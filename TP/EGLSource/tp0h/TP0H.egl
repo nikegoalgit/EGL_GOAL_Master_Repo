@@ -1,0 +1,2884 @@
+package tp0h;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import in1.common.*;
+import ku.common.*;
+import op.common.*;
+import pc.common.*;
+import pk.common.*;
+import pw.common.*;
+import sl.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import tp.common.*;
+import ts.common.*;
+//*** PROGRAM=TP0H ****
+// This application allows users to confirm Fastpick selection.
+// ;
+// When running under "selection" (as opposed to "planning"),
+// this screen allows users to assign fast pick locations by
+// product/special handling.
+// ;
+// By "accepting" the Fastpick data on the screen, this screen
+// will submit a batch job that will process movement of pro-
+// duct from bulk storage area to Fastpick areas, from there it
+// will be processed on the regular "Normal" batch job run.
+// ;
+// Also allows printing of Fastpick re-planning reports.
+// ;
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// Fastpick 02/19/96  OVAZQU  new program
+// Fastpick 09/11/96  OVAZQU  change cartons per pick face to 4
+// Fastpick 09/27/96  OVAZQU  Add checking of orders and units
+//                            counts to make sure that poolh,
+//                            fastp and fploc tbls still match
+//                            before we finalize fp confirmatn.
+// Fastpick 10/22/96  OVAZQU  Remove check between pool and
+//                            fastp tables.  Leave check to
+//                            ensure that what we started with
+//                            is still what we ended with.
+// Fastpick 03/21/97  OVAZQU  Correct class and msgclass on job
+//                            card in tp0ht02 table.
+// Fastpick 03/27/97  OVAZQU  Change number of cartons per pick
+//                            face from 4 to 5.
+// ;
+// *********************
+Program TP0H type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "PK00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  PWHREC PWHREC; // record
+  SL5REC SL5REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA3REC TA3REC; // record
+  TA5REC TA5REC; // record
+  TA6REC TA6REC; // record
+  TAEREC TAEREC; // record
+  TP0HW00 TP0HW00; // record
+  TP0HW01 TP0HW01; // record
+  TP0HW02 TP0HW02; // record
+  TP0HW9D TP0HW9D; // record
+  TP0HW9E TP0HW9E; // record
+  TP0HW9H TP0HW9H; // record
+  TP0HW9J TP0HW9J; // record
+  TP0HW9O TP0HW9O; // record
+  TP0HW9P TP0HW9P; // record
+  TP0HW9R TP0HW9R; // record
+  TP0HW9U TP0HW9U; // record
+  TP0HW9W TP0HW9W; // record
+  TP1REC TP1REC; // record
+  TP20REC TP20REC; // record
+  TP2REC TP2REC; // record
+  TPWREC TPWREC; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use TP0HT01; // table
+  use TP0HT02 {deleteAfterUse = yes}; // table
+  use PK00ENU; // table
+  use XWHTBL; // table
+  use TP0HM.TA0PM001,  // forms
+      TP0HM.TP0HM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPTP001: XPTP001();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and display storage areas.*/
+     /* ------------------------------------------------------------*/
+
+    set TP0HM001 initial; /* M001 input/output*/
+    set TP0HW00 empty; /* Working storage*/
+    set TP0HW01 empty; /* M001 display storage*/
+    set TP0HW02 empty; /* intrnl loc tbl working storage*/
+    set TP20REC empty; /* Working storage*/
+    set SQLCA empty; /* SQL communication area*/
+    set TP1REC empty; /* Fastp01 record*/
+    set TP2REC empty; /* Fploc01 record*/
+    set PWHREC empty; /* Pkpgm01 record*/
+    set TAEREC empty; /* Error diagnosis information*/
+    set TA1REC empty; /* Error diagnosis parameters*/
+    set TA3REC empty; /**/
+    set TA5REC empty; /* temporary storage area*/
+    set TA6REC empty; /**/
+    set XX0XW01 empty; /* Date/time subroutine parameters*/
+
+     /* ------------------------------------------------------------*/
+     /* determine default data to be loaded*/
+     /* ------------------------------------------------------------*/
+    TP0HW00.XXXTSLEN = 1014;
+
+    TP0HW00.TP0HWSWR = "Y"; /* request for data switch*/
+    TP0HW00.TP0HWSWF = "Y"; /* format screen data switch*/
+    TP0HW00.TP0HWSWC = "N"; /* not confirmed yet*/
+    TP0HW00.TP0HWSWP = "N"; /* detail reports not printed yet*/
+    TP0HW00.TP0HWSWE = "N"; /* error switch*/
+    TP0HW00.XARCD = "02"; /* fastfpick area code*/
+    TP0HW00.TP0HW-SL4ZONE-RP = "80"; /* fastfpick rp zone cd*/
+    TP0HW00.TP0HW-SL4ZONE-FC = "81"; /* fastfpick fc zone cd*/
+    TP0HW00.TP0HW-SL5LOCTN-FC-NOSHNDL = "019999"; /* fc no sp-hndl loc*/
+    TP0HW00.TP0HW-SL5LOCTN-FC-SHNDL = "039999"; /* fc sp-hndl loc*/
+    TP0HW00.TP0HWIXL-MAX = 650; /* max nbr of locs in intrnl tbl*/
+    TP0HW00.TP0HW-CRTNS-X-PK-FACE = 5; /* cartons per pick face*/
+    TP0HW00.TP0HW-BAD-CNT-MSG = " ";
+    TP0HW00.TP0HW-BAD-CNT-MSG-C1 = "MISSMATCHED POOLH:";
+    TP0HW00.TP0HW-BAD-CNT-MSG-C2 = ",";
+    TP0HW00.TP0HW-BAD-CNT-MSG-C3 = ", FASTP:";
+    TP0HW00.TP0HW-BAD-CNT-MSG-C4 = ",";
+
+     /* ------------------------------------------------------------*/
+     /* Flow to mainline processing*/
+     /* ------------------------------------------------------------*/
+
+    goto TP0H001;
+
+    TP0H001: TP0H001();
+    goto TP0H001;
+    TP0H002: TP0H002();
+    goto TP0H002; /* Converse map*/
+
+  end // end main
+end // end TP0H
+
+// Inquire/maintainance m001
+Function TP0H001()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) Obtain the data to display.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Reset highlighted fields to normal intensity.*/
+   /* 5) Verify the data that was entered.*/
+   /* 6) Process a valid input request.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+  TP0HS100-GET-DATA(); /* Obtain the data to display*/
+
+  TP0HS200-CNVRS-MAP(); /* Format and display the map*/
+
+  TP0HS300-CHK-PFKEY(); /* Check attention identifier*/
+
+  TP0HS400-RST-FLDS(); /* Reset fields to normal intensity*/
+
+  TP0HS500-VRFY-DATA(); /* Verify the entered data*/
+
+  TP0HS600-PROC-RQST(); /* Process valid input request*/
+
+end // end TP0H001
+
+// Converse map
+Function TP0H002()
+  converse TP0HM001 ;
+end // end TP0H002
+
+// Determine CICS region
+Function TP0HS-CALL-TA0230()
+   /* ------------------------------------------------------------*/
+   /* FIND WHICH ENVIRONMENT CURRENT PROGRAM IS RUNNING IN*/
+   /*  */
+   /* PRODUCTION REGION CAUSES PRODUCTION JCL TO BE EXECUTED,*/
+   /* TEST REGION CAUSES TEST JCL TO BE EXECUTED USING DSNT OR DSND.*/
+   /*  */
+   /* ALL VERSIONS OF JCL ARE FOUND IN TS09T01*/
+   /*  */
+   /* ------------------------------------------------------------*/
+
+  set TA3REC empty;
+
+  TA3REC.TA3OPTN = "ASSIGN";
+
+  try
+    call "TA0230" (TA3REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA3REC.TA3RTNCD == 0)         
+
+    return;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA3REC.TA3GROUP; /* Subroutine parameters*/
+
+  TP0HW00.XXXLOCID = "TA0"; /* Module identification*/
+  converseLib.validationFailed(1); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "FIND CICS REGION";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = TP0HW00.XXXLOCID; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M099"; /* Map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TP0HS-CALL-TA0230
+
+// Call Vfastp01 tbl i/o mod
+Function TP0HS-CALL-TP0020()
+   /* -------------------------------------------------------------------*/
+   /* call TP0020 to do fastp i/o's*/
+   /* -------------------------------------------------------------------*/
+
+  set TP20REC empty;
+
+  TP20REC.XWHCD = TPWREC.XWH-WHSE-CD;
+  if (TPWREC.TPW-SEL-RUN-MODE == "PK") /* picking selection?*/
+    TP20REC.TP1-FP-STAT-IND = "4";
+  else
+    TP20REC.TP1-FP-STAT-IND = "2";
+  end
+  TP20REC.TPW-PGM-ID = "TP0H";
+  TP20REC.TPW-RQST-TYP = TP0HW00.TPW-RQST-TYP;
+
+
+  call "TP0020" (TP20REC) {isNoRefresh = yes, isExternal = yes}; /* call fastp io mod*/
+
+   /* ------------------------------------------------------------*/
+   /* Check return codes*/
+   /* ------------------------------------------------------------*/
+
+  if (TP20REC.TPW-RTRN-CD == 0)
+
+    if (TP20REC.TPW-RTRN-SQLCD == 0
+     || TP20REC.TPW-RTRN-SQLCD == 100)
+      /* next sentence*/
+    else
+
+      TP0HW00.XXXLOCID = "CALL";
+      if (TP20REC.TPW-RTRN-SQLCD == -911)
+        converseLib.validationFailed(108); /* contention*/
+      else
+        converseLib.validationFailed(29); /* unexpected return*/
+      end
+
+    end
+
+  else
+
+    TP0HW00.XXXLOCID = "TP20";
+    converseLib.validationFailed(29); /* unexpected return*/
+
+  end
+
+  if (converseVar.validationMsgNum > 0) /* error found*/
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Rollback updates*/
+  end
+
+
+end // end TP0HS-CALL-TP0020
+
+// Call vfploc01 tbl i/o mod
+Function TP0HS-CALL-VFPLOC()
+   /* -------------------------------------------------------------------*/
+   /* call vfploc01 to do fploc i/o's*/
+   /* -------------------------------------------------------------------*/
+
+  if (TP0HW00.TPW-RQST-TYP == "I ") /* insert dpick.vfploc01*/
+
+    try
+      call "VFPLOC01" ("A ", SQLCA, TP2REC) {isNoRefresh = yes, isExternal = yes};
+    end
+
+  else /* delete all dpick.vfploc01 rows*/
+
+    try
+      call "VFPLOC01" ("D1", SQLCA, TP2REC) {isNoRefresh = yes, isExternal = yes};
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Check return codes*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && (SQLCA.VAGen_SQLCODE == 0      /* and normal return code*/
+   || SQLCA.VAGen_SQLCODE == 100))  
+
+    return; /* Return to previous process*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TP0HW00.XXXLOCID = "FPLOC"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    converseLib.validationFailed(28); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+  else
+    converseLib.validationFailed(29); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+  end
+
+  TA1REC.TA1PGMNO = "TP0H"; /* Module identification*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "DELETE OR INSERT ROWS";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFPLOC01"; /* Table view name*/
+  TA1REC.TA1TBLKE = TP2REC.TP2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Rollback updates*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TP0HS-CALL-VFPLOC
+
+// add temporary storage
+Function TP0HS-TS-ADD()
+   /* ------------------------------------------------------------*/
+   /* Add the next page to temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW01.XXXTSLEN = TP0HW00.XXXTSLEN;
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+  TA5REC.TA5FNCCD = "A"; /* Function code*/
+
+  try
+    call "TA0050" (TP0HW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, initialize the storage area and indicators*/
+   /* to be used.  Return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    set TP0HW01 empty; /* m001 display storage*/
+
+    TP0HW00.TP0HWIDX = 1; /* Display line index*/
+
+    TP0HW00.TA5TSQIX = TA5REC.TA5TSQIX; /* Highest page number*/
+    TA5REC.TA5TSQIX = 0; /* Current page number*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TP0HW00.XXXLOCID = "TS-ADD"; /* Module identification*/
+  converseLib.validationFailed(29); /* Indicate system error*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = TP0HW00.XXXLOCID; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TP0HS-TS-ADD
+
+// purge temporary storage
+Function TP0HS-TS-PURGE()
+   /* ------------------------------------------------------------*/
+   /* Initialize the storage areas and indicators to be used.*/
+   /* ------------------------------------------------------------*/
+
+  set TP0HW01 empty; /* m001 temporary storage detail*/
+
+  TA5REC.TA5TSQIX = 0; /* Current page number*/
+  TP0HW00.TA5TSQIX = 0; /* Highest page number*/
+
+   /* ------------------------------------------------------------*/
+   /* Purge any temporary storage for this application.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+  TA5REC.TA5FNCCD = "P"; /* Function code*/
+
+  try
+    call "TA0050" (TP0HW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TP0HW00.XXXLOCID = "TS-PURGE"; /* Module identification*/
+  converseLib.validationFailed(29); /* Indicate system error*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = TP0HW00.XXXLOCID; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TP0HS-TS-PURGE
+
+// read temporary storage
+Function TP0HS-TS-READ()
+   /* ------------------------------------------------------------*/
+   /* Obtain the next page of data to display.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+  TP0HW01.XXXTSLEN = TP0HW00.XXXTSLEN;
+  TA5REC.TA5TSQIX = TP0HW00.XXXTSPAG; /* Page number*/
+  TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+  try
+    call "TA0050" (TP0HW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TP0HW00.XXXLOCID = "TS-READ"; /* Module identification*/
+  converseLib.validationFailed(29); /* Indicate system error*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "READ PAGE FROM TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = TP0HW00.XXXLOCID; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TP0HS-TS-READ
+
+// update temporary storage
+Function TP0HS-TS-UPDT()
+   /* ------------------------------------------------------------*/
+   /* Update temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5FNCCD = "U"; /* Function code*/
+
+  try
+    call "TA0050" (TP0HW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, initialize the storage area and indicators*/
+   /* to be used.  Return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TP0HW00.XXXLOCID = "TS-UPDT"; /* Module identification*/
+  converseLib.validationFailed(29); /* Indicate system error*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "READ TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = TP0HW00.XXXLOCID; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TP0HS-TS-UPDT
+
+// get fastp data
+Function TP0HS100-GET-DATA()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, return to the previous process*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0 /* An error was found*/
+   || TP0HW00.TP0HWSWR == "N")          /* or no data was requested*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* purge temporary storage*/
+   /* ------------------------------------------------------------*/
+
+  TP0HS-TS-PURGE(); /* purge temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* obtain data from fast pick db2 table*/
+   /* ------------------------------------------------------------*/
+
+  TP0HS120-GET-FASTP(); /* get dpick.vfastp01 info*/
+
+   /* ------------------------------------------------------------*/
+   /* Get poolh & fastp orders & units counts*/
+   /* ------------------------------------------------------------*/
+
+  if (TPWREC.TPW-SEL-RUN-MODE == "PK" /* Picking Selection*/
+   && TP0HW00.TA5TSQIX > 0)           /* & ts pages written*/
+
+    TP0HW00.TPW-RQST-TYP = "T1"; /* tally poolh & fastp orders/units*/
+
+    TP0HS999-COUNTORDS(); /* count poolh/fastp orders/units*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* if no data to show or bad error, make loc columns non-enterable*/
+   /* ------------------------------------------------------------*/
+
+  if (TP0HW00.TA5TSQIX == 0 /* no ts pages written*/
+   || TP0HW00.TP0HWSWE == "Y") /* or error sw set*/
+
+    TP0HW00.TP0HWIDX = 1;
+    while (TP0HW00.TP0HWIDX <= 13
+    )
+      set TP0HM001.SL4ZONE[TP0HWIDX] skip;
+      set TP0HM001.SL5LOCTN[TP0HWIDX] skip;
+      TP0HW00.TP0HWIDX = TP0HW00.TP0HWIDX + 1;
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the request for data is complete.*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.XXXTSPAG = 1;
+  TP0HW00.TP0HWSWR = "N"; /* Request for data switch*/
+
+
+end // end TP0HS100-GET-DATA
+
+// Get data from Dpick.Vfastp01
+Function TP0HS120-GET-FASTP()
+   /* ------------------------------------------------------------*/
+   /* obtain data from fast pick db2 table*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.TP0HWIXL = 1;
+  TP0HW00.TP0HWIDX = 1;
+  TP0HW00.XXXTSPAG = 1;
+
+  TP0HW00.TPW-RQST-TYP = "S1"; /* Open FASTP01 (non-spcl-hndl)*/
+  TP0HS-CALL-TP0020();
+
+  if (TP20REC.TPW-RTRN-CD == 0
+   && TP20REC.TPW-RTRN-SQLCD == 0) /* good return codes*/
+
+    TP0HW00.TPW-RQST-TYP = "N1"; /* Fetch FASTP01 (non-spcl-hndl)*/
+    TP0HS-CALL-TP0020();
+
+    while (TP20REC.TPW-RTRN-CD == 0
+     && TP20REC.TPW-RTRN-SQLCD == 0)
+
+      TP0HS122-LOAD-TS(); /* move fastp data to ts record*/
+
+      TP0HS-CALL-TP0020(); /* fetch next fastp01 (non-spcl-hndl)*/
+    end
+  end
+
+  if (TP20REC.TPW-RTRN-CD == 0
+   && (TP20REC.TPW-RTRN-SQLCD == 0
+   || TP20REC.TPW-RTRN-SQLCD == 100)) /* good return codes*/
+
+    TP0HW00.TPW-RQST-TYP = "S2"; /* Open FASTP01 (spcl-hndl)*/
+    TP0HS-CALL-TP0020();
+
+    if (TP20REC.TPW-RTRN-CD == 0
+     && TP20REC.TPW-RTRN-SQLCD == 0) /* good return codes*/
+
+      TP0HW00.TPW-RQST-TYP = "N2"; /* Fetch FASTP01 (spcl-hndl)*/
+      TP0HS-CALL-TP0020();
+
+      while (TP20REC.TPW-RTRN-CD == 0
+       && TP20REC.TPW-RTRN-SQLCD == 0)
+
+        TP0HS122-LOAD-TS(); /* move fastp data to ts record*/
+
+        TP0HS-CALL-TP0020(); /* fetch next fastp01 (spcl-hndl)*/
+      end
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* See if incomplete ts page to write*/
+   /* ------------------------------------------------------------*/
+
+  if (TP20REC.TPW-RTRN-CD == 0)
+
+    if (TP20REC.TPW-RTRN-SQLCD == 0
+     || TP20REC.TPW-RTRN-SQLCD == 100) /* good return codes*/
+
+      if (TP0HW00.TP0HWIDX > 1) /* incomplete page?*/
+        TP0HS-TS-ADD(); /* insert ts record*/
+      end
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* if no data found, display message*/
+   /* ------------------------------------------------------------*/
+
+  if (TP0HW00.TA5TSQIX == 0 /* no ts pages written*/
+   && converseVar.validationMsgNum == 0) /* no error found*/
+
+    TP0HW00.XXXLOCID = "GETF";
+    TP0HW00.TP0HW-INFO-MSG = 31; /* no data for display*/
+    TP0HW00.TP0HWSWF = "N"; /* do not try to format screen*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* see if any errors found, if so, do not format screen*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* error found*/
+    TP0HW00.TP0HWSWF = "N"; /* do not try to format screen*/
+
+    exit stack;
+  end
+
+
+end // end TP0HS120-GET-FASTP
+
+// move fastp data to ts record
+Function TP0HS122-LOAD-TS()
+   /* -------------------------------------------------------------------*/
+   /* add cartons and quantities to totals*/
+   /* -------------------------------------------------------------------*/
+
+  TP0HW00.TP0HW-TOT-PK1NBCTN = TP0HW00.TP0HW-TOT-PK1NBCTN +   TP20REC.TP0HW-PK-NBR-FC-CRTNS + TP20REC.TP0HW-PK-NBR-RP-CRTNS;
+  TP0HW00.TP0HW-TOT-FC-QTY = TP0HW00.TP0HW-TOT-FC-QTY + TP20REC.PK5ITMFC;
+  TP0HW00.TP0HW-TOT-RP-QTY = TP0HW00.TP0HW-TOT-RP-QTY + TP20REC.PK5ITMRP;
+
+   /* -------------------------------------------------------------------*/
+   /* move fastp data to line on ts record*/
+   /* create 1 line for full case cartons*/
+   /* create as many lines as repack cartons is divisible by (the num-*/
+   /* ber of cartons per pick face) + 1.*/
+   /* -------------------------------------------------------------------*/
+
+  if (TP20REC.PK5ITMFC > 0) /* full case*/
+
+    TP0HW01.PK1NBCTN[TP0HWIDX] = TP20REC.TP0HW-PK-NBR-FC-CRTNS;
+    TP0HW01.PK5ITMFC[TP0HWIDX] = TP20REC.PK5ITMFC;
+    TP0HW01.SL4ZONE[TP0HWIDX] = TP0HW00.TP0HW-SL4ZONE-FC; /* fc zone*/
+    if (TP20REC.OP1SPHDF == "Y") /* special handling?*/
+      TP0HW01.SL5LOCTN[TP0HWIDX] = TP0HW00.TP0HW-SL5LOCTN-FC-SHNDL; /* fc location*/
+    else
+      TP0HW01.SL5LOCTN[TP0HWIDX] = TP0HW00.TP0HW-SL5LOCTN-FC-NOSHNDL; /* fc location*/
+    end
+
+    TP0HS1222-BLDTSREC(); /* build ts record*/
+
+  end
+
+  if (TP20REC.PK5ITMRP > 0) /* repack*/
+
+    if (TP20REC.TP0HW-PK-NBR-RP-CRTNS > TP0HW00.TP0HW-CRTNS-X-PK-FACE)
+
+      TP0HW00.TP0HW-NBR-LOCS = TP20REC.TP0HW-PK-NBR-RP-CRTNS / TP0HW00.TP0HW-CRTNS-X-PK-FACE;
+      TP0HW00.TP0HW-QTY-PER-LOC = ((TP20REC.PK5ITMRP / TP20REC.TP0HW-PK-NBR-RP-CRTNS)       * TP0HW00.TP0HW-CRTNS-X-PK-FACE);
+
+      while (TP0HW00.TP0HW-NBR-LOCS > 0)
+        TP0HW01.PK1NBCTN[TP0HWIDX] = TP0HW00.TP0HW-CRTNS-X-PK-FACE;
+        TP0HW01.PK5ITMRP[TP0HWIDX] = TP0HW00.TP0HW-QTY-PER-LOC;
+        TP0HW01.SL4ZONE[TP0HWIDX] = TP0HW00.TP0HW-SL4ZONE-RP; /* rp zone*/
+
+        TP0HS1222-BLDTSREC(); /* build ts record*/
+
+        TP20REC.TP0HW-PK-NBR-RP-CRTNS = TP20REC.TP0HW-PK-NBR-RP-CRTNS - TP0HW00.TP0HW-CRTNS-X-PK-FACE;
+        TP20REC.PK5ITMRP = TP20REC.PK5ITMRP - TP0HW00.TP0HW-QTY-PER-LOC;
+        TP0HW00.TP0HW-NBR-LOCS = TP0HW00.TP0HW-NBR-LOCS - 1;
+      end
+    end
+
+    if (TP20REC.TP0HW-PK-NBR-RP-CRTNS > 0
+     || TP20REC.PK5ITMRP > 0) /* residual*/
+
+      TP0HW01.PK1NBCTN[TP0HWIDX] = TP20REC.TP0HW-PK-NBR-RP-CRTNS;
+      TP0HW01.PK5ITMRP[TP0HWIDX] = TP20REC.PK5ITMRP;
+      TP0HW01.SL4ZONE[TP0HWIDX] = TP0HW00.TP0HW-SL4ZONE-RP; /* rp zone*/
+
+      TP0HS1222-BLDTSREC(); /* build ts record*/
+    end
+
+  end
+
+
+end // end TP0HS122-LOAD-TS
+
+// build ts record
+Function TP0HS1222-BLDTSREC()
+   /* -------------------------------------------------------------------*/
+   /* move fastp data to line on ts record*/
+   /* -------------------------------------------------------------------*/
+
+  TP0HW01.CU-CO-SHORT-NM[TP0HWIDX] = TP20REC.CU-CO-SHORT-NM;
+  TP0HW01.CU-CO-ID[TP0HWIDX] = TP20REC.CU-CO-ID;
+  TP0HW01.OP1SPHDF[TP0HWIDX] = TP20REC.OP1SPHDF;
+  TP0HW01.TPW-XHDCD1[TP0HWIDX] = TP20REC.TPW-XHDCD1;
+  TP0HW01.TPW-XHDCD2[TP0HWIDX] = TP20REC.TPW-XHDCD2;
+  TP0HW01.TPW-XHDCD3[TP0HWIDX] = TP20REC.TPW-XHDCD3;
+  TP0HW01.XGPCD[TP0HWIDX] = TP20REC.XGPCD;
+  TP0HW01.SY1STNBR[TP0HWIDX] = TP20REC.SY1STNBR;
+  TP0HW01.SY2CLRID[TP0HWIDX] = TP20REC.SY2CLRID;
+  TP0HW01.XDMCD[TP0HWIDX] = TP20REC.XDMCD;
+  TP0HW01.XQACD[TP0HWIDX] = TP20REC.XQACD;
+  TP0HW01.XOWCD[TP0HWIDX] = TP20REC.XOWCD;
+  TP0HW01.PC2INSEG[TP0HWIDX] = TP20REC.PC2INSEG;
+  TP0HW01.XEGCD[TP0HWIDX] = TP20REC.XEGCD;
+  TP0HW01.XPGCD[TP0HWIDX] = TP20REC.XPGCD;
+  TP0HW01.XUMCD[TP0HWIDX] = TP20REC.XUMCD;
+  TP0HW01.SY-SZ-ID[TP0HWIDX] = TP20REC.SY-SZ-ID;
+  TP0HW01.SY-SZ-ID-DESC[TP0HWIDX] = TP20REC.SY-SZ-ID-DESC;
+
+  TP0HW00.TP0HW-TOT-LOCS = TP0HW00.TP0HW-TOT-LOCS + 1; /* count locs*/
+
+   /* ------------------------------------------------------------*/
+   /* if picking, create an entry on location internal tbl.*/
+   /* ------------------------------------------------------------*/
+
+  if (TPWREC.TPW-SEL-RUN-MODE == "PK")
+    if (TP0HW00.TP0HWIXL <= TP0HW00.TP0HWIXL-MAX)
+      TP0HW02.XXXTSPAG[TP0HWIXL] = TP0HW00.XXXTSPAG;
+      TP0HW02.SL4ZONE[TP0HWIXL] = TP0HW01.SL4ZONE[TP0HWIDX];
+      TP0HW02.SL5LOCTN[TP0HWIXL] = TP0HW01.SL5LOCTN[TP0HWIDX];
+      TP0HW00.TP0HWIXL = TP0HW00.TP0HWIXL + 1;
+    end
+  end
+
+  TP0HW00.TP0HWIDX = TP0HW00.TP0HWIDX + 1;
+  if (TP0HW00.TP0HWIDX > 13)
+
+    TP0HS-TS-ADD(); /* insert ts record*/
+
+    TP0HW00.TP0HWIDX = 1;
+    TP0HW00.XXXTSPAG = TP0HW00.XXXTSPAG + 1;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* see if any errors found, if so, do not format screen*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* error found*/
+    TP0HW00.TP0HWSWF = "N"; /* do not try to format screen*/
+
+    exit stack;
+  end
+
+
+end // end TP0HS1222-BLDTSREC
+
+// Converse map
+Function TP0HS200-CNVRS-MAP()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, save the error message number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    TP0HW00.TP0HWMSG = converseVar.validationMsgNum; /* Message number*/
+  else
+    if (TP0HW00.TP0HW-INFO-MSG != 0)
+      TP0HW00.TP0HWMSG = TP0HW00.TP0HW-INFO-MSG;
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If obtain data failed or no error, format data to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum == 0 /* No error found*/
+   && TP0HW00.TP0HWSWF == "Y"           /* Map must be formatted*/
+   && TP0HW00.TP0HWSWE == "N"           /* No error sw set*/
+   && TP0HW00.TP0HWSWC == "N")          /* Not confirmed yet*/
+
+    TP0HS220-FRMT-MAP(); /* Format the data on the map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Set map color*/
+   /* ------------------------------------------------------------*/
+
+  if (TPWREC.TPW-SEL-RUN-MODE == "PK") /* PICKING SELECTION?*/
+    TP0HM001.TP0HM-RUN-MODE = "P I C K I N G";
+    set TP0HM-TITLE1 magenta;
+    set TP0HM-TITLE2A magenta;
+    set TP0HM-TITLE2B magenta;
+    set TP0HM-HDR1 magenta;
+    set TP0HM-HDR2 magenta;
+    set TP0HM-HDR3A magenta, underline;
+    set TP0HM-HDR3B magenta, underline;
+    set TP0HM-HDR3C magenta, underline;
+    set TP0HM-HDR3D magenta, underline;
+    set TP0HM-HDR3E magenta, underline;
+    set TP0HM-HDR3F magenta, underline;
+    set TP0HM-HDR3G magenta, underline;
+    set TP0HM-HDR3H magenta, underline;
+    set TP0HM-HDR3I magenta, underline;
+    set TP0HM-HDR3J magenta, underline;
+    set TP0HM-FOOTR1 magenta;
+    if (TP0HW00.TA5TSQIX == 0   /* no data*/
+     || TP0HW00.TP0HWSWE == "Y" /* or error sw set*/
+     || TP0HW00.TP0HWSWC == "Y") /* or already confirmed*/
+      set TP0HM-PF5 invisible, skip;
+      set TP0HM-HDR3-SL4ZONE magenta, skip;
+      set TP0HM-HDR3-SL5LOCTN magenta, skip;
+    else
+      set TP0HM-PF5 skip;
+      set TP0HM-HDR3-SL4ZONE magenta, underline;
+      set TP0HM-HDR3-SL5LOCTN magenta, underline;
+    end
+  else
+    TP0HM001.TP0HM-RUN-MODE = "PICK PLANNING";
+    set TP0HM-TITLE1 blue;
+    set TP0HM-TITLE2A blue;
+    set TP0HM-TITLE2B blue;
+    set TP0HM-HDR1 blue;
+    set TP0HM-HDR2 blue;
+    set TP0HM-HDR3A blue, underline;
+    set TP0HM-HDR3B blue, underline;
+    set TP0HM-HDR3C blue, underline;
+    set TP0HM-HDR3D blue, underline;
+    set TP0HM-HDR3E blue, underline;
+    set TP0HM-HDR3F blue, underline;
+    set TP0HM-HDR3G blue, underline;
+    set TP0HM-HDR3H blue, underline;
+    set TP0HM-HDR3I blue, underline;
+    set TP0HM-HDR3J blue, underline;
+    set TP0HM-HDR3-SL4ZONE invisible, skip;
+    set TP0HM-HDR3-SL5LOCTN invisible, skip;
+    set TP0HM-FOOTR1 blue;
+    set TP0HM-PF5 invisible, skip;
+  end
+
+  if (TP0HW00.TA5TSQIX == 0   /* no data to work on*/
+   || TP0HW00.TP0HWSWC == "Y" /* or already confirmed*/
+   || TP0HW00.TP0HWSWP == "Y") /* or reports already printed*/
+    set TP0HM-PF9 invisible, skip;
+  else
+    set TP0HM-PF9 skip;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* format top & bottom info on map*/
+   /* ------------------------------------------------------------*/
+
+  TP0HM001.XWHCD = TPWREC.XWH-WHSE-CD; /* warehouse code*/
+  TP0HM001.XWHABRV = TPWREC.XWHABRV; /* warehous abrv desc*/
+  TP0HM001.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  if (TP0HW00.TP0HWSWE == "N") /* no error sw set?*/
+    TP0HM001.TP0HM-ERROR-MSG-FLD = " ";
+  else
+    TP0HM001.TP0HM-ERROR-MSG-FLD = " *** BAD ERROR FOUND ***";
+  end
+
+  TP0HM001.TP0HM-TOT-ORDERS = TP0HW00.TP0HW-TOT-ORDERS;
+  TP0HM001.TP0HM-TOT-PK1NBCTN = TP0HW00.TP0HW-TOT-PK1NBCTN;
+  TP0HM001.TP0HM-TOT-FC-QTY = TP0HW00.TP0HW-TOT-FC-QTY;
+  TP0HM001.TP0HM-TOT-RP-QTY = TP0HW00.TP0HW-TOT-RP-QTY;
+  TP0HM001.TP0HM-TOT-LOCS = TP0HW00.TP0HW-TOT-LOCS;
+
+   /* ------------------------------------------------------------*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /* ------------------------------------------------------------*/
+
+  if (TP0HW00.TP0HWMSG != 0) /* Message to display*/
+    if (TP0HW00.TP0HWMSG == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(TP0HW00.TP0HWMSG);
+    end /* error message number*/
+    TP0HM001.XXXLOCID = TP0HW00.XXXLOCID; /* Module identification*/
+    set TP0HM001 alarm; /* Indicate sound alarm*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Set cursor*/
+   /* ------------------------------------------------------------*/
+
+  if (TP0HW00.TP0HWMSG == 0) /* No errors*/
+    if (TPWREC.TPW-SEL-RUN-MODE == "PK"
+     && TP0HM001.SY1STNBR[1] > " ") /* data on line?*/
+      set TP0HM001.SL5LOCTN[1] cursor;
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* CONVERSE THE MAP*/
+   /* ------------------------------------------------------------*/
+
+  TP0H002(); /* Converse map*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.XXXLOCID = " "; /* Module identification*/
+  TP0HW00.TP0HWMSG = 0;
+  TP0HW00.TP0HW-INFO-MSG = 0;
+
+
+end // end TP0HS200-CNVRS-MAP
+
+// format map
+Function TP0HS220-FRMT-MAP()
+   /* ------------------------------------------------------------*/
+   /* Init map*/
+   /* ------------------------------------------------------------*/
+
+  set TP0HM001 initial; /* m001 input/ouput area*/
+
+  TP0HW00.TP0HWSWF = "N"; /* init map switch*/
+
+   /* ------------------------------------------------------------*/
+   /* Read TS*/
+   /* ------------------------------------------------------------*/
+
+  TP0HS-TS-READ(); /* read temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* Format map using data from TS*/
+   /* ------------------------------------------------------------*/
+
+  TP0HM001.XXXTSPAG = TP0HW00.XXXTSPAG;
+  TP0HM001.TA5TSQIX = TP0HW00.TA5TSQIX;
+
+  TP0HW00.TP0HWIDX = 1;
+  while (TP0HW00.TP0HWIDX <= 13
+  )
+    if (TP0HW01.SY1STNBR[TP0HWIDX] > " ") /* data on line?*/
+      TP0HM001.CU-CO-SHORT-NM[TP0HWIDX] = TP0HW01.CU-CO-SHORT-NM[TP0HWIDX];
+      TP0HM001.TPW-XHDCD1[TP0HWIDX] = TP0HW01.TPW-XHDCD1[TP0HWIDX];
+      TP0HM001.TPW-XHDCD2[TP0HWIDX] = TP0HW01.TPW-XHDCD2[TP0HWIDX];
+      TP0HM001.TPW-XHDCD3[TP0HWIDX] = TP0HW01.TPW-XHDCD3[TP0HWIDX];
+      TP0HM001.SY1STNBR[TP0HWIDX] = TP0HW01.SY1STNBR[TP0HWIDX];
+      TP0HM001.SY2CLRID[TP0HWIDX] = TP0HW01.SY2CLRID[TP0HWIDX];
+      TP0HM001.XQACD[TP0HWIDX] = TP0HW01.XQACD[TP0HWIDX];
+      TP0HM001.PC2INSEG[TP0HWIDX] = TP0HW01.PC2INSEG[TP0HWIDX];
+      TP0HM001.SY-SZ-ID-DESC[TP0HWIDX] = TP0HW01.SY-SZ-ID-DESC[TP0HWIDX];
+      TP0HM001.PK1NBCTN[TP0HWIDX] = TP0HW01.PK1NBCTN[TP0HWIDX];
+      TP0HM001.PK5ITMFC[TP0HWIDX] = TP0HW01.PK5ITMFC[TP0HWIDX];
+      TP0HM001.PK5ITMRP[TP0HWIDX] = TP0HW01.PK5ITMRP[TP0HWIDX];
+      TP0HM001.SL4ZONE[TP0HWIDX] = TP0HW01.SL4ZONE[TP0HWIDX];
+      TP0HM001.SL5LOCTN[TP0HWIDX] = TP0HW01.SL5LOCTN[TP0HWIDX];
+      if (TPWREC.TPW-SEL-RUN-MODE == "PK")
+        set TP0HM001.SL4ZONE[TP0HWIDX] skip;
+        if (TP0HW01.SL5LOCTN[TP0HWIDX] != TP0HW-SL5LOCTN-FC-NOSHNDL
+         && TP0HW01.SL5LOCTN[TP0HWIDX] != TP0HW-SL5LOCTN-FC-SHNDL)
+          set TP0HM001.SL5LOCTN[TP0HWIDX] normal;
+          set TP0HM001.SL5LOCTN[TP0HWIDX] underline;
+        end
+      else
+        set TP0HM001.SL4ZONE[TP0HWIDX] invisible, skip;
+        set TP0HM001.SL5LOCTN[TP0HWIDX] invisible, skip;
+      end
+    else
+      set TP0HM001.SL4ZONE[TP0HWIDX] invisible, skip;
+      set TP0HM001.SL5LOCTN[TP0HWIDX] invisible, skip;
+    end
+
+    TP0HW00.TP0HWIDX = TP0HW00.TP0HWIDX + 1;
+
+  end
+
+
+end // end TP0HS220-FRMT-MAP
+
+// check attention identifier
+Function TP0HS300-CHK-PFKEY()
+   /* ------------------------------------------------------------*/
+   /* Check attention identifier*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+   /* ------------------------------------------------------------*/
+   /* See if pf confirmation flags need to be reset.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not pf3) /* no EXIT being requested*/
+    TP0HW00.TP0HW-PF3-CONFIRM-IND = " "; /* reset EXIT indicator*/
+  end
+
+  if (converseVar.eventKey not pf5) /* no ACCEPT being requested*/
+    TP0HW00.TP0HW-PF5-CONFIRM-IND = " "; /* reset confirmation ind*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If CANCEL was requested, clear the map fields and exit.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+    converseLib.clearScreen();
+     /* refresh map*/
+    TP0HW00.TP0HWSWR = "N"; /* no request for data*/
+    TP0HW00.TP0HWSWF = "N"; /* no format screen*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If HELP, exit to the previous level or exit to the Master*/
+   /* Menu was requested, exit to another application.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+
+    XSPF1(); /* Exit to the HELP facility*/
+
+    TP0HM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    converseLib.validationFailed(12); /* Indicate invalid attention key*/
+    TP0HW00.XXXLOCID = "300"; /* Module identification*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If END was requested, make sure user re-requests PF3 if*/
+   /* location information was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+
+    if (TPWREC.TPW-SEL-RUN-MODE == "PK" /* picking run*/
+     && TP0HW00.TA5TSQIX > 0            /* & data found*/
+     && TP0HW00.TP0HW-PF3-CONFIRM-IND == " ") /* & no pf re-keying yet*/
+
+      TP0HW00.TP0HW-PF3-CONFIRM-IND = "R"; /* request pf re-key*/
+      TP0HW00.XXXLOCID = "300"; /* module identification*/
+      TP0HM001.VAGen_EZEMSG = "PLEASE CONFIRM PF3 KEY";
+    else
+      TP0HW00.TP0HW-PF3-CONFIRM-IND = " "; /* reset request ind*/
+      COMMAREA.CATOAP = "TP0A"; /* Fast Pick menu*/
+      COMMAREA.CAUSERA = TPWREC.TPWGRPLV; /* COMMAREA user area*/
+
+      XSEXIT(); /* Invoke selected application*/
+
+      TP0HM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+      converseLib.validationFailed(12); /* Indicate invalid attention key*/
+      TP0HW00.XXXLOCID = "300"; /* Module identification*/
+    end
+
+    exit stack; /* Exit to display map*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Exit to Main Menu was requested*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf4) /* PF4 was pressed*/
+
+    XSPF4(); /* Exit to system main menu*/
+
+    TP0HM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    converseLib.validationFailed(12); /* Indicate invalid attention key*/
+    TP0HW00.XXXLOCID = "300"; /* Module identification*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If ACCEPT was requested, make sure user re-requests PF5 to*/
+   /* ensure that they are sure.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf5) /* ACCEPT was pressed*/
+
+    if (TPWREC.TPW-SEL-RUN-MODE == "PK" /* picking run*/
+     && TP0HW00.TA5TSQIX > 0            /* data exists*/
+     && TP0HW00.TP0HWSWE == "N"         /* & no error sw set*/
+     && TP0HW00.TP0HWSWC == "N")        /* & no previously fulfilled pf5*/
+
+      return; /* go and process pf*/
+    else
+      TP0HW00.XXXLOCID = "300"; /* Module identification*/
+      converseLib.validationFailed(12); /* Indicate invalid attention key*/
+
+      exit stack; /* Exit to display map*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Print Reports function was requested*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf9) /* Print reports*/
+
+    if (TP0HW00.TA5TSQIX > 0    /* data to print*/
+     && TP0HW00.TP0HWSWP == "N" /* & no previous pf9*/
+     && TP0HW00.TP0HWSWC == "N") /* & no previously fulfilled pf5*/
+
+      return;
+    else
+      TP0HW00.XXXLOCID = "300"; /* Module identification*/
+      converseLib.validationFailed(12); /* Indicate invalid attention key*/
+
+      exit stack; /* Exit to display map*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Check for invalid key requested*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf7   
+   && converseVar.eventKey not pf8) 
+
+    TP0HW00.XXXLOCID = "300"; /* Module identification*/
+    converseLib.validationFailed(12); /* Indicate invalid attention key*/
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+end // end TP0HS300-CHK-PFKEY
+
+// Reset enterable fields
+Function TP0HS400-RST-FLDS()
+   /* ------------------------------------------------------------*/
+   /* reset enterable fields to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  if (TPWREC.TPW-SEL-RUN-MODE == "PK"      /* if picking run*/
+   && TP0HW00.TA5TSQIX > 0                 /* and data exists*/
+   && TP0HW00.TP0HWSWE == "N"              /* and no error sw set*/
+   && TP0HW00.TP0HWSWC == "N"              /* and no previously fulfilled pf5*/
+   && TP0HW00.TP0HW-PF3-CONFIRM-IND == " " /* and not asking for*/
+   && TP0HW00.TP0HW-PF5-CONFIRM-IND == " ") /* pf re-keying*/
+
+    TP0HW00.TP0HWIDX = 1;
+    while (TP0HW00.TP0HWIDX <= 13)
+
+      if (TP0HM001.SY1STNBR[TP0HWIDX] > " ") /* DATA ON LINE?*/
+        if (TP0HM001.SL5LOCTN[TP0HWIDX] != TP0HW-SL5LOCTN-FC-NOSHNDL
+         && TP0HM001.SL5LOCTN[TP0HWIDX] != TP0HW-SL5LOCTN-FC-SHNDL)
+          set TP0HM001.SL5LOCTN[TP0HWIDX] normal;
+          set TP0HM001.SL5LOCTN[TP0HWIDX] underline;
+        end
+      end
+      TP0HW00.TP0HWIDX = TP0HW00.TP0HWIDX + 1;
+    end
+  end
+
+
+end // end TP0HS400-RST-FLDS
+
+// verify entered data
+Function TP0HS500-VRFY-DATA()
+   /* ------------------------------------------------------------*/
+   /* Edit entered location codes*/
+   /* ------------------------------------------------------------*/
+
+  if (TPWREC.TPW-SEL-RUN-MODE == "PK" /* Picking run mode and*/
+   && TP0HW00.TP0HW-PF5-CONFIRM-IND == " ") /* not asking for re-keying*/
+
+    TP0HW00.TP0HWSWU = "N"; /* reset data modified sw*/
+    TP0HW00.TP0HWIDX = 13;
+    while (TP0HW00.TP0HWIDX > 0)
+
+      if (TP0HM001.SY1STNBR[TP0HWIDX] > " ") /* data on this line*/
+
+        if (TP0HM001.SL5LOCTN[TP0HWIDX] != 
+        TP0HW01.SL5LOCTN[TP0HWIDX]) /* different location*/
+
+          TP0HW00.TP0HWSWU = "Y"; /* data modified*/
+
+          if (TP0HM001.SL5LOCTN[TP0HWIDX] > " ") /* new loc entered?*/
+
+            TP0HS520-CHNGD-LOC(); /* check modified location*/
+
+          end
+        end
+      end
+      TP0HW00.TP0HWIDX = TP0HW00.TP0HWIDX - 1;
+    end
+
+    if (converseVar.validationMsgNum > 0) /* errors found?*/
+      exit stack; /* go to display error message*/
+    end
+
+    /* ------------------------------------------------------------*/
+    /* If data was modified, update internal table and ts page*/
+    /* ------------------------------------------------------------*/
+
+    if (TP0HW00.TP0HWSWU == "Y") /* data was modified?*/
+
+      TP0HS540-UPDTINTBL(); /* find page position on loc intrnl tbl*/
+
+      TP0HW00.TP0HWIDX = 1;
+      while (TP0HW00.TP0HWIDX <= 13)
+
+        if (TP0HW00.TP0HWIXL > 0) /* valid intrnl tbl entry exists*/
+          TP0HW02.SL5LOCTN[TP0HWIXL] = TP0HM001.SL5LOCTN[TP0HWIDX];
+          TP0HW00.TP0HWIXL = TP0HW00.TP0HWIXL + 1;
+        end
+
+        TP0HW01.SL5LOCTN[TP0HWIDX] = TP0HM001.SL5LOCTN[TP0HWIDX];
+        TP0HW00.TP0HWIDX = TP0HW00.TP0HWIDX + 1;
+      end
+
+      TP0HS-TS-UPDT(); /* update current ts page*/
+    end
+  end
+
+  if (converseVar.validationMsgNum > 0) /* errors found?*/
+    exit stack; /* go to display error message*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If Fastpick is being confirmed, check for missing locs.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf5) /* Confirm Fastpick?*/
+    if (TP0HW00.TP0HW-PF5-CONFIRM-IND == " ") /* not asking for re-keying*/
+      TP0HS560-CHKNOLOCS(); /* Check for un-assigned locs*/
+    end
+
+    if (converseVar.validationMsgNum == 0) /* no errors found ?*/
+      TP0HS580-CHKSAMEDY(); /* Check for Sameday job running*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7) /* Size scroll back request*/
+    if (TP0HW00.XXXTSPAG < 2) /* and no previous pages*/
+      converseLib.validationFailed(37); /* No previous page to display*/
+      TP0HW00.XXXLOCID = "500"; /* Module identification*/
+    end
+  end
+
+  if (converseVar.eventKey is pf8) /* Size scroll forward request*/
+    if (TP0HW00.XXXTSPAG >= TP0HW00.TA5TSQIX) /* and no more pages*/
+      converseLib.validationFailed(38); /* No more pages to display*/
+      TP0HW00.XXXLOCID = "500"; /* Module identification*/
+    end
+  end
+
+  if (converseVar.validationMsgNum > 0) /* errors found?*/
+    exit stack; /* go to display error message*/
+  end
+
+
+end // end TP0HS500-VRFY-DATA
+
+Function TP0HS520-CHNGD-LOC()
+   /* ------------------------------------------------------------*/
+   /* check modified location*/
+   /* ------------------------------------------------------------*/
+
+  TP0HS522-CHKDUPLOC(); /* check for dup locs*/
+
+  if (TP0HW00.TP0HWSWD == "N") /* no dup loc found*/
+
+    TP0HS524-GETLOCTYP();
+
+    if (SL5REC.YLTCD != "81") /* incorrect fastpick loc type*/
+
+      set TP0HM001.SL5LOCTN[TP0HWIDX] bold, cursor;
+      converseLib.validationFailed(51); /* invalid data entered*/
+      TP0HW00.XXXLOCID = "520"; /* Module identification*/
+    end
+
+  else
+    set TP0HM001.SL5LOCTN[TP0HWIDX] bold, cursor;
+    converseLib.validationFailed(140); /* duplicate location*/
+    TP0HW00.XXXLOCID = "520"; /* Module identification*/
+  end
+
+
+end // end TP0HS520-CHNGD-LOC
+
+// Check for dup locs
+Function TP0HS522-CHKDUPLOC()
+   /* ------------------------------------------------------------*/
+   /* Make sure there are no dup locs - First check current page*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.TP0HWSWD = "N"; /* reset dup loc sw*/
+  TP0HW00.TP0HWIXL = TP0HW00.TP0HWIDX - 1;
+
+  while (TP0HW00.TP0HWIXL > 0 /* check prev lines on screen*/
+   && TP0HW00.TP0HWSWD == "N") /* while no dups found*/
+
+    if (TP0HM001.SL4ZONE[TP0HWIDX] == TP0HM001.SL4ZONE[TP0HWIXL]
+     && TP0HM001.SL5LOCTN[TP0HWIDX] == TP0HM001.SL5LOCTN[TP0HWIXL])
+
+      TP0HW00.TP0HWSWD = "Y"; /* dups found*/
+    else
+      TP0HW00.TP0HWIXL = TP0HW00.TP0HWIXL - 1; /* decrement lines indx*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Now check internal table*/
+   /* ------------------------------------------------------------*/
+
+  if (TP0HW00.TP0HWSWD == "N") /* no dups found yet*/
+
+    TP0HW00.TP0HWIXL = 1;
+    while (TP0HW00.TP0HWIXL <= TP0HW00.TP0HWIXL-MAX /* scan intrnl tbl*/
+     && TP0HW00.TP0HWIXL <= TP0HW00.TP0HW-TOT-LOCS
+     && TP0HW00.TP0HWSWD == "N")
+
+      if (TP0HW00.XXXTSPAG != TP0HW02.XXXTSPAG[TP0HWIXL]) /* no curr page*/
+
+        if (TP0HM001.SL4ZONE[TP0HWIDX] == TP0HW02.SL4ZONE[TP0HWIXL]
+         && TP0HM001.SL5LOCTN[TP0HWIDX] == TP0HW02.SL5LOCTN[TP0HWIXL])
+
+          TP0HW00.TP0HWSWD = "Y"; /* dups found*/
+        end
+      end
+      TP0HW00.TP0HWIXL = TP0HW00.TP0HWIXL + 1;
+    end
+  end
+
+
+end // end TP0HS522-CHKDUPLOC
+
+// Verify location type
+Function TP0HS524-GETLOCTYP()
+   /* --------------------------------------------------------------------*/
+   /* Select set on Dstloc.vlocat01*/
+   /* --------------------------------------------------------------------*/
+
+  set SL5REC empty;
+  SL5REC.XWHCD = TPWREC.XWH-WHSE-CD; /* warehouse*/
+  SL5REC.XARCD = TP0HW00.XARCD;
+  SL5REC.SL4ZONE = TP0HM001.SL4ZONE[TP0HWIDX];
+  SL5REC.SL5LOCTN = TP0HM001.SL5LOCTN[TP0HWIDX];
+  try
+    call "IO1490" ("S ", SQLCA, SL5REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && (SQLCA.VAGen_SQLCODE == 0      /* and normal return code*/
+   || SQLCA.VAGen_SQLCODE == 100))  
+    return; /* Return to previous process*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TP0HW00.XXXLOCID = "520"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    converseLib.validationFailed(28); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+  else
+    converseLib.validationFailed(29); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+  end
+
+  TA1REC.TA1PGMNO = "TP0H"; /* Module identification*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT LOCATION ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1DBASE = "DSTLOC  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VLOCAT01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SL5REC.SL5KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TP0HS524-GETLOCTYP
+
+// Find curr pg on loc intrnl tbl
+Function TP0HS540-UPDTINTBL()
+   /* ------------------------------------------------------------*/
+   /* Look for current page on location internal table*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.TP0HWIXL = 1;
+
+  while (TP0HW02.XXXTSPAG[TP0HWIXL] != TP0HW00.XXXTSPAG
+   && TP0HW00.TP0HWIXL <= TP0HW00.TP0HW-TOT-LOCS
+   && TP0HW00.TP0HWIXL <= TP0HW00.TP0HWIXL-MAX) /* correct line found*/
+
+    TP0HW00.TP0HWIXL = TP0HW00.TP0HWIXL + 1;
+  end
+
+  if (TP0HW02.XXXTSPAG[TP0HWIXL] != TP0HW00.XXXTSPAG) /* page not found*/
+    TP0HW00.TP0HWIXL = 0; /* reset location index*/
+  end
+
+
+end // end TP0HS540-UPDTINTBL
+
+// Check for missing locs
+Function TP0HS560-CHKNOLOCS()
+   /* ------------------------------------------------------------*/
+   /* Make sure there are no missing locs among all ts pages.*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.TP0HW-SVTSPAG = TP0HW00.XXXTSPAG;
+  TP0HW00.XXXTSPAG = 1;
+  while (TP0HW00.XXXTSPAG <= TP0HW00.TA5TSQIX /* get all ts pages*/
+   && converseVar.validationMsgNum == 0) /* as long as there are no errors*/
+
+    TP0HS-TS-READ(); /* get ts page*/
+
+    TP0HW00.TP0HWIDX = 1;
+    while (TP0HW00.TP0HWIDX <= 13           /* get all lines on page*/
+     && TP0HW01.SY1STNBR[TP0HWIDX] > " " /* w/data on line*/
+     && converseVar.validationMsgNum == 0) /* as long as there are no errors*/
+
+      if (TP0HW01.SL5LOCTN[TP0HWIDX] > " ") /* loc cd exists*/
+        TP0HW00.TP0HWIDX = TP0HW00.TP0HWIDX + 1;
+      else
+        converseLib.validationFailed(499); /* data needed*/
+      end
+
+    end
+
+    TP0HW00.XXXTSPAG = TP0HW00.XXXTSPAG + 1;
+
+  end
+
+  TP0HW00.XXXTSPAG = TP0HW00.TP0HW-SVTSPAG; /* restore ts pg*/
+  TP0HS-TS-READ(); /* get ts page*/
+
+
+end // end TP0HS560-CHKNOLOCS
+
+// Check for batch jobs running
+Function TP0HS580-CHKSAMEDY()
+   /* --------------------------------------------------------------------*/
+   /* See if a "SAME", "RUSH", "NORM" or "FAST" batch job is running*/
+   /* --------------------------------------------------------------------*/
+
+  TP0HW00.TP0HW-RUN-TYP = "S"; /* Check for "SAME" batch job*/
+  TP0HS582-GET-PKPGM(); /* see if pkpgm exists*/
+
+  if (PWHREC.XXXCMTCT > 0) /* Job running*/
+    converseLib.validationFailed(450); /* Job running msg*/
+    TP0HW00.XXXLOCID = "580S"; /* module ID*/
+    return; /* Return to previous process*/
+  end
+
+
+  TP0HW00.TP0HW-RUN-TYP = "R"; /* Check for "RUSH" batch job*/
+  TP0HS582-GET-PKPGM(); /* see if pkpgm exists*/
+
+  if (PWHREC.XXXCMTCT > 0) /* Job running*/
+    converseLib.validationFailed(450); /* Job running msg*/
+    TP0HW00.XXXLOCID = "580R"; /* module ID*/
+    return; /* Return to previous process*/
+  end
+
+
+  TP0HW00.TP0HW-RUN-TYP = "N"; /* Check for "NORM" batch job*/
+  TP0HS582-GET-PKPGM(); /* see if pkpgm exists*/
+
+  if (PWHREC.XXXCMTCT > 0) /* Job running*/
+    converseLib.validationFailed(450); /* Job running msg*/
+    TP0HW00.XXXLOCID = "580N"; /* module ID*/
+    return; /* Return to previous process*/
+  end
+
+
+  TP0HW00.TP0HW-EZEDTEL = VGVar.currentGregorianDate; /* Get current date*/
+  TP0HW00.TP0HW-RUN-TYP = "F"; /* Check for "FAST" batch job*/
+  TP0HS582-GET-PKPGM(); /* see if pkpgm exists*/
+
+  if (PWHREC.XXXCMTCT > 0 /* Job running*/
+   || PWHREC.XXXLSTDT == TP0HW00.TP0HW-EZEDTEL) /* already submitted*/
+    converseLib.validationFailed(502); /* Job running msg*/
+    TP0HW00.XXXLOCID = "580F"; /* module ID*/
+    return; /* Return to previous process*/
+  end
+
+
+end // end TP0HS580-CHKSAMEDY
+
+// Get PKPGM row
+Function TP0HS582-GET-PKPGM()
+   /* --------------------------------------------------------------------*/
+   /* Select set on Dpick.vpkpgm01*/
+   /* --------------------------------------------------------------------*/
+
+  set PWHREC empty;
+  PWHREC.XWHCD = TPWREC.XWH-WHSE-CD; /* warehouse*/
+  TP0HW00.XXXPGMNO = "PK121 "; /* pgm Id for batch jobs status*/
+  TP0HW00.TP0HW-XXXPGMNO-TYP = TP0HW00.TP0HW-RUN-TYP;
+  PWHREC.XXXPGMNO = TP0HW00.XXXPGMNO;
+  try
+    call "IO4240" ("S ", SQLCA, PWHREC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* and normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* and normal return code*/
+      return; /* Return to previous process*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TP0HW00.XXXLOCID = "582"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    converseLib.validationFailed(28); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+  else
+    converseLib.validationFailed(29); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+  end
+
+  TA1REC.TA1PGMNO = "TP0H"; /* Module identification*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT PKPGM ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPKPGM01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PWHREC.PWHKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TP0HS582-GET-PKPGM
+
+// process request
+Function TP0HS600-PROC-RQST()
+   /* --------------------------------------------------------*/
+   /* Process the different pf requests;*/
+   /* --------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7) /* scroll backwards*/
+    TP0HW00.XXXTSPAG = TP0HW00.XXXTSPAG - 1;
+    TP0HW00.TP0HWSWF = "Y"; /* set format map switch*/
+  else
+
+    if (converseVar.eventKey is pf8) /* scroll forward*/
+      TP0HW00.XXXTSPAG = TP0HW00.XXXTSPAG + 1;
+      TP0HW00.TP0HWSWF = "Y"; /* set format map switch*/
+    else
+
+      if (converseVar.eventKey is pf9) /* print detail orders*/
+        TP0HS620-PROC-PF9();
+      else
+
+        if (converseVar.eventKey is pf5) /* confirm fastpick*/
+
+          if (TP0HW00.TP0HW-PF5-CONFIRM-IND == " ") /* not pf5 re-keyed yet*/
+            TP0HW00.TP0HW-PF5-CONFIRM-IND = "R"; /* ask for pf re-key*/
+            TP0HW00.XXXLOCID = "600"; /* module identification*/
+            TP0HM001.VAGen_EZEMSG = "PLEASE CONFIRM PF5 KEY";
+            TP0HW00.TP0HWIDX = 1;
+            while (TP0HW00.TP0HWIDX <= 13) /* protect enterable data*/
+              set TP0HM001.SL4ZONE[TP0HWIDX] skip;
+              set TP0HM001.SL5LOCTN[TP0HWIDX] skip;
+              TP0HW00.TP0HWIDX = TP0HW00.TP0HWIDX + 1;
+            end
+          else
+            TP0HW00.TP0HW-PF5-CONFIRM-IND = " "; /* reset request ind*/
+            TP0HS640-PROC-PF5();
+          end
+        end
+      end
+    end
+  end
+
+
+end // end TP0HS600-PROC-RQST
+
+// Process PF9 - Print reports
+Function TP0HS620-PROC-PF9()
+   /* -----------------------------------------------------------*/
+   /* Submit JCL to print Fastpick re-planning reports*/
+   /* Determine CICS region.*/
+   /* Format the batch program parameters.*/
+   /* Submit the job control through the internal reader.*/
+   /* Indicate that the selected function is completed.*/
+   /* ------------------------------------------------------------*/
+
+  move " " to TA6REC.TA6ROW[1] for all; /* Clear JCL array rows*/
+  TA6REC.TA6INDEX = 1; /* Initialize index*/
+
+  TP0HS-CALL-TA0230(); /* Determine CICS region*/
+
+  if (TA3REC.TA3RGNID == "03") /* PROD region*/
+    TP0HW00.TP0HWIXJ = 1;
+  else /* TEST region*/
+
+    if ("/*EOF" in TP0HT01.TARJCL)
+      TP0HW00.TP0HWIXJ = sysVar.arrayIndex;
+      TP0HW00.TP0HWIXJ = TP0HW00.TP0HWIXJ + 1;
+    else
+      TP0HW00.TP0HWIXJ = 1;
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Format the Job Control Language statement from the table.*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.TP0HWSWJ = "N";
+
+  while (TP0HW00.TP0HWSWJ == "N" /* do until "eoj" found*/
+   && TP0HW00.TP0HWIXJ < 999) /* limit to avoid endless loop*/
+
+    if (TP0HT01.TARTYPE[TP0HWIXJ] == " ") /* no special jcl card*/
+      TA6REC.TARJCL[TA6INDEX] = TP0HT01.TARJCL[TP0HWIXJ]; /* JCL*/
+      TA6REC.TARTYPE[TA6INDEX] = TP0HT01.TARTYPE[TP0HWIXJ]; /* Type*/
+    else
+
+      TP0HS622-SPCLJCLCD(); /* process any special JCL cards*/
+    end
+
+    TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+
+    if (TP0HT01.TARJCL[TP0HWIXJ] == "/*EOF") /* End of table*/
+      TP0HW00.TP0HWSWJ = "Y"; /* Indicate job submitted*/
+    else
+      TP0HW00.TP0HWIXJ = TP0HW00.TP0HWIXJ + 1; /* Increment index*/
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for background execution.*/
+   /* ------------------------------------------------------------*/
+
+  TA6REC.TA6SUBSW = "S"; /* Tailor and submit the JCL*/
+  TA6REC.TA6MSGSW = "N"; /* EOJ online message switch*/
+
+  XPTA0P(); /* Submit JCL for background job*/
+
+   /* ------------------------------------------------------------*/
+   /* If submit was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "0")        /* and normal return*/
+
+    TP0HW00.TP0HWSWP = "Y"; /* Detail reports printed*/
+    TP0HW00.TP0HWSWR = "N"; /* no data request*/
+    TP0HW00.TP0HWSWF = "N"; /* no format screen*/
+    TP0HW00.TP0HW-INFO-MSG = 500; /* info msg "request successful"*/
+    set TP0HM001.TP0HM-PF9 invisible, skip; /* protect pf9*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If not successful, indicate unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode != "00000000" /* Call not successful*/
+   || TA6REC.TA6RTNCD > "1")         /* or unexpected error*/
+
+    converseLib.validationFailed(29); /* Unexpected error occurred*/
+    TP0HW00.XXXLOCID = "620"; /* Module identification*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+end // end TP0HS620-PROC-PF9
+
+// Process special jcl card
+Function TP0HS622-SPCLJCLCD()
+   /* -----------------------------------------------------------*/
+   /* Process any special JCL card.*/
+   /* ------------------------------------------------------------*/
+
+
+  if (TP0HT01.TARTYPE[TP0HWIXJ] == "J") /* whse card*/
+    TP0HW9J.TARJCL = TP0HT01.TARJCL[TP0HWIXJ];
+    TP0HW9J.XWHCD = TPWREC.XWH-WHSE-CD;
+    TA6REC.TARJCL[TA6INDEX] = TP0HW9J.TARJCL;
+  else
+
+    if (TP0HT01.TARTYPE[TP0HWIXJ] == "D") /* dnsT/dsnD statement*/
+      TP0HW9D.TARJCL = TP0HT01.TARJCL[TP0HWIXJ];
+      if (TA3REC.TA3RGNID == "04"
+       || TA3REC.TA3RGNID == "08")
+        TP0HW9D.TP0HW-DSN = "T"; /* dsnT region*/
+      else
+        TP0HW9D.TP0HW-DSN = "D"; /* dsnD region*/
+      end
+      TA6REC.TARJCL[TA6INDEX] = TP0HW9D.TARJCL;
+    else
+
+      if (TP0HT01.TARTYPE[TP0HWIXJ] == "O") /* output card*/
+        TP0HW9O.TARJCL = TP0HT01.TARJCL[TP0HWIXJ];
+        TP0HW9O.TPWMRMT = TPWREC.TPWMRMT;
+        TA6REC.TARJCL[TA6INDEX] = TP0HW9O.TARJCL;
+      else
+
+        if (TP0HT01.TARTYPE[TP0HWIXJ] == "W") /* whse card*/
+          TP0HW9W.TARJCL = TP0HT01.TARJCL[TP0HWIXJ];
+          TP0HW9W.XWHCD = TPWREC.XWH-WHSE-CD;
+          TA6REC.TARJCL[TA6INDEX] = TP0HW9W.TARJCL;
+        else
+
+          if (TP0HT01.TARTYPE[TP0HWIXJ] == "H") /* whse card*/
+            TP0HW9H.TARJCL = TP0HT01.TARJCL[TP0HWIXJ];
+            TP0HW9H.XWHCD = TPWREC.XWH-WHSE-CD;
+            TA6REC.TARJCL[TA6INDEX] = TP0HW9H.TARJCL;
+          else
+
+            if (TP0HT01.TARTYPE[TP0HWIXJ] == "U") /* userid*/
+              TP0HW9U.TARJCL = TP0HT01.TARJCL[TP0HWIXJ];
+              TP0HW9U.CAUSERID = COMMAREA.CAUSERID;
+              TA6REC.TARJCL[TA6INDEX] = TP0HW9U.TARJCL;
+            else
+
+              if (TP0HT01.TARTYPE[TP0HWIXJ] == "P") /* parameter statement*/
+                TP0HW9P.TARJCL = TP0HT01.TARJCL[TP0HWIXJ];
+                if (TPWREC.TPW-SEL-RUN-MODE == "PK") /* "picking selection"?*/
+                  TP0HW9P.TPW-RUN-TYP = "NORM";
+                  TP0HW9P.TP1-FP-STAT-IND = "4";
+                else
+                  TP0HW9P.TPW-RUN-TYP = "PLAN";
+                  TP0HW9P.TP1-FP-STAT-IND = "2";
+                end
+                TA6REC.TARJCL[TA6INDEX] = TP0HW9P.TARJCL;
+              else
+
+                if (TP0HT01.TARTYPE[TP0HWIXJ] == "R") /* Run type card*/
+                  TP0HW9R.TARJCL = TP0HT01.TARJCL[TP0HWIXJ];
+                  if (TPWREC.TPW-SEL-RUN-MODE == "PK")
+                                   /* "picking selection"?*/
+                    TP0HW9R.TPW-RUN-TYP = "NORM";
+                  else
+                    TP0HW9R.TPW-RUN-TYP = "PLAN";
+                  end
+                  TA6REC.TARJCL[TA6INDEX] = TP0HW9R.TARJCL;
+                else
+
+                  TA6REC.TARJCL[TA6INDEX] = TP0HT01.TARJCL[TP0HWIXJ];
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+
+end // end TP0HS622-SPCLJCLCD
+
+// Process PF5 - Accept FP
+Function TP0HS640-PROC-PF5()
+   /* ------------------------------------------------------------*/
+   /* Delete all rows on fploc01 for current whse.*/
+   /* ------------------------------------------------------------*/
+
+  set TP2REC empty;
+  TP2REC.XWHCD = TPWREC.XWH-WHSE-CD;
+  TP0HW00.TPW-RQST-TYP = "D1"; /* delete all rows*/
+
+  TP0HS-CALL-VFPLOC();
+
+  if (converseVar.validationMsgNum != 0) /* errors found*/
+
+    exit stack; /* go back to display screen*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Insert a new fploc01 row for each sku on ts pages*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.TP0HW-SVTSPAG = TP0HW00.XXXTSPAG;
+  TP0HW00.XXXTSPAG = 1;
+
+  while (TP0HW00.XXXTSPAG <= TP0HW00.TA5TSQIX /* get all ts pages*/
+   && converseVar.validationMsgNum == 0) /* as long as there are no errors*/
+
+    TP0HS-TS-READ(); /* get ts page*/
+
+    /* ------------------------------------------------------------*/
+    /* Insert Vfploc row for each loc.*/
+    /* ------------------------------------------------------------*/
+
+    TP0HW00.XXX-REC-SEQ-NBR = 1;
+    TP0HW00.TP0HWIDX = 1;
+
+    while (TP0HW00.TP0HWIDX <= 13           /* get all lines on page*/
+     && TP0HW01.SY1STNBR[TP0HWIDX] > " " /* w/data on line*/
+     && converseVar.validationMsgNum == 0) /* as long as there are no errors*/
+
+      set TP2REC empty;
+      TP2REC.XWHCD = TPWREC.XWH-WHSE-CD;
+      TP2REC.KUCCOID = TP0HW01.CU-CO-ID[TP0HWIDX];
+      TP2REC.OP1SPHDF = TP0HW01.OP1SPHDF[TP0HWIDX];
+      TP2REC.XHD-HNDL-CD[1] = TP0HW01.TPW-XHDCD1[TP0HWIDX];
+      TP2REC.XHD-HNDL-CD[2] = TP0HW01.TPW-XHDCD2[TP0HWIDX];
+      TP2REC.XHD-HNDL-CD[3] = TP0HW01.TPW-XHDCD3[TP0HWIDX];
+      TP2REC.XGPCD = TP0HW01.XGPCD[TP0HWIDX];
+      TP2REC.SY1STNBR = TP0HW01.SY1STNBR[TP0HWIDX];
+      TP2REC.SY2CLRID = TP0HW01.SY2CLRID[TP0HWIDX];
+      TP2REC.XDMCD = TP0HW01.XDMCD[TP0HWIDX];
+      TP2REC.XQACD = TP0HW01.XQACD[TP0HWIDX];
+      TP2REC.PC2INSEG = TP0HW01.PC2INSEG[TP0HWIDX];
+      TP2REC.XEGCD = TP0HW01.XEGCD[TP0HWIDX];
+      TP2REC.XPGCD = TP0HW01.XPGCD[TP0HWIDX];
+      TP2REC.XUMCD = TP0HW01.XUMCD[TP0HWIDX];
+      TP2REC.XOWCD = TP0HW01.XOWCD[TP0HWIDX];
+      TP2REC.SY-SZ-ID = TP0HW01.SY-SZ-ID[TP0HWIDX];
+      TP2REC.XXX-REC-SEQ-NBR = TP0HW00.XXX-REC-SEQ-NBR;
+      TP2REC.SY4IDDSC = TP0HW01.SY-SZ-ID-DESC[TP0HWIDX];
+      TP2REC.PK5ITMFC = TP0HW01.PK5ITMFC[TP0HWIDX];
+      TP2REC.PK5ITMRP = TP0HW01.PK5ITMRP[TP0HWIDX];
+      TP2REC.PK1NBCTN = TP0HW01.PK1NBCTN[TP0HWIDX];
+      TP2REC.XAR-AREA-CD = TP0HW00.XARCD;
+      TP2REC.SL-ZONE-CD = TP0HW01.SL4ZONE[TP0HWIDX];
+      TP2REC.SL-LOC-CD = TP0HW01.SL5LOCTN[TP0HWIDX];
+      TP2REC.ZZ-SDT = VGVar.currentShortGregorianDate;
+      TP2REC.ZZ-CHNG-DT = VGVar.currentShortGregorianDate;
+      TP2REC.ZZ-CHNG-HHMM = 0;
+      TP2REC.ZZ-CHNG-CNT = 0;
+      TP0HW00.TPW-RQST-TYP = "I "; /* insert DPICK.VFPLOC01 row*/
+
+      TP0HS-CALL-VFPLOC();
+
+      TP0HW00.TP0HWIDX = TP0HW00.TP0HWIDX + 1;
+      TP0HW00.XXX-REC-SEQ-NBR = TP0HW00.XXX-REC-SEQ-NBR + 1;
+    end
+
+    TP0HW00.XXXTSPAG = TP0HW00.XXXTSPAG + 1;
+  end
+
+  if (converseVar.validationMsgNum != 0) /* errors found*/
+
+    exit stack; /* go back to display screen*/
+  end
+
+  TP0HW00.XXXTSPAG = TP0HW00.TP0HW-SVTSPAG; /* restore ts page*/
+  TP0HS-TS-READ(); /* get ts page*/
+
+   /* ------------------------------------------------------------*/
+   /* update POOLH table to tag fastpick orders as '5'*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.TPW-RQST-TYP = "UP"; /* updt pool hdr*/
+
+  TP0HS-CALL-TP0020();
+
+  if (converseVar.validationMsgNum != 0) /* errors found*/
+
+    exit stack; /* go back to display screen*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* update status on FASTP table from '4' to '5'*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.TPW-RQST-TYP = "UF"; /* updt status on Fastp*/
+
+  TP0HS-CALL-TP0020();
+
+  if (converseVar.validationMsgNum != 0) /* errors found*/
+
+    exit stack; /* go back to display screen*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Get poolh & fastp orders & units counts*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.TPW-RQST-TYP = "T2"; /* tally poolh & fastp orders/units*/
+
+  TP0HS999-COUNTORDS(); /* count poolh/fastp orders/units*/
+
+  if (converseVar.validationMsgNum != 0 /* errors found*/
+   || TP0HW00.TP0HWSWE == "Y")         
+
+    exit stack; /* go back to display screen*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Submit batch job to move Fastpick products to Fastpick area.*/
+   /* ------------------------------------------------------------*/
+
+  TP0HS642-BTCH-FAST(); /* submit job for "FAST" batch run*/
+
+   /* ------------------------------------------------------------*/
+   /* No errors found, re-build but not format screen*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum == 0) /* no errors found*/
+
+    TP0HW00.TP0HWSWR = "N"; /* re-request data*/
+    TP0HW00.TP0HWSWF = "N"; /* no format screen*/
+    TP0HW00.TP0HWSWC = "Y"; /* set confirmed fl = 'y'*/
+    TP0HW00.TP0HW-INFO-MSG = 32; /* info msg "update ok"*/
+    set TP0HM001 initial; /* clear map*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* roll back updates*/
+    exit stack; /* go back to display screen*/
+  end
+
+
+end // end TP0HS640-PROC-PF5
+
+Function TP0HS642-BTCH-FAST()
+   /* -----------------------------------------------------------*/
+   /* Submit JCL to trigger Fastpick batch job run.*/
+   /* Determine CICS region.*/
+   /* Format the batch program parameters.*/
+   /* Submit the job control through the internal reader.*/
+   /* Indicate that the selected function is completed.*/
+   /* ------------------------------------------------------------*/
+
+  move " " to TA6REC.TA6ROW[1] for all; /* Clear JCL array rows*/
+  TA6REC.TA6INDEX = 1; /* Initialize index*/
+
+  TP0HS-CALL-TA0230(); /* Determine CICS region*/
+
+  if (TA3REC.TA3RGNID == "03") /* PROD region*/
+    TP0HW00.TP0HWIXJ = 1;
+  else /* TEST region*/
+
+    if ("/*EOF" in TP0HT02.TARJCL)
+      TP0HW00.TP0HWIXJ = sysVar.arrayIndex;
+      TP0HW00.TP0HWIXJ = TP0HW00.TP0HWIXJ + 1;
+    else
+      TP0HW00.TP0HWIXJ = 1;
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Format the Job Control Language statement from the table.*/
+   /* ------------------------------------------------------------*/
+
+  TP0HW00.TP0HWSWJ = "N";
+
+  while (TP0HW00.TP0HWSWJ == "N" /* do until "eoj" found*/
+   && TP0HW00.TP0HWIXJ < 999) /* limit to avoid endless loop*/
+
+    if (TP0HT02.TARTYPE[TP0HWIXJ] == " ") /* no special jcl card*/
+      TA6REC.TARJCL[TA6INDEX] = TP0HT02.TARJCL[TP0HWIXJ]; /* JCL*/
+      TA6REC.TARTYPE[TA6INDEX] = TP0HT02.TARTYPE[TP0HWIXJ]; /* Type*/
+    else
+
+      TP0HS6422-SPCLJCLC(); /* process any special JCL cards*/
+    end
+
+    TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+
+    if (TP0HT02.TARJCL[TP0HWIXJ] == "/*EOF") /* End of table*/
+      TP0HW00.TP0HWSWJ = "Y"; /* Indicate job submitted*/
+    else
+      TP0HW00.TP0HWIXJ = TP0HW00.TP0HWIXJ + 1; /* Increment index*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for background execution.*/
+   /* ------------------------------------------------------------*/
+
+  TA6REC.TA6SUBSW = "S"; /* Tailor and submit the JCL*/
+  TA6REC.TA6MSGSW = "N"; /* EOJ online message switch*/
+
+  XPTA0P(); /* Submit JCL for background job*/
+
+   /* ------------------------------------------------------------*/
+   /* If submit was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "0")        /* and normal return*/
+
+    TP0HW00.TP0HW-INFO-MSG = 165; /* info msg "request successful"*/
+    set TP0HM001.TP0HM-PF5 invisible, skip; /* protect pf5*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If not successful, indicate unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode != "00000000" /* Call not successful*/
+   || TA6REC.TA6RTNCD > "1")         /* or unexpected error*/
+
+    converseLib.validationFailed(29); /* Unexpected error occurred*/
+    TP0HW00.XXXLOCID = "642"; /* Module identification*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+end // end TP0HS642-BTCH-FAST
+
+// Process special jcl card
+Function TP0HS6422-SPCLJCLC()
+   /* -----------------------------------------------------------*/
+   /* Process any special JCL card.*/
+   /* ------------------------------------------------------------*/
+
+  if (TP0HT02.TARTYPE[TP0HWIXJ] == "E") /* whse card*/
+    TP0HW9E.TARJCL = TP0HT02.TARJCL[TP0HWIXJ];
+    TP0HW9E.XWHCD = TPWREC.XWH-WHSE-CD;
+    TA6REC.TARJCL[TA6INDEX] = TP0HW9E.TARJCL;
+  else
+
+    if (TP0HT02.TARTYPE[TP0HWIXJ] == "J") /* whse card*/
+      TP0HW9J.TARJCL = TP0HT02.TARJCL[TP0HWIXJ];
+      TP0HW9J.XWHCD = TPWREC.XWH-WHSE-CD;
+      TA6REC.TARJCL[TA6INDEX] = TP0HW9J.TARJCL;
+    else
+
+      if (TP0HT02.TARTYPE[TP0HWIXJ] == "U") /* userid*/
+        TP0HW9U.TARJCL = TP0HT02.TARJCL[TP0HWIXJ];
+        TP0HW9U.CAUSERID = COMMAREA.CAUSERID;
+        TA6REC.TARJCL[TA6INDEX] = TP0HW9U.TARJCL;
+      else
+
+        TA6REC.TARJCL[TA6INDEX] = TP0HT02.TARJCL[TP0HWIXJ];
+      end
+    end
+  end
+
+
+end // end TP0HS6422-SPCLJCLC
+
+// Get poolh & Fastp counts
+Function TP0HS999-COUNTORDS()
+   /* ------------------------------------------------------------*/
+   /* Get poolh & fastp orders & units counts*/
+   /* ------------------------------------------------------------*/
+
+  TP0HS-CALL-TP0020();
+
+  if (converseVar.validationMsgNum > 0) /* errors found*/
+
+    return; /* Return to previuos process*/
+  end
+
+   /* IF TP20REC.TP0HW-COUNT1 NE TP20REC.TP0HW-COUNT3/* pool & fastp*/
+   /* OR TP20REC.TP0HW-COUNT2 NE TP20REC.TP0HW-COUNT4;/* missmatch*/
+   /* ;*/
+   /* MOVE 'Y' TO TP0HW00.TP0HWSWE;  /* set error fl*/
+   /* MOVE TP20REC.TP0HW-COUNT1 TO TP0HW00.TP0HW-COUNT1-DISP;*/
+   /* MOVE TP20REC.TP0HW-COUNT2 TO TP0HW00.TP0HW-COUNT2-DISP;*/
+   /* MOVE TP20REC.TP0HW-COUNT3 TO TP0HW00.TP0HW-COUNT3-DISP;*/
+   /* MOVE TP20REC.TP0HW-COUNT4 TO TP0HW00.TP0HW-COUNT4-DISP;*/
+   /* MOVE TP0HW00.TPW-RQST-TYP TO TP0HW00.TP0HW-BAD-CNT-MSG-C5;*/
+   /* MOVE TP0HW00.TP0HW-BAD-CNT-MSG TO TP0HM001.EZEMSG;*/
+   /* ;*/
+   /* CALL EZEROLLB;                 /* roll back updates*/
+   /* END;*/
+   /* ;*/
+   /* IF TP0HW00.TP0HWSWE EQ 'N';      /* no error sw set?*/
+
+  if (TP0HW00.TPW-RQST-TYP == "T1") /* initial part of process?*/
+    TP0HW00.TP0HW-TOT-ORDERS = TP20REC.TP0HW-COUNT1;
+    TP0HW00.TP0HW-COUNT1 = TP20REC.TP0HW-COUNT1;
+    TP0HW00.TP0HW-COUNT2 = TP20REC.TP0HW-COUNT2;
+    TP0HW00.TP0HW-COUNT3 = TP20REC.TP0HW-COUNT3;
+    TP0HW00.TP0HW-COUNT4 = TP20REC.TP0HW-COUNT4;
+  else
+    if (TP20REC.TP0HW-COUNT1 != TP0HW00.TP0HW-COUNT1 /* old & new counts*/
+     || TP20REC.TP0HW-COUNT2 != TP0HW00.TP0HW-COUNT2) /* missmatch*/
+
+      TP0HW00.TP0HWSWE = "Y"; /* set error fl*/
+      TP0HW00.TP0HW-COUNT1-DISP = TP20REC.TP0HW-COUNT1;
+      TP0HW00.TP0HW-COUNT2-DISP = TP20REC.TP0HW-COUNT2;
+      TP0HW00.TP0HW-COUNT3-DISP = TP0HW00.TP0HW-COUNT3;
+      TP0HW00.TP0HW-COUNT4-DISP = TP0HW00.TP0HW-COUNT4;
+      TP0HW00.TP0HW-BAD-CNT-MSG-C5 = "T1 VS T2";
+      TP0HM001.VAGen_EZEMSG = TP0HW00.TP0HW-BAD-CNT-MSG;
+
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback(); /* roll back updates*/
+    end
+  end
+
+   /* END;*/
+
+
+end // end TP0HS999-COUNTORDS
+
+//*** RECORD=TP0HW00 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// 
+// ***********************
+Record TP0HW00 type basicRecord
+  5 * char(195) ; 
+    10 XXXLOCID XXXLOCID ; 
+    10 XXXTSLEN XXXTSLEN ; 
+    10 XXXTSPAG XXXTSPAG ; 
+    10 TP0HW-SVTSPAG TP0HW-SVTSPAG ; 
+    10 TA5TSQIX TA5TSQIX ; 
+    10 XXX-REC-SEQ-NBR XXX-REC-SEQ-NBR ; 
+    10 TPW-RQST-TYP TPW-RQST-TYP ; 
+    10 XARCD XARCD ; 
+    10 TP0HWSWC TP0HWSWC ; 
+    10 TP0HWSWF TP0HWSWF ; 
+    10 TP0HWSWJ TP0HWSWJ ; 
+    10 TP0HWSWP TP0HWSWP ; 
+    10 TP0HWSWR TP0HWSWR ; 
+    10 TP0HWSWU TP0HWSWU ; 
+    10 TP0HWSWD TP0HWSWD ; 
+    10 TP0HWSWE TP0HWSWE ; 
+    10 TP0HW-INFO-MSG TP0HW-INFO-MSG ; 
+    10 TP0HWMSG TP0HWMSG ; 
+    10 TP0HWIDX TP0HWIDX ; 
+    10 TP0HWIXJ TP0HWIXJ ; 
+    10 TP0HWIXL TP0HWIXL ; 
+    10 TP0HWIXL-MAX TP0HWIXL-MAX ; 
+    10 TP0HW-CRTNS-X-PK-FACE TP0HW-CRTNS-X-PK-FACE ; 
+    10 TP0HW-SL4ZONE-FC TP0HW-SL4ZONE-FC ; 
+    10 TP0HW-SL4ZONE-RP TP0HW-SL4ZONE-RP ; 
+    10 TP0HW-SL5LOCTN-FC-SHNDL TP0HW-SL5LOCTN-FC-SHNDL ; 
+    10 TP0HW-SL5LOCTN-FC-NOSHNDL TP0HW-SL5LOCTN-FC-NOSHNDL ; 
+    10 TP0HW-NBR-LOCS TP0HW-NBR-LOCS ; 
+    10 TP0HW-QTY-PER-LOC TP0HW-QTY-PER-LOC ; 
+    10 TP0HW-TOT-PK1NBCTN TP0HW-TOT-PK1NBCTN ; 
+    10 TP0HW-TOT-ORDERS TP0HW-TOT-ORDERS ; 
+    10 TP0HW-TOT-FC-QTY TP0HW-TOT-FC-QTY ; 
+    10 TP0HW-TOT-RP-QTY TP0HW-TOT-RP-QTY ; 
+    10 TP0HW-TOT-LOCS TP0HW-TOT-LOCS ; 
+    10 XXXPGMNO XXXPGMNO ; 
+      15 * char(5) ; 
+      15 TP0HW-XXXPGMNO-TYP TP0HW-XXXPGMNO-TYP ; 
+    10 TP0HW-RUN-TYP TP0HW-RUN-TYP ; 
+    10 TP0HW-EZEDTEL TP0HW-EZEDTEL ; 
+    10 TP0HW-PF3-CONFIRM-IND TP0HW-PF3-CONFIRM-IND ; 
+    10 TP0HW-PF5-CONFIRM-IND TP0HW-PF5-CONFIRM-IND ; 
+    10 TP0HW-COUNT1 TP0HW-COUNT1 ; 
+    10 TP0HW-COUNT2 TP0HW-COUNT2 ; 
+    10 TP0HW-COUNT3 TP0HW-COUNT3 ; 
+    10 TP0HW-COUNT4 TP0HW-COUNT4 ; 
+    10 TP0HW-BAD-CNT-MSG TP0HW-BAD-CNT-MSG ; 
+      15 TP0HW-BAD-CNT-MSG-C1 TP0HW-BAD-CNT-MSG-C1 ; 
+      15 TP0HW-COUNT1-DISP TP0HW-COUNT1-DISP ; 
+      15 TP0HW-BAD-CNT-MSG-C2 TP0HW-BAD-CNT-MSG-C2 ; 
+      15 TP0HW-COUNT2-DISP TP0HW-COUNT2-DISP ; 
+      15 TP0HW-BAD-CNT-MSG-C3 TP0HW-BAD-CNT-MSG-C3 ; 
+      15 TP0HW-COUNT3-DISP TP0HW-COUNT3-DISP ; 
+      15 TP0HW-BAD-CNT-MSG-C4 TP0HW-BAD-CNT-MSG-C4 ; 
+      15 TP0HW-COUNT4-DISP TP0HW-COUNT4-DISP ; 
+      15 * char(3) ; 
+      15 TP0HW-BAD-CNT-MSG-C5 TP0HW-BAD-CNT-MSG-C5 ; 
+end // end TP0HW00
+
+//*** RECORD=TP0HW01 ****
+// ------------------------
+// Map 001 display storage
+// ------------------------
+// ***********************
+Record TP0HW01 type basicRecord
+  5 XXXTSLEN XXXTSLEN ; 
+  5 * char(1014) ; 
+    10 * char(78) [13] ; 
+      15 CU-CO-SHORT-NM CU-CO-SHORT-NM ; 
+      15 CU-CO-ID CU-CO-ID ; 
+      15 OP1SPHDF OP1SPHDF ; 
+      15 TPW-XHDCD1 TPW-XHDCD1 ; 
+      15 TPW-XHDCD2 TPW-XHDCD2 ; 
+      15 TPW-XHDCD3 TPW-XHDCD3 ; 
+      15 SY1STNBR SY1STNBR ; 
+      15 SY2CLRID SY2CLRID ; 
+      15 XGPCD XGPCD ; 
+      15 XDMCD XDMCD ; 
+      15 XQACD XQACD ; 
+      15 PC2INSEG PC2INSEG ; 
+      15 XEGCD XEGCD ; 
+      15 XPGCD XPGCD ; 
+      15 XUMCD XUMCD ; 
+      15 XOWCD XOWCD ; 
+      15 SY-SZ-ID SY-SZ-ID ; 
+      15 SY-SZ-ID-DESC SY-SZ-ID-DESC ; 
+      15 PK1NBCTN PK1NBCTN ; 
+      15 PK5ITMFC PK5ITMFC ; 
+      15 PK5ITMRP PK5ITMRP ; 
+      15 SL4ZONE SL4ZONE ; 
+      15 SL5LOCTN SL5LOCTN ; 
+end // end TP0HW01
+
+//*** RECORD=TP0HW02 ****
+// ----------------------------------------------------------
+// Internal table to keep track of assigned locations
+// ----------------------------------------------------------
+// 
+// ***********************
+Record TP0HW02 type basicRecord
+  5 * char(7800) ; 
+    10 * char(12) [650] ; 
+      15 XXXTSPAG XXXTSPAG ; 
+      15 SL4ZONE SL4ZONE ; 
+      15 SL5LOCTN SL5LOCTN ; 
+end // end TP0HW02
+
+//*** RECORD=TP0HW9D ****
+// This record is a redefinition of the Job Control Language
+// statement.  It is used to define the columns to be used to
+// insert the dsnT/dsnD code.
+// ***********************
+Record TP0HW9D type basicRecord
+  5 TARJCL TARJCL ; 
+    10 * char(14) ; 
+    10 TP0HW-DSN TP0HW-DSN ; 
+    10 * char(65) ; 
+end // end TP0HW9D
+
+//*** RECORD=TP0HW9E ****
+// This record is a redefinition of the Job Control Language
+// statement.  It is used to define the columns to be used to
+// insert the Warehouse code (xwhcd).
+// ***********************
+Record TP0HW9E type basicRecord
+  5 TARJCL TARJCL ; 
+    10 * char(24) ; 
+    10 XWHCD XWHCD ; 
+    10 * char(54) ; 
+end // end TP0HW9E
+
+//*** RECORD=TP0HW9H ****
+// This record is a redefinition of the Job Control Language
+// statement.  It is used to define the columns to be used to
+// insert the Warehouse code (xwhcd).
+// ***********************
+Record TP0HW9H type basicRecord
+  5 TARJCL TARJCL ; 
+    10 XWHCD XWHCD ; 
+    10 * char(78) ; 
+end // end TP0HW9H
+
+//*** RECORD=TP0HW9J ****
+// This record is a redefinition of the Job Control Language
+// statement.  It is used to define the columns to be used to
+// insert the Warehouse code (xwhcd).
+// ***********************
+Record TP0HW9J type basicRecord
+  5 TARJCL TARJCL ; 
+    10 * char(4) ; 
+    10 XWHCD XWHCD ; 
+    10 * char(74) ; 
+end // end TP0HW9J
+
+Record TP0HW9O type basicRecord
+  5 TARJCL TARJCL ; 
+    10 * char(27) ; 
+    10 TPWMRMT TPWMRMT ; 
+    10 * char(47) ; 
+end // end TP0HW9O
+
+//*** RECORD=TP0HW9P ****
+// Parm card
+// ***********************
+Record TP0HW9P type basicRecord
+  5 TARJCL TARJCL ; 
+    10 TPW-RUN-TYP TPW-RUN-TYP ; 
+    10 * char(1) ; 
+    10 TP1-FP-STAT-IND TP1-FP-STAT-IND ; 
+    10 * char(74) ; 
+end // end TP0HW9P
+
+//*** RECORD=TP0HW9R ****
+// Parm card
+// ***********************
+Record TP0HW9R type basicRecord
+  5 TARJCL TARJCL ; 
+    10 * char(20) ; 
+    10 TPW-RUN-TYP TPW-RUN-TYP ; 
+    10 * char(56) ; 
+end // end TP0HW9R
+
+//*** RECORD=TP0HW9U ****
+// This record is a redefinition of the Job Control Language
+// statement.  It is used to define the columns to be used to
+// insert the userid.
+// ***********************
+Record TP0HW9U type basicRecord
+  5 TARJCL TARJCL ; 
+    10 * char(22) ; 
+    10 CAUSERID CAUSERID ; 
+    10 * char(50) ; 
+end // end TP0HW9U
+
+//*** RECORD=TP0HW9W ****
+// This record is a redefinition of the Job Control Language
+// statement.  It is used to define the columns to be used to
+// insert the Warehouse code (xwhcd).
+// ***********************
+Record TP0HW9W type basicRecord
+  5 TARJCL TARJCL ; 
+    10 * char(21) ; 
+    10 XWHCD XWHCD ; 
+    10 * char(57) ; 
+end // end TP0HW9W
+
+//*** RECORD=TP20REC ****
+// ------------------------
+// TP0020 link record layout
+// ------------------------
+// ***********************
+Record TP20REC type basicRecord
+  5 * char(2500) ; 
+    10 * char(13) ; 
+      15 XWHCD XWHCD ; 
+      15 TPW-RQST-TYP TPW-RQST-TYP ; 
+      15 TP1-FP-STAT-IND TP1-FP-STAT-IND ; 
+      15 TPW-PGM-ID TPW-PGM-ID ; 
+    10 * char(84) ; 
+      15 TPW-RTRN-CD TPW-RTRN-CD ; 
+      15 TPW-RTRN-SQLCD TPW-RTRN-SQLCD ; 
+      15 TPW-RTRN-MSG TPW-RTRN-MSG ; 
+    10 * char(90) ; 
+      15 CU-CO-SHORT-NM CU-CO-SHORT-NM ; 
+      15 CU-CO-ID CU-CO-ID ; 
+      15 OP1SPHDF OP1SPHDF ; 
+      15 TPW-XHDCD1 TPW-XHDCD1 ; 
+      15 TPW-XHDCD2 TPW-XHDCD2 ; 
+      15 TPW-XHDCD3 TPW-XHDCD3 ; 
+      15 XGPCD XGPCD ; 
+      15 SY1STNBR SY1STNBR ; 
+      15 SY2CLRID SY2CLRID ; 
+      15 XDMCD XDMCD ; 
+      15 XQACD XQACD ; 
+      15 XOWCD XOWCD ; 
+      15 PC2INSEG PC2INSEG ; 
+      15 XEGCD XEGCD ; 
+      15 XPGCD XPGCD ; 
+      15 XUMCD XUMCD ; 
+      15 SY-SZ-ID SY-SZ-ID ; 
+      15 SY-SZ-ID-DESC SY-SZ-ID-DESC ; 
+      15 PK5ITMFC PK5ITMFC ; 
+      15 PK5ITMRP PK5ITMRP ; 
+      15 TP0HW-PK-NBR-FC-CRTNS TP0HW-PK-NBR-FC-CRTNS ; 
+      15 TP0HW-PK-NBR-RP-CRTNS TP0HW-PK-NBR-RP-CRTNS ; 
+      15 TP0HW-COUNT1 TP0HW-COUNT1 ; 
+      15 TP0HW-COUNT2 TP0HW-COUNT2 ; 
+      15 TP0HW-COUNT3 TP0HW-COUNT3 ; 
+      15 TP0HW-COUNT4 TP0HW-COUNT4 ; 
+    10 * char(2313) ; 
+end // end TP20REC
+
+//*** RECORD=TP2REC ****
+// **************** picking transaction table*****************
+// 
+// db2 table:           dpick.vfploc01
+// 
+// copylib member:      dfploc01
+// 
+// i/o mod:             vfploc01
+// 
+// key to db2 table:    xwhcd
+//                      pk1cuoid
+// 
+// date created:        05/06/96
+// 
+// maintenance log:
+//   date    init.      comment
+// --------  -----      ---------------------------------------
+// 05/06/96  OVAZQU     initial record creation
+// **********************
+Record TP2REC type basicRecord
+  5 TP2GROUP TP2GROUP ; 
+    10 TP2KEY TP2KEY ; 
+      15 XWHCD XWHCD ; 
+      15 OP1SPHDF OP1SPHDF ; 
+      15 KUCCOID KUCCOID ; 
+      15 SY1STNBR SY1STNBR ; 
+      15 SY2CLRID SY2CLRID ; 
+      15 SY-SZ-ID SY-SZ-ID ; 
+      15 XXX-REC-SEQ-NBR XXX-REC-SEQ-NBR ; 
+    10 * char(66) ; 
+      15 XHD-HNDL-CD XHD-HNDL-CD [3] ; 
+      15 XGPCD XGPCD ; 
+      15 XDMCD XDMCD ; 
+      15 XQACD XQACD ; 
+      15 PC2INSEG PC2INSEG ; 
+      15 XEGCD XEGCD ; 
+      15 XPGCD XPGCD ; 
+      15 XUMCD XUMCD ; 
+      15 XOWCD XOWCD ; 
+      15 SY4IDDSC SY4IDDSC ; 
+      15 PK5ITMFC PK5ITMFC ; 
+      15 PK5ITMRP PK5ITMRP ; 
+      15 PK1NBCTN PK1NBCTN ; 
+      15 XAR-AREA-CD XAR-AREA-CD ; 
+      15 SL-ZONE-CD SL-ZONE-CD ; 
+      15 SL-LOC-CD SL-LOC-CD ; 
+      15 ZZ-SDT ZZ-SDT ; 
+      15 ZZ-CHNG-DT ZZ-CHNG-DT ; 
+      15 ZZ-CHNG-HHMM ZZ-CHNG-HHMM ; 
+      15 ZZ-CHNG-CNT ZZ-CHNG-CNT ; 
+end // end TP2REC
+
+// Bad count message 1
+DataItem TP0HW-BAD-CNT-MSG char(71)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TP0HW-BAD-CNT-MSG-C1 char(18)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TP0HW-BAD-CNT-MSG-C2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TP0HW-BAD-CNT-MSG-C3 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TP0HW-BAD-CNT-MSG-C4 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TP0HW-BAD-CNT-MSG-C5 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// generic counter 1
+DataItem TP0HW-COUNT1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// generic counter 1 display
+DataItem TP0HW-COUNT1-DISP num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// generic counter 2
+DataItem TP0HW-COUNT2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// generic counter 2 display
+DataItem TP0HW-COUNT2-DISP num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// generic counter 3
+DataItem TP0HW-COUNT3 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// generic counter 3 display
+DataItem TP0HW-COUNT3-DISP num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// generic counter 4
+DataItem TP0HW-COUNT4 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// generic counter 4 display
+DataItem TP0HW-COUNT4-DISP num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nbr. of cartons per pick face
+DataItem TP0HW-CRTNS-X-PK-FACE num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// XWH_WHSE_CD
+DataItem TP0HW-DSN char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current date yyyymmdd
+DataItem TP0HW-EZEDTEL int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// information message to display
+DataItem TP0HW-INFO-MSG num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// number of locations needed
+DataItem TP0HW-NBR-LOCS int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Confirm PF3 flag
+DataItem TP0HW-PF3-CONFIRM-IND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Confirm PF5 flag
+DataItem TP0HW-PF5-CONFIRM-IND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// pk-nbr-of-cartons
+DataItem TP0HW-PK-NBR-FC-CRTNS int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pk-nbr-of-cartons
+DataItem TP0HW-PK-NBR-RP-CRTNS int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// quantity per loc
+DataItem TP0HW-QTY-PER-LOC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 's', 'f', 'r', 'n'
+DataItem TP0HW-RUN-TYP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// full case zone (constant)
+DataItem TP0HW-SL4ZONE-FC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// repack zone (constant)
+DataItem TP0HW-SL4ZONE-RP char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TP0HW-SL5LOCTN-FC-NOSHNDL char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TP0HW-SL5LOCTN-FC-SHNDL char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Save temporary storage page
+DataItem TP0HW-SVTSPAG num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Total units
+DataItem TP0HW-TOT-FC-QTY int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Total lane numbers
+DataItem TP0HW-TOT-LOCS int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Total orders
+DataItem TP0HW-TOT-ORDERS int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Total cartons
+DataItem TP0HW-TOT-PK1NBCTN int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Total qty x uom
+DataItem TP0HW-TOT-RP-QTY int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem TP0HW-XXXPGMNO-TYP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work index
+DataItem TP0HWIDX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// jcl index
+DataItem TP0HWIXJ smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// intrnl locs tbl index
+DataItem TP0HWIXL smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// intrnl locs tbl index - max
+DataItem TP0HWIXL-MAX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// save msg no
+DataItem TP0HWMSG smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// Confirm switch
+DataItem TP0HWSWC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// duplicate location switch
+DataItem TP0HWSWD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error switch
+DataItem TP0HWSWE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Format the map switch
+DataItem TP0HWSWF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Job submitted sw
+DataItem TP0HWSWJ char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Print detail report sw
+DataItem TP0HWSWP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Request for data switch
+DataItem TP0HWSWR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Data updated switch
+DataItem TP0HWSWU char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record group level
+DataItem TP2GROUP char(86)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// tp2rec key
+DataItem TP2KEY char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

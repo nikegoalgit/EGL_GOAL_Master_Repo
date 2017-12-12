@@ -1,0 +1,1316 @@
+package op03;
+import corpcom2.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import ku.common.*;
+import ni.common.*;
+import oi.common.*;
+import op.common.*;
+import sp.common.*;
+import ta.common.*;
+import vv.common.*;
+//*** PROGRAM=OP03 ****
+// csp subroutine:  determine an order's terms
+// 
+// this program is used to determine what an order's terms
+// are.  it is passed oearec and sp6rec.  oearec provides the
+// criteria needed for doing needed calls.  sp6rec is used
+// if the order is a sales program order, and has already been
+// accessed by the calling application.
+// 
+// terms determined:  payment term code & desc; ad allowance
+//   percent, face & bank; trade discount percent, face & bank;
+//   coop percent, defective allowance percent.
+// 
+// terms can come from three places:  sales program (sp6rec).
+// customer (kutrec) and corporate default (xodtbl).  these
+// records hold terms codes.  the codes are used to access
+// the proper corporate table, which translates the code into
+// the applicable terms percent.  this percent is what ends up
+// on the order header. (payment term code does not translate
+// to a percent, but to a description which is informational
+// on the screen).
+// 
+// terms are processed as follows:
+// 1.  if the order is a sales program order and the sp6rec
+//     indicates that sales program terms are to be used
+//     ('s' = sp6dovrc)
+//     a.  the tier level is found in sp6rec based on the
+//         order's total dollars or units (indicated by
+//         sp6uomi).  if the term exists, it is used, else
+//         if the term exists on the customer terms record
+//         it is used, else the corporate default is used.
+// 2.  if the order is a sales program order and the sp6rec
+//     indicates that customer terms are to be used ('c' =
+//     sp6dovrc)
+//     a.  the tier level is found in sp6rec based on the
+//         order's total dollars or units (indicated by
+//         sp6uomi).  sales program discount is still applied
+//         to the order (sp6mdisc).  if the term exists on the
+//         customer terms record it is used, else if the term
+//         exists on sp6rec it is used, else the corporate
+//         default is used.
+// 3.  if the order is not a sales program order and customer
+//     terms exist, the customer term is used if it exists,
+//     else the corporate default is used.  also, the customer
+//     terms record is the only place that could provide any
+//     defective allowance value.
+// 4.  if no customer terms exist, then all terms are defaulted
+//     from the corporate table, xodtbl.
+// 
+// ------------------------------------------------------------
+//                  maintenance history
+// ------------------------------------------------------------
+//  7-31-89  obecke  created application.  currently is used
+//                   by op0e & op0j.  creates initial display
+//                   of terms in op0e.  if term is overridden,
+//                   this is handled by op0e code.  op0j uses
+//                   op03 to calc final terms for sales program
+//                   orders because of tiered terms and final
+//                   $/units are not known til then.
+//  9-20-89  oricha  add logic to handle nil terms.  also fix
+//                   error handling for 'not found' situations.
+//                   entire application readjusted.
+//  9-29-89  dwalke  stop posting of sql 100 on vterms01  sc1
+// 10-03-89  tfox    added xaucd to oearec. chg code to use
+//                   account class not div code to determine a
+//                   nil order.
+// 11/13/89  craine  db2 chg's - sb1
+// 02/27/90  oricha  sx1. chg ad alw/coop logic : xaucd
+//                   ne 31 or ne 32 or ne 33 to: xaucd ne 31
+//                   and ne 32 and ne 33. bug #291.
+// 02/14/91  tfox    regen for db chgs
+// *********************
+Program OP03 type basicProgram //VAGen Info - called batch program
+  (
+   OEAREC OEAREC, // record
+   SP6REC SP6REC // record
+  )
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes
+  }
+
+  // Data Declarations
+  ERRSQLCA ERRSQLCA; // record
+  KU3REC KU3REC; // record
+  KUTREC KUTREC; // record
+  OP03W01 OP03W01 { initialized = yes }; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TAEREC TAEREC; // record
+  VNLXPT01 VNLXPT01; // record
+  YSMREC YSMREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XAATBL {deleteAfterUse = yes}; // table
+  use XCPTBL {deleteAfterUse = yes}; // table
+  use XDATBL {deleteAfterUse = yes}; // table
+  use XPTTBL {deleteAfterUse = yes}; // table
+  use XODTBL {deleteAfterUse = yes}; // table
+  use XTDTBL {deleteAfterUse = yes}; // table
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OP03001: OP03001();
+    exit program; /* return to calling application*/
+  end // end main
+end // end OP03
+
+// determine the order's terms
+Function OP03001()
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+  
+  set OP03W01 empty;
+  set KUTREC empty;
+  set VNLXPT01 empty;
+  set YSMREC empty;
+  OP03W01.OP03WTFB = "N";
+  OP03W01.OP03WAFB = "N";
+  OEAREC.OEAM509 = "N"; /* turn off msg flag-corp rec missing*/
+  OEAREC.OEAM511 = "N"; /* turn off msg flag-pmt term info missing*/
+  OEAREC.OEAM010 = "N"; /* turn off deadlock msg flag*/
+  OEAREC.OEAMMSG = "N"; /* turn off global msg flag*/
+  OEAREC.OEAERR = "N"; /* turn off fatal error flag*/
+
+
+  if (OEAREC.XAUCD != "31" /* if not an international order*/
+   && OEAREC.XAUCD != "32" /* if not an international order*/
+   && OEAREC.XAUCD != "33") /* if not an international order*/
+    OP03SA1(); /* get corporate table terms defaults, xodtbl*/
+    if (OP03W01.OP03WXFF == "N") /* if defaults weren't found*/
+      exit stack;
+    end
+  end
+
+
+  if (OEAREC.SP1ID > " ")
+    OP03SB1(); /* find tier level in sp6rec*/
+  end
+
+
+  if (OEAREC.OEACUTRM == "Y") /* if customer terms exist*/
+    OP03SC1(); /* get dcust.vterms01--customer terms*/
+                                   /* rec*/
+  end
+
+
+  if (OEAREC.OEAERR == "N") /* if fatal error flag off*/
+    if (OEAREC.XAUCD == "31" /* if a nil order*/
+     || OEAREC.XAUCD == "32" /* if a nil order*/
+     || OEAREC.XAUCD == "33") /* if a nil order*/
+      OP03SN1(); /* process international terms*/
+    else
+      OP03SD1(); /* process domestic terms*/
+    end
+  end
+
+
+  if (OEAREC.OEAERR == "N") /* if fatal error flag off*/
+    OP03SX1(); /* get code percents from corp tables*/
+
+    if (OP03W01.OP03WTFB == "Y")
+                                   /* if compute trade disc face/bank = yes*/
+      OP03SB3(); /* process spgm face and bank %*/
+    end
+
+    if (OP03W01.OP03WAFB == "Y") /* if compute ad allow face/bank = yes*/
+      OP03SB4(); /* process spgm face and bank %*/
+    end
+
+    OP03SM1(); /* move found terms to pass-record*/
+  end
+end // end OP03001
+
+// get corp terms defaults,xodtbl
+Function OP03SA1()
+
+       /* need date has to equal or greater than the order-type*/
+       /* discount-begin-date and less or equal to the order-type*/
+       /* discount-end date*/
+
+
+  OP03W01.OP03WXFF = "N"; /* init corp default found flag*/
+  sysVar.arrayIndex = 1;
+
+  while (XODTBL.XOTCD[sysVar.arrayIndex] != "99")
+    if (OEAREC.XOTCD in XODTBL.XOTCD from sysVar.arrayIndex)
+      if (XODTBL.XXXSTAT[sysVar.arrayIndex] == "A"
+       && OEAREC.OP1CUNDT >= XODTBL.XODBENDT[sysVar.arrayIndex]
+       && OEAREC.OP1CUNDT <= XODTBL.XODEENDT[sysVar.arrayIndex])
+        OEAREC.XODMXDSC = XODTBL.XODMXDSC[sysVar.arrayIndex];
+        OP03W01.OP03WIXX = sysVar.arrayIndex; /* save subscript for later*/
+        OP03W01.OP03WXFF = "Y"; /* turn on found flag*/
+        return; /* must kick out here so don't exceed subscript*/
+      else
+        sysVar.arrayIndex = sysVar.arrayIndex + 1;
+      end
+    else
+      OEAREC.OEAM509 = "Y"; /* turn on msg flag*/
+      OEAREC.OEAERR = "Y"; /* turn on fatal error*/
+      TA1REC.TA1LOCAT[1] = "OP03SA1";
+      TA1REC.TA1LOCAT[2] = "ORD TYP";
+      TA1REC.TA1LOCAT[3] = OEAREC.XOTCD;
+      TA1REC.TA1LOCAT[4] = "XODTBL  ";
+      TAEDESC1 = "ORDER TYPE MISSING OR OT DATE RANGE EXPIRED";
+      OP03SZ2(); /* post csp routine*/
+      return; /* must kick out here so don't exceed subscript*/
+    end /* on while loop--see csp book on this*/
+                                   /* weirdness*/
+  end
+
+
+end // end OP03SA1
+
+// process corp default terms
+Function OP03SA2()
+
+
+  if (XODTBL.XPTCD[OP03WIXX] > " ")
+    OP03W01.OP03WPTC = XODTBL.XPTCD[OP03WIXX]; /* payment term code*/
+  end
+
+  if (XODTBL.XCPCD[OP03WIXX] > " ")
+    OP03W01.OP03WXCC = XODTBL.XCPCD[OP03WIXX]; /* coop code*/
+  end
+
+  if (XODTBL.XTDCD[OP03WIXX] > " ")
+    OP03W01.OP03WTDC = XODTBL.XTDCD[OP03WIXX]; /* trade disc code*/
+    OP03W01.OP03WTBK = XODTBL.XODTDBKP[OP03WIXX]; /* trade disc bank*/
+    OP03W01.OP03WTFC = XODTBL.XODTDFCP[OP03WIXX]; /* trade disc face*/
+  end
+
+  if (XODTBL.XAACD[OP03WIXX] > " ")
+    OP03W01.OP03WAAC = XODTBL.XAACD[OP03WIXX]; /* ad allow code*/
+    OP03W01.OP03WABK = XODTBL.XODAABKP[OP03WIXX]; /* ad allow bank*/
+    OP03W01.OP03WAFC = XODTBL.XODAAFCP[OP03WIXX]; /* ad allow face*/
+  end
+
+
+end // end OP03SA2
+
+// find the spgm tier level
+Function OP03SB1()
+
+
+
+  if (SP6REC.SP6UOMI == "D") /* indicates tiering by dollars*/
+    OP03W01.OP03WUOD = OEAREC.OP1OVALU; /* hold units/dollars*/
+  else /* indicates tiering by units*/
+    OP03W01.OP03WUOD = OEAREC.OP1OTUNT; /* hold units/dollars*/
+  end
+
+   /* ****************************************************/
+   /* work rows 2-20; any unused rows*/
+   /* have a tier dollar/unit value of zero.*/
+   /* ****************************************************/
+
+  OP03W01.OP03WSFF = "N"; /* terms found flag*/
+  OP03W01.OP03WSUB = 20; /* work backwards in tier table*/
+
+  while (OP03W01.OP03WSFF == "N" /* set sales pgm terms found flag to no*/
+   && OP03WSUB != 1) /* work rows 2-20*/
+
+    if (OP03W01.OP03WUOD >= SP6REC.SP6TIER[OP03WSUB]
+     && SP6REC.SP6TIER[OP03WSUB] != 0)
+      OEAREC.SP6MDISC = SP6REC.SP6MDISC[OP03WSUB]; /* save min disc*/
+      OEAREC.OP1TLVLN = OP03WSUB; /* save subscript as tier level nbr*/
+      OP03W01.OP03WIXS = OP03WSUB; /* save subscript for later*/
+      OP03W01.OP03WSFF = "Y";
+    else
+      OP03W01.OP03WSUB = OP03W01.OP03WSUB - 1;
+    end
+  end
+
+   /* *********************************************************/
+   /* rows 2-20 are worked first with the above logic because*/
+   /* row 1's tier value is zero*/
+   /* *********************************************************/
+
+  if (OP03W01.OP03WSFF == "N") /* if tier not found in 2-20*/
+    OEAREC.SP6MDISC = SP6REC.SP6MDISC[1]; /* save min disc*/
+    OP03W01.OP03WIXS = 1; /* default lowest level, line 1*/
+    OEAREC.OP1TLVLN = 1; /* tier level number*/
+    OP03W01.OP03WSFF = "Y";
+  end
+
+
+end // end OP03SB1
+
+// process sales program terms
+Function OP03SB2()
+
+   /* ******************************/
+   /* find payment term code*/
+   /* ******************************/
+
+  if (SP6REC.SP6TPTCD[OP03WIXS] > " ")
+    OP03W01.OP03WPTC = SP6REC.SP6TPTCD[OP03WIXS];
+  else
+    if (OP03W01.OP03WCFF == "Y"
+     && KUTREC.XPTCD[OP03WIXC] > " ")
+      OP03W01.OP03WPTC = KUTREC.XPTCD[OP03WIXC];
+    else
+      if (XODTBL.XPTCD[OP03WIXX] > " ")
+        OP03W01.OP03WPTC = XODTBL.XPTCD[OP03WIXX];
+      end
+    end
+  end
+
+
+   /* ******************************/
+   /* find coop code*/
+   /* ******************************/
+
+  if (SP6REC.SP6TCOCD[OP03WIXS] > " ")
+    OP03W01.OP03WXCC = SP6REC.SP6TCOCD[OP03WIXS];
+  else
+    if (OP03W01.OP03WCFF == "Y"
+     && KUTREC.XCPCD[OP03WIXC] > " ")
+      OP03W01.OP03WXCC = KUTREC.XCPCD[OP03WIXC];
+    else
+      if (XODTBL.XCPCD[OP03WIXX] > " ")
+        OP03W01.OP03WXCC = XODTBL.XCPCD[OP03WIXX];
+      end
+    end
+  end
+
+   /* ******************************/
+    /* find trade discount code*/
+   /* ******************************/
+
+  if (SP6REC.SP6TTDCD[OP03WIXS] > " ")
+    OP03W01.OP03WTDC = SP6REC.SP6TTDCD[OP03WIXS];
+    OP03W01.OP03WTBK = SP6REC.SP6TDPCT; /* bank %*/
+    OP03W01.OP03WTFB = "Y"; /* compute trade disc face/bank*/
+  else
+    if (OP03W01.OP03WCFF == "Y"
+     && KUTREC.XTDCD[OP03WIXC] > " ")
+      OP03W01.OP03WTDC = KUTREC.XTDCD[OP03WIXC];
+      OP03W01.OP03WTFC = KUTREC.KUTTDPOF[OP03WIXC];
+      OP03W01.OP03WTBK = KUTREC.KUTTDPBK[OP03WIXC];
+    else
+      if (XODTBL.XTDCD[OP03WIXX] > " ")
+        OP03W01.OP03WTDC = XODTBL.XTDCD[OP03WIXX];
+        OP03W01.OP03WTFC = XODTBL.XODTDFCP[OP03WIXX];
+        OP03W01.OP03WTBK = XODTBL.XODTDBKP[OP03WIXX];
+      end
+    end
+  end
+
+   /* ******************************/
+   /* find ad allowance code*/
+   /* ******************************/
+
+  if (SP6REC.SP6TAACD[OP03WIXS] > " ")
+    OP03W01.OP03WAAC = SP6REC.SP6TAACD[OP03WIXS];
+    OP03W01.OP03WABK = SP6REC.SP6AAPCT; /* bank %*/
+    OP03W01.OP03WAFB = "Y"; /* compute ad allow face/bank*/
+  else
+    if (OP03W01.OP03WCFF == "Y"
+     && KUTREC.XAACD[OP03WIXC] > " ")
+      OP03W01.OP03WAAC = KUTREC.XAACD[OP03WIXC];
+      OP03W01.OP03WAFC = KUTREC.KUTAPOF[OP03WIXC];
+      OP03W01.OP03WABK = KUTREC.KUTAPBK[OP03WIXC];
+    else
+      if (XODTBL.XAACD[OP03WIXX] > " ")
+        OP03W01.OP03WAAC = XODTBL.XAACD[OP03WIXX];
+        OP03W01.OP03WAFC = XODTBL.XODAAFCP[OP03WIXX];
+        OP03W01.OP03WABK = XODTBL.XODAABKP[OP03WIXX];
+      end
+    end
+  end
+
+end // end OP03SB2
+
+// compute spgm ad alw fc & bank
+Function OP03SB3()
+   /* *********************************************************/
+   /* if a sales program and sales program terms are used,*/
+   /* compute trade discount bank and face %*/
+   /* *********************************************************/
+
+  OP03W01.OP03WTBK = OP03W01.OP03WTBK / 100;
+  OP03W01.OP03WTBK = OP03W01.OP03WTDP * OP03W01.OP03WTBK;
+  OP03W01.OP03WTFC = OP03W01.OP03WTDP - OP03W01.OP03WTBK;
+
+
+end // end OP03SB3
+
+// compute spgm ad alw face&bank
+Function OP03SB4()
+   /* *********************************************************/
+   /* if a sales program and sales program terms are used,*/
+   /* compute ad allowance bank and face %*/
+   /* *********************************************************/
+
+  OP03W01.OP03WABK = OP03W01.OP03WABK / 100;
+  OP03W01.OP03WABK = OP03W01.OP03WAAP * OP03W01.OP03WABK;
+  OP03W01.OP03WAFC = OP03W01.OP03WAAP - OP03W01.OP03WABK;
+
+
+end // end OP03SB4
+
+// get dcust.vterms01, kutrec
+Function OP03SC1()
+
+  OP03W01.OP03WCFF = "N"; /* init cust terms found flag*/
+
+  KUTREC.KUCCOID = OEAREC.KUCCOID; /* load keys*/
+  KUTREC.KUMSTRID = OEAREC.KUMSTRID;
+  KUTREC.XNXCD = OEAREC.XNXCD;
+  KUTREC.XGPCD = OEAREC.XGPCD;
+  KUTREC.XOTCD = OEAREC.XOTCD;
+
+  KU3REC.KU3NDT = OEAREC.OP1CUNDT;
+  KU3REC.KU3OPT = "SF";
+
+  call "IO0350" (KU3REC, SQLCA, KUTREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OP03SC2(); /* find terms based on need date*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+       /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[1] = "SF     ";
+      TA1REC.TA1LOCAT[2] = "IO0350 ";
+      TA1REC.TA1LOCAT[3] = "OP03SC1";
+      TA1REC.TA1LOCAT[4] = OEAREC.XDVCD;
+      TA1REC.TA1DBASE = "DCUST";
+      TA1REC.TA1TBLVU = "VTERMS01"; /* table view*/
+      OP03SZ3(); /* post error db2*/
+    end
+  end
+
+
+end // end OP03SC1
+
+// find cust terms based on ndt
+Function OP03SC2()
+
+       /* *** 19000001 is the default effective date for order*/
+       /* *** type in customer terms db2 record*/
+
+  sysVar.arrayIndex = 1;
+
+  while (sysVar.arrayIndex < 4                  
+   && KUTREC.KUTENDT[sysVar.arrayIndex] != 0 /* terms eff date > 0*/
+   && OP03W01.OP03WCFF == "N") /* terms flag = not found*/
+
+    if (KUTREC.KUTENDT[sysVar.arrayIndex] <= OEAREC.OP1CUNDT /* term eff dt < need dt*/
+     && KUTREC.KUTXNDT[sysVar.arrayIndex] >= OEAREC.OP1CUNDT) /* t expir dt > need dt*/
+      OP03W01.OP03WIXC = sysVar.arrayIndex; /* save subscript*/
+      OP03W01.OP03WCFF = "Y"; /* terms flag = found*/
+      sysVar.arrayIndex = 9; /* bump up sub to get out of loop*/
+      OP03SX2(); /* process defective allowance*/
+    end
+
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+
+
+  if (OP03W01.OP03WCFF == "N") /* if cust terms not found*/
+    TA1REC.TA1LOCAT[1] = "KUTREC ";
+    TA1REC.TA1LOCAT[2] = "IO0350 ";
+    TA1REC.TA1LOCAT[3] = "OP03SC2";
+    TA1REC.TA1LOCAT[4] = "CK DATE";
+    TAEREC.TAEDESC1 = "CUSTOMER TERMS BASED ON NEED DATE MISSING";
+    OP03SZ2(); /* post message cust terms not found*/
+  end
+
+
+
+end // end OP03SC2
+
+// process customer terms
+Function OP03SC3()
+
+   /* ******************************/
+   /* find payment term code*/
+   /* ******************************/
+
+  if (KUTREC.XPTCD[OP03WIXC] > " ")
+    OP03W01.OP03WPTC = KUTREC.XPTCD[OP03WIXC];
+  else
+    if (OEAREC.SP1ID > " "
+     && SP6REC.SP6TPTCD[OP03WIXS] > " ")
+      OP03W01.OP03WPTC = SP6REC.SP6TPTCD[OP03WIXS];
+    else
+      if (XODTBL.XPTCD[OP03WIXX] > " ")
+        OP03W01.OP03WPTC = XODTBL.XPTCD[OP03WIXX];
+      end
+    end
+  end
+
+
+   /* ******************************/
+   /* find coop code*/
+   /* ******************************/
+
+  if (KUTREC.XCPCD[OP03WIXC] > " ")
+    OP03W01.OP03WXCC = KUTREC.XCPCD[OP03WIXC];
+  else
+    if (OEAREC.SP1ID > " "
+     && SP6REC.SP6TCOCD[OP03WIXS] > " ")
+      OP03W01.OP03WXCC = SP6REC.SP6TCOCD[OP03WIXS];
+    else
+      if (XODTBL.XCPCD[OP03WIXX] > " ")
+        OP03W01.OP03WXCC = XODTBL.XCPCD[OP03WIXX];
+      end
+    end
+  end
+
+   /* ******************************/
+    /* find trade discount code*/
+   /* ******************************/
+
+  if (KUTREC.XTDCD[OP03WIXC] > " ")
+    OP03W01.OP03WTDC = KUTREC.XTDCD[OP03WIXC];
+    OP03W01.OP03WTFC = KUTREC.KUTTDPOF[OP03WIXC];
+    OP03W01.OP03WTBK = KUTREC.KUTTDPBK[OP03WIXC];
+  else
+    if (OEAREC.SP1ID > " "
+     && SP6REC.SP6TTDCD[OP03WIXS] > " ")
+      OP03W01.OP03WTDC = SP6REC.SP6TTDCD[OP03WIXS];
+      OP03W01.OP03WTBK = SP6REC.SP6TDPCT; /* bank %*/
+      OP03W01.OP03WTFB = "Y"; /* compute trade disc face/bank*/
+    else
+      if (XODTBL.XTDCD[OP03WIXX] > " ")
+        OP03W01.OP03WTDC = XODTBL.XTDCD[OP03WIXX];
+        OP03W01.OP03WTBK = XODTBL.XODTDBKP[OP03WIXX];
+        OP03W01.OP03WTFC = XODTBL.XODTDFCP[OP03WIXX];
+      end
+    end
+  end
+
+   /* ******************************/
+   /* find ad allowance code*/
+   /* ******************************/
+
+  if (KUTREC.XAACD[OP03WIXC] > " ")
+    OP03W01.OP03WAAC = KUTREC.XAACD[OP03WIXC];
+    OP03W01.OP03WAFC = KUTREC.KUTAPOF[OP03WIXC];
+    OP03W01.OP03WABK = KUTREC.KUTAPBK[OP03WIXC];
+  else
+    if (OEAREC.SP1ID > " "
+     && SP6REC.SP6TAACD[OP03WIXS] > " ")
+      OP03W01.OP03WAAC = SP6REC.SP6TAACD[OP03WIXS];
+      OP03W01.OP03WABK = SP6REC.SP6AAPCT; /* bank %*/
+      OP03W01.OP03WAFB = "Y"; /* compute ad allow face/bank*/
+    else
+      if (XODTBL.XAACD[OP03WIXX] > " ")
+        OP03W01.OP03WAAC = XODTBL.XAACD[OP03WIXX];
+        OP03W01.OP03WABK = XODTBL.XODAABKP[OP03WIXX];
+        OP03W01.OP03WAFC = XODTBL.XODAAFCP[OP03WIXX];
+      end
+    end
+  end
+
+end // end OP03SC3
+
+// process domestic terms
+Function OP03SD1()
+
+  if (OEAREC.SP1ID > " ") /* if a sales program order*/
+    if (SP6REC.SP6DOVRC != "C")
+                                   /* and tier table says to use spgm terms*/
+      OP03SB2(); /* process sales program terms*/
+    else /* indicator says 'c' use cust terms*/
+      if (OP03W01.OP03WCFF == "Y") /* IF CUST TERMS FOUND*/
+        OP03SC3(); /* process customer terms*/
+      else
+        OP03SA2(); /* process corporate default terms*/
+      end
+    end
+  else
+    if (OP03W01.OP03WCFF == "Y") /* IF CUST TERMS FOUND*/
+      OP03SC3(); /* process customer terms*/
+    else
+      OP03SA2(); /* process corporate default terms*/
+    end
+  end
+
+end // end OP03SD1
+
+// move final results to pass rec
+Function OP03SM1()
+
+  OEAREC.XTDCD = OP03W01.OP03WTDC;
+  OEAREC.XTDPCT = OP03W01.OP03WTDP;
+  OEAREC.OP1TDBKP = OP03W01.OP03WTBK;
+  OEAREC.OP1TDFCP = OP03W01.OP03WTFC;
+  OEAREC.XAACD = OP03W01.OP03WAAC;
+  OEAREC.XAAPCT = OP03W01.OP03WAAP;
+  OEAREC.OP1AABKP = OP03W01.OP03WABK;
+  OEAREC.OP1AAFCP = OP03W01.OP03WAFC;
+  OEAREC.XCPCD = OP03W01.OP03WXCC;
+  OEAREC.XCPPCT = OP03W01.OP03WXCP;
+  OEAREC.XPTCD = OP03W01.OP03WPTC;
+  OEAREC.XPTDESC = OP03W01.OP03WPTD;
+  OEAREC.XDACD = OP03W01.OP03WDAC;
+  OEAREC.XDAPCT = OP03W01.OP03WDAP;
+end // end OP03SM1
+
+// process international terms
+Function OP03SN1()
+
+  OP03W01.OP03WFND = "N"; /* init generic found flag*/
+
+  OP03SN2(); /* get ysmrec summary order type code*/
+
+  if (OP03W01.OP03WFND == "Y") /* if found*/
+    OP03SN3();
+                                   /* get nil payment term code from nilrec*/
+  end
+
+
+  if (OEAREC.OEAM010 == "N") /* if deadlock flag off*/
+    if (OEAREC.SP1ID > " ") /* if a sales program order*/
+      if (SP6REC.SP6DOVRC != "C")
+                                   /* and tier table says to use spgm terms*/
+        OP03SN4(); /* process sales program terms*/
+      else /* indicator says 'c' use cust terms*/
+        OP03SN5(); /* process customer terms*/
+      end
+    else
+      OP03SN5(); /* process customer terms*/
+    end
+  end
+
+end // end OP03SN1
+
+// get nil ysmrec summ ord typ cd
+Function OP03SN2()
+   /* get translation of nil summarized order type code from*/
+     /* from ysmrec*/
+
+  YSMREC.YSMTBLPF = "XOB";
+  YSMREC.YSMSYSPF = "NL";
+  YSMREC.YSMSUMID = 1;
+  YSMREC.YSMSUMCD = "**";
+  YSMREC.YSMSRCVL = OEAREC.XOBCD;
+
+  call "IO2640" ("S1", SQLCA, YSMREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OP03SN6(); /* fetch record*/
+  else
+    TA1REC.TA1LOCAT[1] = "S1     ";
+    TA1REC.TA1LOCAT[2] = "IO2640 ";
+    TA1REC.TA1LOCAT[3] = "OP03SN2";
+    TA1REC.TA1LOCAT[4] = OEAREC.XOBCD;
+    TA1REC.TA1DBASE = "DCORP   "; /* data base name*/
+    TA1REC.TA1TBLVU = "VSUMCD01"; /* table view*/
+    OP03SZ3();
+  end
+
+
+end // end OP03SN2
+
+// get pmt terms code from nilrec
+Function OP03SN3()
+   /* use the summary code from sn3 to get nilrec's payment*/
+     /* term code*/
+
+  VNLXPT01.KUCCOID = OEAREC.KUCCOID;
+  VNLXPT01.YSMXOB = YSMREC.YSMSUMCD;
+  VNLXPT01.XGPCD = OEAREC.XGPCD;
+  VNLXPT01.NILLOVAL = OEAREC.OP1OVALU;
+
+  call "IO4490" ("SF", SQLCA, VNLXPT01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "SF     ";
+    TA1REC.TA1LOCAT[2] = "IO4490 ";
+    TA1REC.TA1LOCAT[3] = "OP03SN3";
+    TA1REC.TA1LOCAT[4] = YSMREC.YSMSUMCD;
+    TA1REC.TA1DBASE = "DNILO   "; /* data base name*/
+    TA1REC.TA1TBLVU = "VNLXPT01"; /* table view*/
+    OP03SZ3();
+    OEAREC.OEAERR = "Y";
+    OEAREC.OEAM509 = "Y";
+  end
+
+
+end // end OP03SN3
+
+// process nil spgm order
+Function OP03SN4()
+
+   /* ******************************/
+   /* find payment term code*/
+   /* ******************************/
+
+  if (SP6REC.SP6TPTCD[OP03WIXS] > " ")
+    OP03W01.OP03WPTC = SP6REC.SP6TPTCD[OP03WIXS];
+  else
+    if (VNLXPT01.XPTCD > " ")
+      OP03W01.OP03WPTC = VNLXPT01.XPTCD;
+    end
+  end
+
+
+
+   /* ******************************/
+    /* find trade discount code*/
+   /* ******************************/
+
+  if (SP6REC.SP6TTDCD[OP03WIXS] > " ")
+    OP03W01.OP03WTDC = SP6REC.SP6TTDCD[OP03WIXS];
+    OP03W01.OP03WTBK = SP6REC.SP6TDPCT; /* bank %*/
+    OP03W01.OP03WTFB = "Y"; /* compute trade disc face/bank*/
+  else
+    if (OP03W01.OP03WCFF == "Y"
+     && KUTREC.XTDCD[OP03WIXC] > " ")
+      OP03W01.OP03WTDC = KUTREC.XTDCD[OP03WIXC];
+      OP03W01.OP03WTFC = KUTREC.KUTTDPOF[OP03WIXC];
+      OP03W01.OP03WTBK = KUTREC.KUTTDPBK[OP03WIXC];
+    end
+  end
+
+
+end // end OP03SN4
+
+// process nil customer terms
+Function OP03SN5()
+
+   /* ******************************/
+   /* find payment term code*/
+   /* ******************************/
+
+  if (VNLXPT01.XPTCD > " ")
+    OP03W01.OP03WPTC = VNLXPT01.XPTCD;
+  else
+    if (OEAREC.SP1ID > " "
+     && OP03W01.OP03WSFF == "Y"
+     && SP6REC.SP6TPTCD[OP03WIXS] > " ")
+      OP03W01.OP03WPTC = SP6REC.SP6TPTCD[OP03WIXS];
+    end
+  end
+
+
+
+   /* ******************************/
+    /* find trade discount code*/
+   /* ******************************/
+
+  if (OP03W01.OP03WCFF == "Y"
+   && KUTREC.XTDCD[OP03WIXC] > " ")
+    OP03W01.OP03WTDC = KUTREC.XTDCD[OP03WIXC];
+    OP03W01.OP03WTFC = KUTREC.KUTTDPOF[OP03WIXC];
+    OP03W01.OP03WTBK = KUTREC.KUTTDPBK[OP03WIXC];
+  else
+    if (OEAREC.SP1ID > " "
+     && OP03W01.OP03WSFF == "Y"
+     && SP6REC.SP6TTDCD[OP03WIXS] > " ")
+      OP03W01.OP03WTDC = SP6REC.SP6TTDCD[OP03WIXS];
+      OP03W01.OP03WTBK = SP6REC.SP6TDPCT; /* bank %*/
+      OP03W01.OP03WTFB = "Y"; /* compute trade disc face/bank*/
+    end
+  end
+
+end // end OP03SN5
+
+// fetch ysmrec 'n1'
+Function OP03SN6()
+
+  while (SQLCA.VAGen_SQLCODE == 0
+   && OP03W01.OP03WFND == "N")
+    call "IO2640" ("N1", SQLCA, YSMREC) {isNoRefresh = yes, isExternal = yes};
+
+    if (SQLCA.VAGen_SQLCODE == 0)
+      if (YSMREC.XXXSTAT == "A")
+        OP03W01.OP03WFND = "Y"; /* turn on found flag*/
+      end
+    else
+      TA1REC.TA1LOCAT[1] = "S1     ";
+      TA1REC.TA1LOCAT[2] = "IO2640 ";
+      TA1REC.TA1LOCAT[3] = "OP03SN2";
+      TA1REC.TA1LOCAT[4] = OEAREC.XOBCD;
+      TA1REC.TA1DBASE = "DCORP   "; /* data base name*/
+      TA1REC.TA1TBLVU = "VSUMCD01"; /* table view*/
+      OP03SZ3();
+    end
+
+  end
+
+
+  if (SQLCA.VAGen_SQLCODE != -911) /* if not deadlock, close cusor*/
+    call "IO2640" ("C1", SQLCA, YSMREC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1LOCAT[1] = "C1     ";
+      TA1REC.TA1LOCAT[2] = "IO2640 ";
+      TA1REC.TA1LOCAT[3] = "OP03SN2";
+      TA1REC.TA1LOCAT[4] = OEAREC.XOBCD;
+      TA1REC.TA1DBASE = "DCORP   "; /* data base name*/
+      TA1REC.TA1TBLVU = "VSUMCD01"; /* table view*/
+      OP03SZ3();
+    end
+  end
+
+end // end OP03SN6
+
+// get corp table code %'s
+Function OP03SX1()
+
+   /* the only term required for an order is payment term code.*/
+   /* if the others are missing from the records, that's ok;*/
+   /* load '00' to code which translates to 0%, so only those*/
+   /* actually missing from the tables are reported in ta0020.*/
+
+
+   /* ****************************************************/
+    /* get trade discount % for domestic & international*/
+   /* ****************************************************/
+
+  if (OP03W01.OP03WTDC == " ")
+    OP03W01.OP03WTDC = "00";
+  end
+
+  if (OP03W01.OP03WTDC in XTDTBL.XTDCD
+   && XTDTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    OP03W01.OP03WTDP = XTDTBL.XTDPCT[sysVar.arrayIndex]; /* save td percent*/
+  else
+    OP03W01.OP03WTDP = 0;
+    TA1REC.TA1LOCAT[1] = "OP03SX1";
+    TA1REC.TA1LOCAT[2] = "XTDCD";
+    TA1REC.TA1LOCAT[3] = OP03W01.OP03WTDC;
+    TA1REC.TA1LOCAT[4] = "XTDTBL";
+    TAEREC.TAEDESC1 = "TRADE DISCOUNT CODE MISSING FROM TABLE";
+    OP03SZ2(); /* post missing code thru ta0020*/
+  end
+
+
+   /* ********************************************************/
+   /* domestic orders:  get ad allowance, coop*/
+   /* ********************************************************/
+
+  if (OEAREC.XAUCD != "31" /* if not international order*/
+   && OEAREC.XAUCD != "32" /* if not international order*/
+   && OEAREC.XAUCD != "33") /* if not international order*/
+    if (OP03W01.OP03WAAC == " ")
+      OP03W01.OP03WAAC = "00";
+    end
+
+    if (OP03W01.OP03WAAC in XAATBL.XAACD
+     && XAATBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      OP03W01.OP03WAAP = XAATBL.XAAPCT[sysVar.arrayIndex]; /* save aa %*/
+    else
+      OP03W01.OP03WAAP = 0;
+      TA1REC.TA1LOCAT[1] = "OP03SX1";
+      TA1REC.TA1LOCAT[2] = "XAACD";
+      TA1REC.TA1LOCAT[3] = OP03W01.OP03WAAC;
+      TA1REC.TA1LOCAT[4] = "XAATBL";
+      TAEREC.TAEDESC1 = "AD ALLOWANCE CODE MISSING FROM TABLE";
+      OP03SZ2(); /* post missing code thru ta0020*/
+    end
+
+
+    if (OP03W01.OP03WXCC == " ")
+      OP03W01.OP03WXCC = "00";
+    end
+
+    if (OP03W01.OP03WXCC in XCPTBL.XCPCD
+     && XCPTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      OP03W01.OP03WXCP = XCPTBL.XCPPCT[sysVar.arrayIndex]; /* save co-op %*/
+    else
+      OP03W01.OP03WXCP = 0;
+      TA1REC.TA1LOCAT[1] = "OP03SX1";
+      TA1REC.TA1LOCAT[2] = "XCPCD ";
+      TA1REC.TA1LOCAT[3] = OP03W01.OP03WXCC;
+      TA1REC.TA1LOCAT[4] = "XCPTBL";
+      TAEREC.TAEDESC1 = "COOP CODE MISSING FROM TABLE";
+      OP03SZ2(); /* post missing code thru ta0020*/
+    end
+  end
+
+
+
+   /* ********************************************************/
+   /* get payment term % for domestic & international*/
+   /* ********************************************************/
+
+  if (OP03W01.OP03WPTC in XPTTBL.XPTCD /* valid payment term code*/
+   && XPTTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    if (OEAREC.XAUCD == "31" /* if international order*/
+     || OEAREC.XAUCD == "32" /* if international order*/
+     || OEAREC.XAUCD == "33") /* if international order*/
+      if (XPTTBL.XPTCTRLI[sysVar.arrayIndex] == "N" /* nil*/
+       || XPTTBL.XPTCTRLI[sysVar.arrayIndex] == "B") /* both domestic & nil*/
+        OP03W01.OP03WPTD = XPTTBL.XPTDESC[sysVar.arrayIndex];
+      else
+        TA1REC.TA1LOCAT[1] = "OP03SX1";
+        TA1REC.TA1LOCAT[2] = "XPTCD";
+        TA1REC.TA1LOCAT[3] = OP03W01.OP03WPTC;
+        TA1REC.TA1LOCAT[4] = "XPTTBL";
+        TAEREC.TAEDESC1 = "PAYMENT TERM CODE INVALID FOR NIL   ";
+        OP03SZ2(); /* post missing code thru ta0020*/
+        OEAREC.OEAM509 = "Y";
+        OEAREC.OEAERR = "Y";
+      end
+    else
+      if (XPTTBL.XPTCTRLI[sysVar.arrayIndex] == "I" /* inc*/
+       || XPTTBL.XPTCTRLI[sysVar.arrayIndex] == "B") /* both domestic & nil*/
+        OP03W01.OP03WPTD = XPTTBL.XPTDESC[sysVar.arrayIndex];
+      else
+        TA1REC.TA1LOCAT[1] = "OP03SX1";
+        TA1REC.TA1LOCAT[2] = "XPTCD";
+        TA1REC.TA1LOCAT[3] = OP03W01.OP03WPTC;
+        TA1REC.TA1LOCAT[4] = "XPTTBL";
+        TAEREC.TAEDESC1 = "PAYMENT TERM CODE INVALID FOR DOMESTIC";
+        OP03SZ2(); /* post missing code thru ta0020*/
+        OEAREC.OEAM509 = "Y";
+        OEAREC.OEAERR = "Y";
+      end
+    end
+  else
+    TA1REC.TA1LOCAT[1] = "OP03SX1";
+    TA1REC.TA1LOCAT[2] = "XPTCD";
+    TA1REC.TA1LOCAT[3] = OP03W01.OP03WPTC;
+    TA1REC.TA1LOCAT[4] = "XPTTBL";
+    TAEREC.TAEDESC1 = "PAYMENT TERM CODE MISSING FROM TABLE";
+    OP03SZ2(); /* post missing code thru ta0020*/
+    OEAREC.OEAM509 = "Y";
+    OEAREC.OEAERR = "Y";
+  end
+
+end // end OP03SX1
+
+// get defect. allow %, xdatbl
+Function OP03SX2()
+
+
+  if (KUTREC.XDACD[OP03WIXC] == " ")
+    KUTREC.XDACD[OP03WIXC] = "00";
+  end
+
+  if (KUTREC.XDACD[OP03WIXC] in XDATBL.XDACD
+   && XDATBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    OP03W01.OP03WDAC = XDATBL.XDACD[sysVar.arrayIndex]; /* save code*/
+    OP03W01.OP03WDAP = XDATBL.XDAPCT[sysVar.arrayIndex]; /* save percent*/
+  else
+    OP03W01.OP03WDAP = 0;
+    OEAREC.OEAMMSG = "Y"; /* turn on global msg flag*/
+    TA1REC.TA1LOCAT[1] = "OP03SX1";
+    TA1REC.TA1LOCAT[2] = "XDACD";
+    TA1REC.TA1LOCAT[3] = KUTREC.XDACD[OP03WIXC];
+    TA1REC.TA1LOCAT[4] = "XDATBL";
+    TAEREC.TAEDESC1 = "XDACD MISSING FROM XDATBL";
+    OP03SZ2(); /* post missing code thru ta0020*/
+  end
+
+end // end OP03SX2
+
+// load errdiag ta1rec stuff
+Function OP03SZ1()
+  OP03W01.OP03WT1A = OEAREC.KUCCOID;
+  OP03W01.OP03WT1B = OEAREC.KUMSTRID;
+  OP03W01.OP03WT1C = OEAREC.XNXCD;
+  OP03W01.OP03WT1D = OEAREC.XGPCD;
+  OP03W01.OP03WT1E = OEAREC.XOTCD;
+  OP03W01.OP03WT1F = OEAREC.SP1ID;
+  OP03W01.OP03WT1G = OEAREC.OP1CUNDT;
+  OP03W01.OP03WT1H = OEAREC.XDVCD;
+end // end OP03SZ1
+
+// csp post routine ta0020
+Function OP03SZ2()
+
+  OEAREC.OEAM511 = "Y"; /* general msg*/
+  OEAREC.OEAMMSG = "Y"; /* turn on global message*/
+  TA1REC.TA1PGMNM = "OP03";
+  TA1REC.TA1PGMAP = "OP03";
+  TA1REC.TA1MAP = OEAREC.OEAAPPL;
+  OP03SZ1(); /* load errdiag info*/
+  TAEREC.TAEDESC2 = OP03W01.OP03WT1;
+  TA1REC.TA1TYPE = "APPL";
+  TA1REC.TA1FUNC = "POST";
+  try
+    call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+  end
+end // end OP03SZ2
+
+// db2 post routine ta0020
+Function OP03SZ3()
+
+  OEAREC.OEAMMSG = "Y"; /* turn on global msg flag*/
+  OEAREC.OEAM511 = "Y"; /* turn on global msg flag*/
+
+  if (SQLCA.VAGen_SQLCODE == -911) /* if deadlock*/
+    OEAREC.OEAM010 = "Y"; /* turn on deadlock msg flag*/
+    OEAREC.OEAERR = "Y"; /* turn on error flag*/
+  end
+
+  OP03SZ1(); /* load errdiag info*/
+  TA1REC.TA1TBLKE = OP03W01.OP03WT1;
+  TA1REC.TA1PGMNM = "OP03";
+  TA1REC.TA1PGMAP = "OP03";
+  TA1REC.TA1MAP = OEAREC.OEAAPPL;
+  set ERRSQLCA empty;
+  move SQLCA to ERRSQLCA withV60Compat;
+  TA1REC.TA1TYPE = "DB2";
+  TA1REC.TA1FUNC = "POST";
+  try
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+  end
+end // end OP03SZ3
+
+//*** RECORD=OP03W01 ****
+// 08/24/89       skott    made indexes 3 digits in length
+// ***********************
+Record OP03W01 type basicRecord
+  10 OP03WFND OP03WFND ; 
+  10 OP03WSUB OP03WSUB ; 
+  10 OP03WTFB OP03WTFB ; 
+  10 OP03WAFB OP03WAFB ; 
+  10 OP03WIXS OP03WIXS ; 
+  10 OP03WIXC OP03WIXC ; 
+  10 OP03WIXX OP03WIXX ; 
+  10 OP03WUOD OP03WUOD ; 
+  10 OP03WSFF OP03WSFF ; 
+  10 OP03WCFF OP03WCFF ; 
+  10 OP03WXFF OP03WXFF ; 
+  10 OP03WMNO OP03WMNO ; 
+  10 XODMXDSC XODMXDSC ; 
+  10 SP6MDISC SP6MDISC ; 
+  10 OP03WTDC OP03WTDC ; 
+  10 OP03WTDP OP03WTDP ; 
+  10 OP03WTBK OP03WTBK ; 
+  10 OP03WTFC OP03WTFC ; 
+  10 OP03WAAC OP03WAAC ; 
+  10 OP03WAAP OP03WAAP ; 
+  10 OP03WABK OP03WABK ; 
+  10 OP03WAFC OP03WAFC ; 
+  10 OP03WXCC OP03WXCC ; 
+  10 OP03WXCP OP03WXCP ; 
+  10 OP03WPTC OP03WPTC ; 
+  10 OP03WPTD OP03WPTD ; 
+  10 OP03WPTA OP03WPTA ; 
+  10 OP03WDAC OP03WDAC ; 
+  10 OP03WDAP OP03WDAP ; 
+  10 OP03WT1 OP03WT1 ; 
+    15 OP03WT1A OP03WT1A ; 
+    15 OP03WT1B OP03WT1B ; 
+    15 OP03WT1C OP03WT1C ; 
+    15 OP03WT1D OP03WT1D ; 
+    15 OP03WT1E OP03WT1E ; 
+    15 OP03WT1F OP03WT1F ; 
+    15 OP03WT1G OP03WT1G ; 
+    15 OP03WT1H OP03WT1H ; 
+end // end OP03W01
+
+// ad allow code to get %
+DataItem OP03WAAC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ad allow percent
+DataItem OP03WAAP decimal(5,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ad allow bank percent
+DataItem OP03WABK decimal(5,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// compute adalw face/bank
+DataItem OP03WAFB char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ad allow face percent
+DataItem OP03WAFC decimal(5,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cust terms found flag
+DataItem OP03WCFF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// defective allow code to get %
+DataItem OP03WDAC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// def allowance percent
+DataItem OP03WDAP decimal(5,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// reusable found flag
+DataItem OP03WFND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// customer terms subscript
+DataItem OP03WIXC num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// spgm tier table subscript
+DataItem OP03WIXS num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// xodtbl terms subscript
+DataItem OP03WIXX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// message number
+DataItem OP03WMNO num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// payment term abbreviation
+DataItem OP03WPTA char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// payment term code to get abrv
+DataItem OP03WPTC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// payment term description
+DataItem OP03WPTD char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// spgm terms found flag
+DataItem OP03WSFF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// working subscript
+DataItem OP03WSUB num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// errdiag key
+DataItem OP03WT1 char(40)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// errdiag info
+DataItem OP03WT1A num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// errdiag info
+DataItem OP03WT1B num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// errdiag info
+DataItem OP03WT1C num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// errdiag info
+DataItem OP03WT1D char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// errdiag info
+DataItem OP03WT1E char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// errdiag info
+DataItem OP03WT1F char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// errdiag info
+DataItem OP03WT1G num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// errdiag info
+DataItem OP03WT1H char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// trade disc bank percent
+DataItem OP03WTBK decimal(5,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// trade disc code to get %
+DataItem OP03WTDC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// trade disc percent
+DataItem OP03WTDP decimal(5,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// compute tdisc face/bank
+DataItem OP03WTFB char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// trade disc face precent
+DataItem OP03WTFC decimal(5,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// total units or dollars
+DataItem OP03WUOD int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// coop code to get %
+DataItem OP03WXCC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// coop code percent
+DataItem OP03WXCP decimal(5,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// corp defaults found flag
+DataItem OP03WXFF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

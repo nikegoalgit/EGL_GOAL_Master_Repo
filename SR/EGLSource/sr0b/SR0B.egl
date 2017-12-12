@@ -1,0 +1,2237 @@
+package sr0b;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import fy.common.*;
+import in1.common.*;
+import ku.common.*;
+import op.common.*;
+import pk.common.*;
+import sm.common.*;
+import sp.common.*;
+import sr.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+//*** PROGRAM=SR0B ****
+// ------------------- sr0b: prepare batch --------------------
+// 
+// maintenance history:
+// 
+//    date    name       description
+//    ----    ----       --------------------------------------
+//    9/86    tlewis     program creation
+//  9-08-88   mblail     sr#48 removed ability to edit
+//                         carrier code and carrier name.
+// 10-20-88   jwood      changed call options to NONCSP
+// 01-05-89   rhetri     add edit on date shipped. must be less
+//                       than dship.vsrhdr01's sr-pick-sched-dt
+// 03-20-89   jwood      added xssegtr logic
+// 03-01-94   HKEMPE     Generate/Compile to pick up revised
+//                       COMMAREA and XWHTBL
+// 10-19-94   HKEMPE     Ship date entered should be the batch
+//                       header ship date as well as the order
+//                       ship date (SR243).
+//                       Bypassed edit of shipped date vs pick
+//                       sched date for promo whse (SR212).
+//                       Rearranged PA/PF keys and eliminated
+//                       the invalid ones.
+// 11/28/94   HKEMPE     Changed error message numbers in the
+//                       processing of ShipRec orders.
+// 02-09-98   oricha     y2k modifications:  zero fill year in
+//            y2kproj    m020; sr0bw03, sr0bs04, s12, s17, s19.
+// 04-20-98   DKESLE     add edit to make sure schedule has
+//                       been picked
+// 
+// ************************************************************
+// description:
+// -----------
+// the screen consists a warehouse code and ten lines of re-
+// peating data. each line consists of a pick number and
+// date shipped.
+//  this application updates the batch header table
+// dship.vsrhdr01.
+// the updateable field is date shipped.
+// warehouse code and pick number are keys.
+//  the warehouse code is entered in one of two ways:
+//   a. the user may enter a warehouse code. this is verified
+//      against the corporate table xwhtbl.
+//   b. if the user is coming into this application from an-
+//      other application within the ship recon system the
+//      warehouse code the user was last using is passed in the
+//      commarea and is displayed in this application. of
+//      course the user may change this if needed.
+//  the user may enter up to ten batchs to be prepared, in any
+// order including skipping lines between entered batchs.
+// all entered lines are 'shuffled' to the top of the screen
+// until no intervening blank lines are present.
+//  a check is made to make sure no duplicate pick numbers have
+// been entered.
+//  each entered batch record is read on the dship.vsrhdr01
+// table to see if it exists.
+//  next batch status is checked. this must be either a 'p' for
+// prepared or a 'e' for entered.
+//  next ship date is checked. the ship date may not be older
+// then a year. also the usual valid month, day, year must be
+// entered. note that at the end of processing after all up-
+// dating is done the ship date is checked again in order to
+// produce a warning on ship dates older then 30 days. this is
+// only a warning and does not affect updating.
+//  if there are errors the screen is redisplayed to the user
+// and this continues util all errors have been corrected.
+//  if there are no errors then the up to ten batch headers are
+// updated. two fields which are updated that the user never
+// sees are date changed and time changed (these are not the
+// zz fields). everytime anything in the batch record changes
+// these fields are updated.
+//  ship date is rechecked in order to give the 30 day warning
+// as previously mentioned.
+// ************************************************************
+// *********************
+Program SR0B type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "SR00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  SQLCA SQLCA; // record
+  SR0BW01 SR0BW01; // record
+  SR0BW02 SR0BW02; // record
+  SR0BW03 SR0BW03; // record
+  SR1REC SR1REC; // record
+  SR2REC SR2REC; // record
+  SRWREC SRWREC; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TAEREC TAEREC; // record
+  TF1REC TF1REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use SR0BM.SR0BM020 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    SR0B010: SR0B010();
+    goto SR0B020; /* go to converse prepare batch scrn*/
+    SR0B020: SR0B020();
+     /* -----------  sr0b020 flow  -----------------*/
+
+     /* test for pa2 and save warehouse code and name*/
+
+    if (converseVar.eventKey is pa2)
+      SR0BW02.XWHCD = SR0BM020.XWHCD;
+      SR0BW02.XWHABRV = SR0BM020.XWHABRV;
+      goto SR0B010; /* back to initialize screen*/
+    else
+      if (SR0BM020.SR0BMMSG != " "
+       || SR0BM020.VAGen_EZEMSG != " "
+       || converseVar.validationMsgNum != 0)
+        set SR0BM020 alarm;
+        goto SR0B020; /* errors/msg's - redisplay scrn*/
+      else
+        if (SRWREC.SRWMSG != " ")
+          SR0BM020.SR0BMMSG = SRWREC.SRWMSG;
+          set SR0BM020 alarm;
+          goto SR0B020; /* errors/msg's - redisplay scrn*/
+        else
+          goto SR0B040; /* no errors so update the*/
+        end /* batch headers*/
+      end
+    end
+     /* ----------- end sr0b020 flow ------------------*/
+    SR0B040: SR0B040();
+    if (converseVar.validationMsgNum == 16 /* record not found*/
+     || converseVar.validationMsgNum == 20) /* record updated since last reference*/
+       /* NEXT SENTENCE*/
+    else
+      set SR0BM020.PK1PKSCH[1] cursor;
+    end
+    goto SR0B020; /* go back to converse prepare batch screen*/
+  end // end main
+end // end SR0B
+
+// init prepare batch scrn
+Function SR0B010()
+
+    /* -------------  execute process sr0b010  --------------*/
+
+  XSENTRY(); /* appl entry security*/
+
+  XSSEGTR(); /* set segmented transaction id*/
+
+
+
+  set SR1REC empty;
+  set TF1REC empty;
+  set TA1REC empty;
+  set TA2REC empty;
+  set SQLCA empty;
+  set SR0BW01 empty;
+  set SR0BW03 empty;
+  set SRWREC empty;
+  set SR0BM020 initial;
+  set SR0BM020.PK1PKSCH[1] cursor;
+
+   /* if youre coming from an application outside ship recon*/
+   /* move whatever (if anything) is in the item field to*/
+   /* the warehouse code on the map.*/
+
+  if (COMMAREA.CAFROMAP != " ")
+    SR0BW01.SR0BWFRA = COMMAREA.CAFROMAP;
+    if (SR0BWFR1 != "SR")
+      SR0BW01.SR0BWITM = COMMAREA.CAITEM;
+      SR0BM020.XWHCD = SR0BW01.SR0BWWHS;
+    else
+      SRWREC.SRWGRP = COMMAREA.CAUSERA;
+      SR0BM020.XWHCD = SRWREC.SRWXWHCD;
+    end
+  else
+     /* next sentence.*/
+  end
+
+   /* about the following 'if' stmt:*/
+
+   /* information from the from application. if you are coming*/
+   /* from another application within the 'sr' system move ware-*/
+   /* house cd from the application you came from to the screen*/
+   /* here.*/
+
+
+   /* if the user is coming from outside the 'sr' system then*/
+   /* move warehouse code from the commarea security record to the*/
+   /* screen.*/
+
+
+   /* if pa2 was requested then move the last warehouse code the*/
+   /* user entered to the screen.*/
+
+  if (converseVar.eventKey is pa2)
+    SR0BM020.XWHCD = SR0BW02.XWHCD;
+    SR0BM020.XWHABRV = SR0BW02.XWHABRV;
+  end
+
+
+
+  SR0BM020.SR0BMDT = VGVar.currentShortGregorianDate; /* system date*/
+
+   /* -------------  end process sr0b010  --------------------*/
+
+end // end SR0B010
+
+// converse prepare batch scrn
+Function SR0B020()
+   /* -----------  before stage - sr0b020 -----*/
+
+
+
+
+  converse SR0BM020 ;
+
+   /* -------------------map sr0bm020 conversed------------------*/
+
+  SR0BM020.VAGen_EZEMSG = " ";
+  SR0BM020.SR0BMMSG = " "; /* clear all message fields*/
+  SRWREC.SRWMSG = " ";
+
+  SRWREC.SRWXWHCD = SR0BM020.XWHCD; /* move warehouse and batch*/
+  COMMAREA.CAUSERA = SRWREC.SRWGRP; /* in case of transfer.*/
+  COMMAREA.CAFROMAP = "SR0B";
+
+  XSSRS01(); /* check standard pf keys*/
+
+
+  SR0BS07(); /* shuffle screen lines*/
+
+
+
+  if (converseVar.validationMsgNum != 0 /* invalid pf*/
+   || SR0BM020.SR0BMMSG != " ")         /* invalid security*/
+    exit stack;
+  end
+
+   /* edit warehouse code*/
+
+  SR0BS01(); /* edit warehouse code*/
+  if (converseVar.validationMsgNum != 0)
+    exit stack;
+  end
+
+   /* the following checks to see if data was entered*/
+
+
+  SR0BW01.SR0BWFL3 = "N"; /* initialize data flag to no*/
+  if (converseVar.eventKey is enter)
+    SR0BW01.SR0BWIDX = 10;
+    while (SR0BW01.SR0BWIDX > 0)
+      if (SR0BM020.PK1PKSCH[SR0BWIDX] != 0
+       || SR0BM020.SR0BMMM[SR0BWIDX] != 0
+       || SR0BM020.SR0BMDD[SR0BWIDX] != 0
+       || SR0BM020.SR0BMYY[SR0BWIDX] != 0)
+        SR0BW01.SR0BWFL3 = "Y";
+        SR0BW01.SR0BWIDX = 0;
+      else
+        SR0BW01.SR0BWIDX = SR0BW01.SR0BWIDX - 1;
+      end
+    end
+  end
+
+  if (SR0BW01.SR0BWFL3 == "Y") /* there is data to edit*/
+     /* next sentence*/
+  else
+    set SR0BM020.PK1PKSCH[1] cursor;
+    converseLib.validationFailed(18); /* please enter data*/
+    exit stack;
+  end
+
+
+
+  SR0BS11(); /* check for duplicate pick numbers*/
+  if (converseVar.validationMsgNum != 0)
+    exit stack;
+  else
+     /* next sentence*/
+  end
+
+
+
+   /* in the next 'if' statement:*/
+   /* edit batch number and, date shipped up*/
+   /* to ten possible times (because ten lines on the screen).*/
+
+
+
+  if (converseVar.eventKey is enter)
+    SR0BW01.SR0BWIDX = 10;
+    while (SR0BW01.SR0BWIDX > 0)
+      if (SR0BM020.PK1PKSCH[SR0BWIDX] != 0
+       || SR0BM020.SR0BMMM[SR0BWIDX] != 0
+       || SR0BM020.SR0BMDD[SR0BWIDX] != 0
+       || SR0BM020.SR0BMYY[SR0BWIDX] != 0)
+        SR0BW01.SR0BWFL1 = "N"; /* initialize error flag*/
+        SR0BW01.SR0BWFL2 = "N"; /* error on btch hdr read*/
+        SR0BS02(); /* edit schedule nbr,carrier,shipdate*/
+        SR0BW01.SR0BWIDX = SR0BW01.SR0BWIDX - 1;
+      else
+        SR0BW01.SR0BWIDX = SR0BW01.SR0BWIDX - 1;
+      end
+    end
+    exit stack;
+  else
+    exit stack;
+  end
+
+    /* -----------   end of process sr0b020  ------------*/
+
+end // end SR0B020
+
+// update batch headers
+Function SR0B040()
+
+   /* ---------------  execute process sr0b040  --------------*/
+              /* prepare and update batch headers*/
+   /* --------------------------------------------------------*/
+
+
+
+  SR0BW01.SR0BWFL2 = " ";
+  SR0BW01.SR0BWFL5 = " ";
+  SR0BW01.SR0BWIDX = 1;
+  while (SR0BW01.SR0BWIDX <= 10)
+    SR0BS17(); /* update headers*/
+  end
+
+   /* if no problems with updates then commit*/
+
+  if (SR0BW01.SR0BWIDX == 11
+   && SR0BW01.SR0BWFL5 == "Y")
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.commit();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* commit the changes*/
+    converseLib.validationFailed(69); /* schedule prepared*/
+    SR0BS20(); /* clear saved zz count array*/
+  else
+    exit stack;
+  end
+
+   /* recheck for any shipdates older then thirty days*/
+
+  SR0BS10(); /* recheck shipdate*/
+
+   /* if there is an error here it is that shipdate is older then*/
+   /* 30 days. batch(s) are updated anyway with a warning*/
+
+  if (converseVar.validationMsgNum == 11) /* ship date older then 30 days*/
+    converseLib.validationFailed(42); /* batch(s) updated -warning: ship date*/
+                                   /* older then 30 days*/
+  end
+
+   /* -------------  end process sr0b040  --------------------*/
+
+end // end SR0B040
+
+// Close cursor in ShipRec order
+Function SR0BS-IO0800-C2()
+   /* ------------------------------------------------------------*/
+   /* Close the cursor for the selected set of ShipRec order rows.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0800" ("C2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  SRWREC.XXXERRID = "IO0800C2"; /* Message location*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = SRWREC.XXXERRID; /* Message location*/
+  TA1REC.TA1LOC = "CLOSE SELECTED SET CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRORD01"; /* Table view name*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0BS-IO0800-C2
+
+// Fetch row in ShipRec ord tbl
+Function SR0BS-IO0800-N2()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row from the ShipRec order table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0800" ("N2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0
+     || SQLCA.VAGen_SQLCODE == 100) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  SRWREC.XXXERRID = "IO0800N2"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = SRWREC.XXXERRID; /* Message location*/
+  TA1REC.TA1LOC = "FETCH NEXT ROW IN CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRORD01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR2REC.SR2KEYS; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0BS-IO0800-N2
+
+// Select cursor in ShipRec order
+Function SR0BS-IO0800-S2()
+   /* ------------------------------------------------------------*/
+   /* Select the requested set of rows from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0800" ("S2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select set*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  SRWREC.XXXERRID = "IO0800S2"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = SRWREC.XXXERRID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT SET AND OPEN CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRORD01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR2REC.SR2KEYS; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0BS-IO0800-S2
+
+// Update ShipRec order w/ shp dt
+Function SR0BS-IO0800-U()
+   /* ------------------------------------------------------------*/
+    /* Update vsrord01*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0800" ("U ", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (sysVar.errorCode == "00000000")
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* if updated*/
+     || SQLCA.VAGen_SQLCODE == +100) /* or not found*/
+      return;
+    end
+
+  end
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* csp return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* sql commarea*/
+
+  SRWREC.XXXERRID = "IO0800U "; /* error identification*/
+
+  if (sysVar.errorCode == "00000000"
+   && SQLCA.VAGen_SQLCODE == -911) /* if resource not available*/
+    converseLib.validationFailed(134); /* resource not available*/
+    TA1REC.TA1FUNC = "POST"; /* termination function*/
+  else
+    converseLib.validationFailed(124); /* system error*/
+    TA1REC.TA1FUNC = "RETN"; /* termination function*/
+  end
+
+  TA1REC.TA1TYPE = "DB2";
+  TA1REC.TA1LOC = "UPDATING DB2 VSRORD01";
+  TA1REC.TA1PGMNM = SRWREC.XXXERRID;
+  TA1REC.TA1DBASE = "DSHIP";
+  TA1REC.TA1TBLVU = "VSRORD01";
+  TA1REC.TA1TBLKE = SR2REC.SR2KEYS;
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes};
+
+  exit stack;
+
+
+end // end SR0BS-IO0800-U
+
+// validate warehouse code
+Function SR0BS01()
+
+
+   /* ------------ start stmt grp sr0bs01 -----------------*/
+
+                /* edit warehouse code*/
+
+   /* -----------------------------------------------------*/
+
+  set SR0BM020.XWHCD initialAttributes;
+  set SR0BM020.XWHABRV initialAttributes;
+  if (SR0BM020.XWHCD == " ")
+    converseLib.validationFailed(17); /* warehouse code required*/
+    set SR0BM020.XWHCD cursor, modified, bold;
+  else
+    if (SR0BM020.XWHCD in XWHTBL.XWHCD)
+      if (XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+
+      else
+        converseLib.validationFailed(2); /* inactive warehouse*/
+        set SR0BM020.XWHCD cursor, bold;
+        set SR0BM020.XWHABRV modified, bold;
+      end
+    else
+      converseLib.validationFailed(1); /* non-existent warehouse*/
+      set SR0BM020.XWHCD cursor, bold;
+      SR0BM020.XWHABRV = " ";
+    end
+  end
+
+
+   /* -------------   end of stmt grp sr0bs01  ------------*/
+
+end // end SR0BS01
+
+// edit batch nbr,carrier cd,name
+Function SR0BS02()
+
+
+   /* ------------ start stmt grp sr0bs02 -----------------*/
+
+              /* edit picking schedule number*/
+
+   /* -----------------------------------------------------*/
+
+
+
+  SR0BW01.SR0BWFL1 = "N";
+  set SR0BM020.PK1PKSCH[SR0BWIDX] initialAttributes;
+  if (SR0BM020.PK1PKSCH[SR0BWIDX] != 0)
+    SR0BS03(); /* read batch record*/
+  else
+    SR0BW01.SR0BWFL1 = "Y";
+    converseLib.validationFailed(14); /* pick schedule nbr required*/
+    set SR0BM020.PK1PKSCH[SR0BWIDX] cursor, bold;
+    return;
+  end
+
+  if (SR0BW01.SR0BWFL2 == "Y") /* error on btch hdr read*/
+    SR0BW01.SR0BWFL1 = "Y"; /* error on this line*/
+    converseLib.validationFailed(16); /* pick schedule nbr not on file*/
+    set SR0BM020.PK1PKSCH[SR0BWIDX] cursor, bold;
+    return;
+  else
+    SR0BS22(); /* compare pick ids*/
+    if (SR0BW01.SR0BWCNT[SR0BWIDX] == 0)
+      SR0BW01.SR0BWCNT[SR0BWIDX] = SR1REC.ZZZCHGCT;
+      SR0BS16(); /* move in unchged fields*/
+    else
+      if (SR0BW01.SR0BWCNT[SR0BWIDX] != SR1REC.ZZZCHGCT)
+        converseLib.validationFailed(20); /* record updated since last display*/
+        SR0BW01.SR0BWFL1 = "Y"; /* record updated since last display*/
+        SR0BW01.SR0BWCNT[SR0BWIDX] = SR1REC.ZZZCHGCT;
+        SR0BS13(); /* move fields in*/
+      end
+    end
+  end
+
+
+
+  SR0BS12(); /* edit ship date*/
+
+
+
+  SR0BS14(); /* edit date against pick-sched-dt*/
+
+
+
+  SR0BS08(); /* check batch status*/
+
+  if (XWHTBL.XWTCD[sysVar.arrayIndex] == "01"   
+   && XWHTBL.XWHSTKLF[sysVar.arrayIndex] == "Y" /* movers whse*/
+   && SR1REC.SR1PKSFL != "Y")                   /* if all orders have not been picked*/
+    converseLib.validationFailed(112); /* don't allow schedule to be prepared*/
+    set SR0BM020.PK1PKSCH[SR0BWIDX] cursor, bold;
+    return;
+  end
+
+   /* -------------   end of stmt grp sr0bs02  ------------*/
+
+end // end SR0BS02
+
+// read hdr batch record
+Function SR0BS03()
+
+
+   /* ------------ start stmt grp sr0bs03 -----------------*/
+
+               /* read hdr batch record*/
+
+   /* -----------------------------------------------------*/
+  SR0BW01.SR0BWMSG = " ";
+
+  set SR1REC empty; /* clear batch record*/
+  set SQLCA empty;
+
+  SR1REC.XWHCD = SR0BM020.XWHCD; /* set batch header key*/
+  SR1REC.PK1PKSCH = SR0BM020.PK1PKSCH[SR0BWIDX];
+  call "IO0790" ("S ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* read batch header*/
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* NEXT SENTENCE*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      SR0BW01.SR0BWFL2 = "Y"; /* error on batch header read*/
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DSHIP";
+      TA1REC.TA1TBLVU = "VSRHDR01";
+      TA1REC.TA1MAP = " ";
+      TA1REC.TA1TBLKE = SR1REC.SR1KEYS;
+      TA1REC.TA1PGMNM = "SR0BS03";
+      TA1REC.TA1LOC = "READING DB2 VSRHDR01";
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      COMMAREA.CAUSERA = " ";
+      XSPF4();
+    end
+  end
+
+
+
+
+    /* -----------   end of stmt grp sr0bs03  ------------*/
+
+end // end SR0BS03
+
+// validate date shipped
+Function SR0BS04()
+   /* ------------- start stmt grp sr0bs04 ---------------*/
+
+     /* date shipped must have valid date and*/
+     /* be le todays date, less than 1 year old.*/
+     /* warning for ship date gt 30 days old*/
+
+   /* ----------------------------------------------------*/
+
+
+  set SR0BM020.SR0BMYY[SR0BWIDX] initialAttributes;
+  set SR0BM020.SR0BMMM[SR0BWIDX] initialAttributes;
+  set SR0BM020.SR0BMDD[SR0BWIDX] initialAttributes;
+
+   /* first edit of month*/
+
+  if (SR0BM020.SR0BMMM[SR0BWIDX] <= 12 /* bad date entered?*/
+   && SR0BM020.SR0BMMM[SR0BWIDX] >= 1)
+     /* next sentence*/
+  else
+    if (SR0BW01.SR0BWFL1 == "N")
+      SR0BW01.SR0BWFL1 = "Y"; /* no previous error on the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      converseLib.validationFailed(10); /* invalid ship date*/
+      return;
+    else
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      return;
+       /* next sentence*/
+    end
+  end
+
+    /* first edit of day*/
+
+  if (SR0BM020.SR0BMDD[SR0BWIDX] <= 31 /* bad date entered?*/
+   && SR0BM020.SR0BMDD[SR0BWIDX] >= 1)
+     /* next sentence*/
+  else
+    if (SR0BW01.SR0BWFL1 == "N")
+      SR0BW01.SR0BWFL1 = "Y"; /* no previous error on the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      converseLib.validationFailed(10); /* invalid ship date*/
+      return;
+    else
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      return;
+       /* next sentence*/
+    end
+  end
+
+   /* -------- y2k out begin -------*/
+   /* MOVE EZEDTE TO SR0BW03.SR0BWDT1;  /* sys yymmdd to work*/
+   /* -------- y2k out end ---------*/
+   /* -------- y2k in  begin -------*/
+  SR0BW03.SR0BWDT1 = VGVar.currentGregorianDate; /* sys ccyymmdd to work*/
+   /* -------- y2k in end ----------*/
+
+  SR0BW03.SR0BWYY2 = SR0BM020.SR0BMYY[SR0BWIDX]; /* ship yymmdd to work*/
+  SR0BW03.SR0BWMM2 = SR0BM020.SR0BMMM[SR0BWIDX];
+  SR0BW03.SR0BWDD2 = SR0BM020.SR0BMDD[SR0BWIDX];
+
+   /* -------- y2k in  begin -------*/
+  if (SR0BW03.SR0BWYY2 > 60)
+    SR0BW03.SR0BWCC2 = 19;
+  else
+    SR0BW03.SR0BWCC2 = 20;
+  end
+   /* -------- y2k in end ----------*/
+
+   /* -------- y2k out begin -------*/
+   /* MOVE SR0BW03.SR0BWDT2 TO TA2REC.TA2GRGEN;*/
+   /* MOVE 'GREGJUL ' TO TA2REC.TA2DTOPT;*/
+   /* MOVE 'E' TO TA2REC.TA2GRTYP;*/
+   /* -------- y2k out end ---------*/
+
+   /* -------- y2k in begin --------*/
+  set TA2REC empty;
+  TA2REC.TA2GRGGN = SR0BW03.SR0BWDT2;
+  TA2REC.TA2DTOPT = "GREGJUL ";
+  TA2REC.TA2GRTYP = "G";
+   /* -------- y2k in end ----------*/
+
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* common date checking/converting pgm*/
+
+  if (TA2REC.TA2RTNCD != 0 /* bad date entered?*/
+   && SR0BW01.SR0BWFL1 == "N") /* no previous error in the line*/
+    SR0BW01.SR0BWFL1 = "Y";
+    set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+    set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+    set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  else
+    if (TA2REC.TA2RTNCD != 0 /* bad date entered?*/
+     && SR0BW01.SR0BWFL1 == "Y") /* previous error in the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      converseLib.validationFailed(10); /* invalid ship date*/
+      return;
+    else
+       /* next sentence*/
+    end
+  end
+
+  if (SR0BW03.SR0BWDT2 > SR0BW03.SR0BWDT1 /* ship date gt sys date?*/
+   && SR0BW01.SR0BWFL1 == "N")            /* no previous error on the line*/
+    SR0BW01.SR0BWFL1 = "Y";
+    set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+    set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+    set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  else
+    if (SR0BW03.SR0BWDT2 > SR0BW03.SR0BWDT1 /* ship date gt sys date?*/
+     && SR0BW01.SR0BWFL1 == "Y")            /* previous error on the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      return;
+    else
+       /* next sentence*/
+    end
+  end
+
+    /* compute days between ship date and todays date*/
+
+  SR0BW03.SR0BW3N1 = TA2REC.TA2JULNN; /* save ship julian days*/
+
+
+   /* ------ y2k out begin -------*/
+   /* MOVE EZEDTE TO TA2REC.TA2GRGEN;*/
+   /* MOVE 'GREGJUL ' TA2REC.TA2DTOPT; /* get todays julian date*/
+   /* MOVE 'E' TO TA2REC.TA2GRTYP;*/
+   /* ------ y2k out END ---------*/
+
+   /* ------ y2k in  begin -------*/
+    /* keep this consistent with what's loaded in w.s.*/
+  set TA2REC empty;
+  TA2REC.TA2GRGGN = SR0BW03.SR0BWDT1;
+  TA2REC.TA2DTOPT = "GREGJUL "; /* get todays julian date*/
+  TA2REC.TA2GRTYP = "G";
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* common date checking/converting pgm*/
+
+  if (TA2REC.TA2RTNCD != 0 /* bad date entered?*/
+   && SR0BW01.SR0BWFL1 == "N") /* no previous error in the line*/
+    SR0BW01.SR0BWFL1 = "Y";
+    set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+    set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+    set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  else
+    if (TA2REC.TA2RTNCD != 0 /* bad date entered?*/
+     && SR0BW01.SR0BWFL1 == "Y") /* previous error in the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      converseLib.validationFailed(10); /* invalid ship date*/
+      return;
+    else
+       /* next sentence*/
+    end
+  end
+   /* ------ y2k in end ----------*/
+
+  SR0BW03.SR0BW3N2 = TA2REC.TA2JULNN; /* save todays julian days*/
+
+   /* ------ y2k out begin -------*/
+   /* SR0BW03.SR0BW2N = SR0BW03.SR0BWYY1 - SR0BW03.SR0BWYY2;*/
+   /* ------ y2k out end --------*/
+
+   /* ------ y2k in  begin -------*/
+  SR0BW03.SR0BW2N = SR0BW03.SR0BW-CCYY1 - SR0BW03.SR0BW-CCYY2;
+   /* ------ y2k in end ----------*/
+
+  SR0BW03.SR0BWAGE = SR0BW03.SR0BW2N * 365;
+  SR0BW03.SR0BWAGE = SR0BW03.SR0BWAGE + SR0BW03.SR0BW3N2 - SR0BW03.SR0BW3N1;
+
+    /* check for ship date older than 1 year*/
+  if (SR0BW03.SR0BWAGE > 365
+   && SR0BW01.SR0BWFL1 == "N") /* no previous error on the line*/
+    SR0BW01.SR0BWFL1 = "Y";
+    set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+    set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+    set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  else
+    if (SR0BW03.SR0BWAGE > 365
+     && SR0BW01.SR0BWFL1 == "Y") /* previous error on the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      return;
+    else
+       /* next sentence*/
+    end
+  end
+
+    /* check for ship date older than 30 days*/
+  if (SR0BW03.SR0BWAGE > 30
+   && SR0BW01.SR0BWFL1 == "N") /* no previous error on the line*/
+    SR0BW01.SR0BWFL1 = "Y";
+    set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+    set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+    set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+    converseLib.validationFailed(11);
+                                   /* warning: ship date older than 30 days*/
+  else
+    if (SR0BW03.SR0BWAGE > 30
+     && SR0BW01.SR0BWFL1 == "Y") /* previous error on the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      converseLib.validationFailed(11);
+                                   /* warning: ship date older than 30 days*/
+    else
+       /* next sentence*/
+    end
+  end
+
+   /* -------------   end stmt grp sr0bs04 ---------------*/
+end // end SR0BS04
+
+// update batch header
+Function SR0BS06()
+
+   /* ---------------  statement group sr0bs06  --------------*/
+
+                    /* update batch headers*/
+
+   /* --------------------------------------------------------*/
+
+
+
+
+    /* update batch header*/
+
+
+  set SQLCA empty;
+
+  call "IO0790" ("U ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 0)
+    SR0BW01.SR0BWFL5 = "Y";
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* syncpoint rollback*/
+      converseLib.validationFailed(16); /* record not found*/
+      set SR0BM020.PK1PKSCH[SR0BWIDX] cursor, bold;
+      return;
+    else
+      SR0BW01.SR0BWSQL = SQLCA.SQLCAREC; /* hold error sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* syncpoint rollback*/
+      SQLCA.SQLCAREC = SR0BW01.SR0BWSQL;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "ABND";
+      TA1REC.TA1DBASE = "DSHIP";
+      TA1REC.TA1TBLVU = "VSRHDR01";
+      TA1REC.TA1MAP = " ";
+      TA1REC.TA1TBLKE = SR1REC.SR1KEYS;
+      TA1REC.TA1PGMNM = "SR0BS06";
+      TA1REC.TA1LOC = "UPDATE DB2 DCUST.VSRHDR01";
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+    end
+  end
+
+
+
+   /* -------------  end statement group sr0bs06 -------------*/
+
+end // end SR0BS06
+
+// shuffle lines on screen
+Function SR0BS07()
+
+   /* ---------------  statement group sr0bs07  --------------*/
+
+                   /* shuffle lines on screen*/
+
+   /* --------------------------------------------------------*/
+
+  SR0BW01.SR0BWIDX = 1;
+  while (SR0BW01.SR0BWIDX <= 10)
+
+    if (SR0BM020.PK1PKSCH[SR0BWIDX] == 0
+     && SR0BM020.SR0BMMM[SR0BWIDX] == 0
+     && SR0BM020.SR0BMDD[SR0BWIDX] == 0
+     && SR0BM020.SR0BMYY[SR0BWIDX] == 0)
+
+      SR0BW01.SR0BWIX2 = SR0BW01.SR0BWIDX + 1;
+      while (SR0BW01.SR0BWIX2 <= 10) /* look for next non empty row*/
+
+        if (SR0BM020.PK1PKSCH[SR0BWIX2] != 0 /* look for next non empty row*/
+         || SR0BM020.SR0BMMM[SR0BWIX2] != 0  
+         || SR0BM020.SR0BMDD[SR0BWIX2] != 0  
+         || SR0BM020.SR0BMYY[SR0BWIX2] != 0)
+          SR0BM020.PK1PKSCH[SR0BWIDX] = SR0BM020.PK1PKSCH[SR0BWIX2];
+          SR0BM020.SR0BMMM[SR0BWIDX] = SR0BM020.SR0BMMM[SR0BWIX2];
+          SR0BM020.SR0BMDD[SR0BWIDX] = SR0BM020.SR0BMDD[SR0BWIX2];
+          SR0BM020.SR0BMYY[SR0BWIDX] = SR0BM020.SR0BMYY[SR0BWIX2];
+          SR0BM020.PK1PKSCH[SR0BWIX2] = 0;
+          SR0BM020.SR0BMMM[SR0BWIX2] = 0;
+          SR0BM020.SR0BMDD[SR0BWIX2] = 0;
+          SR0BM020.SR0BMYY[SR0BWIX2] = 0;
+          SR0BW01.SR0BWIX2 = 10;
+        end
+        SR0BW01.SR0BWIX2 = SR0BW01.SR0BWIX2 + 1;
+
+      end /* end look for next non empty row*/
+
+    end /* end if current row empty*/
+    SR0BW01.SR0BWIDX = SR0BW01.SR0BWIDX + 1;
+
+  end /* end cycle thru current rows*/
+
+
+
+   /* -------------  end statement group sr0bs07 -------------*/
+
+end // end SR0BS07
+
+// check batch status
+Function SR0BS08()
+
+
+   /* ------------ start stmt grp sr0bs08 -----------------*/
+
+                 /* check batch status*/
+
+   /* -----------------------------------------------------*/
+
+
+          /* only a batch which has a status of 'e' ,'p' or 'h'*/
+          /* may be prepared.*/
+
+
+
+
+  if (SR1REC.SR1BTST == "E")
+    return;
+  else
+    if (SR1REC.SR1BTST == "P")
+      return;
+    else
+      if (SR1REC.SR1BTST == "H")
+        return;
+      else
+        if (SR0BW01.SR0BWFL1 == "Y") /* error on previous line*/
+          set SR0BM020.PK1PKSCH[SR0BWIDX] bold;
+          return;
+        else
+          converseLib.validationFailed(19); /* batch status is not 'e'  or 'p'*/
+          SR0BW01.SR0BWFL1 = "Y";
+          set SR0BM020.PK1PKSCH[SR0BWIDX] cursor, bold;
+          return;
+        end
+      end
+    end
+  end
+
+   /* -------------   end of stmt grp sr0bs08  ------------*/
+
+end // end SR0BS08
+
+// recheck shipdate
+Function SR0BS10()
+   /* ------------- start statement group sr0bs10 ---------------*/
+
+                /* recheck ship date for older then 30*/
+                /* day warning.*/
+
+   /* -----------------------------------------------------------*/
+
+  SR0BW01.SR0BWFL1 = "N"; /* initialize data flag to no*/
+  SR0BW01.SR0BWIDX = 10;
+  while (SR0BW01.SR0BWIDX > 0)
+    if (SR0BM020.PK1PKSCH[SR0BWIDX] != 0)
+      SR0BS04(); /* recheck ship date*/
+      SR0BW01.SR0BWIDX = SR0BW01.SR0BWIDX - 1;
+    else
+      SR0BW01.SR0BWIDX = SR0BW01.SR0BWIDX - 1;
+    end
+  end
+
+
+    /* -----------   end of statement group sr0bs10 -----*/
+
+end // end SR0BS10
+
+// check for duplicate pick nbr
+Function SR0BS11()
+
+   /* ---------------  statement group sr0bs11  --------------*/
+
+             /* check for duplicate batch numbers*/
+
+   /* --------------------------------------------------------*/
+
+
+   /* set fields defined*/
+
+  SR0BW01.SR0BWIDX = 1;
+  while (SR0BW01.SR0BWIDX <= 10)
+
+    set SR0BM020.PK1PKSCH[SR0BWIDX] initialAttributes;
+    set SR0BM020.SR0BMMM[SR0BWIDX] initialAttributes;
+    set SR0BM020.SR0BMDD[SR0BWIDX] initialAttributes;
+    set SR0BM020.SR0BMYY[SR0BWIDX] initialAttributes;
+
+    SR0BW01.SR0BWIDX = SR0BW01.SR0BWIDX + 1;
+  end
+
+   /* check for duplicate pick schedule numbers*/
+
+  SR0BW01.SR0BWIDX = 10;
+  SR0BW01.SR0BWIX2 = 9;
+  while (SR0BW01.SR0BWIDX >= 2)
+    while (SR0BW01.SR0BWIX2 >= 1)
+
+      if (SR0BM020.PK1PKSCH[SR0BWIDX] == SR0BM020.PK1PKSCH[SR0BWIX2]
+       && SR0BM020.PK1PKSCH[SR0BWIDX] != 0)
+        set SR0BM020.PK1PKSCH[SR0BWIDX] cursor, bold;
+        set SR0BM020.PK1PKSCH[SR0BWIX2] cursor, bold;
+        converseLib.validationFailed(21); /* duplicate pick schedule numbers*/
+      end
+      SR0BW01.SR0BWIX2 = SR0BW01.SR0BWIX2 - 1;
+    end
+    SR0BW01.SR0BWIDX = SR0BW01.SR0BWIDX - 1;
+    SR0BW01.SR0BWIX2 = SR0BW01.SR0BWIDX - 1;
+  end
+
+
+
+
+   /* -------------  end statement group sr0bs11 -------------*/
+
+end // end SR0BS11
+
+// validate date shipped
+Function SR0BS12()
+   /* ------------- start stmt grp sr0bs12 ---------------*/
+
+     /* date shipped must have valid date and*/
+     /* be le todays date, less than 1 year old.*/
+     /* warning for ship date gt 30 days old*/
+
+   /* -----------------------------------------------------*/
+
+  set SR0BM020.SR0BMYY[SR0BWIDX] initialAttributes;
+  set SR0BM020.SR0BMMM[SR0BWIDX] initialAttributes;
+  set SR0BM020.SR0BMDD[SR0BWIDX] initialAttributes;
+
+
+  if (SR0BM020.SR0BMMM[SR0BWIDX] == 0
+   && SR0BM020.SR0BMDD[SR0BWIDX] == 0
+   && SR0BM020.SR0BMYY[SR0BWIDX] == 0)
+    if (SR0BW01.SR0BWFL1 == "N")
+      SR0BW01.SR0BWFL1 = "Y"; /* no previous error on the line*/
+      set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      converseLib.validationFailed(24); /* required field*/
+      return;
+    else
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      return;
+    end
+  end
+
+   /* first edit of month*/
+
+  if (SR0BM020.SR0BMMM[SR0BWIDX] <= 12 /* bad date entered?*/
+   && SR0BM020.SR0BMMM[SR0BWIDX] >= 1)
+     /* next sentence*/
+  else
+    if (SR0BW01.SR0BWFL1 == "N")
+      SR0BW01.SR0BWFL1 = "Y"; /* no previous error on the line*/
+      set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+      converseLib.validationFailed(61); /* invalid month*/
+      return;
+    else
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      return;
+       /* next sentence*/
+    end
+  end
+
+    /* first edit of day*/
+
+  if (SR0BM020.SR0BMDD[SR0BWIDX] <= 31 /* bad date entered?*/
+   && SR0BM020.SR0BMDD[SR0BWIDX] >= 1)
+     /* next sentence*/
+  else
+    if (SR0BW01.SR0BWFL1 == "N")
+      SR0BW01.SR0BWFL1 = "Y"; /* no previous error on the line*/
+      set SR0BM020.SR0BMDD[SR0BWIDX] cursor, bold;
+      converseLib.validationFailed(62); /* invalid day*/
+      return;
+    else
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      return;
+       /* next sentence*/
+    end
+  end
+
+   /* ------ y2k out begin --------*/
+   /* MOVE EZEDTE TO SR0BW03.SR0BWDT1;  /* sys yymmdd to work*/
+   /* ------ y2k out END ----------*/
+
+   /* ------ y2k in  begin --------*/
+  SR0BW03.SR0BWDT1 = VGVar.currentGregorianDate; /* sys ccyymmdd to work*/
+   /* ------ y2k in end -----------*/
+
+  SR0BW03.SR0BWYY2 = SR0BM020.SR0BMYY[SR0BWIDX]; /* ship yymmdd to work*/
+  SR0BW03.SR0BWMM2 = SR0BM020.SR0BMMM[SR0BWIDX];
+  SR0BW03.SR0BWDD2 = SR0BM020.SR0BMDD[SR0BWIDX];
+
+   /* ------ y2k in  begin --------*/
+  if (SR0BW03.SR0BWYY2 > 60)
+    SR0BW03.SR0BWCC2 = 19;
+  else
+    SR0BW03.SR0BWCC2 = 20;
+  end
+   /* ------ y2k in end -----------*/
+
+
+   /* ------ y2k out begin --------*/
+   /* MOVE SR0BW03.SR0BWDT2 TO TA2REC.TA2GRGEN;*/
+   /* MOVE 'GREGJUL ' TO TA2REC.TA2DTOPT;*/
+   /* MOVE 'E' TO TA2REC.TA2GRTYP;*/
+   /* ------ y2k out end ----------*/
+
+   /* ------ y2k in  begin --------*/
+  set TA2REC empty;
+  TA2REC.TA2GRGGN = SR0BW03.SR0BWDT2;
+  TA2REC.TA2DTOPT = "GREGJUL ";
+  TA2REC.TA2GRTYP = "G";
+   /* ------ y2k in end -----------*/
+
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* common dt check/convert pgm*/
+
+  if (TA2REC.TA2RTNCD != 0 /* bad date entered?*/
+   && SR0BW01.SR0BWFL1 == "N") /* no previous error in the line*/
+    SR0BW01.SR0BWFL1 = "Y";
+    set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+    set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+    set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  else
+    if (TA2REC.TA2RTNCD != 0 /* bad date entered?*/
+     && SR0BW01.SR0BWFL1 == "Y") /* previous error in the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      converseLib.validationFailed(10); /* invalid ship date*/
+      return;
+    else
+       /* next sentence*/
+    end
+  end
+
+  if (SR0BW03.SR0BWDT2 > SR0BW03.SR0BWDT1 /* ship date gt sys date?*/
+   && SR0BW01.SR0BWFL1 == "N")            /* no previous error on the line*/
+    SR0BW01.SR0BWFL1 = "Y";
+    set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+    set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+    set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  else
+    if (SR0BW03.SR0BWDT2 > SR0BW03.SR0BWDT1 /* ship date gt sys date?*/
+     && SR0BW01.SR0BWFL1 == "Y")            /* previous error on the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      return;
+    else
+       /* next sentence*/
+    end
+  end
+
+    /* compute days between ship date and todays date*/
+
+  SR0BW03.SR0BW3N1 = TA2REC.TA2JULNN; /* save ship julian days*/
+
+   /* ------ y2k out begin --------*/
+   /* MOVE EZEDTE TO TA2REC.TA2GRGEN;*/
+   /* MOVE 'GREGJUL ' TA2REC.TA2DTOPT;           /* get todays julian date*/
+   /* MOVE 'E' TO TA2REC.TA2GRTYP;*/
+                                  /* CALL TA0040 TA2REC (NOMAPS,NONCSP;*/
+                                   /* /* common date check/convert pgm*/
+   /* ------ y2k out end ----------*/
+
+   /* ------ y2k in  begin --------*/
+  set TA2REC empty;
+  TA2REC.TA2GRGGN = SR0BW03.SR0BWDT1;
+  TA2REC.TA2DTOPT = "GREGJUL "; /* get todays julian date*/
+  TA2REC.TA2GRTYP = "G";
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* common date check/convert pgm*/
+
+
+  if (TA2REC.TA2RTNCD != 0 /* bad date entered?*/
+   && SR0BW01.SR0BWFL1 == "N") /* no previous error in the line*/
+    SR0BW01.SR0BWFL1 = "Y";
+    set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+    set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+    set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  else
+    if (TA2REC.TA2RTNCD != 0 /* bad date entered?*/
+     && SR0BW01.SR0BWFL1 == "Y") /* previous error in the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      converseLib.validationFailed(10); /* invalid ship date*/
+      return;
+    else
+       /* next sentence*/
+    end
+  end
+   /* ------ y2k in end -----------*/
+
+  SR0BW03.SR0BW3N2 = TA2REC.TA2JULNN; /* save todays julian days*/
+
+   /* ------ y2k out begin --------*/
+   /* SR0BW03.SR0BW2N = SR0BW03.SR0BWYY1 - SR0BW03.SR0BWYY2;*/
+   /* ------ y2k out end ----------*/
+
+   /* ------ y2k in  begin --------*/
+  SR0BW03.SR0BW2N = SR0BW03.SR0BW-CCYY1 - SR0BW03.SR0BW-CCYY2;
+   /* ------ y2k in end -----------*/
+
+  SR0BW03.SR0BWAGE = SR0BW03.SR0BW2N * 365;
+  SR0BW03.SR0BWAGE = SR0BW03.SR0BWAGE + SR0BW03.SR0BW3N2 - SR0BW03.SR0BW3N1;
+
+    /* check for ship date older than 1 year*/
+  if (SR0BW03.SR0BWAGE > 365
+   && SR0BW01.SR0BWFL1 == "N") /* no previous error on the line*/
+    SR0BW01.SR0BWFL1 = "Y";
+    set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+    set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+    set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  else
+    if (SR0BW03.SR0BWAGE > 365
+     && SR0BW01.SR0BWFL1 == "Y") /* previous error on the line*/
+      set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+      set SR0BM020.SR0BMMM[SR0BWIDX] bold;
+      set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+      return;
+    else
+       /* next sentence*/
+    end
+  end
+
+
+   /* -------------   end stmt grp sr0bs12 ---------------*/
+end // end SR0BS12
+
+// move unchanged fields in
+Function SR0BS13()
+   /* ------------- start stmt grp sr0bs13 ---------------*/
+
+        /* move in fields again in the case*/
+         /* of a record updated since last referenced*/
+
+   /* ----------------------------------------------------*/
+
+
+  SR0BW01.SR0BWFDT = SR1REC.SR1SHPDT;
+  SR0BM020.SR0BMYY[SR0BWIDX] = SR0BW01.SR0BWFYY;
+  SR0BM020.SR0BMMM[SR0BWIDX] = SR0BW01.SR0BWFMM;
+  SR0BM020.SR0BMDD[SR0BWIDX] = SR0BW01.SR0BWFDD;
+  set SR0BM020.PK1PKSCH[SR0BWIDX] cursor, bold;
+  return;
+
+
+
+   /* -------------   end stmt grp sr0bs13 ---------------*/
+end // end SR0BS13
+
+// edit for sr-pick-sched-dt
+Function SR0BS14()
+   /* ------------- start stmt grp sr0bs12 ---------------*/
+
+     /* date shipped must be greater than or equal to*/
+     /* the picking scheduled date.*/
+
+   /* -----------------------------------------------------*/
+
+
+  if (SR0BM020.SR0BMYY[SR0BWIDX] > 80)
+    SR0BWCCC = 19;
+  else
+    SR0BWCCC = 20;
+  end
+
+  SR0BWCMM = SR0BM020.SR0BMMM[SR0BWIDX];
+  SR0BWCDD = SR0BM020.SR0BMDD[SR0BWIDX];
+  SR0BWCYY = SR0BM020.SR0BMYY[SR0BWIDX];
+
+  if (SR0BM020.XWHCD != "03" /* Not promo whse*/
+   && SR0BM020.XWHCD != "09" 
+   && SR0BM020.XWHCD != "12" 
+   && SR0BWCDT < SR1PKDT)    /* is dt less than sr-pick-sched-dt?*/
+    if (SR0BW01.SR0BWFL1 == "N")
+      SR0BW01.SR0BWFL1 = "Y"; /* no previous error on the line*/
+    end
+    set SR0BM020.SR0BMMM[SR0BWIDX] cursor, bold;
+    set SR0BM020.SR0BMDD[SR0BWIDX] bold;
+    set SR0BM020.SR0BMYY[SR0BWIDX] bold;
+    converseLib.validationFailed(161);
+                                   /* display 'dt must be >= pick sched dt'*/
+    return;
+  end
+
+
+
+   /* -------------   end stmt grp sr0bs14 ---------------*/
+end // end SR0BS14
+
+// move unchanged fields in
+Function SR0BS16()
+   /* ------------- start stmt grp sr0bs16 ---------------*/
+
+        /* move in unchanged fields*/
+
+   /* ----------------------------------------------------*/
+
+
+  if (SR1REC.SR1BTST == "P"
+   || SR1REC.SR1BTST == "H"
+   || SR1REC.SR1BTST == "E")
+    if (SR0BM020.SR0BMMM[SR0BWIDX] == 0
+     && SR0BM020.SR0BMDD[SR0BWIDX] == 0
+     && SR0BM020.SR0BMYY[SR0BWIDX] == 0)
+      SR0BW01.SR0BWFDT = SR1REC.SR1SHPDT;
+      SR0BM020.SR0BMYY[SR0BWIDX] = SR0BW01.SR0BWFYY;
+      SR0BM020.SR0BMMM[SR0BWIDX] = SR0BW01.SR0BWFMM;
+      SR0BM020.SR0BMDD[SR0BWIDX] = SR0BW01.SR0BWFDD;
+    end
+  end
+
+   /* -------------   end stmt grp sr0bs16 ---------------*/
+end // end SR0BS16
+
+// update hdrs
+Function SR0BS17()
+   /* ------------- start stmt grp sr0bs17 ---------------*/
+
+                    /* update headers*/
+
+   /* ----------------------------------------------------*/
+
+  if (SR0BM020.PK1PKSCH[SR0BWIDX] != 0)
+    SR0BW01.SR0BWFL2 = " ";
+    SR0BS03(); /* read batch hdr*/
+  else
+    SR0BW01.SR0BWIDX = 11;
+    return;
+  end
+
+  if (SR1REC.ZZZCHGCT != SR0BW01.SR0BWCNT[SR0BWIDX])
+    converseLib.validationFailed(20); /* recd updated since last reference*/
+    set SR0BM020.PK1PKSCH[SR0BWIDX] cursor, bold;
+    SR0BW01.SR0BWCNT[SR0BWIDX] = 0;
+    SR0BW01.SR0BWIDX = 12;
+    return;
+  else
+    /* ------- y2k out begin ------*/
+    /* MOVE 19 TO SR0BW01.SR0BWFCT;*/
+    /* ------- y2k out end --------*/
+    SR0BW01.SR0BWFYY = SR0BM020.SR0BMYY[SR0BWIDX];
+    SR0BW01.SR0BWFMM = SR0BM020.SR0BMMM[SR0BWIDX];
+    SR0BW01.SR0BWFDD = SR0BM020.SR0BMDD[SR0BWIDX];
+    /* ------- y2k in  begin ------*/
+    if (SR0BW01.SR0BWFYY > 60)
+      SR0BW01.SR0BWFCT = 19;
+    else
+      SR0BW01.SR0BWFCT = 20;
+    end
+    /* ------- y2k in  end --------*/
+    SR0BS19(); /* update the batch record*/
+  end
+
+
+
+
+   /* -------------   end stmt grp sr0bs17 ---------------*/
+end // end SR0BS17
+
+// prepare and update batch
+Function SR0BS19()
+
+   /* ---------------  statement group sr0bs19  --------------*/
+
+           /* prepare and update a batch record*/
+
+   /* --------------------------------------------------------*/
+
+  SR1REC.SR1SHPDT = SR0BW01.SR0BWFDT;
+  SR0BW01.SR0BWTIM = VGVar.currentFormattedTime;
+  SR0BW01.SR0BWTHH = SR0BW01.SR0BWHH;
+  SR0BW01.SR0BWTMM = SR0BW01.SR0BWMI;
+  SR1REC.SR1TMCHG = SR0BW01.SR0BWTI;
+  SR1REC.ZZZCHGTM = SR0BW01.SR0BWTI;
+  if (SR1REC.SR1BTST == "H")
+     /* next sentence*/
+  else
+    SR1REC.SR1BTST = "P";
+  end
+
+   /* ------ y2k out begin -------*/
+   /* MOVE EZEDTE TO SR0BW01.SR0BWFDA;*/
+   /* ------ y2k out end ---------*/
+
+   /* ------ y2k in  begin -------*/
+  SR0BW01.SR0BWFDT = VGVar.currentGregorianDate;
+   /* ------ y2k in end ----------*/
+
+  SR1REC.SR1DTCHG = SR0BW01.SR0BWFDT;
+  SR1REC.ZZZCHGDT = SR0BW01.SR0BWFDT;
+  SR1REC.XXXUSRID = COMMAREA.CAUSERID;
+  SR0BW01.SR0BWFL5 = " ";
+  SR0BS06(); /* update batch header*/
+
+   /* check to see if there is a message using ezemno from*/
+   /* sr0bs06. if so this means that the record has been*/
+   /* updated since the user last saw it. they will have to*/
+   /* update it again.*/
+   /* if no problem then increment the index.*/
+
+  if (converseVar.validationMsgNum != 0)
+    SR0BW01.SR0BWIDX = 12;
+  else
+
+    set SR2REC empty;
+
+    SR2REC.XWHCD = SR1REC.XWHCD; /* Warehouse code*/
+    SR2REC.PK1PKSCH = SR1REC.PK1PKSCH; /* Schedule nbr*/
+    SR2REC.OP1CUOID = -1; /* Cust ord id*/
+    SR2REC.OP1NORID = -1; /* Nike ord id*/
+    SR2REC.OP1NTMAL = -1; /* Nbr times alloc*/
+
+    SR0BS-IO0800-S2(); /* Cursor on ShipRec order*/
+
+    SR0BS-IO0800-N2(); /* Fetch first row*/
+
+    while (SQLCA.VAGen_SQLCODE == 0
+     && converseVar.validationMsgNum == 0)
+
+      if (SR2REC.SR1SHPDT == 0) /* If no shipped date (from SR0R)*/
+        SR2REC.SR1SHPDT = SR1REC.SR1SHPDT;
+        SR0BS-IO0800-U(); /* Update order with shipped date*/
+      end
+
+      if (SQLCA.VAGen_SQLCODE == 0
+       || SQLCA.VAGen_SQLCODE == +100)
+        SR0BS-IO0800-N2(); /* Fetch next row*/
+      end
+
+    end
+
+    SR0BS-IO0800-C2(); /* Close cursor*/
+
+    if (converseVar.validationMsgNum == 0)
+      SR0BW01.SR0BWIDX = SR0BW01.SR0BWIDX + 1;
+    else
+      SR0BW01.SR0BWIDX = 12;
+    end
+
+  end
+
+
+
+
+   /* -------------  end statement group sr0bs19 -------------*/
+
+end // end SR0BS19
+
+// check for duplicate pick nbr
+Function SR0BS20()
+
+   /* ---------------  statement group sr0bs20  --------------*/
+
+                /* clear out saved zz count array*/
+
+   /* --------------------------------------------------------*/
+
+
+
+  SR0BW01.SR0BWIDX = 1;
+  while (SR0BW01.SR0BWIDX <= 10)
+    SR0BW01.SR0BWCNT[SR0BWIDX] = 0;
+    SR0BW01.SR0BWSAP[SR0BWIDX] = 0;
+    SR0BW01.SR0BWIDX = SR0BW01.SR0BWIDX + 1;
+  end
+
+
+
+
+   /* -------------  end statement group sr0bs20 -------------*/
+
+end // end SR0BS20
+
+// compare previous pick id
+Function SR0BS22()
+
+   /* ---------------  statement group sr0bs22  --------------*/
+
+                   /* compare previous pick id*/
+
+   /* --------------------------------------------------------*/
+
+  if (SR0BW01.SR0BWSAP[SR0BWIDX] != SR0BM020.PK1PKSCH[SR0BWIDX])
+    SR0BW01.SR0BWCNT[SR0BWIDX] = 0;
+    SR0BW01.SR0BWSAP[SR0BWIDX] = SR0BM020.PK1PKSCH[SR0BWIDX];
+  end
+
+
+
+
+   /* -------------  end statement group sr0bs22 -------------*/
+
+end // end SR0BS22
+
+//*** RECORD=SR0BW01 ****
+// ;******************** sr0bw01 ******************************
+// ;
+// ;       work record for sr0b: prepare batch
+// ;
+// ;***********************************************************
+// ***********************
+Record SR0BW01 type basicRecord
+  5 SR0BWGR1 SR0BWGR1 ; 
+    10 XWHCD XWHCD ; 
+    10 SR0BWPKI SR0BWPKI ; 
+    10 SR0BWMSG SR0BWMSG ; 
+    10 SR0BWIDX SR0BWIDX ; 
+    10 SR0BWIX2 SR0BWIX2 ; 
+    10 SR0BWDT SR0BWDT ; 
+      15 SR0BWMM SR0BWMM ; 
+      15 SR0BWDD SR0BWDD ; 
+      15 SR0BWYY SR0BWYY ; 
+    10 SR0BWFRA SR0BWFRA ; 
+      15 SR0BWFR1 SR0BWFR1 ; 
+      15 SR0BWFR2 SR0BWFR2 ; 
+    10 SR0BWITM SR0BWITM ; 
+      15 SR0BWWHS SR0BWWHS ; 
+      15 * char(18) ; 
+    10 SR0BWFDT SR0BWFDT ; 
+      15 SR0BWFCT SR0BWFCT ; 
+      15 SR0BWFDA SR0BWFDA ; 
+        20 SR0BWFYY SR0BWFYY ; 
+        20 SR0BWFMM SR0BWFMM ; 
+        20 SR0BWFDD SR0BWFDD ; 
+    10 * char(1) ; 
+    10 SR0BWCDT SR0BWCDT ; 
+      15 SR0BWCCC SR0BWCCC ; 
+      15 SR0BWCYY SR0BWCYY ; 
+      15 SR0BWCMM SR0BWCMM ; 
+      15 SR0BWCDD SR0BWCDD ; 
+    10 * char(1) ; 
+    10 SR0BWTIM SR0BWTIM ; 
+      15 SR0BWHH SR0BWHH ; 
+      15 * char(1) ; 
+      15 SR0BWMI SR0BWMI ; 
+      15 * char(1) ; 
+      15 SR0BWSS SR0BWSS ; 
+    10 SR0BWTI SR0BWTI ; 
+      15 SR0BWTHH SR0BWTHH ; 
+      15 SR0BWTMM SR0BWTMM ; 
+    10 SR0BWPIC SR0BWPIC ; 
+    10 SR0BWFL1 SR0BWFL1 ; 
+    10 SR0BWFL2 SR0BWFL2 ; 
+    10 SR0BWFL3 SR0BWFL3 ; 
+    10 SR0BWFL4 SR0BWFL4 ; 
+    10 SR0BWFL5 SR0BWFL5 ; 
+    10 SR0BWFL6 SR0BWFL6 ; 
+    10 SR0BWSQL SR0BWSQL ; 
+    10 SR0BWARY SR0BWARY ; 
+      15 SR0BWSAP SR0BWSAP [10] ; 
+      15 SR0BWCNT SR0BWCNT [10] ; 
+      15 SR0BWMFL SR0BWMFL [10] ; 
+    10 SR0BWCAR SR0BWCAR ; 
+end // end SR0BW01
+
+//*** RECORD=SR0BW02 ****
+// ;************************* sr0bw02 *************************
+// ;
+// ;       save area for warehouse and abreviation
+// ;
+// ;***********************************************************
+// ***********************
+Record SR0BW02 type basicRecord
+  5 SR0BWSAV SR0BWSAV ; 
+    10 XWHCD XWHCD ; 
+    10 XWHABRV XWHABRV ; 
+end // end SR0BW02
+
+//*** RECORD=SR0BW03 ****
+// ********************** sr0bw03 *****************************
+// ;
+// ;          work area for date tests
+// ;
+// ;***********************************************************
+// ***********************
+Record SR0BW03 type basicRecord
+  3 SR0BWGR3 SR0BWGR3 ; 
+    5 SR0BW2CH SR0BW2CH ; 
+    5 SR0BW1N SR0BW1N ; 
+    5 SR0BW2N SR0BW2N ; 
+    5 SR0BW3N1 SR0BW3N1 ; 
+    5 SR0BW3N2 SR0BW3N2 ; 
+    5 SR0BWAGE SR0BWAGE ; 
+    5 SR0BWDT1 SR0BWDT1 ; 
+      10 SR0BW-CCYY1 SR0BW-CCYY1 ; 
+        15 SR0BWCC1 SR0BWCC1 ; 
+        15 SR0BWYY1 SR0BWYY1 ; 
+      10 SR0BWMM1 SR0BWMM1 ; 
+      10 SR0BWDD1 SR0BWDD1 ; 
+    5 SR0BWDT2 SR0BWDT2 ; 
+      10 SR0BW-CCYY2 SR0BW-CCYY2 ; 
+        15 SR0BWCC2 SR0BWCC2 ; 
+        15 SR0BWYY2 SR0BWYY2 ; 
+      10 SR0BWMM2 SR0BWMM2 ; 
+      10 SR0BWDD2 SR0BWDD2 ; 
+end // end SR0BW03
+
+DataItem SR0BW-CCYY1 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SR0BW-CCYY2 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 1 digit work field
+DataItem SR0BW1N num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 2 char work field
+DataItem SR0BW2CH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 2 digit work field
+DataItem SR0BW2N num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 3 digit work field
+DataItem SR0BW3N1 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 3 digit work field
+DataItem SR0BW3N2 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship date age in days
+DataItem SR0BWAGE num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group lvl array
+DataItem SR0BWARY char(100)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hold carrier code
+DataItem SR0BWCAR char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0BWCC1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SR0BWCC2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// century
+DataItem SR0BWCCC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// day
+DataItem SR0BWCDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group yyyymmdd
+DataItem SR0BWCDT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// month
+DataItem SR0BWCMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// save count
+DataItem SR0BWCNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// year
+DataItem SR0BWCYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// day
+DataItem SR0BWDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   day
+DataItem SR0BWDD1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   day
+DataItem SR0BWDD2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group date
+DataItem SR0BWDT char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work date 1
+DataItem SR0BWDT1 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work date 2
+DataItem SR0BWDT2 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// century
+DataItem SR0BWFCT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group yymmdd
+DataItem SR0BWFDA num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// day
+DataItem SR0BWFDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group yyyymmdd
+DataItem SR0BWFDT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error on previous line flag
+DataItem SR0BWFL1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error on btch hdr read flag
+DataItem SR0BWFL2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// is there data flag
+DataItem SR0BWFL3 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error on carrier tbl read
+DataItem SR0BWFL4 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// a record was written
+DataItem SR0BWFL5 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record reference problem
+DataItem SR0BWFL6 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// month
+DataItem SR0BWFMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// first 2 chars of from appl
+DataItem SR0BWFR1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// last 2 chars of from appl
+DataItem SR0BWFR2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from appl name
+DataItem SR0BWFRA char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// year
+DataItem SR0BWFYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group level
+DataItem SR0BWGR1 char(401)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// group field
+DataItem SR0BWGR3 char(31)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hours
+DataItem SR0BWHH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work index
+DataItem SR0BWIDX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// caitem group level
+DataItem SR0BWITM char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work index
+DataItem SR0BWIX2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// save micl carr flag
+DataItem SR0BWMFL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// minutes
+DataItem SR0BWMI char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// month
+DataItem SR0BWMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   month
+DataItem SR0BWMM1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   month
+DataItem SR0BWMM2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error message
+DataItem SR0BWMSG char(78)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hold pick nbr
+DataItem SR0BWPIC num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pick schedule id
+DataItem SR0BWPKI int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// save pick id
+DataItem SR0BWSAP num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group level
+DataItem SR0BWSAV char(14)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// sql hold area
+DataItem SR0BWSQL char(136)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// seconds
+DataItem SR0BWSS char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hours
+DataItem SR0BWTHH num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// time
+DataItem SR0BWTI num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group time
+DataItem SR0BWTIM char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// minutes
+DataItem SR0BWTMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// whse cd from commarea.caitem
+DataItem SR0BWWHS char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// year
+DataItem SR0BWYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   year
+DataItem SR0BWYY1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   year
+DataItem SR0BWYY2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

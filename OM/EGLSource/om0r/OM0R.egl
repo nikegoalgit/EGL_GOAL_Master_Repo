@@ -1,0 +1,1626 @@
+package om0r;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import dg.common.*;
+import fk.common.*;
+import fy.common.*;
+import ku.common.*;
+import ob.common.*;
+import om.common.*;
+import op.common.*;
+import pc.common.*;
+import pg.common.*;
+import pw.common.*;
+import sm.common.*;
+import sp.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import vv.common.*;
+//*** PROGRAM=OM0R ****
+// ************************************************************
+// *
+// *   This application cancels orders/products and re-adjusts
+// *   the remaining product qtys.   Note that the order qtys
+// *   are not adjusted until om0r re-figures what the new
+// *   order status should be.
+// *   Each call to this application can cancel up to 10 sub-
+// *   orders of a customer-order, or up to 200 line-items
+// *   (products) of a sub-order.   The determination of
+// *   whether this call is to cancel an order or a product is
+// *   made by testing the first occurance of the array
+// *   omwrec.op1subxl...if it is not zero then this call is
+// *   to cancel up to 10 sub-orders listed in the array.
+// *   If the first occurrance of the omwrec.op1subxl array is
+// *   zero it means that this call is to cancel up to 200
+// *   products that are listed in the omwrec.omwlinbr array.
+// *   Note that, if we are cancelling products, only the
+// *   products that are flagged (omwrec.omwselcd) with an 'e'
+// *   are cancelled...this differs from the sub-order cancel-
+// *   lation in that all sub-orders listed in the
+// *   omwrec.op1subxl array are cancelled.
+// *
+// ************************************************************
+// *  data base views dorder.vopaud01-audit report table-opfrec
+// *
+// ************************************************************
+// ************************************************************
+// *  copy members      omwrec
+// ************************************************************
+// ************************************************************
+// *  sub programs called  db1000  ta0020
+// ************************************************************
+// ************************************************************
+// *  applications called  om0n
+// ************************************************************
+// *maint history:
+// *date      by      rev  comments
+// *--------  ------  ---  -----------------------------------
+// *11-14-86  bcourt   1
+// *03-02-87  tmai     2   modified statement groups om0rs15,
+// *                       om0rs16 and added statement group
+// *                       om0rs46 to write audit records for
+// *                       the cancelled line items
+// * 05-07-87  ssayew      modified statement groups om0rs15,
+// *                       om0rs16, om0rs46 and added om0rs47.
+// *                       work fields added to om0rw01 for
+// *                       purposes of adding information to
+// *                       the audit record and modifying the
+// *                       conditions under which audit
+// *                       records are written.
+// * 11-02-87  tfox        added new stmt grp s01 to read
+// *                       op1rec. added call to s01in om0r000
+// * 01-14-87  jhh         added flexible bulk/draw to s15/s47
+// * 01/26/88  craine      add prod deadline sales analysis
+// *                       changes and xomcd to audit.
+// * 02/04/88  craine      chg s01 to use xspf4 instead of xfer
+// * 03/23/88  craine      fix bug - status set to 'xl' when
+// *                       qty's had been shipped.
+// * 04/18/88  gwells      production deadline table -
+// *                         replaced xpdtbl with call to
+// *                         io2560 - dorder.vcutof01.  edit
+// *                         need date versus prod deadline via
+// *                         this module.  added opjrec &
+// *                         oplrec. statement groups affected
+// *                         s35, s40, s55, s60, 000.
+// * 05/16/88  craine      didn't use after 30 days logic on
+// *                       at-once or prop orders.
+// * 08/15/88  gwells      rebook - s15 & s16 - added code to
+// *                         check rebook flag for 'y' and
+// *                         write oprrec (rebook audit).
+// *                         add s48 (build oprrec) and
+// *                         s49 (write oprrec).
+// * 11/03/88  gwells      added kuccoid to oprrec - s48.
+// * 11/15/88  craine      set zz_chng fields in oprrec on
+// *                       write - s48.
+// * 12/05/88  gwells      write type '3' audit record if
+// *                       credit status is '20' or '80' - s48
+// * 12/21/88  craine      chg om0rs49 to write rebook audit
+// *                       only when the rbk tot item qty is
+// *                       greater than zero.
+// * 02/23/89  jwood       added noncsp option to calls
+// * 03/15/89  skott       added opurec for dorder.voraud01
+// *                       audit records.  s15, s16, s65, s66
+// * 06/26/89  schase      added call to credit (cc1070) for
+// *                       all cancellations of items/orders.
+// *                       impact in: s15, s16, 000 & new s02.
+// * 08/14/89  ssteph      added credit life code 30 to
+// *                       process s48.
+// * 04/04/90  cgrice      db changes - renamed op1blkcd to
+// *                       xbdcd.  s47
+// * 04/11/90  schase      bug #278 - add reenter flag when
+// *                       cancel.  changed s65
+// * 08/01/90  schase      Added code to delete dordb.vbbulk01
+// *                       record for customer bulks.
+// *                       Changed 000. Added s9d.
+// * 10/11/90  dviert      Regen for record changes
+// * 11/09/90  rdavis      database changes. rename xsdcd to
+// *                       pc1inseg and xsacd to xegcd in
+// *                       op3rec. s48.
+// * 02/11/91  tfox        added move of quality code to opurec
+// *                       in s65. also regen for db changes
+// * 03/01/91  craine      move current date and time to header
+// *                       when updating - OM0RS02
+// * 10/08/91  dmeier      db changes - removed references to
+// *                       op1owrdt. renamed opurec.xxxpgmno
+// *                       opurec.xxxpgmnd. populated opurec.
+// *                       xowcd (om0rs48, s65)
+// * 11/11/91  schase      db changes - osmrec only. added new
+// *                       fields.  recompile only.
+// * 02/12/92  schase      recompiled for new version of cc1rec
+// * 03/13/92  scantr      db changes & clean up records list
+// * 09/01/93  gcalki      CSP 4.1 changes - removed all xfers
+// *                       and replaced with setting a return
+// *                       code in the new record omerec then
+// *                       peforming ezeclos. omerec, s01, s02
+// *                       s05, s10, s30, s35, s40, s45, s49,
+// *                       s50, s55, s60, s66.
+// * 09/01/93  gcalki      CSP 4.1 changes - sub om0n doesn't
+// *                       xfer on abort.  it now passes a code
+// *                       like above. 000
+// * 02/28/94  scantr      db changes - length changes in
+// *                       om0rw01.
+// * 04/28/94  jather      log 1003. renamed causera to
+// *                       ca-user-workarea-4k to hold opwrec
+// *                       which has increased to 3072 bytes.
+// * 06/21/94  schase      Virtual Airspeed Project/Task #15:
+// *                       Replaced access to DORDB.VBBULK01
+// *                       using OSMREC with access to DORDB.
+// *                       VBULKS01 using VBULKS01.  Chgd 000.
+// *                       Added om0rs-delete-bulks.
+// * 04/22/96  nfield      change to use vbulks02.
+// * 08/05/96  nfield      om0rs47 - add nike bulk/draw codes
+// * 08/27/98  udafon #178 Increased size of OMWREC to 3505
+// *                       bytes. Re-compiled application.
+// * 10/25/00  Rshaik    The application is modified as part of
+// * TT#5837             Original quantity calculation. Most of
+// *                     the order quantity changes happen
+// *                     during the 30-60 days from the cut off
+// *                     date. Application modified to update
+// *                     Original Quantity till 60 days past th
+// *                     deadline date whether quantity increas
+// *                     or decreased.
+// *                     Look for the changes in OM0rs11.
+// *
+// * 01/22/01  CNAMAN    a) Modified statement group OM0RS60
+// *                        to post the abend on the screen
+// *                        whenever there is no row in
+// *                        VCUTOF01 table.
+// *                     b) Modified statement group OM0RS55
+// *                        to post the abend on the screen
+// *                        whenever there is no row in
+// *                        VCOLOR02 table.
+// *                     c) Added working storage variables
+// *                        in OMWREC for posting the error
+// *                        message.
+// ************************************************************
+// *********************
+Program OM0R type basicProgram //VAGen Info - called batch program
+  (
+   OMWREC OMWREC, // record
+   OMEREC OMEREC // record
+  )
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes
+  }
+
+  // Data Declarations
+  CC1REC CC1REC; // record
+  COMMAREA COMMAREA { initialized = yes }; // record
+  ERRSQLCA ERRSQLCA; // record
+  OM0RW01 OM0RW01; // record
+  OMAREC OMAREC; // record
+  OP1REC OP1REC; // record
+  OP3REC OP3REC; // record
+  OP8REC OP8REC; // record
+  OPBREC OPBREC; // record
+  OPJREC OPJREC; // record
+  OPLREC OPLREC; // record
+  OPRREC OPRREC; // record
+  OPUREC OPUREC; // record
+  SQLCA SQLCA; // record
+  SYCREC SYCREC; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  VBULKS02 VBULKS02; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XBDTBL {deleteAfterUse = yes}; // table
+  use XOMTBL {deleteAfterUse = yes}; // table
+  use XOSTBL {deleteAfterUse = yes}; // table
+  use XOTTBL {deleteAfterUse = yes}; // table
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OM0R000: OM0R000();
+
+
+    exit program; /* no flow processing...return to calling appl.*/
+
+
+  end // end main
+end // end OM0R
+
+// order/product cancellation
+Function OM0R000()
+
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+  TA1REC.TA1PGMNM = "OM0R";
+  TA1REC.TA1LOCAT[1] = "OM0R000";
+
+
+  OP1REC.OP1GROUP = OMWREC.OP1GROUP;
+
+
+  OM0RS01(); /* read order header*/
+
+
+    /* set up current date in omarec*/
+
+  OMAREC.OMACYMD = VGVar.currentShortGregorianDate;
+  if (OMAREC.OMACYY > 83)
+    OMAREC.OMACCC = 19;
+  else
+    OMAREC.OMACCC = 20;
+  end
+
+
+    /* 6/21/89 - zero credit check work fields*/
+
+  OM0RW01.OM0RWCCV = 0; /* zero out credit check value*/
+  OM0RW01.OM0RWCCQ = 0; /* zero out credit check units*/
+
+
+  if (OMWREC.OP1SUBXL[1] > 0) /* if there is at least one*/
+                                   /* order to cancel*/
+    OM0RW01.XXXINDX1 = 1; /* set sub-order index to 1*/
+    while (OM0RW01.XXXINDX1 <= 10
+     && OMWREC.OP1SUBXL[XXXINDX1] > 0)
+      OM0RS05(); /* go cancel the sub order*/
+      OP1REC.OP1NORID = OMWREC.OP1SUBXL[XXXINDX1];
+      set OMEREC empty; /* initial omerec return cd*/
+      OMWREC.OP1GROUP = OP1REC.OP1GROUP;
+      call "OM0N" (OMWREC, OMEREC); /* update order header order status*/
+      if (OMEREC.OME-RETURN-CD != "00") /* check om0r return code*/
+        exit program; /* return to calling appl*/
+      end
+
+       /* *** Delete associated customer bulk record on the Batch DB*/
+      OP1REC.OP1GROUP = OMWREC.OP1GROUP;
+      if (OP1REC.XOSCD == "XL") /* if order was cancelled*/
+        if (OP1REC.XBDCD == "1") /* customer bulk*/
+          OM0RS-DELETE-BULKS(); /* delete dordb.vbulks01 record*/
+        end
+      end
+      OM0RW01.XXXINDX1 = OM0RW01.XXXINDX1 + 1;
+    end
+  else /* if not an order cancel,*/
+                                    /* must be a product cancel*/
+    OP3REC.OP1NORID = OP1REC.OP1NORID;
+    OM0RW01.XXXINDX1 = 1;
+    while (OM0RW01.XXXINDX1 <= 900)
+      if (OMWREC.OMWSELCD[XXXINDX1] == "E") /* if selected for cancel*/
+        OM0RS10(); /* go cancel this product*/
+      end
+      OM0RW01.XXXINDX1 = OM0RW01.XXXINDX1 + 1;
+    end
+    OMWREC.OP1GROUP = OP1REC.OP1GROUP;
+    call "OM0N" (OMWREC, OMEREC); /* update order header order status*/
+    if (OMEREC.OME-RETURN-CD != "00") /* check om0r return code*/
+      exit program; /* return to calling appl*/
+    end
+     /* *** Delete associated customer bulk record on the Batch DB*/
+    OP1REC.OP1GROUP = OMWREC.OP1GROUP;
+    if (OP1REC.XOSCD == "XL") /* if order was cancelled*/
+      if (OP1REC.XBDCD == "1") /* customer bulk*/
+        OM0RS-DELETE-BULKS(); /* delete dordb.vbulks01 record*/
+      end
+    end
+  end
+
+
+
+    /* 6/21/89 - call to credit.*/
+    /* credit check for entire order. computing negative order*/
+    /* qty and value to pass to cc1070.*/
+
+  OP1REC.OP1GROUP = OMWREC.OP1GROUP;
+  CC1REC.CC1CLRSN = 5; /* credit reason code for cancels*/
+  CC1REC.CC1PGMNM = "OM0R"; /* program name*/
+  CC1REC.CC1RTNCD = 0; /* clear return code*/
+  CC1REC.CC1RTNMA = " "; /* clear return msg*/
+  CC1REC.CC1PVALU = OM0RW01.OM0RWCCV * -1; /* frmt cc1rec value*/
+  CC1REC.CC1PUNTS = OM0RW01.OM0RWCCQ * -1; /* frmt cc1rec units*/
+  CC1REC.CC1AVALU = 0; /* zero out credit allocated value*/
+  CC1REC.CC1AUNTS = 0; /* zero out credit allocated units*/
+
+  call "CC1070" (SQLCA, OP1REC, CC1REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (CC1REC.CC1RTNCD == 0) /* good return*/
+    OM0RS02(); /* update order header*/
+    if (SQLCA.VAGen_SQLCODE == 0) /* good update*/
+      OMWREC.OP1GROUP = OP1REC.OP1GROUP;
+    end
+  end
+
+
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+   /* commit the changes*/
+     /* we're done...return to calling application*/
+
+
+end // end OM0R000
+
+// DELETE BULK REC FROM VBULKS01
+Function OM0RS-DELETE-BULKS()
+
+     /* build batch bulk record key*/
+
+  set VBULKS02 empty;
+  VBULKS02.OP1PARTN = OP1REC.OP1PARTN; /* move part char*/
+  VBULKS02.OP1CUOID = OP1REC.OP1CUOID; /* move order number*/
+  VBULKS02.OP1NORID = OP1REC.OP1NORID; /* move nike order id*/
+
+  call "VBULKS02" ("D ", SQLCA, VBULKS02) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == 100)
+     /* NEXT SENTENCE*/
+  else
+    set TA1REC empty;
+    set ERRSQLCA empty;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "POST";
+    TA1REC.TA1DBASE = "DORDB";
+    TA1REC.TA1TBLVU = "VBULKS01";
+    OM0RW01.OM0RWPAR = OP1REC.OP1PARTN;
+    OM0RW01.OM0RWCOI = OP1REC.OP1CUOID;
+    OM0RW01.OM0RWNOI = OP1REC.OP1NORID;
+    TA1REC.TA1TBLKE = OM0RW01.OM0RWDON;
+    TA1REC.TA1LOCAT[2] = "D/IO725";
+    TA1REC.TA1LOCAT[2] = "0/OM0RS";
+    TA1REC.TA1LOCAT[3] = "-DELETE";
+    TA1REC.TA1LOCAT[4] = "-BULKS ";
+    move SQLCA to ERRSQLCA withV60Compat;
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+  end
+
+
+end // end OM0RS-DELETE-BULKS
+
+// read order header
+Function OM0RS01()
+
+   /* ************************************************************/
+   /* *                                                         **/
+   /* *    Get the order header.  The key to the                **/
+   /* *    order is passed through the commarea into omwrec     **/
+   /* *    and then on to op1rec.                               **/
+   /* *                                                         **/
+   /* ************************************************************/
+
+
+  call "IO0430" ("S ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OM0R    ";
+    TA1REC.TA1MAP = "OM0RM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VORHDR01";
+    OMWREC.OMWORDN = OP1REC.OP1CUOID;
+    OMWREC.OMWSORDN = OP1REC.OP1NORID;
+    TA1REC.TA1TBLKE = OMWREC.OMWORD;
+    TA1REC.TA1LOCAT[3] = "OM0RS01";
+    TA1REC.TA1LOCAT[4] = "IO0430";
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    try
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+
+end // end OM0RS01
+
+// read order header
+Function OM0RS02()
+
+   /* ************************************************************/
+   /* *                                                         **/
+   /* *    update the order header. the only fields that have   **/
+   /* *    been impacted since being updated from status setter **/
+   /* *    (om0n) are credit fields. upd is for those credit    **/
+   /* *    fields.                                              **/
+   /* ************************************************************/
+
+  XX0XS01();
+  OP1REC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  OP1REC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+
+
+  call "IO0430" ("U ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OM0R    ";
+    TA1REC.TA1MAP = "OM0RM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VORHDR01";
+    OMWREC.OMWORDN = OP1REC.OP1CUOID;
+    OMWREC.OMWSORDN = OP1REC.OP1NORID;
+    TA1REC.TA1TBLKE = OMWREC.OMWORD;
+    TA1REC.TA1LOCAT[3] = "OM0RS02";
+    TA1REC.TA1LOCAT[4] = "IO0430";
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    try
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+
+
+
+
+end // end OM0RS02
+
+// cancel order
+Function OM0RS05()
+
+
+  OM0RS30(); /* select set of line items*/
+
+
+  OM0RW01.OM0RWEOF = "N";
+
+  OM0RS40(); /* get first line-item*/
+
+
+  while (OM0RW01.OM0RWEOF == "N")
+
+    if (OP3REC.OP2LNIST == "SH" /* if item is already shipped*/
+     || OP3REC.OP2LNIST == "XL") /* or item is cancelled*/
+      /* next sentence*/
+    else
+      if (OP3REC.OP2LNIST in XOSTBL.XOSCD)
+        if (XOSTBL.XOSALWXL[sysVar.arrayIndex] == "Y")
+          if (OM0RW01.OM0RWPPD == "A") /* if 30 days past deadline*/
+            OM0RS15(); /* cancel line item*/
+          else
+            OM0RS16(); /* cancel this line item*/
+          end
+        end
+      else
+        TA1REC.TA1DBASE = "XOSTBL";
+        TA1REC.TA1TBLVU = "XOSCD    ";
+        TA1REC.TA1TBLKE = OP3REC.OP2KEY;
+        TA1REC.TA1LOCAT[2] = "OM0RS05";
+        TA1REC.TA1LOCAT[3] = OP3REC.OP2LNIST;
+        TA1REC.TA1LOCAT[4] = " ";
+
+        TA1REC.TA1TYPE = "DB2"; /* abend type*/
+        TA1REC.TA1FUNC = "RETN"; /* abend func*/
+        set ERRSQLCA empty; /* clear area*/
+        move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+         /* synpoint rollback*/
+        try
+          call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+        end /* abend module*/
+        OMEREC.OME-RETURN-CD = "01";
+        exit program;
+      end
+    end
+
+    OM0RS40(); /* get next line item*/
+
+  end
+
+
+end // end OM0RS05
+
+// cancel product
+Function OM0RS10()
+
+
+  OM0RS35(); /* select unique line item*/
+
+
+  if (OP3REC.OP2LNIST == "SH" /* if item is already shipped*/
+   || OP3REC.OP2LNIST == "XL") /* if item is cancelled*/
+    /* next sentence*/
+  else
+    if (OP3REC.OP2LNIST in XOSTBL.XOSCD)
+      if (XOSTBL.XOSALWXL[sysVar.arrayIndex] == "Y") /* if we can xl this status*/
+        if (OM0RW01.OM0RWPPD == "A") /* if 30 days past deadline*/
+          OM0RS15(); /* cancel line item*/
+        else
+          OM0RS16(); /* cancel this line item*/
+        end
+        OMWREC.OMWSELCD[XXXINDX1] = "X"; /* chg flag to cancelled*/
+      end
+    else
+      TA1REC.TA1DBASE = "XOSTBL";
+      TA1REC.TA1TBLVU = "XOSCD";
+      TA1REC.TA1TBLKE = OP3REC.OP2KEY;
+      TA1REC.TA1LOCAT[2] = "OM0RS10";
+      TA1REC.TA1LOCAT[3] = OP3REC.OP2LNIST;
+      TA1REC.TA1LOCAT[4] = " ";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+
+
+
+
+end // end OM0RS10
+
+// check if deadline past 30
+Function OM0RS11()
+
+   /* added code to set om0rwppd to 'a' if current date is 30*/
+   /* days past prod deadline for org ord qty definition*/
+
+  /* TT# 5837 Original quantity calculation*/
+  /* Total original quantity will gets changed till 60 days from*/
+  /* system order cutoff-date whether quantity increased or*/
+  /* decreased*/
+  TA2REC.TA2DBDTN = OMAREC.OMACDT;
+  TA2REC.TA2DTOPT = "DAYSDIFF";
+  TA2REC.TA2GRTYP = "G";
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+  if (TA2REC.TA2RTNCD == 0)
+   /* TT# 5837 Changes begin*/
+   /* IF TA2REC.TA2DBDDN GT 30;*/
+    if (TA2REC.TA2DBDDN >= 60)
+   /* TT# 5837 Changes end*/
+      OM0RW01.OM0RWPPD = "A";
+    end
+  end
+
+
+
+end // end OM0RS11
+
+// cancel line item processing
+Function OM0RS15()
+
+  set OPUREC empty; /* init audit record*/
+
+  OM0RW01.OM0RWQOO = 0; /* init. ws qty on order*/
+  OM0RW01.OM0RWQSH = 0; /* init. ws qty shipped*/
+  OM0RW01.OM0RWCQT = 0; /* init. ws qty cancelled*/
+  OM0RW01.OM0RWCVL = 0; /* init. ws value cancelled*/
+  OM0RW01.OP2AUPRC = OP3REC.OP2AUPRC; /* save the unit price*/
+
+
+  OM0RW01.XXXINDX2 = 1;
+  while (OM0RW01.XXXINDX2 <= 40)
+    if (OP3REC.OP3SZAFL[XXXINDX2] == "Y")
+      OM0RW01.OP3ONOQT = OP3REC.OP3ONOQT[XXXINDX2];
+      OM0RW01.OP3CNLQT = OP3REC.OP3CNLQT[XXXINDX2];
+      OM0RW01.OP3SHPQT = OP3REC.OP3SHPQT[XXXINDX2];
+      OM0RW01.OM0RWCQT = OM0RW01.OM0RWCQT + OM0RW01.OP3ONOQT; /* cancelled qty*/
+      OM0RW01.OM0RWQOO = OM0RW01.OM0RWQOO + OM0RW01.OP3ONOQT;
+      OM0RW01.OP3CNLQT = OM0RW01.OP3CNLQT + OM0RW01.OP3ONOQT;
+      OM0RW01.OM0RWQSH = OM0RW01.OM0RWQSH + OM0RW01.OP3SHPQT;
+      OP3REC.OP3CNLQT[XXXINDX2] = OM0RW01.OP3CNLQT;
+    end
+    OM0RW01.XXXINDX2 = OM0RW01.XXXINDX2 + 1;
+  end
+
+    /* credit check for product.  6/21/89*/
+    /* compute product qty and value to pass to cc1070.*/
+
+  OM0RW01.OM0RWCCQ = OM0RW01.OM0RWCCQ + OM0RW01.OM0RWCQT;
+  OM0RW01.OM0RWCV1 = OM0RW01.OM0RWCQT * OM0RW01.OP2AUPRC;
+  OM0RW01.OM0RWCCV = OM0RW01.OM0RWCCV + OM0RW01.OM0RWCV1;
+
+
+  XX0XS01(); /* get system date and time*/
+
+
+  if (OM0RW01.OM0RWQSH > 0) /* if some qty has been shipped*/
+    OP3REC.OP2LNIST = "SH"; /* status becomes shipped*/
+  else /* otherwise*/
+    OP3REC.OP2LNIST = "XL"; /* status is cancelled*/
+  end
+
+  OP3REC.OP2LNSDT = XX0XW01.XX0XWDAT;
+  OM0RS20(); /* pust down maintenance info stack*/
+  OP3REC.XOMCD[1] = OMWREC.XOMCD;
+  OP3REC.XMTCD[1] = " ";
+  OP3REC.OP1MTREP[1] = OMWREC.OP1MTREP;
+  OP3REC.OP2OMQTY[1] = OM0RW01.OM0RWQOO * -1;
+  OP3REC.OP2OMDT[1] = XX0XW01.XX0XWDAT;
+
+  OP3REC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  OP3REC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+
+
+           /* build rebook audit record*/
+    /* ** at this point, the audit record may be rebooking or*/
+    /* ** production; so this record may be built unnecessarily.*/
+    /* ** the rebook audit must be built before the on order qtys*/
+    /* ** are reset to 0.  the on order qtys must be set to zero*/
+    /* ** before the op3rec can be re-written.  the audit record*/
+    /* ** is written last.*/
+
+  OM0RS48(); /* build oprrec*/
+
+        /* set on order quantity to zero before rewriting op3rec*/
+
+  OM0RW01.XXXINDX2 = 1;
+
+  while (OM0RW01.XXXINDX2 <= 40)
+    if (OP3REC.OP3SZAFL[XXXINDX2] == "Y")
+      OPUREC.OPUAUDQT[XXXINDX2] = OP3REC.OP3ONOQT[XXXINDX2] * -1;
+      OP3REC.OP3ONOQT[XXXINDX2] = 0;
+    else
+      OPUREC.OPUAUDQT[XXXINDX2] = 0;
+    end
+
+    OM0RW01.XXXINDX2 = OM0RW01.XXXINDX2 + 1;
+  end
+
+
+  OM0RS45(); /* rewrite line-item*/
+
+
+        /* determine the type of audit to be written*/
+
+  if (OMWREC.XOMCD in XOMTBL.XOMCD
+   && XOMTBL.XOMRBKFL[sysVar.arrayIndex] == "Y") /* rebook maintenance reason*/
+    OM0RS49(); /* write the rebook audit record*/
+  else
+
+         /* get cancelled qty and cancelled value for the*/
+         /* production audit record*/
+
+    OM0RS47(); /* determine om0rwbdf*/
+    if (OM0RW01.OM0RWBDF == "BS" /* if smart reservation*/
+     || OM0RW01.OM0RWBDF == "BX") /* or flexible bulk*/
+       /* next sentence*/
+    else
+      OM0RW01.OM0RWCQT = OM0RW01.OM0RWCQT * -1; /* negate the quantity*/
+      OM0RW01.OM0RWCVL = OM0RW01.OM0RWCQT * OM0RW01.OP2AUPRC;
+                                   /* cancelled value*/
+
+      OM0RS65(); /* load opurec audit record*/
+      OM0RS66(); /* write opurec audit record*/
+
+    end
+  end
+
+
+
+   /* *******************************************************/
+end // end OM0RS15
+
+// cancel product
+Function OM0RS16()
+
+
+   /* this cancel differs from om0rs15 in that this*/
+   /* cancel is taking place before the production deadline*/
+   /* or within the 30 day grace period.*/
+
+  set OPUREC empty; /* init audit record*/
+
+  OM0RW01.OM0RWQOO = 0; /* init. ws qty on order*/
+  OM0RW01.OM0RWQSH = 0; /* init. ws qty shipped*/
+  OM0RW01.OM0RWCQT = 0; /* init. ws qty cancelled*/
+  OM0RW01.OM0RWCVL = 0; /* init. ws value cancelled*/
+  OM0RW01.OP2AUPRC = OP3REC.OP2AUPRC; /* save the unit price*/
+
+
+  OM0RW01.XXXINDX2 = 1;
+  while (OM0RW01.XXXINDX2 <= 40)
+    if (OP3REC.OP3SZAFL[XXXINDX2] == "Y")
+      OM0RW01.OP3ONOQT = OP3REC.OP3ONOQT[XXXINDX2];
+      OM0RW01.OP3SHPQT = OP3REC.OP3SHPQT[XXXINDX2];
+      OM0RW01.OM0RWCQT = OM0RW01.OM0RWCQT + OM0RW01.OP3ONOQT; /* cancelled qty*/
+      OM0RW01.OM0RWQSH = OM0RW01.OM0RWQSH + OM0RW01.OP3SHPQT;
+    end
+    OM0RW01.XXXINDX2 = OM0RW01.XXXINDX2 + 1;
+  end
+
+    /* credit check for product.  6/21/89*/
+    /* compute product qty and value to pass to cc1070.*/
+
+  OM0RW01.OM0RWCCQ = OM0RW01.OM0RWCCQ + OM0RW01.OM0RWCQT;
+  OM0RW01.OM0RWCV1 = OM0RW01.OM0RWCQT * OM0RW01.OP2AUPRC;
+  OM0RW01.OM0RWCCV = OM0RW01.OM0RWCCV + OM0RW01.OM0RWCV1;
+
+
+  XX0XS01(); /* get system date and time*/
+
+
+  if (OM0RW01.OM0RWQSH > 0) /* if some qty has been shipped*/
+    OP3REC.OP2LNIST = "SH"; /* status becomes shipped*/
+  else /* otherwise*/
+    OP3REC.OP2LNIST = "XL"; /* status is cancelled*/
+  end
+
+
+  OP3REC.OP2LNSDT = XX0XW01.XX0XWDAT;
+
+  OP3REC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  OP3REC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+
+
+                 /* build the rebook audit record*/
+       /* at this point, the audit record may be rebooking or*/
+       /* production; so this record may be built unnecessarily.*/
+       /* the rebook audit must be built before the on order qtys*/
+       /* are reset to 0.  the on order qtys must be set to zero*/
+       /* before the op3rec can be re-written.  the audit record*/
+       /* is written last.*/
+
+  OM0RS48(); /* build oprrec*/
+
+
+              /* set on order and original quantity to zero*/
+              /* before rewriting op3rec*/
+
+  OM0RW01.XXXINDX2 = 1;
+
+  while (OM0RW01.XXXINDX2 <= 40)
+    if (OP3REC.OP3SZAFL[XXXINDX2] == "Y")
+      OPUREC.OPUAUDQT[XXXINDX2] = OP3REC.OP3ONOQT[XXXINDX2] * -1;
+      OP3REC.OP3ONOQT[XXXINDX2] = 0;
+      OP3REC.OP3ORGQT[XXXINDX2] = 0;
+    else
+      OPUREC.OPUAUDQT[XXXINDX2] = 0;
+    end
+
+    OM0RW01.XXXINDX2 = OM0RW01.XXXINDX2 + 1;
+  end
+
+  OM0RS45(); /* rewrite line-item*/
+
+
+  if (OP1REC.XOMCD > " ")
+     /* next sentence*/
+  end
+        /* determine the type of audit to be written*/
+
+  if (OMWREC.XOMCD in XOMTBL.XOMCD
+   && XOMTBL.XOMRBKFL[sysVar.arrayIndex] == "Y") /* rebook maintenance reason*/
+    OM0RS49(); /* write the rebook audit record*/
+  else
+         /* get cancelled qty and cancelled value for the*/
+         /* production audit record*/
+
+    if (OP3REC.XGPCD == "02"                      
+     && OP1REC.XOTCD in XOTTBL.XOTCD              /* if valid order type code*/
+     && XOTTBL.XOTFUTRF[sysVar.arrayIndex] == "Y" /* if futures order*/
+     && OM0RW01.OM0RWPPD == "N")                  /* if item was not a prod add on*/
+       /* next sentence*/
+    else
+      OM0RS47(); /* determine om0rwbdf*/
+      if (OM0RW01.OM0RWBDF == "BS" /* if smart bulk*/
+       || OM0RW01.OM0RWBDF == "BX") /* if flexible bulk order*/
+         /* next sentence*/
+      else
+
+        OM0RW01.OM0RWCQT = OM0RW01.OM0RWCQT * -1; /* negate the quantity*/
+        OM0RW01.OM0RWCVL = OM0RW01.OM0RWCQT * OM0RW01.OP2AUPRC;
+                                   /* cancelled value*/
+
+        OM0RS65(); /* load opurec*/
+        OM0RS66(); /* write opurec*/
+
+
+      end
+    end
+  end
+
+
+   /* *******************************************************/
+end // end OM0RS16
+
+// push down maint. info stack
+Function OM0RS20()
+   /* GET OM0RS15*/
+  if (OP3REC.XOMCD[1] == " ")
+    /* next sentence*/
+  else
+    OP3REC.XOMCD[4] = OP3REC.XOMCD[3];
+    OP3REC.XMTCD[4] = OP3REC.XMTCD[3];
+    OP3REC.OP2OMQTY[4] = OP3REC.OP2OMQTY[3];
+    OP3REC.OP2OMDT[4] = OP3REC.OP2OMDT[3];
+    OP3REC.OP1MTREP[4] = OP3REC.OP1MTREP[3];
+    OP3REC.XOMCD[3] = OP3REC.XOMCD[2];
+    OP3REC.XMTCD[3] = OP3REC.XMTCD[2];
+    OP3REC.OP2OMQTY[3] = OP3REC.OP2OMQTY[2];
+    OP3REC.OP2OMDT[3] = OP3REC.OP2OMDT[2];
+    OP3REC.OP1MTREP[3] = OP3REC.OP1MTREP[2];
+    OP3REC.XOMCD[2] = OP3REC.XOMCD[1];
+    OP3REC.XMTCD[2] = OP3REC.XMTCD[1];
+    OP3REC.OP2OMQTY[2] = OP3REC.OP2OMQTY[1];
+    OP3REC.OP2OMDT[2] = OP3REC.OP2OMDT[1];
+    OP3REC.OP1MTREP[2] = OP3REC.OP1MTREP[1];
+  end
+end // end OM0RS20
+
+// select set of line items
+Function OM0RS30()
+
+  OP8REC.OP8TASK = "SS";
+  OP8REC.OP8LOCAT[3] = "OM0RS30";
+  OP8REC.OP8LOCAT[4] = " ";
+  OP8REC.OP8MAP = " ";
+
+
+  OP3REC.OP1PARTN = OP1REC.OP1PARTN;
+  OP3REC.OP1CUOID = OP1REC.OP1CUOID;
+  OP3REC.OP1NORID = OMWREC.OP1SUBXL[XXXINDX1];
+  OP3REC.OP2LNINB = 0;
+
+  call "DB1000" (OP8REC, OP3REC, OPBREC) {isNoRefresh = yes, isExternal = yes}; /* select all line-items*/
+
+  if (OPBREC.OPBSZRC == 0)
+    /* next sentence*/
+  else
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+
+
+end // end OM0RS30
+
+// select unique line item
+Function OM0RS35()
+
+
+  OP8REC.OP8TASK = "S ";
+  OP8REC.OP8LOCAT[2] = "OM0RS35";
+
+  OP3REC.OP1PARTN = OP1REC.OP1PARTN;
+  OP3REC.OP1CUOID = OP1REC.OP1CUOID;
+  OP3REC.OP1NORID = OP1REC.OP1NORID;
+  OP3REC.OP2LNINB = OMWREC.OP2LNINB[XXXINDX1];
+
+  call "DB1000" (OP8REC, OP3REC, OPBREC) {isNoRefresh = yes, isExternal = yes}; /* select all line-items*/
+
+  if (OPBREC.OPBSZRC == 0)
+    OM0RS55(); /* get product record*/
+  else
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+end // end OM0RS35
+
+// read next line item
+Function OM0RS40()
+  OP8REC.OP8LOCAT[1] = "OM0R010";
+  OP8REC.OP8LOCAT[2] = "OM0RS10";
+  OP8REC.OP8LOCAT[3] = "OM0RS40";
+  OP8REC.OP8LOCAT[4] = " ";
+
+
+  OP8REC.OP8TASK = "SN";
+  call "DB1000" (OP8REC, OP3REC, OPBREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (OPBREC.OPBSZRC == 0)
+    OM0RS55(); /* get the product record*/
+  else
+    if (OPBREC.OPBSZRC == 1) /* if no more line-items*/
+      OM0RW01.OM0RWEOF = "Y"; /* set end-of-file to yes*/
+      OM0RS50(); /* close the cursor*/
+    else
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+end // end OM0RS40
+
+// rewrite line item
+Function OM0RS45()
+
+  OP8REC.OP8TASK = "U ";
+  call "DB1000" (OP8REC, OP3REC, OPBREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (OPBREC.OPBSZRC == 0)
+     /* next sentence*/
+  else
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+
+
+end // end OM0RS45
+
+// set bulk draw flag
+Function OM0RS47()
+   /* GET NEWBULK*/
+
+
+
+    /* set bulk/draw flag accordingly...*/
+
+       /* dc = customer draw*/
+       /* ds = smart draw*/
+       /* dx = semi-smart draw/flexible*/
+       /* dn = nike draw*/
+       /* bc = customer bulk*/
+       /* bs = smart bulk*/
+       /* bx = semi-smart bulk*/
+       /* bn = nike bulk*/
+
+
+  OM0RW01.OM0RWBDF = " ";
+  if (OP1REC.XBDCD in XBDTBL.XBDCD
+   && XBDTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* if active*/
+    if (XBDTBL.XBDRWOFL[sysVar.arrayIndex] == "Y") /* if draw order*/
+      if (XBDTBL.XBDSETFL[sysVar.arrayIndex] == "Y") /* if set-aside*/
+        if (XBDTBL.XBDRVRFL[sysVar.arrayIndex] == "Y") /* if rsrvtion required*/
+          OM0RW01.OM0RWBDF = "DS"; /* smart draw*/
+        else
+          OM0RW01.OM0RWBDF = "DX"; /* semi-smart/flexible draw*/
+        end
+      else
+        OM0RW01.OM0RWBDF = "DC"; /* customer draw*/
+      end
+      if (XBDTBL.XBDCD[sysVar.arrayIndex] == "K")
+        OM0RW01.OM0RWBDF = "DN"; /* nike draw*/
+      end
+    else
+      if (XBDTBL.XBDBKOFL[sysVar.arrayIndex] == "Y") /* if bulk order*/
+        if (XBDTBL.XBDSETFL[sysVar.arrayIndex] == "Y") /* if set-aside*/
+          if (XBDTBL.XBDRVRFL[sysVar.arrayIndex] == "Y") /* if rsrvtion required*/
+            OM0RW01.OM0RWBDF = "BS"; /* smart bulk*/
+          else
+            OM0RW01.OM0RWBDF = "BX"; /* semi-smart/flexible bulk*/
+          end
+        else
+          OM0RW01.OM0RWBDF = "BC"; /* customer bulk*/
+        end
+        if (XBDTBL.XBDCD[sysVar.arrayIndex] == "B")
+          OM0RW01.OM0RWBDF = "BN"; /* nike bulk*/
+        end
+      end
+    end
+  end
+
+
+
+end // end OM0RS47
+
+// build rebook audit rec
+Function OM0RS48()
+
+             /* build oprrec ( rebook audit record )*/
+
+  set OPRREC empty;
+
+  OPRREC.OP1PARTN = OP1REC.OP1PARTN;
+  OPRREC.OP1CUOID = OP1REC.OP1CUOID;
+  OPRREC.OP1NORID = OP1REC.OP1NORID;
+  OPRREC.KUCCOID = OP1REC.KUCCOID;
+  OPRREC.KUMSTRID = OP1REC.KUMSTRID;
+  OPRREC.XNXCD = OP1REC.XNXCD;
+  OPRREC.XGPCD = OP1REC.XGPCD;
+  OPRREC.XDVCD = OP1REC.XDVCD;
+  OPRREC.XSOCD = OP1REC.XSOCD;
+  OPRREC.XOTCD = OP1REC.XOTCD;
+  OPRREC.XWHCD = OP1REC.XWHCD;
+  OPRREC.OP1CUNDT = OP1REC.OP1CUNDT;
+  OPRREC.SM1AGYID = OP1REC.SM1AGYID;
+  OPRREC.SM4REPID = OP1REC.SM4REPID;
+  if (OP1REC.XCSCD == "20" /* credit hold*/
+   || OP1REC.XCSCD == "30" /* recheck fail*/
+   || OP1REC.XCSCD == "80") /* resell*/
+    OPRREC.OPRAUDTP = "3";
+  else
+    OPRREC.OPRAUDTP = "1";
+  end
+  OPRREC.OP1BLKID = 0;
+  OPRREC.OPRBNOID = 0;
+  OPRREC.OP1RSVQF = "N";
+  OPRREC.OP2LNINB = OP3REC.OP2LNINB;
+  OPRREC.SY1STNBR = OP3REC.SY1STNBR;
+  OPRREC.SY2CLRID = OP3REC.SY2CLRID;
+  OPRREC.XDMCD = OP3REC.XDMCD;
+  OPRREC.XUMCD = OP3REC.XUMCD;
+  OPRREC.XOWCD = OP3REC.XOWCD;
+  OPRREC.XSACD = OP3REC.XEGCD;
+  OPRREC.XSDCD = OP3REC.PC2INSEG;
+  OPRREC.XPGCD = OP3REC.XPGCD;
+  OPRREC.XQACD = OP3REC.XQACD;
+  OPRREC.OPRQTYTP = "1";
+  OPRREC.OPRTRBKQ = OM0RW01.OM0RWCQT;
+  OPRREC.OP2NSIZE = OP3REC.OP2NSIZE;
+
+  OM0RW01.XXXINDX2 = 1;
+  while (OM0RW01.XXXINDX2 <= 40)
+    if (OP3REC.OP3SZAFL[XXXINDX2] == "Y") /* size is active*/
+      OPRREC.OP3SZAFL[XXXINDX2] = OP3REC.OP3SZAFL[XXXINDX2];
+      OPRREC.OPRRBKQT[XXXINDX2] = OP3REC.OP3ONOQT[XXXINDX2];
+    end
+
+    OM0RW01.XXXINDX2 = OM0RW01.XXXINDX2 + 1;
+  end
+
+
+  XX0XS01(); /* get system date and time*/
+
+
+  OPRREC.ZZZSDT = XX0XW01.XX0XWDAT;
+  OPRREC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  OPRREC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+  OPRREC.ZZZCHGCT = 0;
+
+
+
+
+
+end // end OM0RS48
+
+// write the rebook audit record
+Function OM0RS49()
+
+
+       /* ************************************************/
+       /* * this statement group writes the rebook audit **/
+       /* * records for the cancelled line items         **/
+       /* *************************************************/
+
+  if (OPRREC.OPRTRBKQ > 0) /* write only if there is qty to rebook*/
+
+    set TA1REC empty;
+
+    call "IO2720" ("A ", SQLCA, OPRREC) {isNoRefresh = yes, isExternal = yes};
+
+    if (SQLCA.VAGen_SQLCODE == 0)
+       /* next sentence*/
+    else
+      TA1REC.TA1DBASE = "DORDER";
+      TA1REC.TA1LOCAT[1] = "OM0RS49";
+      TA1REC.TA1TBLVU = "VRBAUD01";
+      TA1REC.TA1TBLKE = OP3REC.OP2KEY;
+      TA1REC.TA1LOCAT[3] = "IO2720";
+      TA1REC.TA1FUNC = "RETN";
+      set ERRSQLCA empty;
+      move SQLCA to ERRSQLCA withV60Compat; /* save the original sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+
+
+
+   /* *******************************************************/
+end // end OM0RS49
+
+// close db1000 cursor
+Function OM0RS50()
+
+
+  OP8REC.OP8LOCAT[1] = "OM0RS10";
+  OP8REC.OP8LOCAT[2] = "OM0RS40";
+  OP8REC.OP8LOCAT[3] = "OM0RS50";
+
+
+  OP8REC.OP8TASK = "CS";
+  call "DB1000" (OP8REC, OP3REC, OPBREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (OPBREC.OPBSZRC == 0)
+     /* next sentence*/
+  else
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+end // end OM0RS50
+
+// get the product record
+Function OM0RS55()
+
+
+      /* ********************************************************/
+      /* * read db2 for the product's style,color & size recs  **/
+      /* * this is a combined view of 3 records.               **/
+      /* ********************************************************/
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+
+    set SYCREC empty;
+    set SQLCA empty;
+    set TA1REC empty;
+
+        /* set up read key*/
+    SYCREC.XGPCD = OP1REC.XGPCD; /* gpc*/
+    SYCREC.SY1STNBR = OP3REC.SY1STNBR; /* style*/
+    SYCREC.SY2CLRID = OP3REC.SY2CLRID; /* color*/
+    SYCREC.XDMCD = OP3REC.XDMCD; /* dimension*/
+
+
+        /* read db2*/
+
+    call "IO0560" ("S ", SQLCA, SYCREC) {isNoRefresh = yes, isExternal = yes}; /* single select*/
+
+
+        /* check db2 return code*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* check for good return*/
+      OM0RS60(); /* check the prod deadline*/
+    else
+      /* TT#9994- CNAMAN- 01/22/01- CHANGES BEGIN*/
+      /* CALL RESET;*/
+      /* MOVE '01' TO OMEREC.OME-RETURN-CD;*/
+      /* EZECLOS;*/
+      set TA1REC empty;
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OM0R    ";
+      TA1REC.TA1MAP = "OM0RM001";
+      TA1REC.TA1DBASE = "DPROD   ";
+      TA1REC.TA1TBLVU = "VCOLOR02";
+      OMWREC.SY1STNBR = SYCREC.SY1STNBR;
+      OMWREC.SY2CLRID = SYCREC.SY2CLRID;
+      OMWREC.XDMCD = SYCREC.XDMCD;
+      TA1REC.TA1TBLKE = OMWREC.OMWSTYLE;
+      TA1REC.TA1LOCAT[3] = "OM0RS55";
+      TA1REC.TA1LOCAT[4] = "VCOLOR02";
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      try
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      end
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+       /* TT#9994- CNAMAN- 01/22/01- CHANGES END*/
+    end
+  end
+
+
+   /* *************************************************************/
+end // end OM0RS55
+
+// check the prod deadline
+Function OM0RS60()
+
+
+   /* ********************************************************/
+   /* * set the ws past production deadline flag, om0rwppd,*/
+   /* * from dorder.vcutof01.  product cancel needs to do*/
+   /* * different tasks depending on whether the cancel takes*/
+   /* * place before or after the production deadline.*/
+   /* **/
+   /* **************************************************/
+
+  set TA1REC empty;
+  set OPJREC empty;
+  set OPLREC empty;
+  set SQLCA empty;
+
+  OM0RW01.OM0RWFND = "N";
+  OM0RW01.OM0RWPPD = "Y";
+
+  if (OP1REC.XOTCD in XOTTBL.XOTCD
+   && XOTTBL.XOTFUTRF[sysVar.arrayIndex] == "Y")
+    OPJREC.XOTCD = OP1REC.XOTCD; /* order type code*/
+    OPJREC.XPCCD = SYCREC.XPCCD; /* product cat*/
+    OPJREC.XGACD = SYCREC.XGACD; /* gender age*/
+    OPJREC.SY1STNBR = SYCREC.SY1STNBR; /* product style*/
+    OPJREC.SY2CLRID = SYCREC.SY2CLRID; /* product color*/
+    OPLREC.OPLSOP = "SF"; /* selection option*/
+    OPLREC.OPJCNDTB = OP1REC.OP1CUNDT; /* need date*/
+
+    call "IO2560" (OPLREC, SQLCA, OPJREC) {isNoRefresh = yes, isExternal = yes};
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* record found*/
+      OM0RW01.OM0RWFND = "Y"; /* deadline found*/
+      if (OMAREC.OMACDT <= OPJREC.OPJCUTDT) /* current date > prod d/*/
+        OM0RW01.OM0RWPPD = "N";
+      else
+        TA2REC.TA2DBDFN = OPJREC.OPJCUTDT;
+        OM0RS11(); /* check prod deadline past 30 days*/
+      end
+    else
+      /* TT#9994- CNAMAN- 01/22/01- CHANGES BEGIN*/
+      /* CALL RESET;*/
+      /* MOVE '01' TO OMEREC.OME-RETURN-CD;*/
+      /* EZECLOS;*/
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OM0R    ";
+      TA1REC.TA1MAP = "OM0RM001";
+      TA1REC.TA1DBASE = "DORDER  ";
+      TA1REC.TA1TBLVU = "VCUTOF01";
+      OMWREC.OM0RW-XOTCD = OPJREC.XOTCD;
+      OMWREC.OM0RW-XPCCD = OPJREC.XPCCD;
+      OMWREC.OM0RW-XGACD = OPJREC.XGACD;
+      OMWREC.OM0RW-SY1STNBR = OPJREC.SY1STNBR;
+      OMWREC.OM0RW-SY2CLRID = OPJREC.SY2CLRID;
+      OMWREC.OM0RW-OP1CUNDT = OPLREC.OPJCNDTB;
+      TA1REC.TA1TBLKE = OMWREC.OM0RW-GROUP1;
+      TA1REC.TA1LOCAT[3] = "OM0RS60";
+      TA1REC.TA1LOCAT[4] = "VCUTOF01";
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      try
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      end
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+      /* TT#9994- CNAMAN- 01/22/01- CHANGES END*/
+    end
+  else
+    OM0RW01.OM0RWPPD = "A";
+  end
+
+
+   /* *************************************************************/
+end // end OM0RS60
+
+// load opurec for audit
+Function OM0RS65()
+
+
+  TA1REC.TA1LOCAT[2] = "OM0RS65"; /* group level diag*/
+
+
+
+       /* load data into the opurec audit record*/
+
+
+  OPUREC.OPUAUDTP = "QC"; /* for cancelled line-item*/
+  OPUREC.XXXPGMNB = "OM0R"; /* program name*/
+  OPUREC.OP1PARTN = OP3REC.OP1PARTN;
+  OPUREC.OP1CUOID = OP3REC.OP1CUOID; /* cust ord id*/
+  OPUREC.OP1NORID = OP3REC.OP1NORID; /* nike ord id*/
+  OPUREC.OP2LNINB = OP3REC.OP2LNINB; /* line item nbr*/
+  OPUREC.XGPCD = OP3REC.XGPCD; /* gpc code*/
+  OPUREC.SY1STNBR = OP3REC.SY1STNBR; /* style number*/
+  OPUREC.SY2CLRID = OP3REC.SY2CLRID; /* color*/
+  OPUREC.XDMCD = OP3REC.XDMCD; /* dimension*/
+  OPUREC.XQACD = OP3REC.XQACD; /* quality code*/
+  OPUREC.XOWCD = OP3REC.XOWCD; /* owner group*/
+  OPUREC.XOMCD = OMWREC.XOMCD; /* mntn reason code*/
+  OPUREC.OPUCRNTR = OMWREC.OPUCRNTR; /* reenter flag*/
+  OPUREC.XOTCD = OP1REC.XOTCD; /* order type*/
+  OPUREC.OP1CUNDT = OP1REC.OP1CUNDT; /* need date*/
+  OPUREC.XWHCD = OP1REC.XWHCD; /* whse*/
+  OPUREC.XDVCD = OP1REC.XDVCD; /* division code*/
+
+  OPUREC.ZZZSDT = XX0XW01.XX0XWDAT; /* set up date*/
+  OPUREC.ZZZSTM = XX0XW01.XX0XWTIM; /* set up time*/
+
+
+
+   /* *******************************************************/
+end // end OM0RS65
+
+// write the opurec audit record
+Function OM0RS66()
+
+
+       /* ************************************************/
+       /* * this statement group writes the opurec audit **/
+       /* * records for the cancelled line items         **/
+       /* *************************************************/
+
+  set TA1REC empty;
+
+  call "IO3210" ("A ", SQLCA, OPUREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DORDER";
+    TA1REC.TA1LOCAT[1] = "OM0RS66";
+    TA1REC.TA1TBLVU = "VORAUD01";
+    TA1REC.TA1TBLKE = OP3REC.OP2KEY;
+    TA1REC.TA1LOCAT[3] = "IO3210";
+    TA1REC.TA1FUNC = "RETN";
+    set ERRSQLCA empty;
+    move SQLCA to ERRSQLCA withV60Compat; /* save the original sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* abend module*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+
+
+   /* *******************************************************/
+end // end OM0RS66
+
+Record OM0RW01 type basicRecord
+  5 OM0RWGRP OM0RWGRP ; 
+    10 XXXINDX1 XXXINDX1 ; 
+    10 XXXINDX2 XXXINDX2 ; 
+    10 OM0RWEOF OM0RWEOF ; 
+    10 OP3SHPQT OP3SHPQT ; 
+    10 OP3CNLQT OP3CNLQT ; 
+    10 OP3ONOQT OP3ONOQT ; 
+    10 OM0RWQSH OM0RWQSH ; 
+    10 OM0RWQOO OM0RWQOO ; 
+    10 OM0RWFND OM0RWFND ; 
+    10 OM0RWPPD OM0RWPPD ; 
+    10 OM0RWCQT OM0RWCQT ; 
+    10 OM0RWCVL OM0RWCVL ; 
+    10 OP2AUPRC OP2AUPRC ; 
+    10 OM0RWBDF OM0RWBDF ; 
+    10 OM0RWNDT OM0RWNDT ; 
+      15 OM0RWNYY OM0RWNYY ; 
+      15 OM0RWNMM OM0RWNMM ; 
+      15 OM0RWNDD OM0RWNDD ; 
+    10 OM0RWFDA OM0RWFDA ; 
+      15 XOTCD XOTCD ; 
+      15 OM0RWCDT OM0RWCDT ; 
+        20 OM0RWCMM OM0RWCMM ; 
+        20 OM0RWCDD OM0RWCDD ; 
+      15 OM0RWHS OM0RWHS ; 
+    10 OM0RWCV1 OM0RWCV1 ; 
+    10 OM0RWCCQ OM0RWCCQ ; 
+    10 OM0RWCCV OM0RWCCV ; 
+    10 OM0RWDON OM0RWDON ; 
+      15 OM0RWPAR OM0RWPAR ; 
+      15 OM0RWCOI OM0RWCOI ; 
+      15 OM0RWNOI OM0RWNOI ; 
+end // end OM0RW01
+
+// bulk draw flag
+DataItem OM0RWBDF char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// credit check quantity
+DataItem OM0RWCCQ num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// credit check value
+DataItem OM0RWCCV decimal(15,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// dd
+DataItem OM0RWCDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mmdd
+DataItem OM0RWCDT num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mm
+DataItem OM0RWCMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cust order id
+DataItem OM0RWCOI num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cancelled qty
+DataItem OM0RWCQT num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// credit value compute fld
+DataItem OM0RWCV1 decimal(15,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cancelled value
+DataItem OM0RWCVL decimal(15,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// display order number
+DataItem OM0RWDON char(14)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end of file flag
+DataItem OM0RWEOF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// opfrec data
+DataItem OM0RWFDA char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// found flag
+DataItem OM0RWFND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// om0rw record group level
+DataItem OM0RWGRP char(109)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// warehouse
+DataItem OM0RWHS char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// opfrec work dd
+DataItem OM0RWNDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// opfrec work date
+DataItem OM0RWNDT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// opfrec work mm
+DataItem OM0RWNMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nike order id
+DataItem OM0RWNOI num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// opfrec work ccyy
+DataItem OM0RWNYY num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// order part char
+DataItem OM0RWPAR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// past prod deadline flag
+DataItem OM0RWPPD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ws qty on order
+DataItem OM0RWQOO num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws qty shipped
+DataItem OM0RWQSH num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// index
+DataItem XXXINDX2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

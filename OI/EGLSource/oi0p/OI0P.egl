@@ -1,0 +1,3236 @@
+package oi0p;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import fk.common.*;
+import fy.common.*;
+import in1.common.*;
+import ku.common.*;
+import op.common.*;
+import pc.common.*;
+import pg.common.*;
+import pk.common.*;
+import pw.common.*;
+import sm.common.*;
+import sy.common.*;
+import ta.common.*;
+import ts.common.*;
+//*** PROGRAM=OI0P ****
+// oi0p - aloc-rsrv product order inquiry lets you see if a
+// product has been allocated, partially allocated, reserved
+// or partially reserved for one or more orders. this is an
+// inquiry-only application.  it's use is highly restricted
+// to only a few users.
+// 
+// this application consists of three screens:
+// oi0pm010 aloc/rsrv product order inquiry (parameter screen)
+// oi0pm020 inquiry - (orders found)
+// oi0pm030 size/qty detail
+// 
+// temporary storage is used to hold the data for m020.
+// 
+// oi0pm010 is used to select a product based on a selected
+// set of criteria.  the first four lines are required entry.
+// no fields may be blank.  the remaining fields are optional
+// entry.  range fields are used as follows:  if left blank,
+// the iomod gets all orders with all existing values for that
+// field.  if "from" field is empty and "thru" has a value,
+// gets all orders starting from the beginning of the table
+// thru the ending value entered.  if "from" has a value and
+// "thru" is empty, gets all orders starting with the "from"
+// value thru the end of the table.  To select orders based
+// on a single specific critiria, enter the same value in both
+// the from and thru fields.  for non-range fields, leaving
+// the field empty gets all orders with all possible values
+// for that field.  entering a value gets only those orders
+// with the specified value for that field.
+// 
+// iomod io2070 (oiprec) is used to bring back the data
+// as specified on the parameter screen.
+// 
+// io0pm020 (orders found) shows what orders exist based on
+// the parameter screen.  from this screen you select the
+// order you want to look at for size/qty information.
+// 
+// oi0pm030 (size/qty info) is "up-to-the-moment" information.
+// for the order selected, it shows the totals for all sizes
+// (on order, allocated, shipped, reserved).  a breakdown of
+// those same quantities is hten shown for each size
+// ordered.
+// 
+// what is shown on the oi0pm020 (orders found) screen may not
+// be in sync with what is reflected on oi0pm030 (size/qty).
+// this is because each night the orders database is read for
+// any order with a status of partially allocated, allocated,
+// partially reserved or reserved.  basic order and qty info
+// is taken from each of the orders found and is sorted and
+// stored in table dorder.voprod01 for access the next day.
+// the batch program creating this is op1480.
+// this info becomes the resulting output shown on screen
+// oi0pm020.  the size/qty detail is not prepared the night
+// before--it is extracted "live" by using:
+// 1) io0560 (sycrec) (style/color) to get the product's
+//    size scale code
+// 2) io0040 (sy4rec) (size scale) to get the translation
+//    of the sizes of the product ordered
+// 3) db1000 (product size formatter) to get the product
+//    size info
+// thus, if quantity or status info does not match from
+// oi0pm020 to oi0pm030, the order probably had some activity
+// that day which affected status or qty.
+// 
+// iomods used:
+// io2070    oiprec     dorder.voprod01    al,pa,rs,pr products
+// io0560    sycrec     dprod.vcolor02     style/color
+// io0040    sy4rec     dprod.vscale01     size scale
+// db1000    opbrec                        product size formatr
+//           op3rec
+//           op8rec
+//           ta5rec                        temp storage routine
+// ------------------------------------------------------------
+// maintenance history
+// 
+// rev
+// num   when          who          why
+// ----  ----------   ----------   ----------------------------
+// 01    09-28-87      obecke       created application.
+//       09-30-87      obecke       cleaned up misc bugs.
+//       10/15/87      jvande       didn't clear size screen
+//                                  for next order. caused size
+//                                  from prev ord show for new.
+//       01/21/88      craine       used wrong subscript for
+//                                  moving store name to third
+//                                  screen.
+// 02    05/11/88      obecke  took out limitation of getting
+//                             only 100 orders at a time.  put
+//                             in temp storage.  took out fast
+//                             path option from m020 and m030;
+//                             if bad fast path, goofs up temp
+//                             storage.
+// 03    06/17/88      scass        added a key to the call
+//                                  xowtbl it now validates
+//                                  the whse as well. s1s
+//       06/22/22      craine  fix owner group edit to only
+//                             search table if owner group not
+//                             spaces or zero.
+//       12/02/88      jwood   added noncsp option to calls
+//       01/09/89      dwalke  add segemented transaction it to
+//                             appl.
+//       04/04/90      schase  database changes. op1blkcd to
+//                             xbdcd in s11, s1b, s20, s26, s28
+//                             w02, oi0pm010, oi0pm020
+//       08/07/90      jwood   changed oi0pm020,oi0ps20 to use
+//                             xcscd as a character field
+//       02/15/91      dmeier  regen for database changes
+// LOG   05/17/91      jloyer  Removed hard coded logic that
+// #640                        moved '00' to sy2clrid if gpc=02
+//                             Fall '91 footwear uses sy2clrid.
+//                             Changed S1P, S20.
+//       04/06/94      schase  Changed oi0pm010 and oi0ps10 to
+//                             interface with OP0X Appl.
+//       06/04/97      jnaemu  Added customer inventory segment
+//                             code to OI0P010 and OI0P030 maps
+// *********************
+Program OI0P type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  OI0PW01 OI0PW01; // record
+  OI0PW02 OI0PW02; // record
+  OI0PW03 OI0PW03; // record
+  OI0PW04 OI0PW04; // record
+  OIPREC OIPREC; // record
+  OP3REC OP3REC; // record
+  OP8REC OP8REC; // record
+  OPBREC OPBREC; // record
+  PC2REC PC2REC; // record
+  SQLCA SQLCA; // record
+  SY4REC SY4REC; // record
+  SYCREC SYCREC; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA5REC TA5REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XACTBL {deleteAfterUse = yes}; // table
+  use XBDTBL {deleteAfterUse = yes}; // table
+  use XCSTBL {deleteAfterUse = yes}; // table
+  use XDMTBL {deleteAfterUse = yes}; // table
+  use XGPTBL {deleteAfterUse = yes}; // table
+  use XOCTBL {deleteAfterUse = yes}; // table
+  use XOSTBL {deleteAfterUse = yes}; // table
+  use XOTTBL {deleteAfterUse = yes}; // table
+  use XOWTBL {deleteAfterUse = yes}; // table
+  use XPGTBL {deleteAfterUse = yes}; // table
+  use XQATBL {deleteAfterUse = yes}; // table
+  use XSOTBL {deleteAfterUse = yes}; // table
+  use XUMTBL {deleteAfterUse = yes}; // table
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use OI0PM.OI0PM010,  // forms
+      OI0PM.OI0PM020, 
+      OI0PM.OI0PM030
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OI0P000: OI0P000();
+
+
+    goto OI0P010; /* converse oi0pm010 parameter screen*/
+
+
+
+    OI0P010: OI0P010();
+
+
+
+    if (OI0PW01.OI0PWERR == "Y") /* if errors on parameter screen*/
+      goto OI0P010; /* redisplay screen with error & msg*/
+    else
+      if (converseVar.eventKey is pf19) /* if refresh is requested*/
+        goto OI0P000; /* start over again*/
+      else
+        if (OI0PW01.OI0PWMAX == "Y") /* > 100 records read, bypass loading*/
+          goto OI0P020; /* a second time, show prepared map*/
+        else
+          goto OI0P015; /* call record and load for 2nd map*/
+        end
+      end
+    end
+
+
+
+    OI0P015: OI0P015();
+
+
+
+    if (OI0PW01.OI0PWERR != "Y" /* if no records found, return to m010*/
+     && OI0PW01.OI0PWMAX != "Y") /* > 100 records read--tell user and*/
+      goto OI0P020; /* redisplay first map*/
+    else
+      goto OI0P010;
+                                     /* converse oi0pm020 - prod inq summary*/
+    end
+
+
+
+    OI0P020: OI0P020();
+
+
+
+    if (converseVar.eventKey is pf3)
+                                     /* go to in-tact oi0pm010 parameter scrn*/
+      goto OI0P010;
+      set OI0PM010.XWHCD cursor;
+    else
+      if (OI0PW01.OI0PWERR == "Y"     /* redisplay if error*/
+       || converseVar.eventKey is pf7 /* show previous page*/
+       || converseVar.eventKey is pf8 /* show next page*/
+       || converseVar.eventKey is pf19) /* show refreshed screen*/
+        goto OI0P020; /* for oi0pm020 prod inq summary scrn*/
+      else /* 's' and enter pressed*/
+        goto OI0P025; /* prepare product detail for display*/
+      end /* on oi0pm030*/
+    end
+
+
+
+    OI0P025: OI0P025();
+
+
+
+    if (OI0PW01.OI0PWERR == "Y") /* if error in the call*/
+      goto OI0P020; /* redisplay oi0pm020 screen*/
+    else
+      goto OI0P030; /* show oi0pm030 prod detail scrn*/
+    end
+
+
+
+    OI0P030: OI0P030();
+
+
+
+    if (converseVar.eventKey is pf3) /* m020 prod inq summary requested*/
+      goto OI0P020;
+      set OI0PM020.OI0PMSEL[1] cursor;
+    else
+      if (converseVar.eventKey is pf5) /* m010 parameter screen requested*/
+        goto OI0P010;
+        set OI0PM010.XWHCD cursor;
+      else
+        goto OI0P030; /* display m030 prod detail screen*/
+      end
+    end
+
+
+
+  end // end main
+end // end OI0P
+
+// program initialization
+Function OI0P000()
+
+
+  XSENTRY(); /* application entry validat*/
+
+   /* ****************************************************/
+   /* *** set segmented trans id                      ****/
+   /* ****************************************************/
+
+  COMMAREA.CAEZSAP = sysVar.transactionID;
+  COMMAREA.CAEZSG12 = "OI";
+  COMMAREA.CAEZSG4 = "P";
+  sysVar.transactionID = COMMAREA.CAEZSAP;
+
+   /* *************************************************************/
+
+   /* *************************************************************/
+  set OI0PW01 empty; /* clear records*/
+  set SQLCA empty;
+  set ERRSQLCA empty;
+  set SYCREC empty;
+  set SY4REC empty;
+  set PC2REC empty;
+
+  set OI0PM010 initial; /* clear map*/
+  OI0PW01.OI0PWMAX = "N"; /* set max records flag to no*/
+  OI0PW01.OI0PWERR = "N"; /* set error flag to 'no errors'*/
+
+  OI0PM010.XOWCD = "00"; /* set screen defaults*/
+  OI0PM010.XQACD = "01";
+  OI0PM010.SY2CLRID = "00";
+  OI0PM010.XDMCD = "00";
+  OI0PM010.XPGCD = "00";
+  OI0PM010.XUMCD = "01";
+  OI0PM010.PC2INSEG = "000";
+
+  set OI0PM010.XWHCD cursor;
+
+
+   /* *************************************************************/
+end // end OI0P000
+
+// oi0pm010 converse parm screen
+Function OI0P010()
+
+
+  OI0PM010.OI0PMRVN = 02;
+  OI0PM010.XXXCURDT = VGVar.currentShortGregorianDate;
+
+
+
+  converse OI0PM010 ;
+
+  converseLib.clearScreen();
+
+  converseLib.validationFailed(0); /* clear error message area*/
+
+  OI0PW01.OI0PWERR = "N"; /* turn off error flag*/
+
+  OI0PS10(); /* check pf keys*/
+
+  if (OI0PW01.OI0PWMAX == "Y") /* > 100 recs were selected*/
+     /* next sentence*/
+  else
+
+    OI0PS11(); /* set fields normal*/
+    OI0PS12(); /* edit fields*/
+  end
+
+
+end // end OI0P010
+
+// call oiprec and load ws array
+Function OI0P015()
+
+
+
+   /* *************************************************/
+   /* initialize counters*/
+   /* *************************************************/
+
+  OI0PW01.OI0PW2WX = 1; /* initialize w.s. array*/
+
+   /* *************************************************/
+   /* prepare maps and working storage*/
+   /* *************************************************/
+
+  set OI0PM020 empty;
+  set OI0PM030 empty;
+  set OI0PW02 empty;
+  set OI0PW03 empty;
+  set OI0PW04 empty;
+
+  set OIPREC empty;
+
+   /* *************************************************/
+   /* purge any existing queue in temporary storage*/
+   /* *************************************************/
+
+  OI0PS17();
+
+   /* *************************************************/
+   /* load key for call*/
+   /* *************************************************/
+
+  OI0PS20();
+
+
+   /* *************************************************/
+   /* select and open cursor for oiprec*/
+   /* fetch records and format pages to temp storage*/
+   /* *************************************************/
+
+  OI0PS22();
+
+
+   /* **************************************************/
+   /* if no pages were formatted into temp storage,*/
+   /* indicate that there is no data to display*/
+   /* **************************************************/
+
+  if (OI0PW01.TA5TSQIX == 0) /* no pages in temp storage*/
+    converseLib.validationFailed(212); /* no orders found - please check parm*/
+    set OI0PM010.XWHCD cursor;
+    OI0PW01.OI0PWERR = "Y";
+  else
+
+    /* *************************************************/
+     /* load first page of temp storage to map*/
+    /* *************************************************/
+
+    OI0PW01.OI0PWTSP = 1;
+    OI0PS28(); /* load record to map*/
+  end
+
+
+end // end OI0P015
+
+// converse m020 prod inq summary
+Function OI0P020()
+
+
+  OI0PM020.OI0PMRVN = 02; /* revision number*/
+
+  OI0PM020.XXXCURDT = VGVar.currentShortGregorianDate; /* system date*/
+
+   /* ***************************************************/
+   /* blank lines:  need to set select, need date and*/
+   /* don't ship date autoskip dark*/
+   /* ***************************************************/
+
+  OI0PW2MX = 1; /* map counter*/
+  while (OI0PW2MX <= 17)
+    if (OI0PM020.OI0PMORD[OI0PW2MX] == " ")
+      set OI0PM020.OI0PMSEL[OI0PW2MX] skip, invisible;
+      set OI0PM020.OI0PMCND[OI0PW2MX] skip, invisible;
+      set OI0PM020.OI0PMDSD[OI0PW2MX] skip, invisible;
+    end
+    OI0PW2MX = OI0PW2MX + 1;
+  end
+
+
+
+  converse OI0PM020 ;
+
+
+  converseLib.validationFailed(0); /* clear error msg area*/
+
+  OI0PW01.OI0PWERR = "N"; /* set error flag to no*/
+  set OI0PM020.OI0PMTSP initialAttributes; /* set page select field defined*/
+
+  OI0PS30(); /* check pf keys*/
+
+  OI0PS32(); /* edit select field*/
+
+
+
+
+
+end // end OI0P020
+
+// call and build prod det array
+Function OI0P025()
+
+   /* ***************************************************/
+   /* read size scale record to get translation of sizes*/
+   /* ***************************************************/
+
+  OI0PS40(); /* size scale translation*/
+
+
+   /* ***************************************************/
+   /* call db1000 to get sizes & quantities aloc/rsrvd*/
+   /* ***************************************************/
+
+  OI0PS42(); /* size/quantity info*/
+
+
+   /* ***************************************************/
+   /* move all constants to the map*/
+   /* ***************************************************/
+
+  OI0PS44(); /* non-array map info*/
+
+   /* ***************************************************/
+   /* load the m030 map with the first 31 sizes*/
+   /* ***************************************************/
+
+  OI0PW01.OI0PW3WX = 1; /* set w.s. counter*/
+  OI0PW01.OI0PW3TX = 1; /* set top of map counter*/
+
+  OI0PS46(); /* load map with 1st 31 sizes*/
+
+
+   /* ***************************************************/
+   /* tag the selected line as a 'viewed' line*/
+       /* oi0pw2wx = working storage counter*/
+   /* ***************************************************/
+
+  OI0PW01.OI0PW2WX = 1;
+
+  while (OI0PW01.OI0PW2WX <= 17)
+    if (OI0PM020.OI0PMSEL[OI0PW2WX] == "S")
+      OI0PW02.OI0PWSEL[OI0PW2WX] = "V";
+    else
+       /* next sentence*/
+    end
+    OI0PW01.OI0PW2WX = OI0PW01.OI0PW2WX + 1;
+  end
+
+
+
+end // end OI0P025
+
+// converse m030 prod det sum
+Function OI0P030()
+
+
+
+  OI0PM030.OI0PMRVN = 02; /* revision number*/
+
+  OI0PM030.XXXCURDT = VGVar.currentShortGregorianDate; /* system date*/
+
+  OI0PW01.OI0PW3MX = 1;
+  while (OI0PW3MX <= 31)
+    if (SY4IDDSC[OI0PW3MX] == " ")
+      set OI0PM030.OP3ONOQT[OI0PW3MX] skip, invisible;
+      set OI0PM030.OP3ALQT[OI0PW3MX] skip, invisible;
+      set OI0PM030.OP3OHRQT[OI0PW3MX] skip, invisible;
+      set OI0PM030.OP3SHPQT[OI0PW3MX] skip, invisible;
+    end
+    OI0PW3MX = OI0PW3MX + 1;
+  end
+
+
+
+  converse OI0PM030 ;
+
+
+
+  converseLib.validationFailed(0); /* clear error msg area*/
+  OI0PW01.OI0PWERR = "N"; /* set error flag to no*/
+
+  OI0PS50(); /* handle pf keys*/
+
+end // end OI0P030
+
+// check pf keys
+Function OI0PS10()
+
+
+   /* *************************************************************/
+    /* save fast path data*/
+   /* *************************************************************/
+
+  if (OI0PM010.CATOAP is modified) /* to application has changed*/
+    COMMAREA.CATOAP = OI0PM010.CATOAP; /* move toap to commarea*/
+  end
+
+  set OI0PM010.CATOAP initialAttributes;
+
+
+  if (OI0PM010.CAITEM is modified) /* item key has changed*/
+    COMMAREA.CAITEM = OI0PM010.CAITEM; /* move item to commarea*/
+  end
+
+  set OI0PM010.CAITEM initialAttributes;
+
+
+  if (converseVar.eventKey is enter /* transfer on enter key*/
+   && COMMAREA.CATOAP > " ")        /* transfer to app*/
+    OI0PS17(); /* purge temp storage*/
+    COMMAREA.CAUSERA = " "; /* clear user commarea*/
+    XSEXIT(); /* transfer to exit routine*/
+  end
+
+   /* *************************************************************/
+    /* check pf keys*/
+   /* *************************************************************/
+
+
+  if (converseVar.eventKey is pa1
+   || converseVar.eventKey is pa2)
+    converseLib.clearScreen();
+    
+    converseLib.validationFailed(008); /* invalid pf key*/
+    OI0PW01.OI0PWERR = "Y";
+  else
+    if (converseVar.eventKey is enter)
+      /* next sentence*/
+    else
+      if (converseVar.eventKey is pf19)
+        exit stack;
+      else
+        if (converseVar.eventKey is pf3) /* exit to op menu*/
+          OI0PS17(); /* purge temp storage*/
+          COMMAREA.CATOAP = "OP0X"; /* op main menu*/
+          XSEXIT(); /* pass control to exit routine*/
+          COMMAREA.CAUSERA = " "; /* clear user commarea*/
+          OI0PM010.VAGen_EZEMSG = COMMAREA.CAMSG; /* move error msg*/
+          COMMAREA.CATOAP = " "; /* clear application*/
+          OI0PW01.OI0PWERR = "Y"; /* set error flag*/
+        else
+          if (converseVar.eventKey is pf4) /* exit to master menu*/
+            OI0PS17(); /* purge temp storage*/
+            COMMAREA.CAUSERA = " "; /* clear user commarea*/
+            XSPF4(); /* invoke master menu request*/
+            OI0PM010.VAGen_EZEMSG = COMMAREA.CAMSG; /* move error msg*/
+            COMMAREA.CATOAP = " "; /* clear application*/
+          else
+            converseLib.validationFailed(008); /* invalid pf key*/
+            OI0PW01.OI0PWERR = "Y";
+          end
+        end
+      end
+    end
+  end
+
+
+end // end OI0PS10
+
+// set fields normal
+Function OI0PS11()
+
+
+
+  set OI0PM010.XWHCD normal;
+  set OI0PM010.XOWCD normal;
+  set OI0PM010.XQACD normal;
+  set OI0PM010.SY1STNBR normal;
+  set OI0PM010.SY2CLRID normal;
+  set OI0PM010.XDMCD normal;
+  set OI0PM010.XGPCD normal;
+  set OI0PM010.XPGCD normal;
+  set OI0PM010.XUMCD normal;
+  set OI0PM010.OP2LNIST normal;
+  set OI0PM010.PC2INSEG normal;
+  set OI0PM010.XOTCD normal;
+  set OI0PM010.OI0PMNDL normal;
+  set OI0PM010.OI0PMNDH normal;
+  set OI0PM010.XOCCD normal;
+  set OI0PM010.OI0PMDSL normal;
+  set OI0PM010.OI0PMDSH normal;
+  set OI0PM010.OI0PMCSL normal;
+  set OI0PM010.OI0PMCSH normal;
+  set OI0PM010.OI0PMTUL normal;
+  set OI0PM010.OI0PMTUH normal;
+  set OI0PM010.XSOCD normal;
+  set OI0PM010.XACCD normal;
+  set OI0PM010.XBDCD normal;
+  set OI0PM010.OI0PMONL normal;
+  set OI0PM010.OI0PMONH normal;
+
+
+
+end // end OI0PS11
+
+// edit m010 parameter fields
+Function OI0PS12()
+
+
+
+   /* ***************************************************/
+    /* these are the stmt groups used to edit all the*/
+    /* m010 parameter fields*/
+   /* ***************************************************/
+
+
+  OI0PS1A(); /* order number range*/
+  OI0PS1B(); /* bulk /draw code*/
+  OI0PS1C(); /* assignment control id*/
+  OI0PS1D(); /* sales office id*/
+  OI0PS1E(); /* total units fields*/
+  OI0PS1F(); /* credit status*/
+  OI0PS1H(); /* edit dsa dates*/
+  OI0PS1I(); /* order class*/
+  OI0PS1J(); /* edit need dates*/
+  OI0PS1K(); /* order type*/
+  OI0PS1L(); /* status*/
+  OI0PS1M(); /* unit of measure*/
+  OI0PS1N(); /* package type*/
+  OI0PS1P(); /* style/color*/
+  OI0PS1O(); /* dimension*/
+  OI0PS1Q(); /* gpc*/
+  OI0PS1U(); /* inventory seg*/
+  OI0PS1R(); /* quality*/
+  OI0PS1S(); /* owner group*/
+  OI0PS1T(); /* warehouse*/
+
+   /* ************************************************************/
+end // end OI0PS12
+
+// purge temporary storage
+Function OI0PS17()
+
+
+
+  OI0PW01.OI0PWTSP = 0; /* reset current page nbr*/
+  OI0PW01.TA5TSQIX = 0; /* reset highest page nbr*/
+
+  TA5REC.TA5APPID = "OI0P"; /* appl identification*/
+  TA5REC.TA5FNCCD = "P"; /* function code*/
+
+  call "TA0050" (OI0PW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == +0)
+    /* next sentence*/
+  else
+    TA1REC.TA1FUNC = "POST"; /* termination function*/
+    TA1REC.TA1TYPE = "APPL"; /* type of error*/
+    TA1REC.TA1PGMNM = "OI0PS17";
+    TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "OI0PM002"; /* map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* subroutine parms*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+
+  end
+end // end OI0PS17
+
+// edit m010 order nbr range
+Function OI0PS1A()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the order number range select parameter           **/
+         /* *****************************************************/
+
+       /* check that 'to' field is larger than 'from' field*/
+
+  if (OI0PM010.OI0PMONL > 0
+   && OI0PM010.OI0PMONH == 0)
+    set OI0PM010.OI0PMONL initialAttributes;
+    set OI0PM010.OI0PMONH initialAttributes;
+  else
+    if (OI0PM010.OI0PMONL <= OI0PM010.OI0PMONH)
+      set OI0PM010.OI0PMONL initialAttributes;
+      set OI0PM010.OI0PMONH initialAttributes;
+    else
+      converseLib.validationFailed(216); /* order nbr: start must be less than*/
+                                   /* end*/
+      set OI0PM010.OI0PMONL cursor, bold;
+      set OI0PM010.OI0PMONH bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+
+
+
+end // end OI0PS1A
+
+// edit m010 bulk/draw code
+Function OI0PS1B()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the bulk/draw code select parameter               **/
+         /* *****************************************************/
+
+  if (OI0PM010.XBDCD > " ")
+    if (OI0PM010.XBDCD in XBDTBL.XBDCD
+     && XBDTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(295); /* bulk/draw order code is not valid*/
+      set OI0PM010.XBDCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1B
+
+// edit m010 asgnmt control id
+Function OI0PS1C()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the assignment control id select parameter        **/
+         /* *****************************************************/
+
+
+  if (OI0PM010.XACCD > " ")
+    if (OI0PM010.XACCD in XACTBL.XACCD
+     && XACTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(309); /* assignment control is not valid*/
+      set OI0PM010.XACCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1C
+
+// edit m010 sales office id
+Function OI0PS1D()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the sales office select parameter                 **/
+         /* *****************************************************/
+
+  if (OI0PM010.XSOCD > " ")
+    if (OI0PM010.XSOCD in XSOTBL.XSOCD
+     && XSOTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(109); /* sales office code is not valid*/
+      set OI0PM010.XSOCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1D
+
+// edit m010 total units fields
+Function OI0PS1E()
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the total units range select parameter           **/
+         /* *****************************************************/
+
+   /* the total units are not used in the call to io2070.*/
+   /* even if nothing was entered in the fields, values*/
+   /* need to be assigned to each field for the compare*/
+   /* done on the returned record.  the values are stored*/
+   /* in oi0pw01 as 0 for low order number and 9's*/
+   /* for high order number.  user-entered values are stored*/
+   /* as they were entered.*/
+
+
+  if (OI0PM010.OI0PMTUL == 0)
+    OI0PW01.OI0PWTUL = 0;
+    OI0PM010.OI0PMTUL = 0;
+  else
+    OI0PW01.OI0PWTUL = OI0PM010.OI0PMTUL;
+  end
+
+  if (OI0PM010.OI0PMTUH == 0)
+    OI0PW01.OI0PWTUH = 99999999;
+    OI0PM010.OI0PMTUH = 99999999;
+  else
+    OI0PW01.OI0PWTUH = OI0PM010.OI0PMTUH;
+  end
+
+
+       /* check that 'to' field is larger than 'from' field*/
+
+  if (OI0PM010.OI0PMTUL <= OI0PM010.OI0PMTUH)
+     /* next sentence*/
+  else
+    converseLib.validationFailed(217); /* total units: start must be less than end*/
+    set OI0PM010.OI0PMTUL cursor, bold;
+    set OI0PM010.OI0PMTUH bold;
+    OI0PW01.OI0PWERR = "Y";
+  end
+
+
+
+end // end OI0PS1E
+
+// edit m010 credit status code
+Function OI0PS1F()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the credit status code select parameter          **/
+         /* *****************************************************/
+
+  if (OI0PM010.OI0PMCSL > " "
+   && OI0PM010.OI0PMCSH == " ")
+     /* next sentence*/
+  else
+    if (OI0PM010.OI0PMCSL <= OI0PM010.OI0PMCSH)
+       /* next sentence*/
+    else
+      converseLib.validationFailed(218); /* credit status: start must be less than end*/
+      OI0PW01.OI0PWERR = "Y";
+      set OI0PM010.OI0PMCSL cursor, bold;
+      set OI0PM010.OI0PMCSH bold;
+    end
+  end
+
+
+  if (converseVar.validationMsgNum != 218)
+    if (OI0PM010.OI0PMCSH > " ")
+      if (OI0PM010.OI0PMCSH in XCSTBL.XCSCD
+       && XCSTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+         /* next sentence*/
+      else
+        converseLib.validationFailed(108); /* credit status code is not valid*/
+        set OI0PM010.OI0PMCSH cursor, bold;
+        OI0PW01.OI0PWERR = "Y";
+      end
+    end
+  end
+
+
+  if (converseVar.validationMsgNum != 218)
+    if (OI0PM010.OI0PMCSL > " ")
+      if (OI0PM010.OI0PMCSL in XCSTBL.XCSCD
+       && XCSTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+         /* next sentence*/
+      else
+        converseLib.validationFailed(108); /* credit status code is not valid*/
+        set OI0PM010.OI0PMCSL cursor, bold;
+        OI0PW01.OI0PWERR = "Y";
+      end
+    end
+  end
+
+
+
+   /* ************************************************************/
+end // end OI0PS1F
+
+// edit m010 dates
+Function OI0PS1G()
+
+
+  set TA2REC empty; /* initialize working storage rec 2*/
+  TA2REC.TA2DTOPT = "GREGGREG"; /* functional request*/
+  TA2REC.TA2GRTYP = "A"; /* format is mmddyy*/
+  TA2REC.TA2GRGAN = OI0PW01.OI0PWPDT; /* set date arguement*/
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date module*/
+
+
+
+
+end // end OI0PS1G
+
+// edit m010 dsa dt
+Function OI0PS1H()
+
+
+
+  OI0PS1W(); /* edit dsa high date*/
+
+  OI0PS1X(); /* edit dsa low date*/
+
+  if (OI0PW01.OI0PWEDF == "Y"
+   && OI0PW01.OI0PWSDF == "Y")
+    if (OI0PW01.OI0PWGDL <= OI0PW01.OI0PWGDH)
+       /* next sentence*/
+    else
+      OI0PW01.OI0PWERR = "Y";
+      converseLib.validationFailed(106);
+      set OI0PM010.OI0PMDSL cursor, bold;
+      set OI0PM010.OI0PMDSH bold;
+    end
+  end
+
+
+
+end // end OI0PS1H
+
+// edit m010 order class
+Function OI0PS1I()
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the order class code select parameter             **/
+         /* *****************************************************/
+
+  if (OI0PM010.XOCCD > " ")
+    if (OI0PM010.XOCCD in XOCTBL.XOCCD
+     && XOCTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(020); /* order class is not valid*/
+      set OI0PM010.XOCCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1I
+
+// edit m010 need dates
+Function OI0PS1J()
+
+
+
+  OI0PS1Y(); /* edit need date high*/
+
+  OI0PS1Z(); /* edit need date low*/
+
+  if (OI0PW01.OI0PWEDF == "Y"
+   && OI0PW01.OI0PWSDF == "Y")
+    if (OI0PW01.OI0PWGNL <= OI0PW01.OI0PWGNH)
+       /* next sentence*/
+    else
+      OI0PW01.OI0PWERR = "Y";
+      converseLib.validationFailed(106);
+      set OI0PM010.OI0PMNDL cursor, bold;
+      set OI0PM010.OI0PMNDH bold;
+    end
+  end
+
+
+
+end // end OI0PS1J
+
+// edit m010 order type code
+Function OI0PS1K()
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the order type code  select parameter             **/
+         /* *****************************************************/
+
+
+  if (OI0PM010.XOTCD > " ")
+    if (OI0PM010.XOTCD in XOTTBL.XOTCD
+     && XOTTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(017); /* order type is not valid*/
+      set OI0PM010.XOTCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+   /* ************************************************************/
+end // end OI0PS1K
+
+// edit m010 line item status
+Function OI0PS1L()
+
+
+
+   /* ***************************************************/
+   /* edit line item status*/
+   /* ***************************************************/
+
+  if (OI0PM010.OP2LNIST > " ")
+    if (OI0PM010.OP2LNIST == "RS"
+     || OI0PM010.OP2LNIST == "AL"
+     || OI0PM010.OP2LNIST == "AR")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(219); /* status: must be rs, al or ar*/
+      set OI0PM010.OP2LNIST cursor, bold;
+      OI0PWERR = "Y";
+    end
+  else
+    converseLib.validationFailed(220); /* status is required*/
+    set OI0PM010.OP2LNIST cursor, bold;
+    OI0PWERR = "Y";
+  end
+
+
+
+end // end OI0PS1L
+
+// edit m010 unit of measure
+Function OI0PS1M()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the unit of measure select parameter              **/
+         /* *****************************************************/
+
+  if (OI0PM010.XUMCD > " ")
+    if (OI0PM010.XUMCD in XUMTBL.XUMCD
+     && XUMTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(156); /* unit of measure is not valid*/
+      set OI0PM010.XUMCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  else
+    converseLib.validationFailed(231); /* unit of measure is required*/
+    set OI0PM010.XUMCD cursor, bold;
+    OI0PW01.OI0PWERR = "Y";
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1M
+
+// edit m010 package type code
+Function OI0PS1N()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the package type cd select parameter              **/
+         /* *****************************************************/
+
+  if (OI0PM010.XPGCD > " ")
+    if (OI0PM010.XPGCD in XPGTBL.XPGCD
+     && XPGTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(158); /* package type is not valid*/
+      set OI0PM010.XPGCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  else
+    converseLib.validationFailed(232); /* package type is required*/
+    set OI0PM010.XPGCD cursor, bold;
+    OI0PW01.OI0PWERR = "Y";
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1N
+
+// edit m010 dimension code
+Function OI0PS1O()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the dimension select parameter                    **/
+         /* *****************************************************/
+
+  if (OI0PM010.XDMCD > " ")
+    if (OI0PM010.XDMCD in XDMTBL.XDMCD
+     && XDMTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(234); /* dimension code is not valid*/
+      set OI0PM010.XDMCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  else
+    converseLib.validationFailed(233); /* dimension code is required*/
+    set OI0PM010.XDMCD cursor, bold;
+    OI0PW01.OI0PWERR = "Y";
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1O
+
+// edit m010 style and color
+Function OI0PS1P()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the color code select parameter                   **/
+         /* *****************************************************/
+
+  if (OI0PM010.SY1STNBR > " "
+   && OI0PM010.SY2CLRID > " ")
+
+     /* **********************************************************/
+      /* check to see if style/color already validated from a*/
+        /* previous edit go-thru--bypass unnecessary calling*/
+     /* **********************************************************/
+    if (OI0PM010.XGPCD != SYCREC.XGPCD
+     || OI0PM010.SY1STNBR != SYCREC.SY1STNBR
+     || OI0PM010.SY2CLRID != SYCREC.SY2CLRID
+     || OI0PM010.XDMCD != SYCREC.XDMCD)
+      set SYCREC empty;
+      set SQLCA empty; /* initialize error storage*/
+
+      SYCREC.XGPCD = OI0PM010.XGPCD;
+      SYCREC.SY1STNBR = OI0PM010.SY1STNBR;
+      SYCREC.SY2CLRID = OI0PM010.SY2CLRID;
+      SYCREC.XDMCD = OI0PM010.XDMCD;
+
+      call "IO0560" ("S ", SQLCA, SYCREC) {isNoRefresh = yes, isExternal = yes};
+
+      if (SQLCA.VAGen_SQLCODE == 0) /* good hit*/
+         /* next sentence*/
+      else
+        if (SQLCA.VAGen_SQLCODE == 100) /* record not found*/
+          set OI0PM010.SY1STNBR cursor, bold;
+          set OI0PM010.SY2CLRID bold;
+          OI0PW01.OI0PWERR = "Y"; /* error flag*/
+          converseLib.validationFailed(131); /* style/color is not valid*/
+        else
+          TA1REC.TA1TYPE = "DB2 ";
+          TA1REC.TA1FUNC = "RETN";
+          TA1REC.TA1PGMNM = "OI0P    ";
+          TA1REC.TA1LOCAT[1] = "S       ";
+          TA1REC.TA1LOCAT[2] = "OI0PS1P ";
+          TA1REC.TA1LOCAT[3] = "IO0560  ";
+          TA1REC.TA1LOCAT[4] = "        ";
+          TA1REC.TA1MAP = "OI0PM010";
+          TA1REC.TA1DBASE = "DPROD   ";
+          TA1REC.TA1TBLVU = "VCOLOR02";
+          TA1REC.TA1TBLKE = OI0PM010.SY1STNBR;
+          call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+          COMMAREA.CAUSERA = " "; /* on error clear ws*/
+          XSPF4();
+        end
+      end
+    else
+       /* next sentence*/
+    end
+  else
+    converseLib.validationFailed(235); /* style, color and dimension are req fiedls*/
+    set OI0PM010.SY1STNBR cursor, modified, bold;
+    set OI0PM010.SY2CLRID modified, bold;
+    OI0PW01.OI0PWERR = "Y";
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1P
+
+// edit m010 gpc code
+Function OI0PS1Q()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the gpc code select parameter                     **/
+         /* *****************************************************/
+
+  if (OI0PM010.XGPCD > " ")
+    if (OI0PM010.XGPCD in XGPTBL.XGPCD
+     && XGPTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(138); /* gpc code is not valid*/
+      set OI0PM010.XGPCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  else
+    converseLib.validationFailed(137); /* gpc must be entered to select by*/
+                                   /* style*/
+    set OI0PM010.XGPCD cursor, bold;
+    OI0PW01.OI0PWERR = "Y";
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1Q
+
+// edit m010 quality code
+Function OI0PS1R()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the quality code select parameter                 **/
+         /* *****************************************************/
+
+  if (OI0PM010.XQACD > " ")
+    if (OI0PM010.XQACD in XQATBL.XQACD
+     && XQATBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(236); /* quality code is not valid*/
+      set OI0PM010.XQACD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  else
+    converseLib.validationFailed(237); /* quality code is required*/
+    set OI0PM010.XQACD cursor, bold;
+    OI0PW01.OI0PWERR = "Y";
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1R
+
+// edit m010 owner group code
+Function OI0PS1S()
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the owner group  select parameter                 **/
+         /* *****************************************************/
+
+  OI0PW01.XWHCD = OI0PM010.XWHCD;
+  OI0PW01.XOWCD = OI0PM010.XOWCD;
+
+
+  if (OI0PM010.XOWCD == " "
+   || OI0PM010.XOWCD == "00")
+      /* NEXT SENTENCE*/
+  else
+    if (OI0PW01.OI0PWOKY in XOWTBL.XOWKEY
+     && XOWTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(101); /* own grp code is not valid for warehouse*/
+      set OI0PM010.XOWCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1S
+
+// edit m010 warehouse code
+Function OI0PS1T()
+
+
+
+         /* *****************************************************/
+         /* * this statement group edits                       **/
+         /* * the warehouse code select parameter               **/
+         /* *****************************************************/
+
+  if (OI0PM010.XWHCD > " ")
+    if (OI0PM010.XWHCD in XWHTBL.XWHCD
+     && XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+       /* next sentence*/
+    else
+      converseLib.validationFailed(078); /* warehouse is not valid*/
+      set OI0PM010.XWHCD cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  else
+    converseLib.validationFailed(076); /* warehouse is a required field*/
+    set OI0PM010.XWHCD cursor, bold;
+    OI0PW01.OI0PWERR = "Y";
+  end
+
+
+   /* ************************************************************/
+end // end OI0PS1T
+
+// edit specification code
+Function OI0PS1U()
+
+
+
+     /* edit specification code*/
+
+
+
+  if (OI0PM010.PC2INSEG > " ")
+     /* next sentence*/
+  else
+    OI0PM010.PC2INSEG = "000";
+  end
+
+
+
+  PC2REC.PC2INSEG = OI0PM010.PC2INSEG;
+  PC2REC.XGPCD = OI0PM010.XGPCD;
+
+  call "IO3340" ("SG", SQLCA, PC2REC) {isNoRefresh = yes, isExternal = yes}; /* call spec cd*/
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* NEXT SENTENCE*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      set OI0PM010.PC2INSEG cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+      converseLib.validationFailed(159); /* spec code is not valid*/
+    else
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OI0P    ";
+      TA1REC.TA1LOCAT[1] = "SG      ";
+      TA1REC.TA1LOCAT[2] = "OI0PS1U ";
+      TA1REC.TA1LOCAT[3] = "IO3340  ";
+      TA1REC.TA1LOCAT[4] = "        ";
+      TA1REC.TA1MAP = "OI0PM010";
+      TA1REC.TA1DBASE = "PC2REC  ";
+      TA1REC.TA1TBLVU = "VPRDCU01";
+      TA1REC.TA1TBLKE = OI0PM010.PC2INSEG;
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      COMMAREA.CAUSERA = " ";
+      XSPF4();
+      exit program;
+    end
+  end
+
+
+
+
+end // end OI0PS1U
+
+// edit m010 dsa high dt
+Function OI0PS1W()
+
+
+
+  OI0PW01.OI0PWEDF = "N"; /* end date valid flag*/
+
+  if (OI0PM010.OI0PMDSH == 0)
+    OI0PW01.OI0PWGDH = 99999999;
+    OI0PW01.OI0PWEDF = "Y";
+  else
+    OI0PW01.OI0PWPDT = OI0PM010.OI0PMDSH;
+    OI0PS1G();
+    if (TA2REC.TA2RTNCD == 0)
+      OI0PW01.OI0PWGDH = TA2GRGGN;
+      OI0PW01.OI0PWEDF = "Y";
+    else
+      converseLib.validationFailed(107);
+      set OI0PM010.OI0PMDSH cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+
+end // end OI0PS1W
+
+// edit m010 dsa low date
+Function OI0PS1X()
+
+
+
+  OI0PW01.OI0PWSDF = "N"; /* start date valid flag*/
+
+  if (OI0PM010.OI0PMDSL == 0)
+    OI0PW01.OI0PWGDL = 0;
+    OI0PW01.OI0PWSDF = "Y";
+  else
+    OI0PW01.OI0PWPDT = OI0PM010.OI0PMDSL;
+    OI0PS1G();
+    if (TA2REC.TA2RTNCD == 0)
+      OI0PW01.OI0PWGDL = TA2GRGGN;
+      OI0PW01.OI0PWSDF = "Y";
+    else
+      converseLib.validationFailed(107);
+      set OI0PM010.OI0PMDSL cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+
+
+end // end OI0PS1X
+
+// edit m010 ndt high
+Function OI0PS1Y()
+
+
+  OI0PW01.OI0PWEDF = "N"; /* end date valid flag*/
+
+  if (OI0PM010.OI0PMNDH == 0)
+    OI0PW01.OI0PWGNH = 99999999;
+    OI0PW01.OI0PWEDF = "Y";
+  else
+    OI0PW01.OI0PWPDT = OI0PM010.OI0PMNDH;
+    OI0PS1G();
+    if (TA2REC.TA2RTNCD == 0)
+      OI0PW01.OI0PWGNH = TA2GRGGN;
+      OI0PW01.OI0PWEDF = "Y";
+    else
+      converseLib.validationFailed(107);
+      set OI0PM010.OI0PMNDH cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+
+end // end OI0PS1Y
+
+// edit m010 ndt low
+Function OI0PS1Z()
+
+
+
+  OI0PW01.OI0PWSDF = "N"; /* start date valid flag*/
+
+  if (OI0PM010.OI0PMNDL == 0)
+    OI0PW01.OI0PWGNL = 0;
+    OI0PW01.OI0PWSDF = "Y";
+  else
+    OI0PW01.OI0PWPDT = OI0PM010.OI0PMNDL;
+    OI0PS1G();
+    if (TA2REC.TA2RTNCD == 0)
+      OI0PW01.OI0PWGNL = TA2GRGGN;
+      OI0PW01.OI0PWSDF = "Y";
+    else
+      converseLib.validationFailed(107);
+      set OI0PM010.OI0PMNDL cursor, bold;
+      OI0PW01.OI0PWERR = "Y";
+    end
+  end
+
+
+
+end // end OI0PS1Z
+
+// load parms for call
+Function OI0PS20()
+
+
+
+  OIPREC.XWHCD = OI0PM010.XWHCD; /* warehouse*/
+  OIPREC.XOWCD = OI0PM010.XOWCD; /* owner group*/
+  OIPREC.XQACD = OI0PM010.XQACD; /* quality*/
+  OIPREC.SY1STNBR = OI0PM010.SY1STNBR; /* style*/
+  OIPREC.SY2CLRID = OI0PM010.SY2CLRID; /* color*/
+  OIPREC.XDMCD = OI0PM010.XDMCD; /* dimension*/
+  OIPREC.XGPCD = OI0PM010.XGPCD; /* gpc*/
+  OIPREC.XPGCD = OI0PM010.XPGCD; /* package type*/
+  OIPREC.XUMCD = OI0PM010.XUMCD; /* unit of measure*/
+  OIPREC.PC2INSEG = OI0PM010.PC2INSEG; /* inventory seg cd*/
+
+
+  if (OI0PM010.OP2LNIST == "AL") /* load line item status*/
+    OI0PW04.OI0PWLIH = "PA"; /* high range - 'al'*/
+    OIPREC.OP2LNIST = "AL"; /* low range  - 'al'*/
+  else
+    if (OI0PM010.OP2LNIST == "RS")
+      OI0PW04.OI0PWLIH = "RS"; /* high range - 'rs'*/
+      OIPREC.OP2LNIST = "PR"; /* low range  - 'rs'*/
+    else
+      OI0PW04.OI0PWLIH = "RS"; /* high range - 'ar'*/
+      OIPREC.OP2LNIST = "AL"; /* low range  - 'ar'*/
+    end
+  end
+
+
+  if (OI0PM010.XOTCD > " ")
+    OIPREC.XOTCD = OI0PM010.XOTCD; /* load order type*/
+  else
+    OIPREC.XOTCD = "*"; /* * gets all order types*/
+  end
+
+  if (OI0PM010.OI0PMNDH > 0)
+    OI0PW04.OI0PWNDH = OI0PW01.OI0PWGNH; /* load need date - high*/
+  else
+    OI0PW04.OI0PWNDH = 99999999; /* max high rng if nothing entered*/
+  end
+
+  if (OI0PM010.OI0PMNDL > 0)
+    OIPREC.OP1CUNDT = OI0PW01.OI0PWGNL; /* load need date - low*/
+  else
+    OIPREC.OP1CUNDT = 0; /* min low rng if nothing entered*/
+  end
+
+  if (OI0PM010.XOCCD > " ")
+    OIPREC.XOCCD = OI0PM010.XOCCD; /* load order class*/
+  else
+    OIPREC.XOCCD = "*"; /* * gets all order classes*/
+  end
+
+  if (OI0PM010.OI0PMDSH > 0)
+    OI0PW04.OI0PWDSH = OI0PW01.OI0PWGDH; /* load don't ship - high dt*/
+  else
+    OI0PW04.OI0PWDSH = 99999999; /* max high rng if nothing entered*/
+  end
+
+  if (OI0PM010.OI0PMDSL > 0)
+    OIPREC.OP1DSADT = OI0PW01.OI0PWGDL; /* load don't ship - low*/
+  else
+    OIPREC.OP1DSADT = 0; /* min low rng if nothing entered*/
+  end
+
+  if (OI0PM010.OI0PMCSH > " ")
+    OI0PW04.OI0PWCSH = OI0PM010.OI0PMCSH; /* credit status - high*/
+  else
+    OI0PW04.OI0PWCSH = 99; /* high range if nothing entered*/
+  end
+
+
+  if (OI0PM010.OI0PMCSL > " ")
+    OIPREC.XCSCD = OI0PM010.OI0PMCSL; /* load credit status - low*/
+  else
+    OIPREC.XCSCD = "00"; /* low range if nothing entered*/
+  end
+
+  if (OI0PM010.XSOCD > " ")
+    OIPREC.XSOCD = OI0PM010.XSOCD; /* load sales office*/
+  else
+    OIPREC.XSOCD = "*"; /* * gets all sales offices*/
+  end
+
+
+  if (OI0PM010.XACCD > " ")
+    OIPREC.XACCD = OI0PM010.XACCD; /* load assignment contr id*/
+  else
+    OIPREC.XACCD = "*"; /* * gets all asgn cont id's*/
+  end
+
+
+  if (OI0PM010.XBDCD > " ")
+    OIPREC.XBDCD = OI0PM010.XBDCD; /* load bulk id*/
+  else
+    OIPREC.XBDCD = "*"; /* * gets all bulk id's*/
+  end
+
+  if (OI0PM010.OI0PMONL > 0) /* load order number - low*/
+    OIPREC.OP1CUOID = OI0PM010.OI0PMONL;
+  else
+    OIPREC.OP1CUOID = 0; /* min low rng if nothing entered*/
+  end
+
+
+  if (OI0PM010.OI0PMONH > 0) /* load order number - high*/
+    OI0PW04.OI0PWONH = OI0PM010.OI0PMONH;
+  else
+    OI0PW04.OI0PWONH = 99999999; /* max high rng if nothing entered*/
+  end
+
+
+          /* total units are not loaded to the call--*/
+          /* the records found are checked against the range*/
+          /* during the 'fetch next' portion of the call*/
+
+
+
+end // end OI0PS20
+
+// call oiprec
+Function OI0PS22()
+
+
+
+   /* *****************************************/
+          /* select the set   's1'*/
+   /* *****************************************/
+
+  OI0PW04.OI0PWIO = "S1"; /* open cursor to select set*/
+
+  call "IO2070" (OI0PW04, SQLCA, OIPREC) {isNoRefresh = yes, isExternal = yes};
+
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    while (SQLCA.VAGen_SQLCODE == 0)
+      /* *************************************************/
+       /* fetch and format the data into pages*/
+      /* *************************************************/
+
+      OI0PW01.OI0PWEOF = "N"; /* init end of file switch*/
+      OI0PW01.OI0PW2WX = 1; /* init count*/
+
+
+      while (OI0PW01.OI0PWEOF == "N") /* while not end of file*/
+        OI0PS23(); /* get data and format page*/
+
+        /* ***** if page is full, add page to storage queue*/
+
+        if (OI0PW01.OI0PW2WX > 17) /* page is full*/
+          OI0PS25(); /* add page to temporary stor*/
+        end
+      end
+
+      /* ***** add any partially formatted last page to the queue*/
+
+      if (OI0PW01.OI0PW2WX > 1) /* if a page was formatted*/
+        OI0PS25(); /* add page to temp storage*/
+      end
+
+    end
+  else
+    OI0PS17(); /* purge temp storage*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OI0P";
+    TA1REC.TA1LOCAT[1] = "S1      ";
+    TA1REC.TA1LOCAT[2] = "OI0P015 ";
+    TA1REC.TA1LOCAT[3] = "OI0PS22 ";
+    TA1REC.TA1LOCAT[4] = "IO2070  ";
+    TA1REC.TA1MAP = "        ";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VOPROD01";
+    TA1REC.TA1TBLKE = "OIPREC  ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    XSPF4();
+    exit program;
+  end
+
+   /* *************************************************/
+   /* close io2070 cursor*/
+   /* *************************************************/
+
+  OI0PW04.OI0PWIO = "C1";
+
+  call "IO2070" (OI0PW04, SQLCA, OIPREC) {isNoRefresh = yes, isExternal = yes}; /* close cursor*/
+
+
+
+end // end OI0PS22
+
+// fetch next 'n1' oiprec
+Function OI0PS23()
+   /* *****************************************/
+          /* fetch next       'n1'*/
+   /* *****************************************/
+
+  OI0PW04.OI0PWIO = "N1";
+
+  call "IO2070" (OI0PW04, SQLCA, OIPREC) {isNoRefresh = yes, isExternal = yes}; /* fetch next order*/
+
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+
+    OI0PS24(); /* check total units parameter*/
+
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* returned set empty*/
+      OI0PW01.OI0PWEOF = "Y";
+    else
+      OI0PS17(); /* purge temp storage*/
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OI0P";
+      TA1REC.TA1LOCAT[1] = "N1      ";
+      TA1REC.TA1LOCAT[2] = "OI0PS23 ";
+      TA1REC.TA1LOCAT[3] = "IO2030  ";
+      TA1REC.TA1LOCAT[4] = "        ";
+      TA1REC.TA1MAP = "        ";
+      TA1REC.TA1DBASE = "DORDER  ";
+      TA1REC.TA1TBLVU = "VOPROD01";
+      TA1REC.TA1TBLKE = "OIPREC  ";
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      COMMAREA.CAUSERA = " "; /* on error clear ws*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      XSPF4();
+      exit program;
+    end
+  end
+
+
+
+end // end OI0PS23
+
+// total units within range check
+Function OI0PS24()
+
+
+  OI0PW02.OI0PWTU[OI0PW2WX] = 0;
+
+  if (OI0PM010.OP2LNIST == "AL"
+   && OI0PW01.OI0PWTUL <= OIPREC.OP2TALCQ
+   && OI0PW01.OI0PWTUH >= OIPREC.OP2TALCQ)
+     /* next sentence*/
+  else
+    if (OI0PM010.OP2LNIST == "RS"
+     && OI0PW01.OI0PWTUL <= OIPREC.OP2TOHRQ
+     && OI0PW01.OI0PWTUH >= OIPREC.OP2TOHRQ)
+       /* next sentence*/
+    else
+      if (OI0PM010.OP2LNIST == "AR")
+        OI0PW02.OI0PWTU[OI0PW2WX] = OIPREC.OP2TALCQ + OIPREC.OP2TOHRQ;
+        if (OI0PW01.OI0PWTUL <= OI0PW02.OI0PWTU[OI0PW2WX]
+         && OI0PW01.OI0PWTUH >= OI0PW02.OI0PWTU[OI0PW2WX])
+           /* next sentence*/
+        else
+          OI0PW02.OI0PWTU[OI0PW2WX] = 0; /* reset because of reject*/
+          return; /* fetch the next record*/
+        end
+      else
+        OI0PW02.OI0PWTU[OI0PW2WX] = 0; /* reset because of reject*/
+        return; /* fetch the next record*/
+      end
+    end
+  end
+
+
+   /* *******************************************************/
+   /* if the rec made it this far, all tests have been*/
+   /* passed and the record can be moved to working storage*/
+   /* *******************************************************/
+
+  OI0PS26(); /* load record to temp storage*/
+
+
+
+end // end OI0PS24
+
+// add page to temporary storage
+Function OI0PS25()
+
+
+
+  OI0PW02.OI0PWLEN = 1190; /* temp storage length*/
+  TA5REC.TA5APPID = "OI0P"; /* appl identification*/
+  TA5REC.TA5FNCCD = "A"; /* function code*/
+
+  call "TA0050" (OI0PW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == +0)
+    OI0PW01.TA5TSQIX = TA5REC.TA5TSQIX; /* highest page number*/
+    OI0PW01.OI0PW2WX = 1; /* reset display line number*/
+    set OI0PW02 empty; /* clear temp storage record*/
+  else
+    converseLib.validationFailed(10); /* database busy, please try again*/
+    OI0PW01.OI0PWERR = "Y"; /* turn on error flag*/
+    TA1REC.TA1TYPE = "APPL"; /* type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* termination function*/
+    TA1REC.TA1PGMNM = "OI0PS25";
+    TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "OI0PM002"; /* map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* subroutine parms*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+
+  end
+end // end OI0PS25
+
+// move record to working storage
+Function OI0PS26()
+
+
+
+  OI0PW02.OP1PARTN[OI0PW2WX] = OIPREC.OP1PARTN; /* part char*/
+  OI0PW01.OI0PWFCO = OIPREC.OP1CUOID; /* cust ord nbr*/
+  OI0PW01.OI0PWPT1 = "."; /* period to separate ord nbr*/
+  OI0PW01.OI0PWFNO = OIPREC.OP1NORID; /* nike ord id*/
+  OI0PW02.OI0PWORD[OI0PW2WX] = OI0PW01.OI0PWORD; /* formatted ord nbr*/
+  OI0PW02.OI0PWLNB[OI0PW2WX] = OIPREC.OP2LNINB; /* line item nbr*/
+  OI0PW02.KUMSTSNM[OI0PW2WX] = OIPREC.KUMSTSNM; /* cust short nm*/
+  OI0PW02.OP2LNIST[OI0PW2WX] = OIPREC.OP2LNIST; /* line item status*/
+  OI0PW02.XCSCD[OI0PW2WX] = OIPREC.XCSCD; /* credit status*/
+  OI0PW01.OI0PWDT1 = OIPREC.OP1CUNDT; /* format date*/
+  OI0PW02.OI0PWNDT[OI0PW2WX] = OI0PW01.OI0PWDT1;
+                                   /* customer need date*/
+  OI0PW02.XOTCD[OI0PW2WX] = OIPREC.XOTCD; /* order type*/
+  OI0PW02.XOCCD[OI0PW2WX] = OIPREC.XOCCD; /* order class*/
+  OI0PW01.OI0PWDT1 = OIPREC.OP1DSADT; /* format date*/
+  OI0PW02.OI0PWDSA[OI0PW2WX] = OI0PW01.OI0PWDT1;
+  OI0PW02.XACCD[OI0PW2WX] = OIPREC.XACCD; /* aloc asgn contrl id*/
+  OI0PW02.XBDCD[OI0PW2WX] = OIPREC.XBDCD; /* bulk/draw order cd*/
+  OI0PW02.XDSCD[OI0PW2WX] = OIPREC.XDSCD; /* direct ship cd*/
+  OI0PW02.XSOCD[OI0PW2WX] = OIPREC.XSOCD; /* sales office id*/
+  OI0PW02.OI0PWREP[OI0PW2WX] = OIPREC.SM4REPID; /* sales rep*/
+
+  if (OI0PM010.OP2LNIST == "AL")
+    OI0PW02.OI0PWTU[OI0PW2WX] = OIPREC.OP2TALCQ;
+  else
+    if (OI0PM010.OP2LNIST == "RS")
+      OI0PW02.OI0PWTU[OI0PW2WX] = OIPREC.OP2TOHRQ;
+    else /* 'ar' requested--add both quantities together*/
+        /* next sentence -- array already loaded from*/
+            /* oi0ps24 total units check*/
+    end
+  end
+
+
+  OI0PW01.OI0PW2WX = OI0PW01.OI0PW2WX + 1; /* increment array*/
+
+
+
+end // end OI0PS26
+
+// move working storage to map
+Function OI0PS28()
+
+
+   /* **************************************************/
+   /* 1. first time thru, get page 1*/
+   /* 2. check if map page is same as storage*/
+   /* **************************************************/
+
+  if (OI0PM020.OI0PMTSP == 0)
+    OI0PW01.OI0PWTSP = 1;
+    OI0PM020.OI0PMTSP = 1;
+    OI0PS29(); /* get temp storage page wanted*/
+  end
+
+  if (converseVar.eventKey is enter /* specific page was requested*/
+   && OI0PM020.OI0PMTSP != OI0PW01.OI0PWTSP)
+    OI0PW01.OI0PWTSP = OI0PM020.OI0PMTSP;
+    OI0PS29(); /* get temp storage page wanted*/
+  end
+
+
+  if (converseVar.eventKey is pf7 /* oi0pmtsp was adjusted in 3a*/
+   || converseVar.eventKey is pf8) /* oi0pmtsp was adjusted in 3b*/
+    OI0PS29(); /* get temp storage page wanted*/
+  end
+
+   /* **************************************************/
+   /* set select, need date, don't ship date fields*/
+   /* defined--they may have been set autoskip dark*/
+   /* in oi0p020*/
+   /* **************************************************/
+
+  OI0PW01.OI0PW2MX = 1;
+
+  while (OI0PW2MX <= 17)
+    set OI0PM020.OI0PMSEL[OI0PW2MX] initialAttributes;
+    set OI0PM020.OI0PMCND[OI0PW2MX] initialAttributes;
+    set OI0PM020.OI0PMDSD[OI0PW2MX] initialAttributes;
+    OI0PW2MX = OI0PW2MX + 1;
+  end
+
+  OI0PM020.SY1STNBR = OI0PM010.SY1STNBR;
+  OI0PM020.SY1SSTNM = SYCREC.SY1SSTNM;
+  OI0PM020.XWHCD = OI0PM010.XWHCD;
+  OI0PM020.OI0PMTSP = OI0PW01.OI0PWTSP; /* current page nbr*/
+  OI0PM020.TA5TSQIX = OI0PW01.TA5TSQIX; /* highest page nbr*/
+
+
+   /* ********************************************************/
+     /* oi0pw2wx = w02  working storage subscript for m020*/
+   /* ********************************************************/
+
+  OI0PW2WX = 1;
+
+  while (OI0PW01.OI0PW2WX <= 17) /* total possible for map*/
+
+    OI0PM020.OI0PMSEL[OI0PW2WX] = OI0PW02.OI0PWSEL[OI0PW2WX]; /* sel*/
+    OI0PM020.OI0PMORD[OI0PW2WX] = OI0PW02.OI0PWORD[OI0PW2WX];
+                                   /* ord #*/
+    OI0PM020.KUMSTSNM[OI0PW2WX] = OI0PW02.KUMSTSNM[OI0PW2WX];
+    OI0PM020.OP2LNIST[OI0PW2WX] = OI0PW02.OP2LNIST[OI0PW2WX];
+    OI0PM020.XCSCD[OI0PW2WX] = OI0PW02.XCSCD[OI0PW2WX];
+                                   /* credit stat*/
+    OI0PW01.OI0PWDT1 = OI0PW02.OI0PWNDT[OI0PW2WX];
+    OI0PW01.OI0PWYY2 = OI0PW01.OI0PWYY1;
+    OI0PW01.OI0PWMM2 = OI0PW01.OI0PWMM1;
+    OI0PW01.OI0PWDD2 = OI0PW01.OI0PWDD1;
+    OI0PM020.OI0PMCND[OI0PW2WX] = OI0PW01.OI0PWDT2;
+    OI0PM020.XOTCD[OI0PW2WX] = OI0PW02.XOTCD[OI0PW2WX]; /* order type*/
+    OI0PM020.XOCCD[OI0PW2WX] = OI0PW02.XOCCD[OI0PW2WX];
+                                   /* order class*/
+    OI0PW01.OI0PWDT1 = OI0PW02.OI0PWDSA[OI0PW2WX];
+    OI0PW01.OI0PWYY2 = OI0PW01.OI0PWYY1;
+    OI0PW01.OI0PWMM2 = OI0PW01.OI0PWMM1;
+    OI0PW01.OI0PWDD2 = OI0PW01.OI0PWDD1;
+    OI0PM020.OI0PMDSD[OI0PW2WX] = OI0PW01.OI0PWDT2;
+    OI0PM020.XACCD[OI0PW2WX] = OI0PW02.XACCD[OI0PW2WX]; /* aloc asgnt*/
+    OI0PM020.XBDCD[OI0PW2WX] = OI0PW02.XBDCD[OI0PW2WX]; /* bulk*/
+    OI0PM020.XDSCD[OI0PW2WX] = OI0PW02.XDSCD[OI0PW2WX]; /* direct sh*/
+    OI0PM020.XSOCD[OI0PW2WX] = OI0PW02.XSOCD[OI0PW2WX]; /* sales off*/
+    OI0PM020.SM4REPID[OI0PW2WX] = OI0PW02.OI0PWREP[OI0PW2WX];
+    OI0PM020.OI0PMTU[OI0PW2WX] = OI0PW02.OI0PWTU[OI0PW2WX];
+
+    OI0PW01.OI0PW2WX = OI0PW01.OI0PW2WX + 1; /* increment counter*/
+
+  end
+
+
+
+end // end OI0PS28
+
+// read temporary storage page
+Function OI0PS29()
+
+
+
+  OI0PW02.OI0PWLEN = 1190; /* temp storage length*/
+  TA5REC.TA5APPID = "OI0P"; /* appl identification*/
+  TA5REC.TA5TSQIX = OI0PW01.OI0PWTSP; /* page number*/
+  TA5REC.TA5FNCCD = "R"; /* function code*/
+
+  call "TA0050" (OI0PW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == +0)
+    /* next sentence*/
+  else
+    converseLib.validationFailed(10); /* database busy, please try again*/
+    OI0PW01.OI0PWERR = "Y"; /* turn on error flag*/
+    TA1REC.TA1TYPE = "APPL"; /* type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* termination function*/
+    TA1REC.TA1PGMNM = "OI0PS29";
+    TA1REC.TA1LOC = "READ PAGE TO TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "OI0PM002"; /* map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* subroutine parms*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+
+  end
+end // end OI0PS29
+
+// check m020 pf keys
+Function OI0PS30()
+
+
+
+   /* *************************************************************/
+    /* check pf keys:  oi0pm020*/
+   /* *************************************************************/
+
+
+  OI0PW01.OI0PWERR = "N"; /* reset error flag*/
+
+  if (converseVar.eventKey is pa1
+   || converseVar.eventKey is pa2)
+    converseLib.clearScreen();
+    
+    converseLib.validationFailed(008); /* invalid key*/
+    OI0PW01.OI0PWERR = "Y"; /* error*/
+  else
+    if (converseVar.eventKey is pf3) /* back to parameter screen*/
+      exit stack;
+    else
+      if (converseVar.eventKey is pf4) /* back to master menu*/
+        OI0PS17();
+        COMMAREA.CAUSERA = " "; /* clear user area*/
+        XSPF4();
+      else
+        if (converseVar.eventKey is pf7) /* page back*/
+          OI0PS3A(); /* page backward*/
+          exit stack;
+        else
+          if (converseVar.eventKey is pf8) /* page forward*/
+            OI0PS3B();
+            exit stack;
+          else
+            if (converseVar.eventKey is pf19)
+              OI0PS3C(); /* restore screen*/
+              exit stack;
+            else
+              if (converseVar.eventKey is enter)
+                OI0PS31(); /* edit request page field oi0pm020.oi0pmtsp*/
+              else
+                converseLib.validationFailed(008); /* invalid key*/
+                OI0PW01.OI0PWERR = "Y"; /* error*/
+                exit stack;
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+
+end // end OI0PS30
+
+// edit page request field
+Function OI0PS31()
+
+
+
+   /* ********************************************************/
+   /* if specific page requested, check that it doesn't*/
+   /* exceed the maximum available; if it does, bypass rest*/
+   /* of edits*/
+   /* ********************************************************/
+
+  if (OI0PM020.OI0PMTSP > OI0PW01.TA5TSQIX) /* highest page existing*/
+    OI0PW01.OI0PWERR = "Y";
+    converseLib.validationFailed(03); /* page requested exceeds total pages*/
+    set OI0PM020.OI0PMTSP cursor, bold;
+    exit stack;
+  else
+    set OI0PM020.OI0PMTSP initialAttributes;
+  end
+
+   /* ***********************************************************/
+   /* if specific page requested, prepare the temp storage read*/
+   /* ***********************************************************/
+
+  if (OI0PM020.OI0PMTSP != OI0PW01.OI0PWTSP)
+    OI0PS28();
+    OI0PW01.OI0PWERR = "Y"; /* trigger to kick out to m020*/
+    exit stack;
+  end
+
+
+
+end // end OI0PS31
+
+// edit m020 select field
+Function OI0PS32()
+   /* *****************************************************/
+    /* to select, must use 's'*/
+   /* *****************************************************/
+
+
+  OI0PW01.OI0PW2WX = 1; /* map line count*/
+  OI0PW01.OI0PWSCT = 0; /* selection count*/
+
+  while (OI0PW01.OI0PW2WX <= 17
+   && OI0PW01.OI0PWSCT < 2)
+    if (OI0PM020.OI0PMSEL[OI0PW2WX] > " ")
+      if (OI0PM020.OI0PMSEL[OI0PW2WX] != "S"
+       && OI0PM020.OI0PMSEL[OI0PW2WX] != "V")
+        converseLib.validationFailed(007); /* enter s to select*/
+        set OI0PM020.OI0PMSEL[OI0PW2WX] cursor, bold;
+        OI0PW01.OI0PWERR = "Y";
+        exit stack;
+      else /* keep track of how many selected*/
+        if (OI0PM020.OI0PMSEL[OI0PW2WX] == "S")
+          OI0PW01.OI0PWSCT = OI0PW01.OI0PWSCT + 1;
+          set OI0PM020.OI0PMSEL[OI0PW2WX] initialAttributes;
+        else
+        end
+      end
+    else
+      set OI0PM020.OI0PMSEL[OI0PW2WX] initialAttributes;
+    end
+    OI0PW01.OI0PW2WX = OI0PW01.OI0PW2WX + 1;
+  end
+
+
+   /* *****************************************************/
+    /* only one line may be selected*/
+   /* *****************************************************/
+
+  if (OI0PW01.OI0PWSCT > 1)
+    converseLib.validationFailed(193); /* only one line may be selected*/
+    OI0PW01.OI0PWERR = "Y";
+    set OI0PM020.OI0PMSEL[1] cursor;
+    exit stack;
+  else
+    if (converseVar.eventKey is enter
+     && OI0PW01.OI0PWSCT == 0) /* if no orders selected, give msg*/
+      converseLib.validationFailed(214); /* no orders selected*/
+      OI0PW01.OI0PWERR = "Y"; /* redisplay screen*/
+      set OI0PM020.OI0PMSEL[1] cursor;
+      exit stack;
+    end
+  end
+
+
+   /* *************************************************************/
+    /* one is selected; keep track of which one and prepare call*/
+      /* oi0pw3lx = map line selected, saved to use later in m030*/
+   /* *************************************************************/
+
+  set OP8REC empty; /* prepare for calling db1000*/
+  set OPBREC empty; /* same*/
+  set OP3REC empty; /* same*/
+
+
+  OI0PW01.OI0PW2WX = 1; /* set map at line 1*/
+
+  while (OI0PW01.OI0PW2WX <= 17)
+    if (OI0PM020.OI0PMSEL[OI0PW2WX] == "S") /* if the line is selected*/
+      OI0PW02.OI0PWSEL[OI0PW2WX] = "V"; /* show line as viewed*/
+      OI0PM020.OI0PMSEL[OI0PW2WX] = "V"; /* show line as viewed*/
+      OI0PS33(); /* update temp storage with 'v'*/
+
+             /* below:  keep track of line selected*/
+      OI0PW01.OI0PW3LX = OI0PW01.OI0PW2WX;
+
+      OP3REC.OP1PARTN = OI0PW02.OP1PARTN[OI0PW2WX]; /* load db1000*/
+      OI0PW01.OI0PWORD = OI0PW02.OI0PWORD[OI0PW2WX];
+      OP3REC.OP1CUOID = OI0PW01.OI0PWFCO;
+      OP3REC.OP1NORID = OI0PW01.OI0PWFNO;
+      OP3REC.OP2LNINB = OI0PW02.OI0PWLNB[OI0PW2WX];
+    else
+       /* next sentence*/
+    end
+    OI0PW2WX = OI0PW2WX + 1;
+  end
+
+
+
+end // end OI0PS32
+
+// viewed line - update temp stg
+Function OI0PS33()
+
+
+
+  OI0PW02.OI0PWLEN = 1190; /* temp storage length*/
+  TA5REC.TA5APPID = "OI0P"; /* appl identification*/
+  TA5REC.TA5TSQIX = OI0PW01.OI0PWTSP; /* page number*/
+  TA5REC.TA5FNCCD = "U"; /* function code*/
+
+  call "TA0050" (OI0PW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == +0)
+    /* next sentence*/
+  else
+    converseLib.validationFailed(0);
+    OI0PM010.VAGen_EZEMSG = "SYSTEM ERROR -- PLEASE TRY AGAIN";
+    OI0PW01.OI0PWERR = "Y"; /* turn on error flag*/
+    TA1REC.TA1TYPE = "APPL"; /* type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* termination function*/
+    TA1REC.TA1PGMNM = "OI0PS33";
+    TA1REC.TA1LOC = "UPDATE TEMP STORAGE VIEWED LINE";
+    TA1REC.TA1MAP = "OI0PM002"; /* map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* subroutine parms*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+
+  end
+end // end OI0PS33
+
+// m020 page backward
+Function OI0PS3A()
+
+
+
+  if (OI0PW01.OI0PWTSP < 2)
+    converseLib.validationFailed(192); /* end of page backward*/
+    OI0PW01.OI0PWERR = "Y";
+  else
+    OI0PW01.OI0PWTSP = OI0PW01.OI0PWTSP - 1; /* decrement page number*/
+    OI0PS28(); /* load record to map*/
+  end
+
+
+
+end // end OI0PS3A
+
+// m020 page forward
+Function OI0PS3B()
+
+
+
+  if (OI0PW01.OI0PWTSP >= OI0PW01.TA5TSQIX) /* no more pages*/
+    converseLib.validationFailed(191); /* end of page forward*/
+    OI0PW01.OI0PWERR = "Y";
+  else
+    OI0PW01.OI0PWTSP = OI0PW01.OI0PWTSP + 1; /* increment page nbr*/
+    OI0PS28(); /* load records for display*/
+  end
+
+
+
+
+end // end OI0PS3B
+
+// refresh m020 screen
+Function OI0PS3C()
+
+
+
+  OI0PM020.OI0PMTSP = OI0PW01.OI0PWTSP;
+  OI0PM020.TA5TSQIX = OI0PW01.TA5TSQIX;
+  set OI0PM020.OI0PMTSP initialAttributes;
+
+  OI0PW01.OI0PW2WX = 1; /* map index*/
+
+  while (OI0PW01.OI0PW2WX < 18)
+    OI0PM020.OI0PMSEL[OI0PW2WX] = OI0PW02.OI0PWSEL[OI0PW2WX];
+    OI0PW01.OI0PW2WX = OI0PW01.OI0PW2WX + 1; /* working stg index*/
+  end
+
+
+
+end // end OI0PS3C
+
+// read size scale io0040 sy4rec
+Function OI0PS40()
+
+
+   /* *************************************************/
+   /* if the previous style's size scale (sy4rec--*/
+    /* used to get size/qty info) is the same size*/
+   /* scale for the current style (sycrec--style*/
+   /* valid edit), bypass getting the same info again*/
+   /* *************************************************/
+
+  if (SYCREC.SY4SZSCL != SY4REC.SY4SZSCL)
+    set SY4REC empty;
+    set SQLCA empty;
+    set ERRSQLCA empty;
+
+    SY4REC.SY4SZSCL = SYCREC.SY4SZSCL;
+
+    call "IO0040" ("S ", SQLCA, SY4REC) {isNoRefresh = yes, isExternal = yes};
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* if size scale found*/
+       /* next sentence*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* if deadlock*/
+        converseLib.validationFailed(10); /* database busy, please try again*/
+        OI0PWERR = "Y";
+        exit stack;
+      else
+        OI0PS17(); /* purge temp storage*/
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "OI0P    ";
+        TA1REC.TA1LOCAT[1] = "S       ";
+        TA1REC.TA1LOCAT[2] = "OI0PS40 ";
+        TA1REC.TA1LOCAT[3] = "        ";
+        TA1REC.TA1LOCAT[4] = "        ";
+        TA1REC.TA1MAP = "OI0PM030";
+        TA1REC.TA1DBASE = "DPROD   ";
+        TA1REC.TA1TBLVU = "VSCALE01";
+        TA1REC.TA1TBLKE = SY4REC.SY4SZSCL;
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+        COMMAREA.CAUSERA = " ";
+        XSPF4();
+        exit program;
+      end
+    end
+  else
+     /* next sentence*/
+  end
+
+
+
+end // end OI0PS40
+
+// call db1000 size/qty info
+Function OI0PS42()
+
+
+
+  OP8REC.OP8TASK = "S "; /* select function*/
+  OP8REC.OP8LOCAT[1] = "OI0PS42"; /* location for diagnostic error*/
+  OP8REC.OP8MAP = "OI0PM030";
+                                   /* info for return code < 0; puts*/
+   /* into opbrec and calls ta0020*/
+
+  call "DB1000" (OP8REC, OP3REC, OPBREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (OPBREC.OPBSZRC == 0) /* if good return*/
+    OI0PW01.OI0PW3PX = 1; /* initialize position read*/
+    OI0PW01.OI0PW3WX = 1; /* initialize final w.s. array*/
+    OI0PW01.OI0PWSCT = 0; /* initialize total sizes count*/
+
+    while (OI0PW3PX <= 40) /* loading the w.s. record*/
+      if (OP3REC.OP3SZAFL[OI0PW3PX] == "Y") /* if the size is active status*/
+        OI0PW03.SY4IDDSC[OI0PW3WX] = SY4REC.SY4IDDSC[OI0PW3PX];
+        OI0PW03.OP3ONOQT[OI0PW3WX] = OP3REC.OP3ONOQT[OI0PW3PX];
+        OI0PW03.OP3ALQT[OI0PW3WX] = OP3REC.OP3ALQT[OI0PW3PX];
+        OI0PW03.OP3OHRQT[OI0PW3WX] = OP3REC.OP3OHRQT[OI0PW3PX];
+        OI0PW03.OP3SHPQT[OI0PW3WX] = OP3REC.OP3SHPQT[OI0PW3PX];
+        OI0PW01.OI0PW3WX = OI0PW01.OI0PW3WX + 1;
+        OI0PW01.OI0PWSCT = OI0PW01.OI0PWSCT + 1;
+      end
+
+      OI0PW01.OI0PW3PX = OI0PW01.OI0PW3PX + 1;
+    end
+  end
+
+
+  if (SQLCA.VAGen_SQLCODE == -911) /* if deadlock*/
+    converseLib.validationFailed(10); /* database busy, please try again*/
+    OI0PWERR = "Y";
+    exit stack;
+  else
+    if (SQLCA.VAGen_SQLCODE > 0)
+      OI0PS17(); /* purge temp storage*/
+      TA1REC.TA1TYPE = "APPL";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OI0P    ";
+      TA1REC.TA1LOCAT[1] = "S       ";
+      TA1REC.TA1LOCAT[2] = "OI0PS42 ";
+      TA1REC.TA1LOCAT[3] = "        ";
+      TA1REC.TA1LOCAT[4] = "        ";
+      TA1REC.TA1MAP = "OI0PM030";
+      TA1REC.TA1DBASE = "FORMATER";
+      TA1REC.TA1TBLVU = "        ";
+      SQLCA.VAGen_SQLCODE = OPBREC.OPBSZRC;
+      TA1REC.TA1TBLKE = OP3REC.OP2KEY;
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      COMMAREA.CAUSERA = " ";
+      XSPF4();
+      exit program;
+    end
+  end
+
+
+
+
+
+
+end // end OI0PS42
+
+// move constants to map m030
+Function OI0PS44()
+
+
+   /* *****************************************************/
+    /* set up the w.s. index for the line selected*/
+   /* *****************************************************/
+
+  OI0PW01.OI0PW2WX = OI0PW01.OI0PW3LX;
+
+   /* *****************************************************/
+    /* move the constants onto the map (m030)*/
+   /* *****************************************************/
+
+  if (OI0PM010.XWHCD in XWHTBL.XWHCD)
+    OI0PM030.XWHABRV = XWHTBL.XWHABRV[sysVar.arrayIndex]; /* warehouse*/
+    sysVar.arrayIndex = 0;
+  else
+    OI0PM030.XWHABRV = "UNKNOWN";
+  end
+
+  OI0PW01.OI0PWDT1 = OI0PW02.OI0PWNDT[OI0PW2WX]; /* format need date*/
+  OI0PW01.OI0PWYY2 = OI0PW01.OI0PWYY1;
+  OI0PW01.OI0PWMM2 = OI0PW01.OI0PWMM1;
+  OI0PW01.OI0PWDD2 = OI0PW01.OI0PWDD1;
+  OI0PM030.OI0PMCND = OI0PW01.OI0PWDT2;
+
+  OI0PM030.KUMSTSNM = OI0PW02.KUMSTSNM[OI0PW2WX]; /* store name*/
+
+  OI0PM030.PC2INSEG = OI0PM010.PC2INSEG; /* inventory seg cd*/
+
+  OI0PW03.SY1STNBR = OP3REC.SY1STNBR; /* format product nbr*/
+  OI0PW03.OI0PWH1 = "-";
+  OI0PW03.SY2CLRID = OP3REC.SY2CLRID;
+  OI0PW03.OI0PWH2 = "-";
+  OI0PW03.XDMCD = OP3REC.XDMCD;
+  OI0PM030.OI0PMSTY = OI0PW03.OI0PWSTY;
+
+  OI0PM030.SY1SSTNM = OI0PM020.SY1SSTNM; /* style name*/
+
+  if (OP3REC.OP2LNIST in XOSTBL.XOSCD) /* status*/
+    OI0PM030.XOSABRV = XOSTBL.XOSABRV[sysVar.arrayIndex];
+  else
+    OI0PM030.XOSABRV = "UNKNWN";
+  end
+
+  OI0PW01.OI0PWDT1 = OP3REC.OP2LNSDT; /* format status adj date*/
+  OI0PW01.OI0PWMM3 = OI0PW01.OI0PWMM1;
+  OI0PW01.OI0PWDD3 = OI0PW01.OI0PWDD1;
+  OI0PW01.OI0PWCC3 = OI0PW01.OI0PWCC1;
+  OI0PW01.OI0PWYY3 = OI0PW01.OI0PWYY1;
+  OI0PM030.OI0PMLSD = OI0PW01.OI0PWDT3;
+
+  OI0PW01.OI0PWFCO = OP3REC.OP1CUOID; /* format order number*/
+  OI0PW01.OI0PWPT1 = ".";
+  OI0PW01.OI0PWFNO = OP3REC.OP1NORID;
+  OI0PM030.OI0PMORD = OI0PW01.OI0PWORD;
+
+  OI0PM030.OP2TONOQ = OP3REC.OP2TONOQ; /* tot all sizes: ordered*/
+  OI0PM030.OP2TALCQ = OP3REC.OP2TALCQ; /* : aloc*/
+  OI0PM030.OP2TOHRQ = OP3REC.OP2TOHRQ; /* : rsrvd*/
+  OI0PM030.OP2TSHPQ = OP3REC.OP2TSHPQ; /* : shipped*/
+
+
+
+end // end OI0PS44
+
+// m030 load the map
+Function OI0PS46()
+
+
+   /* load screen detail*/
+
+
+
+  OI0PW01.OI0PW3MX = 1;
+
+  while (OI0PW01.OI0PW3MX <= 31 /* ; total possible for map*/
+   && OI0PW01.OI0PWSCT >= OI0PW01.OI0PW3WX) /* & as long as there's info*/
+
+    OI0PM030.SY4IDDSC[OI0PW3MX] = OI0PW03.SY4IDDSC[OI0PW3WX];
+    OI0PM030.OP3ONOQT[OI0PW3MX] = OI0PW03.OP3ONOQT[OI0PW3WX];
+    OI0PM030.OP3ALQT[OI0PW3MX] = OI0PW03.OP3ALQT[OI0PW3WX];
+    OI0PM030.OP3SHPQT[OI0PW3MX] = OI0PW03.OP3SHPQT[OI0PW3WX];
+    OI0PM030.OP3OHRQT[OI0PW3MX] = OI0PW03.OP3OHRQT[OI0PW3WX];
+    set OI0PM030.OP3ONOQT[OI0PW3MX] initialAttributes;
+    set OI0PM030.OP3ALQT[OI0PW3MX] initialAttributes;
+    set OI0PM030.OP3SHPQT[OI0PW3MX] initialAttributes;
+    set OI0PM030.OP3OHRQT[OI0PW3MX] initialAttributes;
+
+    OI0PW01.OI0PW3WX = OI0PW01.OI0PW3WX + 1; /* increment w.s. counter*/
+    OI0PW01.OI0PW3MX = OI0PW01.OI0PW3MX + 1; /* increment map  counter*/
+
+  end
+
+   /* clean up the rest of the screen not being used.*/
+
+  while (OI0PW01.OI0PW3MX <= 31)
+    OI0PM030.SY4IDDSC[OI0PW3MX] = " ";
+    set OI0PM030.OP3ONOQT[OI0PW3MX] skip, invisible;
+    set OI0PM030.OP3ALQT[OI0PW3MX] skip, invisible;
+    set OI0PM030.OP3SHPQT[OI0PW3MX] skip, invisible;
+    set OI0PM030.OP3OHRQT[OI0PW3MX] skip, invisible;
+    OI0PW01.OI0PW3MX = OI0PW3MX + 1;
+  end
+
+
+
+end // end OI0PS46
+
+// m030 handle pf keys
+Function OI0PS50()
+
+
+
+   /* *************************************************************/
+    /* handle pf keys*/
+   /* *************************************************************/
+
+
+  if (converseVar.eventKey is pa1
+   || converseVar.eventKey is pa2)
+    converseLib.clearScreen();
+    
+    converseLib.validationFailed(008); /* invalid pf key*/
+  else
+    if (converseVar.eventKey is enter)
+      /* next sentence*/
+    else
+      if (converseVar.eventKey is pf3) /* m020 prod inq summary scrn requested*/
+        exit stack;
+      else
+        if (converseVar.eventKey is pf4) /* exit to master menu*/
+          COMMAREA.CAUSERA = " "; /* clear user commarea*/
+          OI0PS17(); /* purge temp storage*/
+          XSPF4(); /* invoke master menu request*/
+          OI0PM030.VAGen_EZEMSG = COMMAREA.CAMSG; /* move error msg*/
+          COMMAREA.CATOAP = " "; /* clear application*/
+        else
+          if (converseVar.eventKey is pf5) /* m010 parameter screen requested*/
+            exit stack;
+          else
+            if (converseVar.eventKey is pf7)
+              OI0PS5A();
+              exit stack;
+            else
+              if (converseVar.eventKey is pf8)
+                OI0PS5B();
+                exit stack;
+              else
+                converseLib.validationFailed(008); /* invalid pf key*/
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+
+end // end OI0PS50
+
+// m030 page backward
+Function OI0PS5A()
+
+
+   /* ************************************************************/
+                  /* page backward                             **/
+    /* 1. oi0pw01.oi0pw3mx - screen subscript                  **/
+    /* 2. oi0pw01.oi0pw3wx - table  subscript                  **/
+    /* 3. oi0pw01.oi0pw3tx - top of page subscript             **/
+                                                            /* **/
+   /* ************************************************************/
+
+
+      /* if it is the top page, display the message and*/
+      /* redisplay the same orders.*/
+
+
+  if (OI0PW01.OI0PW3TX == 1)
+    converseLib.validationFailed(192); /* end of page backward*/
+    OI0PW01.OI0PWERR = "Y";
+    exit stack;
+  end
+
+  OI0PS5C(); /* clear screen lines for next*/
+                                     /* ; display*/
+
+  OI0PW01.OI0PW3TX = OI0PW01.OI0PW3TX - 31; /* calculate new top*/
+  OI0PW01.OI0PW3MX = 1; /* set to first array on screen*/
+  OI0PW01.OI0PW3WX = OI0PW01.OI0PW3TX; /* set starting point of w.s.*/
+
+  OI0PS46(); /* load record to map*/
+
+
+
+end // end OI0PS5A
+
+// m030 page forward
+Function OI0PS5B()
+
+
+   /* ************************************************************/
+                  /* page FORWARD                              **/
+    /* 1. oi0pw01.oi0pw3mx - screen subscript                  **/
+    /* 2. oi0pw01.oi0pw3wx - table  subscript                  **/
+    /* 3. oi0pw01.oi0pw3tx - top of page subscript             **/
+                                                            /* **/
+   /* ************************************************************/
+
+
+      /* if it is the top page, display the message and*/
+      /* redisplay the same orders.*/
+
+  OI0PW01.OI0PW3TX = OI0PW01.OI0PW3TX + 31;
+
+  if (OI0PW01.OI0PW3TX > OI0PW01.OI0PWSCT)
+    OI0PW01.OI0PW3TX = OI0PW01.OI0PW3TX - 31;
+    converseLib.validationFailed(191); /* end of page forward*/
+    OI0PW01.OI0PWERR = "Y";
+    exit stack;
+  end
+
+
+  OI0PS5C(); /* clear map fields*/
+
+  OI0PW01.OI0PW3MX = 1; /* start line 1 of map*/
+  OI0PW01.OI0PW3WX = OI0PW01.OI0PW3TX; /* set w.s.*/
+
+
+  OI0PS46(); /* load records for display*/
+
+
+end // end OI0PS5B
+
+// m030 refresh sz/qty fields
+Function OI0PS5C()
+
+
+
+   /* ********************************************************/
+     /* clear the size and qty detail fields for paging*/
+   /* ********************************************************/
+
+
+  OI0PW01.OI0PW3MX = 1;
+
+  while (OI0PW01.OI0PW3MX <= 31)
+
+    OI0PM030.SY4IDDSC[OI0PW3MX] = " ";
+    OI0PM030.OP3ONOQT[OI0PW3MX] = 0;
+    OI0PM030.OP3ALQT[OI0PW3MX] = 0;
+    OI0PM030.OP3OHRQT[OI0PW3MX] = 0;
+    OI0PM030.OP3SHPQT[OI0PW3MX] = 0;
+
+    OI0PW01.OI0PW3MX = OI0PW01.OI0PW3MX + 1;
+
+  end
+
+
+
+end // end OI0PS5C
+
+//*** RECORD=OI0PW01 ****
+// this is the general working storage section for the
+// application.
+// ***********************
+Record OI0PW01 type basicRecord
+  10 OI0PWTSP OI0PWTSP ; 
+  10 TA5TSQIX TA5TSQIX ; 
+  10 OI0PWEOF OI0PWEOF ; 
+  10 OI0PWERR OI0PWERR ; 
+  10 OI0PWMAX OI0PWMAX ; 
+  10 OI0PWEDF OI0PWEDF ; 
+  10 OI0PWSDF OI0PWSDF ; 
+  10 OI0PWPDT OI0PWPDT ; 
+  10 OI0PWGNH OI0PWGNH ; 
+  10 OI0PWGNL OI0PWGNL ; 
+  10 OI0PWGDH OI0PWGDH ; 
+  10 OI0PWGDL OI0PWGDL ; 
+  10 OI0PWTUL OI0PWTUL ; 
+  10 OI0PWTUH OI0PWTUH ; 
+  10 OI0PWDSH OI0PWDSH ; 
+  10 OI0PW2MX OI0PW2MX ; 
+  10 OI0PW2WX OI0PW2WX ; 
+  10 OI0PW2TX OI0PW2TX ; 
+  10 OI0PW3LX OI0PW3LX ; 
+  10 OI0PW3PX OI0PW3PX ; 
+  10 OI0PW3MX OI0PW3MX ; 
+  10 OI0PW3WX OI0PW3WX ; 
+  10 OI0PW3TX OI0PW3TX ; 
+  10 OI0PWOCT OI0PWOCT ; 
+  10 OI0PWSCT OI0PWSCT ; 
+  10 OI0PWORD OI0PWORD ; 
+    15 OI0PWFCO OI0PWFCO ; 
+    15 OI0PWPT1 OI0PWPT1 ; 
+    15 OI0PWFNO OI0PWFNO ; 
+  10 OI0PWDT1 OI0PWDT1 ; 
+    15 OI0PWCC1 OI0PWCC1 ; 
+    15 OI0PWYY1 OI0PWYY1 ; 
+    15 OI0PWMM1 OI0PWMM1 ; 
+    15 OI0PWDD1 OI0PWDD1 ; 
+  10 OI0PWDT2 OI0PWDT2 ; 
+    15 OI0PWMM2 OI0PWMM2 ; 
+    15 OI0PWDD2 OI0PWDD2 ; 
+    15 OI0PWYY2 OI0PWYY2 ; 
+  10 OI0PWDT3 OI0PWDT3 ; 
+    15 OI0PWMM3 OI0PWMM3 ; 
+    15 OI0PWDD3 OI0PWDD3 ; 
+    15 OI0PWCC3 OI0PWCC3 ; 
+    15 OI0PWYY3 OI0PWYY3 ; 
+  10 OI0PWOKY OI0PWOKY ; 
+    15 XWHCD XWHCD ; 
+    15 XOWCD XOWCD ; 
+end // end OI0PW01
+
+//*** RECORD=OI0PW02 ****
+// this is the working storage record used to load the returned
+//   arrays for oi0pm020 - product inquiry summary screen.
+// 
+//                   ***************
+//                    !!  note  !!
+//                   ***************
+// the maximum number of orders that are displayed is 100--
+// however, to get past the total units check subscript
+// in oi0ps24, the occurs count in this record had to be
+// set to 101.
+// ***********************
+Record OI0PW02 type basicRecord
+  10 OI0PWLEN OI0PWLEN ; 
+  10 OI0PW2GR OI0PW2GR [17] ; 
+    15 OI0PWSEL OI0PWSEL ; 
+    15 OP1PARTN OP1PARTN ; 
+    15 OI0PWLNB OI0PWLNB ; 
+    15 OI0PWORD OI0PWORD ; 
+    15 KUMSTSNM KUMSTSNM ; 
+    15 OP2LNIST OP2LNIST ; 
+    15 XCSCD XCSCD ; 
+    15 OI0PWNDT OI0PWNDT ; 
+    15 XOTCD XOTCD ; 
+    15 XOCCD XOCCD ; 
+    15 OI0PWDSA OI0PWDSA ; 
+    15 XACCD XACCD ; 
+    15 XBDCD XBDCD ; 
+    15 XDSCD XDSCD ; 
+    15 XSOCD XSOCD ; 
+    15 OI0PWREP OI0PWREP ; 
+    15 OI0PWTU OI0PWTU ; 
+end // end OI0PW02
+
+//*** RECORD=OI0PW03 ****
+// this is the working storage record for oi0pm030 --
+//   product detail inquiry screen.  the array holds only
+//   the individual size quantities; all other fields on
+//   m030 are constants.
+// ***********************
+Record OI0PW03 type basicRecord
+  10 OI0PWSTY OI0PWSTY ; 
+    15 SY1STNBR SY1STNBR ; 
+    15 OI0PWH1 OI0PWH1 ; 
+    15 SY2CLRID SY2CLRID ; 
+    15 OI0PWH2 OI0PWH2 ; 
+    15 XDMCD XDMCD ; 
+  10 OI0PW3GP OI0PW3GP [40] ; 
+    15 SY4IDDSC SY4IDDSC ; 
+    15 OP3ONOQT OP3ONOQT ; 
+    15 OP3ALQT OP3ALQT ; 
+    15 OP3SHPQT OP3SHPQT ; 
+    15 OP3OHRQT OP3OHRQT ; 
+end // end OI0PW03
+
+//*** RECORD=OI0PW04 ****
+// oi0pw04 is used to load the call function and high ranges
+// of fields from the m010 parameter screen.  this is used to
+// call io2070 dorder.voprod01(oiprec).  (the low ranges are
+// passed in the oiprec.)
+// ***********************
+Record OI0PW04 type basicRecord
+  10 OI0PWIO OI0PWIO ; 
+  10 OI0PWLIH OI0PWLIH ; 
+  10 OI0PWCSH OI0PWCSH ; 
+  10 OI0PWNDH OI0PWNDH ; 
+  10 OI0PWDSH OI0PWDSH ; 
+  10 OI0PWONH OI0PWONH ; 
+end // end OI0PW04
+
+//*** RECORD=OIPREC ****
+// *************** alloc/rsrv product table *******************
+// 
+// db2 table:           dorder.vxxxxxxx
+// 
+// copylib member:      dcl00xxx
+// 
+// i/o module:          ioxxxx
+// 
+// key to db2 table:    xxxxxxxxxxxxxxxxxx
+// 
+// date created:        august 20, 1987
+// 
+// maintenance log:
+// 
+//   date    init.  description
+// -------- ------  -------------------------------------------
+// 08/20/87 jvande  initial record creation
+// **********************
+Record OIPREC type basicRecord
+  5 OIPGROUP OIPGROUP ; 
+    10 OP1PARTN OP1PARTN ; 
+    10 OP1CUOID OP1CUOID ; 
+    10 OP1NORID OP1NORID ; 
+    10 OP2LNINB OP2LNINB ; 
+    10 XWHCD XWHCD ; 
+    10 XGPCD XGPCD ; 
+    10 SY1STNBR SY1STNBR ; 
+    10 SY2CLRID SY2CLRID ; 
+    10 XDMCD XDMCD ; 
+    10 XUMCD XUMCD ; 
+    10 XOWCD XOWCD ; 
+    10 XQACD XQACD ; 
+    10 XPGCD XPGCD ; 
+    10 PC2INSEG PC2INSEG ; 
+    10 OP2LNIST OP2LNIST ; 
+    10 XOTCD XOTCD ; 
+    10 OP1CUNDT OP1CUNDT ; 
+    10 XOCCD XOCCD ; 
+    10 OP1DSADT OP1DSADT ; 
+    10 XCSCD XCSCD ; 
+    10 XSOCD XSOCD ; 
+    10 XACSEQ XACSEQ ; 
+    10 XACCD XACCD ; 
+    10 XBDCD XBDCD ; 
+    10 KUMSTSNM KUMSTSNM ; 
+    10 XDSCD XDSCD ; 
+    10 SM4REPID SM4REPID ; 
+    10 OP2TALCQ OP2TALCQ ; 
+    10 OP2TOHRQ OP2TOHRQ ; 
+    10 ZZZSDT ZZZSDT ; 
+end // end OIPREC
+
+// data display line
+DataItem OI0PW2GR char(70)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// m020 map subscript
+DataItem OI0PW2MX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// m020 top of page index
+DataItem OI0PW2TX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// m020 ws array subscript
+DataItem OI0PW2WX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// product detail group level
+DataItem OI0PW3GP char(21)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// line selected from m020
+DataItem OI0PW3LX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// m030 map subscript
+DataItem OI0PW3MX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// read position on sizes
+DataItem OI0PW3PX num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// m030 top of page index
+DataItem OI0PW3TX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// m030 ws array subscript
+DataItem OI0PW3WX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// century
+DataItem OI0PWCC1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// century
+DataItem OI0PWCC3 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// high range - credit status
+DataItem OI0PWCSH num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// day
+DataItem OI0PWDD1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// day
+DataItem OI0PWDD2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// day
+DataItem OI0PWDD3 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op-dnt-ship-aft-dt
+DataItem OI0PWDSA num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// high range - don't ship date
+DataItem OI0PWDSH int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ccyymmdd format
+DataItem OI0PWDT1 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mmddyy format
+DataItem OI0PWDT2 num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mmddccyy format
+DataItem OI0PWDT3 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// end date valid flag
+DataItem OI0PWEDF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end of file flag
+DataItem OI0PWEOF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error flag
+DataItem OI0PWERR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// cust ord id
+DataItem OI0PWFCO num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nike order id
+DataItem OI0PWFNO num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ta2grggn dont ship high
+DataItem OI0PWGDH num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ta2grggn don't ship low
+DataItem OI0PWGDL num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ta2grggn need dt high
+DataItem OI0PWGNH num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ta2grggn need dt low
+DataItem OI0PWGNL num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hyphen 1
+DataItem OI0PWH1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hyphen 2
+DataItem OI0PWH2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// call function s1,n1,c1 etc
+DataItem OI0PWIO char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// temporary storage length
+DataItem OI0PWLEN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// high range - status
+DataItem OI0PWLIH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// op-line-item-nbr
+DataItem OI0PWLNB num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// max ords found flag
+DataItem OI0PWMAX char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// month
+DataItem OI0PWMM1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// month
+DataItem OI0PWMM2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// month
+DataItem OI0PWMM3 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// high range - need date
+DataItem OI0PWNDH int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op-cust-need-dt
+DataItem OI0PWNDT num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nbr orders selected
+DataItem OI0PWOCT num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// key to xowtbl
+DataItem OI0PWOKY char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// high range - order number
+DataItem OI0PWONH int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted order nbr
+DataItem OI0PWORD char(11)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// parameter date - generic
+DataItem OI0PWPDT num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// decimal point
+DataItem OI0PWPT1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// sales rep id
+DataItem OI0PWREP num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// nbr of sizes found
+DataItem OI0PWSCT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// start date valid flag
+DataItem OI0PWSDF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// select field
+DataItem OI0PWSEL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OI0PWSTY char(13)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current temp storage page
+DataItem OI0PWTSP num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// calculated total units
+DataItem OI0PWTU num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// compared total units high
+DataItem OI0PWTUH num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// compared total units low
+DataItem OI0PWTUL num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// year
+DataItem OI0PWYY1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// year
+DataItem OI0PWYY2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// year
+DataItem OI0PWYY3 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// oiprec record group
+DataItem OIPGROUP char(85)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

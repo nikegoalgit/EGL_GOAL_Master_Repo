@@ -1,0 +1,2814 @@
+package dg0l;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import da.common.*;
+import ta.common.*;
+import vv.common.*;
+import ww.common.*;
+//*** PROGRAM=DG0L ****
+// NIKE TABLE HANDLER - TABLE MAINTENANCE - ORDER PROCESSING
+//                                          ORDER TYPE
+// OVERVIEW: This application is the maintenance application
+//           for the SYSTEM ORDER TYPE table.
+// 
+// DB2 TABLE: DCORP.VXOT0001
+// CSP TABLE: XOTTBL
+// 
+// DATE CREATED: 04/19/97
+//       AUTHOR: Leslie Rainey
+// 
+// MAINTENANCE HISTORY:
+// 
+//     date     by whom     overview of changes made
+//   --------  ----------  ------------------------------------
+//   06/18/97  LRAINE      FIX ERRROR MESSAGES - XDV, XPY
+//   06/19/97  sjohn6      increase var field to handle 100.00
+//                         swap xotszver,ind on map2
+//   01/14/99  Echan       Correct DG0LW01.XOTABRV EQ DG0LM002.
+//                         XOTADIRS in DG0LP71-COMPARE.
+//                         Display status in DG0LM001.
+//   02/24/99  Echan       Add NOHILITE in DG0LP25-SET-ATTR-1.
+//                         Chg TRAMSACTION to TRANSACTION in
+//                         DG0LP70-PROC-MAP-1.
+//                         Check duplicate and deadlock in
+//                         DG0LP70-PROC-MAP-2.
+// *********************
+Program DG0L type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "DA00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  DAWREC DAWREC; // record
+  DG0LW01 DG0LW01; // record
+  DG0LW02 DG0LW02; // record
+  ERRSQLCA ERRSQLCA; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  VDATRN01 VDATRN01; // record
+  WDA1140 WDA1140; // record
+  XSDAW01 XSDAW01; // record
+  XSDAW02 XSDAW02; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XOTTBL {deleteAfterUse = yes}; // table
+  use XDVTBL {deleteAfterUse = yes}; // table
+  use XGPTBL {deleteAfterUse = yes}; // table
+  use XLCTBL {deleteAfterUse = yes}; // table
+  use XPYTBL {deleteAfterUse = yes}; // table
+  use XQATBL {deleteAfterUse = yes}; // table
+  use DG0LM.DG0LM001,  // forms
+      DG0LM.DG0LM002
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    DG0LP00-DRIVER: DG0LP00-DRIVER();
+    exit program;
+  end // end main
+end // end DG0L
+
+// DRIVER FOR APPLICATION
+Function DG0LP00-DRIVER()
+  /* **************************************************************/
+  /* DRIVER FOR APPLICATION*/
+  /* **************************************************************/
+
+  DG0LP10-INITIALIZE(); /* Initialize application*/
+
+  if (DAWREC.DAW-RETURN-TO-DA01-FL == "Y")
+    DG0LP20-BUILD-MAP2(); /* Build the second map*/
+  else
+    DG0LP20-BUILD-MAP1(); /* Build the first map*/
+  end
+
+  if (DAWREC.DAW-RETURN-TO-DA01-FL == "Y")
+    while (DAWREC.DAW-DONE-WITH-ROW-FL == "N")
+      DG0LP30-MAIN-MAP-2(); /* Process map until ready to exit*/
+    end
+  else
+    while (DAWREC.DAW-TERM-APPL-FL == "N")
+      DG0LP30-MAIN-MAP-1(); /* Process map until ready to exit*/
+    end
+  end
+
+  DG0LP99-TERMINATE(); /* Terminate the application*/
+
+  /* **************/
+  /* ****************** END DG0LP00 *******************************/
+  /* **************/
+end // end DG0LP00-DRIVER
+
+// INITIALIZE THE APPLICATION
+Function DG0LP10-INITIALIZE()
+  /* **********************************************************/
+  /* This process initializes the program work area and map.*/
+  /* **********************************************************/
+
+  XSENTRY(); /* Check entry security*/
+
+  XSSEGTR(); /* Set segmented transaction id*/
+
+  /* Initialize records*/
+
+  DAWREC.DAWGROUP = COMMAREA.CAUSERA; /* restore system record*/
+  set DG0LW01 empty; /* Working storage record*/
+  set DG0LW02 empty; /* Temp storage record*/
+
+  DAWREC.DAW-TERM-APPL-FL = "N";
+  DAWREC.DAW-EDIT-ERROR-FL = "N";
+
+  /* Initialize and move standard information to the map*/
+
+  set DG0LM001 initial;
+  XSDAS-FMT-DB2-MDCY();
+  DG0LM001.DAW-MAP-DATE = DAWREC.DAW-DATE-MDCY;
+  DG0LM001.DAW-MAP-TIME = VGVar.currentFormattedTime;
+
+  set DG0LM002 initial;
+  XSDAS-FMT-DB2-MDCY();
+  DG0LM002.DAW-MAP-DATE = DAWREC.DAW-DATE-MDCY;
+  DG0LM002.DAW-MAP-TIME = VGVar.currentFormattedTime;
+
+  if (COMMAREA.CAMSG != " "
+   && COMMAREA.CAFRMSYS == "DA")
+    DG0LM001.DAW-INFO-MESSAGE = COMMAREA.CAMSG; /* commarea message*/
+  end
+
+  /* **************/
+  /* ****************** END DG0LP10 ******************************/
+  /* **************/
+end // end DG0LP10-INITIALIZE
+
+// BUILD MAP 2 - LIST TABLE ROWS
+Function DG0LP20-BUILD-MAP1()
+  /* ****************************************************************/
+  /* Build temp storage and move first page to MAP 001*/
+  /* ****************************************************************/
+
+  DG0LP22-BUILD-TSQ(); /* build temp storage file*/
+
+  if (DAWREC.DAW-CURR-PAGE != DG0LM001.DAW-CURR-PAGE)
+    DG0LS-TS-READ-FIL(); /* read temp storage page*/
+    DG0LP71-TSQ-TO-MAP(); /* move page to the map*/
+  end
+
+  DG0LP25-SET-ATTR-1(); /* Set field attributes*/
+
+  /* **************/
+  /* ***************** END DG0LP20 **********************************/
+  /* **************/
+end // end DG0LP20-BUILD-MAP1
+
+// BUILD MAP 2 - TBLE ROW DETAILS
+Function DG0LP20-BUILD-MAP2()
+  /* ****************************************************************/
+  /* Build MAP 002*/
+  /* ****************************************************************/
+
+  DG0LM002.DA-CHNG-USER-ID = sysVar.userID;
+  DG0LM002.DAW-UPDATE-DATE = VGVar.currentShortGregorianDate;
+
+  set DG0LW01 empty;
+  set VDATRN01 empty;
+
+  /* *****************************************************************/
+  /* Add a row*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "ADD")
+    DG0LM002.DA-PLOG-TXT1 = " ";
+    DG0LM002.DA-PLOG-TXT2 = " ";
+    DG0LM002.XOTCD = " ";
+    DG0LM002.XOTSABRV = " ";
+    DG0LM002.XOTLDAYS = 0;
+    DG0LM002.XOTPROPF = " ";
+    DG0LM002.XOTATONF = " ";
+    DG0LM002.XOTFUTRF = " ";
+    DG0LM002.XOTSMPLF = " ";
+    DG0LM002.XOTACOGS = " ";
+    DG0LM002.XOTABILL = " ";
+    DG0LM002.XOTPRCDT = " ";
+    DG0LM002.XOTSMLCH = " ";
+    DG0LM002.XOTAPRNT = " ";
+    DG0LM002.XOTBOFL = " ";
+    DG0LM002.XOTAUTHF = " ";
+    DG0LM002.XOTADIRS = " ";
+    DG0LM002.XOTABRV = " ";
+    DG0LM002.XOTDESC = " ";
+    DG0LM002.XOTABULK = " ";
+    DG0LM002.XOTDSAVL = " ";
+    DG0LM002.XOTOALOC = " ";
+    DG0LM002.XDVCD = " ";
+    DG0LM002.XGPCD = " ";
+    DG0LM002.XPYCD = " ";
+    DG0LM002.XOTALWDV = " ";
+    DG0LM002.XDVCD1 = " ";
+    DG0LM002.XDVCD2 = " ";
+    DG0LM002.XDVCD3 = " ";
+    DG0LM002.XDVCD4 = " ";
+    DG0LM002.XDVCD5 = " ";
+    DG0LM002.XOTXTRAS = " ";
+    DG0LM002.XOTSZVER = " ";
+    DG0LM002.XOTSZIND = " ";
+    DG0LM002.XOTPRCVP = 0;
+    DG0LM002.XQACD1 = " ";
+    DG0LM002.XQACD2 = " ";
+    DG0LM002.XQACD3 = " ";
+    DG0LM002.XLCCD1 = " ";
+    DG0LM002.XLCCD2 = " ";
+    DG0LM002.XLCCD3 = " ";
+    DG0LM002.XLCCD4 = " ";
+    DG0LM002.XLCCD5 = " ";
+    DG0LM002.COCMFL = " ";
+    DG0LM002.XOTAVDFL = " ";
+    DG0LM002.XOTANSUM = " ";
+    DG0LM002.XOTDMRPF = " ";
+    DG0LM002.XOTXLDD = 0;
+    DG0LM002.XOTPRGDD = 0;
+    DG0LM002.XOTMRSCD = " ";
+    DG0LM002.XOTCRLIF = 0;
+    DG0LM002.XXXSTAT = " ";
+  end
+
+  /* *****************************************************************/
+  /* Update or copy a row*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "UPD"
+   || DAWREC.DAW-CURR-FUNCTION-CD == "CPY"
+   || DAWREC.DAW-CURR-FUNCTION-CD == "DEL")
+
+    if (DAWREC.DAW-RECORD-TYPE == "TRAN") /* update, copy or delete*/
+                                   /* a transaction*/
+
+      VDATRN01.DAW-VDATRN01-KEY = DG0LW02.DAW-VDATRN01-KEY[DAW-ROW-NBR];
+      XSDAS-DA1140-SEL(); /* select the transaction*/
+
+      DG0LW01.XOTGROUP = VDATRN01.DA-ROW-DATA-TXT-TEXT; /* save data*/
+      DG0LW01.DA-PLOG-TXT1 = VDATRN01.DA-PLOG-TXT1; /* for a later*/
+      DG0LW01.DA-PLOG-TXT2 = VDATRN01.DA-PLOG-TXT2; /* compare*/
+
+      DG0LM002.XOTCD = DG0LW01.XOTCD; /* move to the map*/
+      DG0LM002.XOTABRV = DG0LW01.XOTABRV;
+      DG0LM002.XOTDESC = DG0LW01.XOTDESC;
+      DG0LM002.XOTSABRV = DG0LW01.XOTSABRV;
+      DG0LM002.XOTLDAYS = DG0LW01.XOTLDAYS;
+      DG0LM002.XOTPROPF = DG0LW01.XOTPROPF;
+      DG0LM002.XOTATONF = DG0LW01.XOTATONF;
+      DG0LM002.XOTFUTRF = DG0LW01.XOTFUTRF;
+      DG0LM002.XOTSMPLF = DG0LW01.XOTSMPLF;
+      DG0LM002.XOTACOGS = DG0LW01.XOTACOGS;
+      DG0LM002.XOTABILL = DG0LW01.XOTABILL;
+      DG0LM002.XOTPRCDT = DG0LW01.XOTPRCDT;
+      DG0LM002.XOTSMLCH = DG0LW01.XOTSMLCH;
+      DG0LM002.XOTAPRNT = DG0LW01.XOTAPRNT;
+      DG0LM002.XOTBOFL = DG0LW01.XOTBOFL;
+      DG0LM002.XOTAUTHF = DG0LW01.XOTAUTHF;
+      DG0LM002.XOTADIRS = DG0LW01.XOTADIRS;
+      DG0LM002.XOTABULK = DG0LW01.XOTABULK;
+      DG0LM002.XOTDSAVL = DG0LW01.XOTDSAVL;
+      DG0LM002.XOTOALOC = DG0LW01.XOTOALOC;
+      DG0LM002.XDVCD = DG0LW01.XDVCD;
+      DG0LM002.XGPCD = DG0LW01.XGPCD;
+      DG0LM002.XPYCD = DG0LW01.XPYCD;
+      DG0LM002.XOTALWDV = DG0LW01.XOTALWDV;
+      DG0LM002.XDVCD1 = DG0LW01.XDVCD1;
+      DG0LM002.XDVCD2 = DG0LW01.XDVCD2;
+      DG0LM002.XDVCD3 = DG0LW01.XDVCD3;
+      DG0LM002.XDVCD4 = DG0LW01.XDVCD4;
+      DG0LM002.XDVCD5 = DG0LW01.XDVCD5;
+      DG0LM002.XOTXTRAS = DG0LW01.XOTXTRAS;
+      DG0LM002.XOTSZVER = DG0LW01.XOTSZVER;
+      DG0LM002.XOTSZIND = DG0LW01.XOTSZIND;
+      DG0LM002.XOTPRCVP = DG0LW01.XOTPRCVP;
+      DG0LM002.XQACD1 = DG0LW01.XQACD1;
+      DG0LM002.XQACD2 = DG0LW01.XQACD2;
+      DG0LM002.XQACD3 = DG0LW01.XQACD3;
+      DG0LM002.XLCCD1 = DG0LW01.XLCCD1;
+      DG0LM002.XLCCD2 = DG0LW01.XLCCD2;
+      DG0LM002.XLCCD3 = DG0LW01.XLCCD3;
+      DG0LM002.XLCCD4 = DG0LW01.XLCCD4;
+      DG0LM002.XLCCD5 = DG0LW01.XLCCD5;
+      DG0LM002.COCMFL = DG0LW01.COCMFL;
+      DG0LM002.XOTAVDFL = DG0LW01.XOTAVDFL;
+      DG0LM002.XOTANSUM = DG0LW01.XOTANSUM;
+      DG0LM002.XOTDMRPF = DG0LW01.XOTDMRPF;
+      DG0LM002.XOTXLDD = DG0LW01.XOTXLDD;
+      DG0LM002.XOTPRGDD = DG0LW01.XOTPRGDD;
+      DG0LM002.XOTMRSCD = DG0LW01.XOTMRSCD;
+      DG0LM002.XOTCRLIF = DG0LW01.XOTCRLIF;
+      DG0LM002.XXXSTAT = DG0LW01.XXXSTAT;
+      DG0LM002.DA-PLOG-TXT1 = VDATRN01.DA-PLOG-TXT1;
+      DG0LM002.DA-PLOG-TXT2 = VDATRN01.DA-PLOG-TXT2;
+
+    else
+      if (DAWREC.DAW-RECORD-TYPE == "TBL ") /* update or copy a table row*/
+
+        DG0LM002.XOTCD = DG0LW02.XOTCD[DAW-ROW-NBR];
+                                   /* get the tbl row*/
+        if (DG0LM002.XOTCD in XOTTBL.XOTCD)
+          DG0LW01.XOTCD = XOTTBL.XOTCD[sysVar.arrayIndex]; /* save for a*/
+          DG0LW01.XOTABRV = XOTTBL.XOTABRV[sysVar.arrayIndex];
+          DG0LW01.XOTDESC = XOTTBL.XOTDESC[sysVar.arrayIndex];
+          DG0LW01.XOTSABRV = XOTTBL.XOTSABRV[sysVar.arrayIndex];
+          DG0LW01.XOTLDAYS = XOTTBL.XOTLDAYS[sysVar.arrayIndex];
+          DG0LW01.XOTPROPF = XOTTBL.XOTPROPF[sysVar.arrayIndex];
+          DG0LW01.XOTATONF = XOTTBL.XOTATONF[sysVar.arrayIndex];
+          DG0LW01.XOTFUTRF = XOTTBL.XOTFUTRF[sysVar.arrayIndex];
+          DG0LW01.XOTSMPLF = XOTTBL.XOTSMPLF[sysVar.arrayIndex];
+          DG0LW01.XOTACOGS = XOTTBL.XOTACOGS[sysVar.arrayIndex];
+          DG0LW01.XOTABILL = XOTTBL.XOTABILL[sysVar.arrayIndex];
+          DG0LW01.XOTPRCDT = XOTTBL.XOTPRCDT[sysVar.arrayIndex];
+          DG0LW01.XOTSMLCH = XOTTBL.XOTSMLCH[sysVar.arrayIndex];
+          DG0LW01.XOTAPRNT = XOTTBL.XOTAPRNT[sysVar.arrayIndex];
+          DG0LW01.XOTBOFL = XOTTBL.XOTBOFL[sysVar.arrayIndex];
+          DG0LW01.XOTAUTHF = XOTTBL.XOTAUTHF[sysVar.arrayIndex];
+          DG0LW01.XOTADIRS = XOTTBL.XOTADIRS[sysVar.arrayIndex];
+          DG0LW01.XOTABULK = XOTTBL.XOTABULK[sysVar.arrayIndex];
+          DG0LW01.XOTDSAVL = XOTTBL.XOTDSAVL[sysVar.arrayIndex];
+          DG0LW01.XOTOALOC = XOTTBL.XOTOALOC[sysVar.arrayIndex];
+          DG0LW01.XDVCD = XOTTBL.XDVCD[sysVar.arrayIndex];
+          DG0LW01.XGPCD = XOTTBL.XGPCD[sysVar.arrayIndex];
+          DG0LW01.XPYCD = XOTTBL.XPYCD[sysVar.arrayIndex];
+          DG0LW01.XOTALWDV = XOTTBL.XOTALWDV[sysVar.arrayIndex];
+          DG0LW01.XDVCD1 = XOTTBL.XDVCD1[sysVar.arrayIndex];
+          DG0LW01.XDVCD2 = XOTTBL.XDVCD2[sysVar.arrayIndex];
+          DG0LW01.XDVCD3 = XOTTBL.XDVCD3[sysVar.arrayIndex];
+          DG0LW01.XDVCD4 = XOTTBL.XDVCD4[sysVar.arrayIndex];
+          DG0LW01.XDVCD5 = XOTTBL.XDVCD5[sysVar.arrayIndex];
+          DG0LW01.XOTXTRAS = XOTTBL.XOTXTRAS[sysVar.arrayIndex];
+          DG0LW01.XOTSZVER = XOTTBL.XOTSZVER[sysVar.arrayIndex];
+          DG0LW01.XOTSZIND = XOTTBL.XOTSZIND[sysVar.arrayIndex];
+          DG0LW01.XOTPRCVP = XOTTBL.XOTPRCVP[sysVar.arrayIndex];
+          DG0LW01.XQACD1 = XOTTBL.XQACD1[sysVar.arrayIndex];
+          DG0LW01.XQACD2 = XOTTBL.XQACD2[sysVar.arrayIndex];
+          DG0LW01.XQACD3 = XOTTBL.XQACD3[sysVar.arrayIndex];
+          DG0LW01.XLCCD1 = XOTTBL.XLCCD1[sysVar.arrayIndex];
+          DG0LW01.XLCCD2 = XOTTBL.XLCCD2[sysVar.arrayIndex];
+          DG0LW01.XLCCD3 = XOTTBL.XLCCD3[sysVar.arrayIndex];
+          DG0LW01.XLCCD4 = XOTTBL.XLCCD4[sysVar.arrayIndex];
+          DG0LW01.XLCCD5 = XOTTBL.XLCCD5[sysVar.arrayIndex];
+          DG0LW01.COCMFL = XOTTBL.COCMFL[sysVar.arrayIndex];
+          DG0LW01.XOTAVDFL = XOTTBL.XOTAVDFL[sysVar.arrayIndex];
+          DG0LW01.XOTANSUM = XOTTBL.XOTANSUM[sysVar.arrayIndex];
+          DG0LW01.XOTDMRPF = XOTTBL.XOTDMRPF[sysVar.arrayIndex];
+          DG0LW01.XOTXLDD = XOTTBL.XOTXLDD[sysVar.arrayIndex];
+          DG0LW01.XOTPRGDD = XOTTBL.XOTPRGDD[sysVar.arrayIndex];
+          DG0LW01.XOTMRSCD = XOTTBL.XOTMRSCD[sysVar.arrayIndex];
+          DG0LW01.XOTCRLIF = XOTTBL.XOTCRLIF[sysVar.arrayIndex];
+          DG0LW01.XXXSTAT = XOTTBL.XXXSTAT[sysVar.arrayIndex];
+          DG0LW01.ZZZSDT = XOTTBL.ZZZSDT[sysVar.arrayIndex];
+          DG0LW01.ZZZCHGDT = XOTTBL.ZZZCHGDT[sysVar.arrayIndex];
+          DG0LW01.ZZZCHGTM = XOTTBL.ZZZCHGTM[sysVar.arrayIndex];
+          DG0LW01.ZZZCHGCT = XOTTBL.ZZZCHGCT[sysVar.arrayIndex];
+
+          DG0LM002.XOTABRV = XOTTBL.XOTABRV[sysVar.arrayIndex];
+          DG0LM002.XOTDESC = XOTTBL.XOTDESC[sysVar.arrayIndex];
+          DG0LM002.XOTSABRV = XOTTBL.XOTSABRV[sysVar.arrayIndex];
+          DG0LM002.XOTLDAYS = XOTTBL.XOTLDAYS[sysVar.arrayIndex];
+          DG0LM002.XOTPROPF = XOTTBL.XOTPROPF[sysVar.arrayIndex];
+          DG0LM002.XOTATONF = XOTTBL.XOTATONF[sysVar.arrayIndex];
+          DG0LM002.XOTFUTRF = XOTTBL.XOTFUTRF[sysVar.arrayIndex];
+          DG0LM002.XOTSMPLF = XOTTBL.XOTSMPLF[sysVar.arrayIndex];
+          DG0LM002.XOTACOGS = XOTTBL.XOTACOGS[sysVar.arrayIndex];
+          DG0LM002.XOTABILL = XOTTBL.XOTABILL[sysVar.arrayIndex];
+          DG0LM002.XOTPRCDT = XOTTBL.XOTPRCDT[sysVar.arrayIndex];
+          DG0LM002.XOTSMLCH = XOTTBL.XOTSMLCH[sysVar.arrayIndex];
+          DG0LM002.XOTAPRNT = XOTTBL.XOTAPRNT[sysVar.arrayIndex];
+          DG0LM002.XOTBOFL = XOTTBL.XOTBOFL[sysVar.arrayIndex];
+          DG0LM002.XOTAUTHF = XOTTBL.XOTAUTHF[sysVar.arrayIndex];
+          DG0LM002.XOTADIRS = XOTTBL.XOTADIRS[sysVar.arrayIndex];
+          DG0LM002.XOTABULK = XOTTBL.XOTABULK[sysVar.arrayIndex];
+          DG0LM002.XOTDSAVL = XOTTBL.XOTDSAVL[sysVar.arrayIndex];
+          DG0LM002.XOTOALOC = XOTTBL.XOTOALOC[sysVar.arrayIndex];
+          DG0LM002.XDVCD = XOTTBL.XDVCD[sysVar.arrayIndex];
+          DG0LM002.XGPCD = XOTTBL.XGPCD[sysVar.arrayIndex];
+          DG0LM002.XPYCD = XOTTBL.XPYCD[sysVar.arrayIndex];
+          DG0LM002.XOTALWDV = XOTTBL.XOTALWDV[sysVar.arrayIndex];
+          DG0LM002.XDVCD1 = XOTTBL.XDVCD1[sysVar.arrayIndex];
+          DG0LM002.XDVCD2 = XOTTBL.XDVCD2[sysVar.arrayIndex];
+          DG0LM002.XDVCD3 = XOTTBL.XDVCD3[sysVar.arrayIndex];
+          DG0LM002.XDVCD4 = XOTTBL.XDVCD4[sysVar.arrayIndex];
+          DG0LM002.XDVCD5 = XOTTBL.XDVCD5[sysVar.arrayIndex];
+          DG0LM002.XOTXTRAS = XOTTBL.XOTXTRAS[sysVar.arrayIndex];
+          DG0LM002.XOTSZVER = XOTTBL.XOTSZVER[sysVar.arrayIndex];
+          DG0LM002.XOTSZIND = XOTTBL.XOTSZIND[sysVar.arrayIndex];
+          DG0LM002.XOTPRCVP = XOTTBL.XOTPRCVP[sysVar.arrayIndex];
+          DG0LM002.XQACD1 = XOTTBL.XQACD1[sysVar.arrayIndex];
+          DG0LM002.XQACD2 = XOTTBL.XQACD2[sysVar.arrayIndex];
+          DG0LM002.XQACD3 = XOTTBL.XQACD3[sysVar.arrayIndex];
+          DG0LM002.XLCCD1 = XOTTBL.XLCCD1[sysVar.arrayIndex];
+          DG0LM002.XLCCD2 = XOTTBL.XLCCD2[sysVar.arrayIndex];
+          DG0LM002.XLCCD3 = XOTTBL.XLCCD3[sysVar.arrayIndex];
+          DG0LM002.XLCCD4 = XOTTBL.XLCCD4[sysVar.arrayIndex];
+          DG0LM002.XLCCD5 = XOTTBL.XLCCD5[sysVar.arrayIndex];
+          DG0LM002.COCMFL = XOTTBL.COCMFL[sysVar.arrayIndex];
+          DG0LM002.XOTAVDFL = XOTTBL.XOTAVDFL[sysVar.arrayIndex];
+          DG0LM002.XOTANSUM = XOTTBL.XOTANSUM[sysVar.arrayIndex];
+          DG0LM002.XOTDMRPF = XOTTBL.XOTDMRPF[sysVar.arrayIndex];
+          DG0LM002.XOTXLDD = XOTTBL.XOTXLDD[sysVar.arrayIndex];
+          DG0LM002.XOTPRGDD = XOTTBL.XOTPRGDD[sysVar.arrayIndex];
+          DG0LM002.XOTMRSCD = XOTTBL.XOTMRSCD[sysVar.arrayIndex];
+          DG0LM002.XOTCRLIF = XOTTBL.XOTCRLIF[sysVar.arrayIndex];
+          DG0LM002.XXXSTAT = XOTTBL.XXXSTAT[sysVar.arrayIndex];
+        end
+
+      end
+    end
+  end
+
+  /* *****************************************************************/
+  /* inquire on a row selected in DA01*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-RETURN-TO-DA01-FL == "Y")
+    DAWREC.DAW-DONE-WITH-ROW-FL = "N";
+    DAWREC.DAW-CURR-FUNCTION-CD = "UPD";
+    DAWREC.DAW-RECORD-TYPE = "TRAN";
+
+    VDATRN01.DAW-VDATRN01-KEY = DAWREC.DAW-VDATRN01-KEY;
+    XSDAS-DA1140-SEL(); /* select the transaction*/
+
+    DG0LW01.XOTGROUP = VDATRN01.DA-ROW-DATA-TXT-TEXT; /* save data*/
+    DG0LW01.DA-PLOG-TXT1 = VDATRN01.DA-PLOG-TXT1; /* for a later*/
+    DG0LW01.DA-PLOG-TXT2 = VDATRN01.DA-PLOG-TXT2; /* compare*/
+
+    DG0LM002.XOTCD = DG0LW01.XOTCD; /* move to the map*/
+    DG0LM002.XOTSABRV = DG0LW01.XOTSABRV;
+    DG0LM002.XOTABRV = DG0LW01.XOTABRV;
+    DG0LM002.XOTDESC = DG0LW01.XOTDESC;
+    DG0LM002.XOTLDAYS = DG0LW01.XOTLDAYS;
+    DG0LM002.XOTPROPF = DG0LW01.XOTPROPF;
+    DG0LM002.XOTATONF = DG0LW01.XOTATONF;
+    DG0LM002.XOTFUTRF = DG0LW01.XOTFUTRF;
+    DG0LM002.XOTSMPLF = DG0LW01.XOTSMPLF;
+    DG0LM002.XOTACOGS = DG0LW01.XOTACOGS;
+    DG0LM002.XOTABILL = DG0LW01.XOTABILL;
+    DG0LM002.XOTPRCDT = DG0LW01.XOTPRCDT;
+    DG0LM002.XOTSMLCH = DG0LW01.XOTSMLCH;
+    DG0LM002.XOTAPRNT = DG0LW01.XOTAPRNT;
+    DG0LM002.XOTBOFL = DG0LW01.XOTBOFL;
+    DG0LM002.XOTAUTHF = DG0LW01.XOTAUTHF;
+    DG0LM002.XOTADIRS = DG0LW01.XOTADIRS;
+    DG0LM002.XOTABULK = DG0LW01.XOTABULK;
+    DG0LM002.XOTDSAVL = DG0LW01.XOTDSAVL;
+    DG0LM002.XOTOALOC = DG0LW01.XOTOALOC;
+    DG0LM002.XDVCD = DG0LW01.XDVCD;
+    DG0LM002.XGPCD = DG0LW01.XGPCD;
+    DG0LM002.XPYCD = DG0LW01.XPYCD;
+    DG0LM002.XOTALWDV = DG0LW01.XOTALWDV;
+    DG0LM002.XDVCD1 = DG0LW01.XDVCD1;
+    DG0LM002.XDVCD2 = DG0LW01.XDVCD2;
+    DG0LM002.XDVCD3 = DG0LW01.XDVCD3;
+    DG0LM002.XDVCD4 = DG0LW01.XDVCD4;
+    DG0LM002.XDVCD5 = DG0LW01.XDVCD5;
+    DG0LM002.XOTXTRAS = DG0LW01.XOTXTRAS;
+    DG0LM002.XOTSZVER = DG0LW01.XOTSZVER;
+    DG0LM002.XOTSZIND = DG0LW01.XOTSZIND;
+    DG0LM002.XOTPRCVP = DG0LW01.XOTPRCVP;
+    DG0LM002.XQACD1 = DG0LW01.XQACD1;
+    DG0LM002.XQACD2 = DG0LW01.XQACD2;
+    DG0LM002.XQACD3 = DG0LW01.XQACD3;
+    DG0LM002.XLCCD1 = DG0LW01.XLCCD1;
+    DG0LM002.XLCCD2 = DG0LW01.XLCCD2;
+    DG0LM002.XLCCD3 = DG0LW01.XLCCD3;
+    DG0LM002.XLCCD4 = DG0LW01.XLCCD4;
+    DG0LM002.XLCCD5 = DG0LW01.XLCCD5;
+    DG0LM002.COCMFL = DG0LW01.COCMFL;
+    DG0LM002.XOTAVDFL = DG0LW01.XOTAVDFL;
+    DG0LM002.XOTANSUM = DG0LW01.XOTANSUM;
+    DG0LM002.XOTDMRPF = DG0LW01.XOTDMRPF;
+    DG0LM002.XOTXLDD = DG0LW01.XOTXLDD;
+    DG0LM002.XOTPRGDD = DG0LW01.XOTPRGDD;
+    DG0LM002.XOTMRSCD = DG0LW01.XOTMRSCD;
+    DG0LM002.XOTCRLIF = DG0LW01.XOTCRLIF;
+    DG0LM002.XXXSTAT = DG0LW01.XXXSTAT;
+    DG0LM002.DA-PLOG-TXT1 = VDATRN01.DA-PLOG-TXT1;
+    DG0LM002.DA-PLOG-TXT2 = VDATRN01.DA-PLOG-TXT2;
+
+  end
+
+  if (DG0LM002.XXXSTAT == "A")
+    DG0LM002.DAW-TBL-STATUS-DESC = "ACTIVE  ";
+  end
+  if (DG0LM002.XXXSTAT == "I")
+    DG0LM002.DAW-TBL-STATUS-DESC = "INACTIVE";
+  end
+  if (DG0LM002.XXXSTAT == " ")
+    DG0LM002.DAW-TBL-STATUS-DESC = " ";
+  end
+
+  DG0LP25-SET-ATTR-2(); /* Set field attributes*/
+
+  /* **************/
+  /* ***************** END DG0LP20 **********************************/
+  /* **************/
+end // end DG0LP20-BUILD-MAP2
+
+// BUILD TEMP STORAGE FILE
+Function DG0LP22-BUILD-TSQ()
+  /* ****************************************************************/
+  /* Build temp storage from menu table to allow scrolling*/
+  /* ****************************************************************/
+
+  set DG0LW02 empty; /* temp storage record*/
+  DAWREC.DAW-ROW-NBR = 0; /* temp storage row subscript*/
+  DAWREC.DAW-CURR-PAGE = 0; /* temp storage page(record) number*/
+  DAWREC.DAW-MAX-PAGE = 0; /* temp storage max page number*/
+
+  /* Move the Maintenance records to temp storage*/
+
+  XSDAS-DA1140-OPEN(); /* open cursor*/
+  XSDAS-DA1140-FETCH(); /* fetch first row*/
+
+  while (SQLCA.VAGen_SQLCODE == 0) /* until last row*/
+    DAWREC.DAW-ROW-NBR = DAWREC.DAW-ROW-NBR + 1;
+    DG0LP23-DB2-TO-TSQ(); /* move tbl row to temp storage row*/
+    if (DAWREC.DAW-ROW-NBR == 14) /* maximum tsq rows per map*/
+      DG0LS-TS-ADD-PAGE(); /* write temp storage record when full*/
+    end
+    XSDAS-DA1140-FETCH(); /* fetch next row*/
+  end
+
+  XSDAS-DA1140-CLOSE(); /* close cursor*/
+
+
+  /* Move the CSP table to temp storage*/
+
+  sysVar.arrayIndex = 1;
+  while (XOTTBL.XOTCD[sysVar.arrayIndex] != "99") /* until last row*/
+    DAWREC.DAW-ROW-NBR = DAWREC.DAW-ROW-NBR + 1;
+    DG0LP24-CSP-TO-TSQ(); /* move tbl row to temp storage row*/
+    if (DAWREC.DAW-ROW-NBR == 14) /* maximum tsq rows per map*/
+      DG0LS-TS-ADD-PAGE(); /* write temp storage record when full*/
+    end
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+
+  if (DAWREC.DAW-ROW-NBR > 0 /* rows were moved*/
+   || DAWREC.DAW-MAX-PAGE > 0) /* or tsq pages were written*/
+
+    if (DAWREC.DAW-ROW-NBR < 14 /* last page not full*/
+     && DAWREC.DAW-ROW-NBR != 0) /* rows exist*/
+      DG0LS-TS-ADD-PAGE();
+    end
+
+    DG0LM001.DAW-CURR-PAGE = 1; /* page number to read*/
+    DAWREC.DAW-CURR-PAGE = 0; /* last page read*/
+    DG0LM001.DAW-LAST-PAGE = DAWREC.DAW-MAX-PAGE;
+
+  end
+
+  /* **************/
+  /* ***************** END DG0LP22 **********************************/
+  /* **************/
+end // end DG0LP22-BUILD-TSQ
+
+// MOVE TO TEMP STORAGE PAGE
+Function DG0LP23-DB2-TO-TSQ()
+  /* **************************************************************/
+  /* Move db2 table row to temp storage*/
+  /* The key to the view is saved in temp storage to make it*/
+  /* easier to retrieve and update/delete the row if necessary.*/
+  /* **************************************************************/
+
+  DG0LW02.DAW-RECORD-TYPE[DAW-ROW-NBR] = "TRAN ";
+  DG0LW02.DAW-SELECT-CD[DAW-ROW-NBR] = " ";
+  DG0LW01.XOTGROUP = VDATRN01.DA-ROW-DATA-TXT-TEXT;
+
+  DG0LW02.XOTCD[DAW-ROW-NBR] = DG0LW01.XOTCD;
+  DG0LW02.XOTABRV[DAW-ROW-NBR] = DG0LW01.XOTABRV;
+  DG0LW02.XOTDESC[DAW-ROW-NBR] = DG0LW01.XOTDESC;
+  DG0LW02.XXXSTAT[DAW-ROW-NBR] = DG0LW01.XXXSTAT;
+
+  if (VDATRN01.DA-CHNG-STAT-IND == "E")
+    DG0LW02.DAW-STATUS-DESC[DAW-ROW-NBR] = "EDIT    ";
+  end
+  if (VDATRN01.DA-CHNG-STAT-IND == "P")
+    DG0LW02.DAW-STATUS-DESC[DAW-ROW-NBR] = "PENDING ";
+  end
+  if (VDATRN01.DA-CHNG-STAT-IND == "A")
+    DG0LW02.DAW-STATUS-DESC[DAW-ROW-NBR] = "APPROVED";
+    DG0LW02.DAW-SELECT-CD[DAW-ROW-NBR] = "*"; /* select not allowed*/
+  end
+  if (VDATRN01.DA-CHNG-STAT-IND == "R")
+    DG0LW02.DAW-STATUS-DESC[DAW-ROW-NBR] = "REJECTED";
+  end
+  if (VDATRN01.DA-CHNG-STAT-IND == "I")
+    DG0LW02.DAW-STATUS-DESC[DAW-ROW-NBR] = "PROCESS ";
+    DG0LW02.DAW-SELECT-CD[DAW-ROW-NBR] = "*"; /* select not allowed*/
+  end
+
+  DG0LW02.DA-CHNG-USER-ID[DAW-ROW-NBR] = VDATRN01.DA-CHNG-USER-ID;
+
+  DAWREC.DAW-DATE-COMP = VDATRN01.ZZ-CHNG-DT;
+  XSDAS-FMT-DB2-MDCY();
+  DG0LW02.DAW-CHNG-DT-MDY[DAW-ROW-NBR] = DAWREC.DAW-DATE-MDCY;
+
+  DG0LW02.DAW-VDATRN01-KEY[DAW-ROW-NBR] = VDATRN01.DAW-VDATRN01-KEY;
+
+
+  /* ***************/
+  /* ****************** END DG0LP221 ******************************/
+  /* ***************/
+end // end DG0LP23-DB2-TO-TSQ
+
+// MOVE TO TEMP STORAGE PAGE
+Function DG0LP24-CSP-TO-TSQ()
+  /* **************************************************************/
+  /* Move table row to temp storage*/
+  /* **************************************************************/
+
+  DG0LW02.DAW-RECORD-TYPE[DAW-ROW-NBR] = "TBL ";
+  DG0LW02.DAW-SELECT-CD[DAW-ROW-NBR] = " ";
+
+  DG0LW02.XOTCD[DAW-ROW-NBR] = XOTTBL.XOTCD[sysVar.arrayIndex];
+  DG0LW02.XOTABRV[DAW-ROW-NBR] = XOTTBL.XOTABRV[sysVar.arrayIndex];
+  DG0LW02.XOTDESC[DAW-ROW-NBR] = XOTTBL.XOTDESC[sysVar.arrayIndex];
+  DG0LW02.XXXSTAT[DAW-ROW-NBR] = XOTTBL.XXXSTAT[sysVar.arrayIndex];
+
+  DG0LW02.DAW-STATUS-DESC[DAW-ROW-NBR] = " ";
+  DG0LW02.DA-CHNG-USER-ID[DAW-ROW-NBR] = " ";
+  DG0LW02.DAW-CHNG-DT-MDY[DAW-ROW-NBR] = " ";
+
+  /* ***************/
+  /* ****************** END DG0LP221 ******************************/
+  /* ***************/
+end // end DG0LP24-CSP-TO-TSQ
+
+// SET MAP 1 FIELD ATTRIBUTES
+Function DG0LP25-SET-ATTR-1()
+  /* *********************************************************/
+  /* Set MAP 001 field attributes - only show page numbers when*/
+  /* there is more than 1 page. Autoskip,dark any rows with*/
+  /* an '*' in the select. They can look at the data (for the*/
+  /* status) but they can't select it.*/
+  /* *********************************************************/
+
+  if (DAW-LAST-PAGE > 1)
+    DG0LM001.DAW-PAGE-LIT = "PAGE";
+    set DG0LM001.DAW-CURR-PAGE initialAttributes;
+    DG0LM001.DAW-OF-LIT = "OF";
+    set DG0LM001.DAW-LAST-PAGE initialAttributes;
+    DG0LM001.DAW-PF7-LIT = "PF7 = SCROLL BACK";
+    DG0LM001.DAW-PF8-LIT = "PF8 = SCROLL FRWD";
+  else
+    DG0LM001.DAW-PAGE-LIT = " ";
+    set DG0LM001.DAW-CURR-PAGE skip, noHighLight, invisible;
+    DG0LM001.DAW-OF-LIT = " ";
+    set DG0LM001.DAW-LAST-PAGE skip, invisible;
+    DG0LM001.DAW-PF7-LIT = " ";
+    DG0LM001.DAW-PF8-LIT = " ";
+  end
+
+  sysVar.arrayIndex = 14;
+  while (sysVar.arrayIndex > 0)
+    if (DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] == "*"
+     || DG0LM001.XOTCD[sysVar.arrayIndex] == " ")
+      set DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] skip, invisible;
+    else
+      set DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, initialAttributes;
+    end
+    sysVar.arrayIndex = sysVar.arrayIndex - 1;
+  end
+
+  /* **************/
+  /* ****************** END DG0LP25 **************************/
+  /* **************/
+end // end DG0LP25-SET-ATTR-1
+
+// SET FIELD ATTRIBUTES FOR MAP 2
+Function DG0LP25-SET-ATTR-2()
+  /* *********************************************************/
+  /* Set MAP 002 field attributes - autoskip the DA-CODE when*/
+  /* the function is 'upd'.*/
+  /* *********************************************************/
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "ADD"
+   || DAWREC.DAW-CURR-FUNCTION-CD == "CPY"
+   || DAWREC.DAW-CURR-FUNCTION-CD == "DEL")
+    set DG0LM002.XOTCD initialAttributes;
+  else
+    set DG0LM002.XOTCD skip;
+  end
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "DEL")
+    set DG0LM002.XOTSABRV skip;
+    set DG0LM002.XOTABRV skip;
+    set DG0LM002.XOTDESC skip;
+    set DG0LM002.XOTLDAYS skip;
+    set DG0LM002.XOTPROPF skip;
+    set DG0LM002.XOTATONF skip;
+    set DG0LM002.XOTFUTRF skip;
+    set DG0LM002.XOTSMPLF skip;
+    set DG0LM002.XOTACOGS skip;
+    set DG0LM002.XOTABILL skip;
+    set DG0LM002.XOTPRCDT skip;
+    set DG0LM002.XOTSMLCH skip;
+    set DG0LM002.XOTAPRNT skip;
+    set DG0LM002.XOTBOFL skip;
+    set DG0LM002.XOTAUTHF skip;
+    set DG0LM002.XOTADIRS skip;
+    set DG0LM002.XOTABULK skip;
+    set DG0LM002.XOTDSAVL skip;
+    set DG0LM002.XOTOALOC skip;
+    set DG0LM002.XDVCD skip;
+    set DG0LM002.XGPCD skip;
+    set DG0LM002.XPYCD skip;
+    set DG0LM002.XOTALWDV skip;
+    set DG0LM002.XDVCD1 skip;
+    set DG0LM002.XDVCD2 skip;
+    set DG0LM002.XDVCD3 skip;
+    set DG0LM002.XDVCD4 skip;
+    set DG0LM002.XDVCD5 skip;
+    set DG0LM002.XOTXTRAS skip;
+    set DG0LM002.XOTSZVER skip;
+    set DG0LM002.XOTSZIND skip;
+    set DG0LM002.XOTPRCVP skip;
+    set DG0LM002.XQACD1 skip;
+    set DG0LM002.XQACD2 skip;
+    set DG0LM002.XQACD3 skip;
+    set DG0LM002.XLCCD1 skip;
+    set DG0LM002.XLCCD2 skip;
+    set DG0LM002.XLCCD3 skip;
+    set DG0LM002.XLCCD4 skip;
+    set DG0LM002.XLCCD5 skip;
+    set DG0LM002.COCMFL skip;
+    set DG0LM002.XOTAVDFL skip;
+    set DG0LM002.XOTANSUM skip;
+    set DG0LM002.XOTDMRPF skip;
+    set DG0LM002.XOTXLDD skip;
+    set DG0LM002.XOTPRGDD skip;
+    set DG0LM002.XOTMRSCD skip;
+    set DG0LM002.XOTCRLIF skip;
+    set DG0LM002.XXXSTAT skip;
+  else
+    set DG0LM002.XOTSABRV initialAttributes;
+    set DG0LM002.XOTABRV initialAttributes;
+    set DG0LM002.XOTDESC initialAttributes;
+    set DG0LM002.XOTLDAYS initialAttributes;
+    set DG0LM002.XOTPROPF initialAttributes;
+    set DG0LM002.XOTATONF initialAttributes;
+    set DG0LM002.XOTFUTRF initialAttributes;
+    set DG0LM002.XOTSMPLF initialAttributes;
+    set DG0LM002.XOTACOGS initialAttributes;
+    set DG0LM002.XOTABILL initialAttributes;
+    set DG0LM002.XOTPRCDT initialAttributes;
+    set DG0LM002.XOTSMLCH initialAttributes;
+    set DG0LM002.XOTAPRNT initialAttributes;
+    set DG0LM002.XOTBOFL initialAttributes;
+    set DG0LM002.XOTAUTHF initialAttributes;
+    set DG0LM002.XOTADIRS initialAttributes;
+    set DG0LM002.XOTABULK initialAttributes;
+    set DG0LM002.XOTDSAVL initialAttributes;
+    set DG0LM002.XOTOALOC initialAttributes;
+    set DG0LM002.XDVCD initialAttributes;
+    set DG0LM002.XGPCD initialAttributes;
+    set DG0LM002.XPYCD initialAttributes;
+    set DG0LM002.XOTALWDV initialAttributes;
+    set DG0LM002.XDVCD1 initialAttributes;
+    set DG0LM002.XDVCD2 initialAttributes;
+    set DG0LM002.XDVCD3 initialAttributes;
+    set DG0LM002.XDVCD4 initialAttributes;
+    set DG0LM002.XDVCD5 initialAttributes;
+    set DG0LM002.XOTXTRAS initialAttributes;
+    set DG0LM002.XOTSZVER initialAttributes;
+    set DG0LM002.XOTSZIND initialAttributes;
+    set DG0LM002.XOTPRCVP initialAttributes;
+    set DG0LM002.XQACD1 initialAttributes;
+    set DG0LM002.XQACD2 initialAttributes;
+    set DG0LM002.XQACD3 initialAttributes;
+    set DG0LM002.XLCCD1 initialAttributes;
+    set DG0LM002.XLCCD2 initialAttributes;
+    set DG0LM002.XLCCD3 initialAttributes;
+    set DG0LM002.XLCCD4 initialAttributes;
+    set DG0LM002.XLCCD5 initialAttributes;
+    set DG0LM002.COCMFL initialAttributes;
+    set DG0LM002.XOTAVDFL initialAttributes;
+    set DG0LM002.XOTANSUM initialAttributes;
+    set DG0LM002.XOTDMRPF initialAttributes;
+    set DG0LM002.XOTXLDD initialAttributes;
+    set DG0LM002.XOTPRGDD initialAttributes;
+    set DG0LM002.XOTMRSCD initialAttributes;
+    set DG0LM002.XOTCRLIF initialAttributes;
+    set DG0LM002.XXXSTAT initialAttributes;
+  end
+
+
+  set DG0LM002.DA-PLOG-TXT1 cursor, initialAttributes;
+  set DG0LM002.DA-PLOG-TXT2 initialAttributes;
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "ADD")
+    DG0LM002.DAW-CURR-FUNCTION-DESC = "ADD ROW ";
+  end
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "CPY")
+    DG0LM002.DAW-CURR-FUNCTION-DESC = "COPY ROW";
+  end
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "UPD")
+    DG0LM002.DAW-CURR-FUNCTION-DESC = "UPDATE ROW";
+  end
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "DEL")
+    DG0LM002.DAW-CURR-FUNCTION-DESC = "DELETE ROW";
+  end
+
+  if (DAWREC.DAW-RECORD-TYPE == "TRAN")
+    DG0LM002.DAW-RECORD-TYPE-DESC = "TRANSACTION";
+  end
+
+  if (DAWREC.DAW-RECORD-TYPE == "TBL ")
+    DG0LM002.DAW-RECORD-TYPE-DESC = "TABLE ROW  ";
+  end
+
+
+  /* **************/
+  /* ****************** END DG0LP25 **************************/
+  /* **************/
+end // end DG0LP25-SET-ATTR-2
+
+// MAIN PROCESS LOOP FOR MAP 1
+Function DG0LP30-MAIN-MAP-1()
+  /* **********************************************************/
+  /* MAIN PROCESS - Program loops through this process until*/
+  /* the user exits with a PF key or transfers to another*/
+  /* application. Exit occurs when DA-TERM-APPL = 'Y'*/
+  /* **********************************************************/
+
+  DG0LP40-CONVERSE-1(); /* Display the map*/
+
+  converseLib.validationFailed(0);
+  DG0LM001.VAGen_EZEMSG = " ";
+  DG0LM001.DAW-INFO-MESSAGE = " ";
+  DAWREC.DAW-EDIT-ERROR-FL = "N";
+
+  DG0LP25-SET-ATTR-1(); /* Reset field attributes to defined*/
+
+  DG0LP50-PF-KEYS-1(); /* Edit pf keys*/
+
+  if (DAWREC.DAW-EDIT-ERROR-FL == "N"
+   && DAWREC.DAW-TERM-APPL-FL == "N") /* No errors and not ready to exit*/
+
+    DG0LP60-EDIT-MAP-1(); /* Do all edits for map 1*/
+
+    if (DAWREC.DAW-EDIT-ERROR-FL == "N")
+      DG0LP70-PROC-MAP-1(); /* Do any processing needed for map 1*/
+    end
+
+  end
+
+
+  /* **************/
+  /* ****************** END DG0LP30 *****************************/
+  /* **************/
+end // end DG0LP30-MAIN-MAP-1
+
+// MAIN PROCESSING LOOP FOR MAP 2
+Function DG0LP30-MAIN-MAP-2()
+  /* **********************************************************/
+  /* MAIN PROCESS - Program loops through this process until*/
+  /* the user exits with a PF key or transfers to another*/
+  /* application. Exit occurs when DA-TERM-APPL = 'Y' or*/
+  /* DA-DONE-WITH-ROW-FL = 'Y'*/
+  /* **********************************************************/
+
+  DG0LP40-CONVERSE-2(); /* Display the map*/
+
+  converseLib.validationFailed(0);
+  DG0LM002.VAGen_EZEMSG = " ";
+  DG0LM002.DAW-INFO-MESSAGE = " ";
+  DAWREC.DAW-EDIT-ERROR-FL = "N";
+
+  DG0LP25-SET-ATTR-2(); /* Reset field attributes to defined*/
+
+  DG0LP50-PF-KEYS-2(); /* Edit pf keys*/
+
+  if (DAWREC.DAW-EDIT-ERROR-FL == "N" /* No errors*/
+   && DAWREC.DAW-TERM-APPL-FL == "N"  /* and not ready to exit to MENU*/
+   && DAWREC.DAW-DONE-WITH-ROW-FL == "N") /* and not ready to exit to MAP1*/
+
+    DG0LP60-EDIT-MAP-2(); /* Do all edits for MAP 2*/
+
+    if (DAWREC.DAW-EDIT-ERROR-FL == "N")
+      DG0LP70-PROC-MAP-2(); /* Do any processing needed for MAP 2*/
+    end
+
+  end
+
+  /* **************/
+  /* ****************** END DG0LP30 *****************************/
+  /* **************/
+end // end DG0LP30-MAIN-MAP-2
+
+// CONVERSE MAP 001
+Function DG0LP40-CONVERSE-1()
+  /* **********************************************************/
+  /* CONVERSE MAP 001 - LIST TABLE*/
+  /* **********************************************************/
+  converse DG0LM001 ;
+
+  /* **************/
+  /* ****************** END DG0LP40 *****************************/
+  /* **************/
+end // end DG0LP40-CONVERSE-1
+
+// CONVERSE MAP 002
+Function DG0LP40-CONVERSE-2()
+  /* **********************************************************/
+  /* CONVERSE MAP 002 - TABLE ROW DETAILS*/
+  /* **********************************************************/
+  converse DG0LM002 ;
+
+  /* **************/
+  /* ****************** END DG0LP40 *****************************/
+  /* **************/
+end // end DG0LP40-CONVERSE-2
+
+// EDIT PF KEYS FOR MAP 1
+Function DG0LP50-PF-KEYS-1()
+  /* **************************************************************/
+  /* Edit the PF keys for MAP 001*/
+  /* **************************************************************/
+
+  if (converseVar.eventKey is enter
+   || converseVar.eventKey is pf3
+   || converseVar.eventKey is pf4
+   || converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8
+   || converseVar.eventKey is pf9
+   || converseVar.eventKey is pf10
+   || converseVar.eventKey is pf11)
+    /* valid pf keys for this application*/
+  else
+    converseLib.validationFailed(001); /* Invalid PF Key*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+  end
+
+  if (converseVar.eventKey is pf7)
+    if (DG0LM001.DAW-CURR-PAGE != DAWREC.DAW-CURR-PAGE)
+      converseLib.validationFailed(002); /* Can't change page number and use*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* PF7 at the same time*/
+    end
+    if (DG0LM001.DAW-LAST-PAGE <= 1)
+      converseLib.validationFailed(001); /* Invalid PF Key*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    end
+    if (DG0LM001.DAW-CURR-PAGE <= 1)
+      converseLib.validationFailed(003); /* Can't use PF7 - already at the*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* first page*/
+    end
+  end
+
+  if (converseVar.eventKey is pf8)
+    if (DG0LM001.DAW-CURR-PAGE != DAWREC.DAW-CURR-PAGE)
+      converseLib.validationFailed(004); /* Can't change page number and use*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* PF8 at the same time*/
+    end
+    if (DG0LM001.DAW-LAST-PAGE <= 1)
+      converseLib.validationFailed(001); /* Invalid PF Key*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    end
+    if (DG0LM001.DAW-CURR-PAGE >= DAWREC.DAW-MAX-PAGE)
+      converseLib.validationFailed(005); /* Can't use PF8 - already at the*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* last page*/
+    end
+  end
+
+  if (DAWREC.DAW-EDIT-ERROR-FL == "N")
+    DG0LP55-HNDL-PFK-1();
+  end
+
+  /* **************/
+  /* ****************** END DG0LP50 *******************************/
+  /* **************/
+end // end DG0LP50-PF-KEYS-1
+
+// EDIT PF KEYS FOR MAP 2
+Function DG0LP50-PF-KEYS-2()
+  /* **************************************************************/
+  /* Edit the PF keys for MAP 002*/
+  /* **************************************************************/
+
+  if (converseVar.eventKey is enter
+   || converseVar.eventKey is pf3
+   || converseVar.eventKey is pf4
+   || converseVar.eventKey is pf6
+   || converseVar.eventKey is pf10)
+    /* valid pf keys for this application*/
+  else
+    converseLib.validationFailed(001); /* Invalid PF Key*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+  end
+
+  if (DAWREC.DAW-EDIT-ERROR-FL == "N")
+    DG0LP55-HNDL-PFK-2();
+  end
+
+  /* **************/
+  /* ****************** END DG0LP50 *******************************/
+  /* **************/
+end // end DG0LP50-PF-KEYS-2
+
+// HANDLE MAP 1 PF KEYS
+Function DG0LP55-HNDL-PFK-1()
+  /* ************************************************************/
+  /* MAP 001 Process PF Keys - do whatever is needed to handle the*/
+  /* pf key and set the exit flag to 'y' when the pfkey does not*/
+  /* require any furthur edits. If the pf key does require editting*/
+  /* of anything entered on the map (like fastpath option) the exit*/
+  /* flag will be set to 'Y' in the map edit process when there are*/
+  /* no errors and there is something in the DA-EXIT-OPTION*/
+  /* ************************************************************/
+
+  if (converseVar.eventKey is pf3)
+    DAWREC.DAW-EXIT-OPTION = "RETN";
+    DAWREC.DAW-TERM-APPL-FL = "Y";
+  end
+
+  if (converseVar.eventKey is pf4)
+    DAWREC.DAW-EXIT-OPTION = "MENU";
+    DAWREC.DAW-TERM-APPL-FL = "Y";
+  end
+
+  if (converseVar.eventKey is pf7) /* subtract 1 from the map page number*/
+    DG0LM001.DAW-CURR-PAGE = DG0LM001.DAW-CURR-PAGE - 1;
+  end
+
+  if (converseVar.eventKey is pf8) /* add 1 to the map page number*/
+    DG0LM001.DAW-CURR-PAGE = DG0LM001.DAW-CURR-PAGE + 1;
+  end
+
+  if (converseVar.eventKey is pf9) /* print the tables*/
+    set XSDAW01 empty;
+    XSDAW01.XXX-TBL-PFX = DAWREC.XXX-TBL-PFX;
+    XSDAS-PRINT-TABLE();
+    DG0LM001.DAW-INFO-MESSAGE = DAWREC.DAW-INFO-MESSAGE;
+  end
+
+  if (converseVar.eventKey is pf10) /* set in process status to pending*/
+    DAWREC.DAW-SET-PENDING-ALL-FL = "Y";
+  else
+    DAWREC.DAW-SET-PENDING-ALL-FL = "N";
+  end
+
+  if (converseVar.eventKey is pf11) /* add a new code*/
+    DAWREC.DAW-ADD-ROW-FL = "Y";
+  else
+    DAWREC.DAW-ADD-ROW-FL = "N";
+  end
+
+  /* **************/
+  /* ****************** END DG0LP55 *****************************/
+  /* **************/
+end // end DG0LP55-HNDL-PFK-1
+
+// HANDLE PF KEYS FOR MAP 2
+Function DG0LP55-HNDL-PFK-2()
+  /* ************************************************************/
+  /* MAP 002 Process PF Keys - do whatever is needed to handle the*/
+  /* pf key and set the DA-DONE-WITH-ROW-FL to 'y' when the pfkey*/
+  /* doesn't require any furthur edits or processing.*/
+  /* For PF6 and PF10 the DA-DONE-WITH-ROW-FL will be set to 'Y'*/
+  /* in DG0LP70-PROC-MAP-2.*/
+  /* ************************************************************/
+
+  if (converseVar.eventKey is pf3)
+    DAWREC.DAW-DONE-WITH-ROW-FL = "Y";
+  end
+
+  if (converseVar.eventKey is pf4)
+    DAWREC.DAW-EXIT-OPTION = "MENU";
+    DAWREC.DAW-TERM-APPL-FL = "Y";
+  end
+
+
+  if (converseVar.eventKey is pf10) /* set in process status to pending*/
+    DAWREC.DAW-SET-PENDING-FL = "Y";
+  else
+    DAWREC.DAW-SET-PENDING-FL = "N";
+  end
+
+  if (converseVar.eventKey is pf6) /* apply the update or add*/
+    DAWREC.DAW-APPLY-FL = "Y";
+  else
+    DAWREC.DAW-APPLY-FL = "N";
+  end
+
+  /* **************/
+  /* ****************** END DG0LP55 *****************************/
+  /* **************/
+end // end DG0LP55-HNDL-PFK-2
+
+// EDIT ALL MAP FIELDS ON MAP 1
+Function DG0LP60-EDIT-MAP-1()
+  /* ***********************************************************/
+  /* Edit MAP 001 fields in reverse order*/
+  /* ***********************************************************/
+
+  DAWREC.DAW-SELECT-ROW-FL = "N";
+  DAWREC.DAW-DELETE-ROW-FL = "N";
+  DAWREC.DAW-COPY-ROW-FL = "N";
+
+  DG0LP61-EDIT-SEL(); /* edit select*/
+
+  DG0LP61-EDIT-PAGE(); /* edit current page number*/
+
+  if (DAWREC.DAW-EDIT-ERROR-FL == "Y" /* any errors*/
+   && DAWREC.DAW-EXIT-OPTION != " ")  /* don't allow exit from appl*/
+    DAWREC.DAW-TERM-APPL-FL = "N";
+    DAWREC.DAW-EXIT-OPTION = " ";
+  end
+
+  /* **************/
+  /* ****************** END DG0LP60 ****************************/
+  /* **************/
+end // end DG0LP60-EDIT-MAP-1
+
+// EDIT ALL FIELDS FOR MAP 2
+Function DG0LP60-EDIT-MAP-2()
+  /* ***********************************************************/
+  /* Edit MAP 001 fields in reverse order*/
+  /* ***********************************************************/
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "DEL")
+    if (DAWREC.DAW-RECORD-TYPE == "TBL ")
+      DG0LP62-EDIT-STAT(); /* Edit status*/
+      DG0LP68-EDIT-PLOG(); /* Edit prologs*/
+    end
+    return;
+  end
+
+
+  DG0LP62-EDIT-FLAGS(); /* Edit restriction indicators*/
+
+  DG0LP62-EDIT-STAT(); /* Edit status*/
+
+  DG0LP62-EDIT-ALDIV(); /* Edit restricted divisions*/
+
+  DG0LP62-EDIT-MERCH();
+
+  DG0LP62-EDIT-XPY(); /* Edit price type*/
+
+  DG0LP62-EDIT-XQA(); /* Edit quality codes*/
+
+  DG0LP62-EDIT-XLC(); /* Edit life cycle codes*/
+
+  DG0LP62-EDIT-DIV(); /* Edit division*/
+
+  DG0LP62-EDIT-GPC(); /* Edit gpc*/
+
+  DG0LP62-EDIT-XOTFL(); /* Edit ot flags*/
+
+  DG0LP62-EDIT-DESC(); /* Edit description*/
+
+  DG0LP62-EDIT-SABRV(); /* Edit short name*/
+
+  DG0LP62-EDIT-ABRV(); /* Edit abbreviation*/
+
+  DG0LP68-EDIT-PLOG(); /* Edit prologs*/
+
+  DG0LP69-EDIT-KEY(); /* Edit the table code and/or key*/
+
+  /* **************/
+  /* ****************** END DG0LP60 ****************************/
+  /* **************/
+end // end DG0LP60-EDIT-MAP-2
+
+// EDIT MAP PAGE NUMBER
+Function DG0LP61-EDIT-PAGE()
+  /* ***********************************************************/
+  /* Edit map current page number*/
+  /* ***********************************************************/
+
+  if (DG0LM001.DAW-CURR-PAGE == DAWREC.DAW-CURR-PAGE)
+    return;
+  end
+
+  /* if select codes entered and page number changed*/
+  /* then reset page number*/
+
+  if (DAWREC.DAW-ADD-ROW-FL == "Y"
+   || DAWREC.DAW-DELETE-ROW-FL == "Y"
+   || DAWREC.DAW-SELECT-ROW-FL == "Y"
+   || DAWREC.DAW-COPY-ROW-FL == "Y")
+    set DG0LM001.DAW-CURR-PAGE bold;
+    DG0LM001.VAGen_EZEMSG = "CANNOT MAINTAIN OR ADD A ROW AND CHANGE PAGE AT THE SAME TIME";
+    DG0LM001.DAW-CURR-PAGE = DAWREC.DAW-CURR-PAGE;
+    DG0LM001.DAW-INFO-MESSAGE = "PAGE NUMBER HAS BEEN RESET - HIT ENTER OR PF11 TO CONTINUE";
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+  end
+
+  if (DG0LM001.DAW-CURR-PAGE > DG0LM001.DAW-LAST-PAGE)
+    set DG0LM001.DAW-CURR-PAGE cursor, bold;
+    converseLib.validationFailed(006); /* page number entered is greater than*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* last page available*/
+  end
+
+  if (DG0LM001.DAW-CURR-PAGE == 0)
+    set DG0LM001.DAW-CURR-PAGE cursor, bold;
+    converseLib.validationFailed(007); /* page number entered is zero - page*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* does not exist*/
+  end
+
+  /* **************/
+  /* ****************** END DG0LP62 ****************************/
+  /* **************/
+end // end DG0LP61-EDIT-PAGE
+
+// EDIT MAP PREFIX OPTION
+Function DG0LP61-EDIT-SEL()
+  /* ***********************************************************/
+  /* Edit map select codes - user may enter multiple selects*/
+  /* on a single page. Each will be processed as long as there*/
+  /* are no errors.*/
+  /* ***********************************************************/
+
+  sysVar.arrayIndex = 14;
+
+  while (sysVar.arrayIndex != 0)
+
+    if (DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] == " "
+     || DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] == "*"
+    ) /* CONTINUE*/
+    else
+      if (DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] == "S")
+        DAWREC.DAW-SELECT-ROW-FL = "Y";
+      else
+        if (DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] == "C")
+          DAWREC.DAW-COPY-ROW-FL = "Y";
+        else
+          if (DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] == "D")
+            if (DG0LM001.DAW-STATUS-DESC[sysVar.arrayIndex] == "EDIT    "
+             || DG0LM001.DAW-STATUS-DESC[sysVar.arrayIndex] == "PENDING "
+             || DG0LM001.DAW-STATUS-DESC[sysVar.arrayIndex] == "REJECTED")
+              DAWREC.DAW-DELETE-ROW-FL = "Y";
+            else
+              converseLib.validationFailed(009); /* only edit, wait or rejected*/
+              DAWREC.DAW-EDIT-ERROR-FL = "Y";
+                                   /* status rows may be deleted*/
+              set DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+            end
+          else
+            if (DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] == "A")
+              converseLib.validationFailed(010); /* invalid select - use PF11 to add a*/
+              DAWREC.DAW-EDIT-ERROR-FL = "Y";
+                                   /* new code instead of 'A'*/
+              set DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+            else
+              converseLib.validationFailed(011); /* invalid select - use 's' to select*/
+              DAWREC.DAW-EDIT-ERROR-FL = "Y";
+                                   /* 'd' to delete or 'c' copy*/
+              set DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+            end
+          end
+        end
+      end
+    end
+    sysVar.arrayIndex = sysVar.arrayIndex - 1;
+  end
+
+  /* **************/
+  /* ****************** END DG0LP61 ****************************/
+  /* **************/
+end // end DG0LP61-EDIT-SEL
+
+// EDIT TABLE ROW ABBREVIATION
+Function DG0LP62-EDIT-ABRV()
+  /* ****************************************************************/
+  /* Edit abbreviation - required, something must be in the field*/
+  /* ****************************************************************/
+
+  if (DG0LM002.XOTABRV == " ")
+    converseLib.validationFailed(014); /* Abbreviation is required*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTABRV cursor, bold;
+  end
+
+
+  /* **************/
+  /* ***************** END DG0LP63 **********************************/
+  /* **************/
+end // end DG0LP62-EDIT-ABRV
+
+Function DG0LP62-EDIT-ALDIV()
+  /* ********************************************************************/
+  /* Edit DIVISIONRESTRICTIONS*/
+  /* ********************************************************************/
+
+  if (DG0LM002.XDVCD4 != " ")
+    if (DG0LM002.XDVCD4 in XDVTBL.XDVCD /* if code is in the table*/
+     && XDVTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(082); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XDVCD4 cursor, bold;
+    end
+  end
+
+  if (DG0LM002.XDVCD3 != " ")
+    if (DG0LM002.XDVCD3 in XDVTBL.XDVCD /* if code is in the table*/
+     && XDVTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(082); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XDVCD3 cursor, bold;
+    end
+  end
+
+  if (DG0LM002.XDVCD2 != " ")
+    if (DG0LM002.XDVCD2 in XDVTBL.XDVCD /* if code is in the table*/
+     && XDVTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(082); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XDVCD2 cursor, bold;
+    end
+  end
+
+  if (DG0LM002.XDVCD1 != " ")
+    if (DG0LM002.XDVCD1 in XDVTBL.XDVCD /* if code is in the table*/
+     && XDVTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(082); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XDVCD1 cursor, bold;
+    end
+  end
+
+  if (DG0LM002.XOTALWDV == "A"
+   || DG0LM002.XOTALWDV == "D")
+  /* CONTINUE*/
+  else
+    converseLib.validationFailed(219); /* xwh code is invalid or inactive*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTALWDV cursor, bold;
+  end
+
+  if (DG0LM002.XDVCD1 != DG0LM002.XDVCD /* must equal primary*/
+   && DG0LM002.XOTALWDV == "A")        
+    converseLib.validationFailed(218); /* xwh code is invalid or inactive*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XDVCD1 cursor, bold;
+  end
+
+
+  /* **************/
+  /* ****************** END DG0LP62 **************************************/
+  /* **************/
+end // end DG0LP62-EDIT-ALDIV
+
+// EDIT TABLE ROW DESCRIPTION
+Function DG0LP62-EDIT-DESC()
+  /* ****************************************************************/
+  /* Edit description - required, something must be in the field*/
+  /* ****************************************************************/
+
+  if (DG0LM002.XOTDESC == " ")
+    converseLib.validationFailed(013); /* Description is required*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTDESC cursor, bold;
+  end
+
+  /* **************/
+  /* ***************** END DG0LP66 **********************************/
+  /* **************/
+end // end DG0LP62-EDIT-DESC
+
+Function DG0LP62-EDIT-DIV()
+  /* ********************************************************************/
+  /* Edit DIVISION*/
+  /* ********************************************************************/
+
+  if (DG0LM002.XDVCD != " ") /* if not spaces*/
+    if (DG0LM002.XDVCD in XDVTBL.XDVCD /* if in the table*/
+     && XDVTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(082); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XDVCD cursor, bold;
+    end
+  end
+
+
+  /* **************/
+  /* ****************** END DG0LP62 **************************************/
+  /* **************/
+end // end DG0LP62-EDIT-DIV
+
+Function DG0LP62-EDIT-FLAGS()
+  /* ********************************************************************/
+  /* Edit ALLOWED FLAG AND INDICATORS*/
+  /* ********************************************************************/
+
+  if (DG0LM002.XOTAVDFL == "0"
+   || DG0LM002.XOTAVDFL == "1"
+   || DG0LM002.XOTAVDFL == "2"
+   || DG0LM002.XOTAVDFL == "3")
+  /* continue*/
+  else
+    converseLib.validationFailed(230);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTAVDFL cursor, bold;
+  end
+
+  if (DG0LM002.XOTDSAVL == "Y"
+   || DG0LM002.XOTDSAVL == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(231);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTDSAVL cursor, bold;
+  end
+
+  if (DG0LM002.XOTDMRPF == "Y"
+   || DG0LM002.XOTDMRPF == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(232);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTDMRPF cursor, bold;
+  end
+
+  if (DG0LM002.XOTACOGS == "Y"
+   || DG0LM002.XOTACOGS == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(229);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTACOGS cursor, bold;
+  end
+
+  if (DG0LM002.XOTSZIND == "I"
+   || DG0LM002.XOTSZIND == "D")
+  /* continue*/
+  else
+    converseLib.validationFailed(233);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTSZIND cursor, bold;
+  end
+
+  if (DG0LM002.XOTSZVER == "Y"
+   || DG0LM002.XOTSZVER == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(234);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTSZVER cursor, bold;
+  end
+
+  if (DG0LM002.XOTXTRAS == "Y"
+   || DG0LM002.XOTXTRAS == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(235);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTXTRAS cursor, bold;
+  end
+
+  if (DG0LM002.XOTPRCDT == "B"
+   || DG0LM002.XOTPRCDT == "S"
+   || DG0LM002.XOTPRCDT == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(236);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTPRCDT cursor, bold;
+  end
+
+  if (DG0LM002.XOTBOFL == "Y"
+   || DG0LM002.XOTBOFL == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(237);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTBOFL cursor, bold;
+  end
+
+  if (DG0LM002.XOTANSUM == "Y"
+   || DG0LM002.XOTANSUM == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(238);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTANSUM cursor, bold;
+  end
+
+  if (DG0LM002.COCMFL == "Y"
+   || DG0LM002.COCMFL == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(239);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.COCMFL cursor, bold;
+  end
+
+  if (DG0LM002.XOTSMLCH == "Y"
+   || DG0LM002.XOTSMLCH == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(240);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTSMLCH cursor, bold;
+  end
+
+  if (DG0LM002.XOTAUTHF == "Y"
+   || DG0LM002.XOTAUTHF == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(241);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTAUTHF cursor, bold;
+  end
+
+  if (DG0LM002.XOTAPRNT == "Y"
+   || DG0LM002.XOTAPRNT == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(242);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTAPRNT cursor, bold;
+  end
+
+  if (DG0LM002.XOTABULK == "Y"
+   || DG0LM002.XOTABULK == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(243);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTABULK cursor, bold;
+  end
+
+
+  if (DG0LM002.XOTADIRS == "Y"
+   || DG0LM002.XOTADIRS == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(244);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTADIRS cursor, bold;
+  end
+
+  if (DG0LM002.XOTOALOC == "Y"
+   || DG0LM002.XOTOALOC == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(245);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTOALOC cursor, bold;
+  end
+
+  if (DG0LM002.XOTABILL == "Y"
+   || DG0LM002.XOTABILL == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(246);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTABILL cursor, bold;
+  end
+
+  /* **************/
+  /* ****************** END DG0LP64 **************************************/
+  /* **************/
+end // end DG0LP62-EDIT-FLAGS
+
+Function DG0LP62-EDIT-GPC()
+  /* ********************************************************************/
+  /* Edit GPC*/
+  /* ********************************************************************/
+
+  if (DG0LM002.XGPCD != " ") /* if not spaces*/
+    if (DG0LM002.XGPCD in XGPTBL.XGPCD /* if code is in the table*/
+     && XGPTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(028); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XGPCD cursor, bold;
+    end
+  end
+
+  /* **************/
+  /* ****************** END DG0LP62 **************************************/
+  /* **************/
+end // end DG0LP62-EDIT-GPC
+
+Function DG0LP62-EDIT-MERCH()
+  /* ****************************************************************/
+  /* Edit MERCHADISE SUMMARY , something must be in the field*/
+  /* ****************************************************************/
+
+  if (DG0LM002.XOTMRSCD == "01"
+   || DG0LM002.XOTMRSCD == "02"
+   || DG0LM002.XOTMRSCD == "03"
+   || DG0LM002.XOTMRSCD == "04"
+   || DG0LM002.XOTMRSCD == "05")
+    return;
+  else
+    converseLib.validationFailed(228);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTMRSCD cursor, bold;
+  end
+
+  /* **************/
+  /* ***************** END DG0LP62 **********************************/
+  /* **************/
+end // end DG0LP62-EDIT-MERCH
+
+Function DG0LP62-EDIT-SABRV()
+  /* ****************************************************************/
+  /* Edit short abrv - required, something must be in the field*/
+  /* ****************************************************************/
+
+  if (DG0LM002.XOTSABRV == " ")
+    converseLib.validationFailed(217); /* short abrv  is required*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTSABRV cursor, bold;
+  end
+
+  /* **************/
+  /* ***************** END DG0LP67 **********************************/
+  /* **************/
+end // end DG0LP62-EDIT-SABRV
+
+// EDIT TABLE STATUS A/I
+Function DG0LP62-EDIT-STAT()
+  /* ****************************************************************/
+  /* Edit status (XXXSTAT) must be 'A' active or 'I' inactive*/
+  /* ****************************************************************/
+
+  if (DG0LM002.XXXSTAT == "A")
+    DG0LM002.DAW-TBL-STATUS-DESC = "ACTIVE  ";
+  else
+    if (DG0LM002.XXXSTAT == "I")
+      DG0LM002.DAW-TBL-STATUS-DESC = "INACTIVE";
+    else
+      converseLib.validationFailed(012); /* status must be 'A' or 'I'*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XXXSTAT cursor, bold;
+    end
+  end
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "DEL"
+   && DG0LM002.XXXSTAT != "I")
+    DG0LM002.DAW-INFO-MESSAGE = "CANNOT DELETE TABLE ROW; STATUS IS ACTIVE. PF3 TO RETURN TO LIST";
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+  end
+
+
+  /* **************/
+  /* ***************** END DG0LP61 **********************************/
+  /* **************/
+end // end DG0LP62-EDIT-STAT
+
+Function DG0LP62-EDIT-XLC()
+  /* ********************************************************************/
+  /* Edit LIFE CYCLES*/
+  /* ********************************************************************/
+
+  if (DG0LM002.XLCCD5 != " ") /* if not spaces*/
+    if (DG0LM002.XLCCD5 in XLCTBL.XLCCD /* if in the table*/
+     && XLCTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(223); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XLCCD5 cursor, bold;
+    end
+  end
+
+  if (DG0LM002.XLCCD4 != " ") /* if not spaces*/
+    if (DG0LM002.XLCCD4 in XLCTBL.XLCCD /* if in the table*/
+     && XLCTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(223); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XLCCD4 cursor, bold;
+    end
+  end
+
+  if (DG0LM002.XLCCD3 != " ") /* if not spaces*/
+    if (DG0LM002.XLCCD3 in XLCTBL.XLCCD /* if in the table*/
+     && XLCTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(223); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XLCCD3 cursor, bold;
+    end
+  end
+
+  if (DG0LM002.XLCCD2 != " ") /* if not spaces*/
+    if (DG0LM002.XLCCD2 in XLCTBL.XLCCD /* if code is in the table*/
+     && XLCTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(223); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XLCCD2 cursor, bold;
+    end
+  end
+
+  if (DG0LM002.XLCCD1 == " ") /* if not spaces*/
+    converseLib.validationFailed(222); /* xwh code is invalid or inactive*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XLCCD1 cursor, bold;
+  else
+    if (DG0LM002.XLCCD1 in XLCTBL.XLCCD /* if warehouse is in the table*/
+     && XLCTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(223); /* xwh code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XLCCD1 cursor, bold;
+    end
+  end
+
+  /* **************/
+  /* ****************** END DG0LP62 **************************************/
+  /* **************/
+end // end DG0LP62-EDIT-XLC
+
+Function DG0LP62-EDIT-XOTFL()
+  /* ********************************************************************/
+  /* Edit ORDER TYPE FLAGS*/
+  /* ********************************************************************/
+
+  if (DG0LM002.XOTSMPLF == "Y"
+   || DG0LM002.XOTSMPLF == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(227);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTSMPLF cursor, bold;
+  end
+
+  if (DG0LM002.XOTFUTRF == "Y"
+   || DG0LM002.XOTFUTRF == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(226);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTFUTRF cursor, bold;
+  end
+
+  if (DG0LM002.XOTATONF == "Y"
+   || DG0LM002.XOTATONF == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(225);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTATONF cursor, bold;
+  end
+
+  if (DG0LM002.XOTPROPF == "Y"
+   || DG0LM002.XOTPROPF == "N")
+  /* continue*/
+  else
+    converseLib.validationFailed(224);
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTPROPF cursor, bold;
+  end
+
+  /* **************/
+  /* ****************** END DG0LP64 **************************************/
+  /* **************/
+end // end DG0LP62-EDIT-XOTFL
+
+Function DG0LP62-EDIT-XPY()
+  /* ********************************************************************/
+  /* Edit PRICE TYPE*/
+  /* ********************************************************************/
+
+  if (DG0LM002.XPYCD != " ") /* if not spaces*/
+    if (DG0LM002.XPYCD in XPYTBL.XPYCD /* if warehouse is in the table*/
+     && XPYTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(362); /* xwh code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XPYCD cursor, bold;
+    end
+  end
+
+  /* **************/
+  /* ****************** END DG0LP62 **************************************/
+  /* **************/
+end // end DG0LP62-EDIT-XPY
+
+Function DG0LP62-EDIT-XQA()
+  /* ********************************************************************/
+  /* Edit QUALITY CODES*/
+  /* ********************************************************************/
+
+  if (DG0LM002.XQACD3 != " ") /* if not spaces*/
+    if (DG0LM002.XQACD3 in XQATBL.XQACD /* if in the table*/
+     && XQATBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(221); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XQACD3 cursor, bold;
+    end
+  end
+
+  if (DG0LM002.XQACD2 != " ") /* if not spaces*/
+    if (DG0LM002.XQACD2 in XQATBL.XQACD /* if code is in the table*/
+     && XQATBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(221); /* code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XQACD2 cursor, bold;
+    end
+  end
+
+  if (DG0LM002.XQACD1 == " ") /* if not spaces*/
+    converseLib.validationFailed(220); /* xwh code is invalid or inactive*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XQACD1 cursor, bold;
+  else
+    if (DG0LM002.XQACD1 in XQATBL.XQACD /* if warehouse is in the table*/
+     && XQATBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and is a active status*/
+    else
+      converseLib.validationFailed(221); /* xwh code is invalid or inactive*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XQACD1 cursor, bold;
+    end
+  end
+
+  /* **************/
+  /* ****************** END DG0LP62 **************************************/
+  /* **************/
+end // end DG0LP62-EDIT-XQA
+
+// EDIT PROLOGS
+Function DG0LP68-EDIT-PLOG()
+  /* ****************************************************************/
+  /* Edit prologs - required, something must be in the field*/
+  /* ****************************************************************/
+
+  if (DG0LM002.DA-PLOG-TXT1 == " "
+   && DG0LM002.DA-PLOG-TXT2 == " ")
+    converseLib.validationFailed(018); /* a least one description of the*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* change is required*/
+    set DG0LM002.DA-PLOG-TXT1 cursor, bold;
+  end
+
+
+  /* **************/
+  /* ***************** END DG0LP62 **********************************/
+  /* **************/
+end // end DG0LP68-EDIT-PLOG
+
+// EDIT TABLE ROW KEY
+Function DG0LP69-EDIT-KEY()
+  /* ****************************************************************/
+  /* Edit the table key (code)*/
+  /* a) required - can't be spaces*/
+  /* b) can't exist if current function is add or copy*/
+  /* field is protected when current function is update*/
+  /* c) can't exist in transaction table with todays date*/
+  /* in any status except 'c' complete*/
+  /* ****************************************************************/
+
+  if (DG0LM002.XOTCD == " ")
+    converseLib.validationFailed(248); /* table key is required*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DG0LM002.XOTCD cursor, bold;
+  end
+
+  /* Can't exist in current table (no matter what the status is)*/
+
+  if (DG0LM002.XOTCD in XOTTBL.XOTCD)
+    if (DAWREC.DAW-CURR-FUNCTION-CD == "ADD")
+      converseLib.validationFailed(247); /* table key already exists*/
+      DG0LM002.DAW-INFO-MESSAGE = "REVIEW TABLE LIST AND SELECT ROW TO UPDATE";
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XOTCD cursor, bold;
+    end
+    if (DAWREC.DAW-CURR-FUNCTION-CD == "CPY")
+      converseLib.validationFailed(247); /* table key already exists*/
+      DG0LM002.DAW-INFO-MESSAGE = "TABLE KEY MUST BE CHANGED WHEN COPYING A ROW TO BE ADDED";
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DG0LM002.XOTCD cursor, bold;
+    end
+  end
+
+  /* **  **  **  **  **  **  **  **  **  **  **  **  **  **  ***/
+  /* WARNING - Add any new edits for the key prior to this line*/
+  /* **  **  **  **  **  **  **  **  **  **  **  **  **  **  ***/
+
+  if (DAWREC.DAW-RECORD-TYPE == "TRAN")
+    if (DAWREC.DAW-CURR-FUNCTION-CD == "UPD"
+     || DAWREC.DAW-CURR-FUNCTION-CD == "DEL")
+      return; /* row is a transaction that is being*/
+    end /* updated - skip the next edit*/
+  end
+
+  /* Can't exist in transaction table - must be the last edit*/
+
+  VDATRN01.XXX-TBL-PFX = DAWREC.XXX-TBL-PFX;
+  DG0LW01.DA-CCAT-KEY-TXT = " ";
+  DG0LW01.DG0LW-KEY-XOTCD = DG0LM002.XOTCD;
+  VDATRN01.DA-CCAT-KEY-TXT = DG0LW01.DA-CCAT-KEY-TXT;
+
+  XSDAS-DA1140-SEL-2();
+
+  if (SQLCA.VAGen_SQLCODE != 100) /* row found*/
+    converseLib.validationFailed(017); /* table key already added or changed*/
+    DG0LM002.DAW-INFO-MESSAGE = "SELECT TRANSACTION TO UPDATE OR CALL DATA ADMIN IF APPROVED/PROCESSING";
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+
+    if (DAWREC.DAW-CURR-FUNCTION-CD == "UPD"
+     || DAWREC.DAW-CURR-FUNCTION-CD == "DEL")
+                                   /* Field is autoskipped*/
+    else
+      set DG0LM002.XOTCD cursor, bold;
+    end
+  end
+
+  /* **************/
+  /* ***************** END DG0LP69 **********************************/
+  /* **************/
+end // end DG0LP69-EDIT-KEY
+
+// DO PROCESSING FOR THE MAP 1
+Function DG0LP70-PROC-MAP-1()
+  /* ****************************************************************/
+  /* Do any processing for MAP 001*/
+  /* ****************************************************************/
+
+  /* *****************************************************************/
+  /* Display new page*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-CURR-PAGE != DG0LM001.DAW-CURR-PAGE)
+    DG0LS-TS-READ-FIL();
+    DG0LP71-TSQ-TO-MAP();
+    DG0LP25-SET-ATTR-1();
+  end
+
+  /* *****************************************************************/
+  /* set all in-process rows on the current page to pending*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-SET-PENDING-ALL-FL == "Y")
+
+    DAWREC.DAW-ROW-NBR = 1;
+    while (DAWREC.DAW-ROW-NBR <= 14) /* check each row on the MAP 001*/
+      if (DG0LM001.DAW-STATUS-DESC[DAW-ROW-NBR] == "EDIT")
+        set VDATRN01 empty;
+        VDATRN01.DAW-VDATRN01-KEY = DG0LW02.DAW-VDATRN01-KEY[DAW-ROW-NBR];
+        XSDAS-SET-STATUS(); /* set the status to 'pending'*/
+      end
+      DAWREC.DAW-ROW-NBR = DAWREC.DAW-ROW-NBR + 1;
+    end
+
+  end
+
+  /* *****************************************************************/
+  /* Add a row*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-ADD-ROW-FL == "Y")
+
+    DAWREC.DAW-RECORD-TYPE = " ";
+    DAWREC.DAW-CURR-FUNCTION-CD = "ADD";
+    DAWREC.DAW-ROW-NBR = 0;
+
+    DG0LP20-BUILD-MAP2();
+
+    DAWREC.DAW-DONE-WITH-ROW-FL = "N";
+    while (DAWREC.DAW-DONE-WITH-ROW-FL != "Y" /* process row until done*/
+     && DAWREC.DAW-TERM-APPL-FL == "N") /* with it or exit from appl*/
+      DG0LP30-MAIN-MAP-2(); /* main loop for MAP 002*/
+    end
+
+    DAWREC.DAW-CURR-FUNCTION-CD = "   ";
+
+  end
+
+  /* *****************************************************************/
+  /* Select, copy or delete rows;*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-SELECT-ROW-FL == "Y"
+   || DAWREC.DAW-COPY-ROW-FL == "Y"
+   || DAWREC.DAW-DELETE-ROW-FL == "Y")
+
+    DAWREC.DAW-ROW-NBR = 1;
+    while (DAWREC.DAW-ROW-NBR <= 14 /* check each row on the MAP 001*/
+     && DAWREC.DAW-TERM-APPL-FL == "N") /* until done or exit from appl*/
+
+      DAWREC.DAW-RECORD-TYPE = DG0LW02.DAW-RECORD-TYPE[DAW-ROW-NBR];
+
+      if (DG0LM001.DAW-SELECT-CD[DAW-ROW-NBR] == "S"
+       || DG0LM001.DAW-SELECT-CD[DAW-ROW-NBR] == "C"
+       || DG0LM001.DAW-SELECT-CD[DAW-ROW-NBR] == "D")
+
+        if (DG0LM001.DAW-SELECT-CD[DAW-ROW-NBR] == "S")
+          DAWREC.DAW-CURR-FUNCTION-CD = "UPD";
+        end
+        if (DG0LM001.DAW-SELECT-CD[DAW-ROW-NBR] == "C")
+          DAWREC.DAW-CURR-FUNCTION-CD = "CPY";
+        end
+        if (DG0LM001.DAW-SELECT-CD[DAW-ROW-NBR] == "D")
+          DAWREC.DAW-CURR-FUNCTION-CD = "DEL";
+          DAWREC.DAW-OK-TO-DELETE-FL = "N";
+        end
+
+        DAWREC.DAW-DONE-WITH-ROW-FL = "N";
+        DG0LP20-BUILD-MAP2();
+        while (DAWREC.DAW-DONE-WITH-ROW-FL != "Y" /* process row until done*/
+         && DAWREC.DAW-TERM-APPL-FL == "N") /* with it or exit from appl*/
+          DG0LP30-MAIN-MAP-2(); /* main loop for MAP 002*/
+        end
+
+      end
+
+      DAWREC.DAW-ROW-NBR = DAWREC.DAW-ROW-NBR + 1;
+      DAWREC.DAW-CURR-FUNCTION-CD = "   ";
+
+    end
+  end
+
+  /* *****************************************************************/
+  /* Any maintenance selections are now completed so rebuild*/
+  /* temp storage*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-TERM-APPL-FL == "N") /* not ready to exit this application*/
+    if (DAWREC.DAW-SELECT-ROW-FL == "Y"
+     || DAWREC.DAW-COPY-ROW-FL == "Y"
+     || DAWREC.DAW-DELETE-ROW-FL == "Y"
+     || DAWREC.DAW-ADD-ROW-FL == "Y"
+     || DAWREC.DAW-SET-PENDING-ALL-FL == "Y")
+      DG0LS-TS-PURGE-FIL(); /* purge temp storage*/
+      DG0LP20-BUILD-MAP1(); /* and then rebuilt it*/
+      if (DAWREC.DAW-SET-PENDING-ALL-FL == "Y")
+        DG0LM001.DAW-INFO-MESSAGE = "ALL TRANSACTIONS IN EDIT STATUS SET TO PENDING - PLEASE REVIEW LIST";
+      else
+        DG0LM001.DAW-INFO-MESSAGE = "ALL MAINTENANCE SELECTIONS HAVE BEEN COMPLETED - PLEASE REVIEW LIST";
+      end
+    end
+  end
+
+  /* **************/
+  /* ***************** END DG0LP70 **********************************/
+  /* **************/
+end // end DG0LP70-PROC-MAP-1
+
+// DO PROCESSING NEEDED FOR MAP 2
+Function DG0LP70-PROC-MAP-2()
+  /* ****************************************************************/
+  /* Do any processing for MAP 002*/
+  /* ****************************************************************/
+
+  /* ****************************************************************/
+  /* User hit enter instead of PF6 or PF10, so there's nothing to*/
+  /* do except give them a message indicating what to do*/
+  /* ****************************************************************/
+
+  if (DAWREC.DAW-APPLY-FL == "N"
+   && DAWREC.DAW-SET-PENDING-FL == "N")
+    DG0LM002.DAW-INFO-MESSAGE = "USE PF6 TO CREATE TRANSACTION OR PF10 TO CREATE AND SET TO PENDING";
+    DG0LM002.VAGen_EZEMSG = "OR PF3 TO RETURN TO LIST";
+    return;
+  end
+
+
+  /* *****************************************************************/
+  /* See if anything was changed- Compare map to table record*/
+  /* *****************************************************************/
+
+  DG0LP71-COMPARE();
+
+
+  /* *****************************************************************/
+  /* Set status to pending if no change to row*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-SET-PENDING-FL == "Y"
+   && DAWREC.DAW-RECORD-TYPE == "TRAN"
+   && DAWREC.DAW-DATA-CHANGED-FL == "N") /* no change to row*/
+    set VDATRN01 empty;
+    if (DAWREC.DAW-RETURN-TO-DA01-FL == "Y")
+      VDATRN01.DAW-VDATRN01-KEY = DAWREC.DAW-VDATRN01-KEY;
+    else
+      VDATRN01.DAW-VDATRN01-KEY = DG0LW02.DAW-VDATRN01-KEY[DAW-ROW-NBR];
+    end
+    XSDAS-SET-STATUS(); /* set the status to 'pending'*/
+    DG0LM002.DAW-INFO-MESSAGE = "TRANSACTION STATUS CHANGED TO PENDING: PF3 TO CONTINUE ";
+    return;
+  end
+
+
+  /* *****************************************************************/
+  /* Create a transaction to add a table row*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "ADD"
+   && DAWREC.DAW-RECORD-TYPE == " "
+   && DAWREC.DAW-DATA-CHANGED-FL == "Y") /* row was added or changed*/
+
+    DG0LP72-NEW-TRAN(); /* build new transaction row*/
+    XSDAS-DA1140-ADD();
+    if (SQLCA.VAGen_SQLCODE == -803 /* check duplicate*/
+     || SQLCA.VAGen_SQLCODE == -911) /* check deadlock*/
+      DG0LM002.DAW-INFO-MESSAGE = DAWREC.DAW-INFO-MESSAGE;
+    else
+      DG0LM002.DAW-INFO-MESSAGE = "NEW TABLE ROW WILL BE ADDED - PF3 TO CONTINUE OR RETURN TO LIST";
+    end
+    return;
+
+  end
+
+
+  /* *****************************************************************/
+  /* Create a transaction to copy a table row*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "CPY"
+   && DAWREC.DAW-RECORD-TYPE == "TBL "
+   && DAWREC.DAW-DATA-CHANGED-FL == "Y") /* row was copied or updated*/
+
+    DG0LP72-NEW-TRAN(); /* build new transaction row*/
+    XSDAS-DA1140-ADD();
+    if (SQLCA.VAGen_SQLCODE == -803 /* check duplicate*/
+     || SQLCA.VAGen_SQLCODE == -911) /* check deadlock*/
+      DG0LM002.DAW-INFO-MESSAGE = DAWREC.DAW-INFO-MESSAGE;
+    else
+      DG0LM002.DAW-INFO-MESSAGE = "NEW TABLE ROW WILL BE ADDED - PF3 TO CONTINUE OR RETURN TO LIST";
+    end
+    return;
+  end
+
+
+  /* *****************************************************************/
+  /* Create a transaction to update a table row*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "UPD"
+   && DAWREC.DAW-RECORD-TYPE == "TBL "
+   && DAWREC.DAW-DATA-CHANGED-FL == "Y") /* row was copied or updated*/
+
+    DG0LP72-NEW-TRAN(); /* build new transaction row*/
+    XSDAS-DA1140-ADD();
+    if (SQLCA.VAGen_SQLCODE == -803 /* check duplicate*/
+     || SQLCA.VAGen_SQLCODE == -911) /* check deadlock*/
+      DG0LM002.DAW-INFO-MESSAGE = DAWREC.DAW-INFO-MESSAGE;
+    else
+      DG0LM002.DAW-INFO-MESSAGE = "TABLE ROW WILL BE UPDATED - PF3 TO CONTINUE OR RETURN TO LIST";
+    end
+    return;
+  end
+
+
+  /* *****************************************************************/
+  /* Create a transaction to delete a table row*/
+  /* *****************************************************************/
+
+  /* This function has not been used*/
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "DEL"
+   && DAWREC.DAW-RECORD-TYPE == "TBL "
+   && DAWREC.DAW-DATA-CHANGED-FL == "Y")
+
+    if (DAWREC.DAW-OK-TO-DELETE-FL == "Y")
+      DG0LP72-NEW-TRAN(); /* build new transaction row*/
+      XSDAS-DA1140-ADD();
+      DG0LM002.DAW-INFO-MESSAGE = "TABLE ROW WILL BE DELETED - PF3 TO CONTINUE OR RETURN TO LIST";
+    else
+      DG0LM002.DAW-INFO-MESSAGE = "USE PF6 TO DELETE OR PF3 TO CANCEL THE DELETE AND RETURN TO LIST";
+      DAWREC.DAW-OK-TO-DELETE-FL = "Y";
+    end
+    return;
+  end
+
+
+  /* *****************************************************************/
+  /* Update a transaction*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-RECORD-TYPE == "TRAN"
+   && DAWREC.DAW-CURR-FUNCTION-CD == "UPD"
+   && DAWREC.DAW-DATA-CHANGED-FL == "Y") /* something was changed*/
+
+    DG0LP73-OLD-TRAN(); /* build old transaction row*/
+    XSDAS-DA1140-UPD();
+    if (SQLCA.VAGen_SQLCODE == -911) /* check deadlock*/
+      DG0LM002.DAW-INFO-MESSAGE = DAWREC.DAW-INFO-MESSAGE;
+    else
+      DG0LM002.DAW-INFO-MESSAGE = "TRANSACTION UPDATED - PF3 TO CONTINUE OR RETURN TO LIST";
+    end
+    return;
+
+  end
+
+
+  /* *****************************************************************/
+  /* copy a transaction*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-RECORD-TYPE == "TRAN"
+   && DAWREC.DAW-CURR-FUNCTION-CD == "CPY"
+   && DAWREC.DAW-DATA-CHANGED-FL == "Y") /* something was changed*/
+
+    DG0LP72-NEW-TRAN(); /* build new transaction row*/
+    XSDAS-DA1140-ADD();
+    if (SQLCA.VAGen_SQLCODE == -803 /* check duplicate*/
+     || SQLCA.VAGen_SQLCODE == -911) /* check deadlock*/
+      DG0LM002.DAW-INFO-MESSAGE = DAWREC.DAW-INFO-MESSAGE;
+    else
+      DG0LM002.DAW-INFO-MESSAGE = "NEW TABLE ROW WILL BE ADDED - PF3 TO CONTINUE OR RETURN TO LIST";
+    end
+    return;
+
+  end
+
+
+  /* *****************************************************************/
+  /* Delete  a transaction*/
+  /* *****************************************************************/
+
+  if (DAWREC.DAW-RECORD-TYPE == "TRAN"
+   && DAWREC.DAW-CURR-FUNCTION-CD == "DEL")
+
+    if (DAWREC.DAW-OK-TO-DELETE-FL == "Y")
+      set VDATRN01 empty;
+      VDATRN01.DAW-VDATRN01-KEY = DG0LW02.DAW-VDATRN01-KEY[DAW-ROW-NBR];
+      XSDAS-DA1140-DEL();
+      if (SQLCA.VAGen_SQLCODE == -911) /* check deadlock*/
+        DG0LM002.DAW-INFO-MESSAGE = DAWREC.DAW-INFO-MESSAGE;
+      else
+        DG0LM002.DAW-INFO-MESSAGE = "TRANSACTION DELETED - PF3 TO CONTINUE OR RETURN TO LIST";
+        DAWREC.DAW-OK-TO-DELETE-FL = "N";
+      end
+      return;
+    else
+      DG0LM002.DAW-INFO-MESSAGE = "USE PF6 TO DELETE OR PF3 TO CANCEL THE DELETE AND RETURN TO LIST";
+      DAWREC.DAW-OK-TO-DELETE-FL = "Y";
+      return;
+    end
+  end
+
+
+  /* still here !! Then nothing changed and there's nothing to process*/
+
+  DG0LM002.DAW-INFO-MESSAGE = "NOTHING ADDED OR CHANGED..... ARE YOU JUST LOOKING ?? ";
+  DG0LM002.VAGen_EZEMSG = "USE PF3 TO RETURN TO LIST WHEN YOU ARE READY";
+
+  /* **************/
+  /* ***************** END DG0LP70 **********************************/
+  /* **************/
+end // end DG0LP70-PROC-MAP-2
+
+// COMPARE TABLE ROW TO RECORD
+Function DG0LP71-COMPARE()
+  /* *****************************************************************/
+  /* See if anything changed*/
+  /* *****************************************************************/
+
+  if (DG0LW01.XOTCD == DG0LM002.XOTCD
+   && DG0LW01.XOTSABRV == DG0LM002.XOTSABRV
+   && DG0LW01.XOTABRV == DG0LM002.XOTABRV
+   && DG0LW01.XOTDESC == DG0LM002.XOTDESC
+   && DG0LW01.XOTLDAYS == DG0LM002.XOTLDAYS
+   && DG0LW01.XOTPROPF == DG0LM002.XOTPROPF
+   && DG0LW01.XOTATONF == DG0LM002.XOTATONF
+   && DG0LW01.XOTFUTRF == DG0LM002.XOTFUTRF
+   && DG0LW01.XOTSMPLF == DG0LM002.XOTSMPLF
+   && DG0LW01.XOTACOGS == DG0LM002.XOTACOGS
+   && DG0LW01.XOTABILL == DG0LM002.XOTABILL
+   && DG0LW01.XOTPRCDT == DG0LM002.XOTPRCDT
+   && DG0LW01.XOTSMLCH == DG0LM002.XOTSMLCH
+   && DG0LW01.XOTAPRNT == DG0LM002.XOTAPRNT
+   && DG0LW01.XOTBOFL == DG0LM002.XOTBOFL
+   && DG0LW01.XOTAUTHF == DG0LM002.XOTAUTHF
+   && DG0LW01.XOTADIRS == DG0LM002.XOTADIRS
+   && DG0LW01.XOTABULK == DG0LM002.XOTABULK
+   && DG0LW01.XOTDSAVL == DG0LM002.XOTDSAVL
+   && DG0LW01.XOTOALOC == DG0LM002.XOTOALOC
+   && DG0LW01.XDVCD == DG0LM002.XDVCD
+   && DG0LW01.XGPCD == DG0LM002.XGPCD
+   && DG0LW01.XPYCD == DG0LM002.XPYCD
+   && DG0LW01.XOTALWDV == DG0LM002.XOTALWDV
+   && DG0LW01.XDVCD1 == DG0LM002.XDVCD1
+   && DG0LW01.XDVCD2 == DG0LM002.XDVCD2
+   && DG0LW01.XDVCD3 == DG0LM002.XDVCD3
+   && DG0LW01.XDVCD4 == DG0LM002.XDVCD4
+   && DG0LW01.XDVCD5 == DG0LM002.XDVCD5
+   && DG0LW01.XOTXTRAS == DG0LM002.XOTXTRAS
+   && DG0LW01.XOTSZVER == DG0LM002.XOTSZVER
+   && DG0LW01.XOTSZIND == DG0LM002.XOTSZIND
+   && DG0LW01.XOTPRCVP == DG0LM002.XOTPRCVP
+   && DG0LW01.XQACD1 == DG0LM002.XQACD1
+   && DG0LW01.XQACD2 == DG0LM002.XQACD2
+   && DG0LW01.XQACD3 == DG0LM002.XQACD3
+   && DG0LW01.XLCCD1 == DG0LM002.XLCCD1
+   && DG0LW01.XLCCD2 == DG0LM002.XLCCD2
+   && DG0LW01.XLCCD3 == DG0LM002.XLCCD3
+   && DG0LW01.XLCCD4 == DG0LM002.XLCCD4
+   && DG0LW01.XLCCD5 == DG0LM002.XLCCD5
+   && DG0LW01.COCMFL == DG0LM002.COCMFL
+   && DG0LW01.XOTAVDFL == DG0LM002.XOTAVDFL
+   && DG0LW01.XOTANSUM == DG0LM002.XOTANSUM
+   && DG0LW01.XOTDMRPF == DG0LM002.XOTDMRPF
+   && DG0LW01.XOTXLDD == DG0LM002.XOTXLDD
+   && DG0LW01.XOTPRGDD == DG0LM002.XOTPRGDD
+   && DG0LW01.XOTMRSCD == DG0LM002.XOTMRSCD
+   && DG0LW01.XOTCRLIF == DG0LM002.XOTCRLIF
+   && DG0LW01.XXXSTAT == DG0LM002.XXXSTAT
+   && DG0LW01.DA-PLOG-TXT1 == DG0LM002.DA-PLOG-TXT1
+   && DG0LW01.DA-PLOG-TXT2 == DG0LM002.DA-PLOG-TXT2)
+    DAWREC.DAW-DATA-CHANGED-FL = "N";
+  else
+    DAWREC.DAW-DATA-CHANGED-FL = "Y";
+  end
+
+  /* **************/
+  /* ***************** END DG0LP71 **********************************/
+  /* **************/
+end // end DG0LP71-COMPARE
+
+// MOVE TEMP STORAGE PAGE TO MAP
+Function DG0LP71-TSQ-TO-MAP()
+  /* ************************************************************/
+  /* Move temp storage page to map*/
+  /* ************************************************************/
+
+  sysVar.arrayIndex = 1;
+
+  while (sysVar.arrayIndex <= 14)
+    DG0LM001.DAW-SELECT-CD[sysVar.arrayIndex] = DG0LW02.DAW-SELECT-CD[sysVar.arrayIndex];
+    DG0LM001.XOTCD[sysVar.arrayIndex] = DG0LW02.XOTCD[sysVar.arrayIndex];
+    DG0LM001.XOTABRV[sysVar.arrayIndex] = DG0LW02.XOTABRV[sysVar.arrayIndex];
+    DG0LM001.XOTDESC[sysVar.arrayIndex] = DG0LW02.XOTDESC[sysVar.arrayIndex];
+    DG0LM001.XXXSTAT[sysVar.arrayIndex] = DG0LW02.XXXSTAT[sysVar.arrayIndex];
+    DG0LM001.DAW-STATUS-DESC[sysVar.arrayIndex] = DG0LW02.DAW-STATUS-DESC[sysVar.arrayIndex];
+    DG0LM001.DA-CHNG-USER-ID[sysVar.arrayIndex] = DG0LW02.DA-CHNG-USER-ID[sysVar.arrayIndex];
+    DG0LM001.DAW-CHNG-DT-MDY[sysVar.arrayIndex] = DG0LW02.DAW-CHNG-DT-MDY[sysVar.arrayIndex];
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+
+  /* **************/
+  /* ****************** END DG0LP71 *****************************/
+  /* **************/
+end // end DG0LP71-TSQ-TO-MAP
+
+// BUILD NEW VDATRN01 RECORD
+Function DG0LP72-NEW-TRAN()
+  /* *****************************************************************/
+  /* Build a new transaction row*/
+  /* *****************************************************************/
+
+  set VDATRN01 empty;
+
+  VDATRN01.XXX-TBL-PFX = DAWREC.XXX-TBL-PFX;
+
+  /* Build the prolog information*/
+
+  VDATRN01.ZZ-CHNG-DT = DAWREC.ZZ-CHNG-DT;
+  VDATRN01.DA-CHNG-USER-ID = sysVar.userID;
+  VDATRN01.DA-APVD-USER-ID = " ";
+  VDATRN01.DA-PLOG-TXT1 = DG0LM002.DA-PLOG-TXT1;
+  VDATRN01.DA-PLOG-TXT2 = DG0LM002.DA-PLOG-TXT2;
+
+  /* Determine the transaction type*/
+
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "ADD"
+   || DAWREC.DAW-CURR-FUNCTION-CD == "CPY")
+    VDATRN01.DA-ROW-EDIT-IND = "A";
+  end
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "UPD")
+    VDATRN01.DA-ROW-EDIT-IND = "C";
+  end
+  if (DAWREC.DAW-CURR-FUNCTION-CD == "DEL")
+    VDATRN01.DA-ROW-EDIT-IND = "D";
+  end
+
+  /* Build the table key*/
+
+  DG0LW01.DA-CCAT-KEY-TXT = " ";
+  DG0LW01.DG0LW-KEY-XOTCD = DG0LM002.XOTCD;
+  VDATRN01.DA-CCAT-KEY-TXT = DG0LW01.DA-CCAT-KEY-TXT;
+
+  /* Build the table row*/
+
+  DG0LW01.XOTCD = DG0LM002.XOTCD;
+  DG0LW01.XOTSABRV = DG0LM002.XOTSABRV;
+  DG0LW01.XOTABRV = DG0LM002.XOTABRV;
+  DG0LW01.XOTDESC = DG0LM002.XOTDESC;
+  DG0LW01.XOTLDAYS = DG0LM002.XOTLDAYS;
+  DG0LW01.XOTPROPF = DG0LM002.XOTPROPF;
+  DG0LW01.XOTATONF = DG0LM002.XOTATONF;
+  DG0LW01.XOTFUTRF = DG0LM002.XOTFUTRF;
+  DG0LW01.XOTSMPLF = DG0LM002.XOTSMPLF;
+  DG0LW01.XOTACOGS = DG0LM002.XOTACOGS;
+  DG0LW01.XOTABILL = DG0LM002.XOTABILL;
+  DG0LW01.XOTPRCDT = DG0LM002.XOTPRCDT;
+  DG0LW01.XOTSMLCH = DG0LM002.XOTSMLCH;
+  DG0LW01.XOTAPRNT = DG0LM002.XOTAPRNT;
+  DG0LW01.XOTBOFL = DG0LM002.XOTBOFL;
+  DG0LW01.XOTAUTHF = DG0LM002.XOTAUTHF;
+  DG0LW01.XOTADIRS = DG0LM002.XOTADIRS;
+  DG0LW01.XOTABULK = DG0LM002.XOTABULK;
+  DG0LW01.XOTDSAVL = DG0LM002.XOTDSAVL;
+  DG0LW01.XOTOALOC = DG0LM002.XOTOALOC;
+  DG0LW01.XDVCD = DG0LM002.XDVCD;
+  DG0LW01.XGPCD = DG0LM002.XGPCD;
+  DG0LW01.XPYCD = DG0LM002.XPYCD;
+  DG0LW01.XOTALWDV = DG0LM002.XOTALWDV;
+  DG0LW01.XDVCD1 = DG0LM002.XDVCD1;
+  DG0LW01.XDVCD2 = DG0LM002.XDVCD2;
+  DG0LW01.XDVCD3 = DG0LM002.XDVCD3;
+  DG0LW01.XDVCD4 = DG0LM002.XDVCD4;
+  DG0LW01.XDVCD5 = DG0LM002.XDVCD5;
+  DG0LW01.XOTXTRAS = DG0LM002.XOTXTRAS;
+  DG0LW01.XOTSZVER = DG0LM002.XOTSZVER;
+  DG0LW01.XOTSZIND = DG0LM002.XOTSZIND;
+  DG0LW01.XOTPRCVP = DG0LM002.XOTPRCVP;
+  DG0LW01.XQACD1 = DG0LM002.XQACD1;
+  DG0LW01.XQACD2 = DG0LM002.XQACD2;
+  DG0LW01.XQACD3 = DG0LM002.XQACD3;
+  DG0LW01.XLCCD1 = DG0LM002.XLCCD1;
+  DG0LW01.XLCCD2 = DG0LM002.XLCCD2;
+  DG0LW01.XLCCD3 = DG0LM002.XLCCD3;
+  DG0LW01.XLCCD4 = DG0LM002.XLCCD4;
+  DG0LW01.XLCCD5 = DG0LM002.XLCCD5;
+  DG0LW01.COCMFL = DG0LM002.COCMFL;
+  DG0LW01.XOTAVDFL = DG0LM002.XOTAVDFL;
+  DG0LW01.XOTANSUM = DG0LM002.XOTANSUM;
+  DG0LW01.XOTDMRPF = DG0LM002.XOTDMRPF;
+  DG0LW01.XOTXLDD = DG0LM002.XOTXLDD;
+  DG0LW01.XOTPRGDD = DG0LM002.XOTPRGDD;
+  DG0LW01.XOTMRSCD = DG0LM002.XOTMRSCD;
+  DG0LW01.XOTCRLIF = DG0LM002.XOTCRLIF;
+  DG0LW01.XXXSTAT = DG0LM002.XXXSTAT;
+
+  VDATRN01.DA-ROW-DATA-TXT-LEN = 123;
+  VDATRN01.DA-ROW-DATA-TXT-TEXT = DG0LW01.XOTGROUP;
+
+  /* Determine the status*/
+
+  if (DAWREC.DAW-SET-PENDING-FL == "Y")
+    VDATRN01.DA-CHNG-STAT-IND = "P";
+  else
+    VDATRN01.DA-CHNG-STAT-IND = "E";
+  end
+
+  /* **************/
+  /* ***************** END DG0LP72 **********************************/
+  /* **************/
+end // end DG0LP72-NEW-TRAN
+
+// BUILD UPDATED VDATRN01 RECORD
+Function DG0LP73-OLD-TRAN()
+  /* *****************************************************************/
+  /* Build an updated transaction row*/
+  /* *****************************************************************/
+
+
+  /* move the prolog information in case it changed*/
+  /* The transaction type stays the same*/
+
+  VDATRN01.DA-CHNG-USER-ID = sysVar.userID;
+  VDATRN01.DA-APVD-USER-ID = " ";
+  VDATRN01.DA-PLOG-TXT1 = DG0LM002.DA-PLOG-TXT1;
+  VDATRN01.DA-PLOG-TXT2 = DG0LM002.DA-PLOG-TXT2;
+
+  /* Build the table row*/
+
+  DG0LW01.XOTCD = DG0LM002.XOTCD;
+  DG0LW01.XOTSABRV = DG0LM002.XOTSABRV;
+  DG0LW01.XOTABRV = DG0LM002.XOTABRV;
+  DG0LW01.XOTDESC = DG0LM002.XOTDESC;
+  DG0LW01.XOTLDAYS = DG0LM002.XOTLDAYS;
+  DG0LW01.XOTPROPF = DG0LM002.XOTPROPF;
+  DG0LW01.XOTATONF = DG0LM002.XOTATONF;
+  DG0LW01.XOTFUTRF = DG0LM002.XOTFUTRF;
+  DG0LW01.XOTSMPLF = DG0LM002.XOTSMPLF;
+  DG0LW01.XOTACOGS = DG0LM002.XOTACOGS;
+  DG0LW01.XOTABILL = DG0LM002.XOTABILL;
+  DG0LW01.XOTPRCDT = DG0LM002.XOTPRCDT;
+  DG0LW01.XOTSMLCH = DG0LM002.XOTSMLCH;
+  DG0LW01.XOTAPRNT = DG0LM002.XOTAPRNT;
+  DG0LW01.XOTBOFL = DG0LM002.XOTBOFL;
+  DG0LW01.XOTAUTHF = DG0LM002.XOTAUTHF;
+  DG0LW01.XOTADIRS = DG0LM002.XOTADIRS;
+  DG0LW01.XOTABULK = DG0LM002.XOTABULK;
+  DG0LW01.XOTDSAVL = DG0LM002.XOTDSAVL;
+  DG0LW01.XOTOALOC = DG0LM002.XOTOALOC;
+  DG0LW01.XDVCD = DG0LM002.XDVCD;
+  DG0LW01.XGPCD = DG0LM002.XGPCD;
+  DG0LW01.XPYCD = DG0LM002.XPYCD;
+  DG0LW01.XOTALWDV = DG0LM002.XOTALWDV;
+  DG0LW01.XDVCD1 = DG0LM002.XDVCD1;
+  DG0LW01.XDVCD2 = DG0LM002.XDVCD2;
+  DG0LW01.XDVCD3 = DG0LM002.XDVCD3;
+  DG0LW01.XDVCD4 = DG0LM002.XDVCD4;
+  DG0LW01.XDVCD5 = DG0LM002.XDVCD5;
+  DG0LW01.XOTXTRAS = DG0LM002.XOTXTRAS;
+  DG0LW01.XOTSZVER = DG0LM002.XOTSZVER;
+  DG0LW01.XOTSZIND = DG0LM002.XOTSZIND;
+  DG0LW01.XOTPRCVP = DG0LM002.XOTPRCVP;
+  DG0LW01.XQACD1 = DG0LM002.XQACD1;
+  DG0LW01.XQACD2 = DG0LM002.XQACD2;
+  DG0LW01.XQACD3 = DG0LM002.XQACD3;
+  DG0LW01.XLCCD1 = DG0LM002.XLCCD1;
+  DG0LW01.XLCCD2 = DG0LM002.XLCCD2;
+  DG0LW01.XLCCD3 = DG0LM002.XLCCD3;
+  DG0LW01.XLCCD4 = DG0LM002.XLCCD4;
+  DG0LW01.XLCCD5 = DG0LM002.XLCCD5;
+  DG0LW01.COCMFL = DG0LM002.COCMFL;
+  DG0LW01.XOTAVDFL = DG0LM002.XOTAVDFL;
+  DG0LW01.XOTANSUM = DG0LM002.XOTANSUM;
+  DG0LW01.XOTDMRPF = DG0LM002.XOTDMRPF;
+  DG0LW01.XOTXLDD = DG0LM002.XOTXLDD;
+  DG0LW01.XOTPRGDD = DG0LM002.XOTPRGDD;
+  DG0LW01.XOTMRSCD = DG0LM002.XOTMRSCD;
+  DG0LW01.XOTCRLIF = DG0LM002.XOTCRLIF;
+  DG0LW01.XXXSTAT = DG0LM002.XXXSTAT;
+
+  VDATRN01.DA-ROW-DATA-TXT-LEN = 123;
+  VDATRN01.DA-ROW-DATA-TXT-TEXT = DG0LW01.XOTGROUP;
+
+  /* Determine the status*/
+
+  if (DAWREC.DAW-SET-PENDING-FL == "Y"
+   || DAWREC.DAW-RETURN-TO-DA01-FL == "Y")
+    VDATRN01.DA-CHNG-STAT-IND = "P";
+  else
+    VDATRN01.DA-CHNG-STAT-IND = "E";
+  end
+
+  /* **************/
+  /* ***************** END DG0LP73 **********************************/
+  /* **************/
+end // end DG0LP73-OLD-TRAN
+
+// EXIT FROM THE APPLICATION
+Function DG0LP99-TERMINATE()
+  /* ************************************************************/
+  /* Transfer out of the application*/
+  /* ************************************************************/
+
+  COMMAREA.CAUSERA = DAWREC.DAWGROUP;
+
+  DG0LS-TS-PURGE-FIL(); /* purge temp storage*/
+
+  if (DAWREC.DAW-RETURN-TO-DA01-FL == "Y") /* return to DA01 application*/
+    COMMAREA.CATOAP = "DA01";
+    XSEXIT();
+  end
+
+  if (DAW-EXIT-OPTION == "RETN") /* return to prior application*/
+    COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+    XSEXIT();
+  end
+
+  if (DAW-EXIT-OPTION == "MENU") /* return to main menu*/
+    XSPF4();
+  end
+
+  if (DAW-EXIT-OPTION == "HELP") /* check for system help*/
+    XSPF1(); /* help facility*/
+  end
+
+  /* Still here - then XSEXIT didn't allow the transfer so restart*/
+  /* the current application and display the error message*/
+
+  if (COMMAREA.CASECRC != 0) /* no message from xsexit*/
+    XSDAS-XSEXIT-CAMSG();
+  end
+
+  COMMAREA.CAFROMAP = "DG0L";
+  sysVar.transferName = "DG0L";
+  transfer to program sysVar.transferName passing COMMAREA;
+
+  /* **************/
+  /* ****************** END DG0LP99 *****************************/
+  /* **************/
+end // end DG0LP99-TERMINATE
+
+// ADD TEMP STORAGE PAGE(RECORD)
+Function DG0LS-TS-ADD-PAGE()
+  /* ************************************************************/
+  /* Write temporary storage*/
+  /* ************************************************************/
+
+  TA5REC.TA5APPID = "DG0L"; /* appl identification*/
+  TA5REC.TA5FNCCD = "A"; /* function code*/
+  DG0LW02.DAW-TEMP-STORAGE-LENGTH = 1362;
+
+  call "TA0050" (DG0LW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    DAWREC.DAW-MAX-PAGE = TA5REC.TA5TSQIX;
+    set DG0LW02 empty; /* Reset for next write*/
+    DAWREC.DAW-ROW-NBR = 0;
+  else
+    TA1REC.TA1LOCAT[1] = "ADD TSQ";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    TA1REC.TA1TBLKE = DAWREC.XXX-TBL-PFX; /* first row*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "POST";
+    TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    DG0LM001.DAW-INFO-MESSAGE = "TEMPORARY STORAGE FAILURE - CONTACT HELP DESK";
+  end
+
+  /* *************************/
+  /* ****************** END DG0LS-ADD-TSQ-PAGE ******************/
+  /* *************************/
+end // end DG0LS-TS-ADD-PAGE
+
+// PURGE TEMP STORAGE FILE
+Function DG0LS-TS-PURGE-FIL()
+  /* ************************************************************/
+  /* Purge temporary storage*/
+  /* ************************************************************/
+
+  TA5REC.TA5APPID = "DG0L"; /* appl identification*/
+  TA5REC.TA5FNCCD = "P"; /* function code*/
+
+  call "TA0050" (DG0LW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  /* **********************/
+  /* ****************** END DG0LS-PURGE-TSQ *********************/
+  /* **********************/
+end // end DG0LS-TS-PURGE-FIL
+
+// READ TEMP STORAGE PAGE
+Function DG0LS-TS-READ-FIL()
+  /* ************************************************************/
+  /* Read temporary storage*/
+  /* ************************************************************/
+
+  DAWREC.DAW-CURR-PAGE = DG0LM001.DAW-CURR-PAGE;
+
+  set DG0LW02 empty;
+
+  TA5REC.TA5APPID = "DG0L"; /* appl identification*/
+  TA5REC.TA5FNCCD = "R"; /* function code*/
+  TA5REC.TA5TSQIX = DAWREC.DAW-CURR-PAGE; /* current page*/
+  DG0LW02.DAW-TEMP-STORAGE-LENGTH = 1362;
+
+  call "TA0050" (DG0LW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == 0)
+     /* NEXT SENTENCE*/
+  else
+    TA1REC.TA1LOCAT[1] = "READ TSQ";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    TA1REC.TA1TBLKE = DAWREC.XXX-TBL-PFX; /* first row*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "POST";
+    TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    DG0LM001.DAW-INFO-MESSAGE = "TEMPORARY STORAGE FAILURE - CONTACT HELP DESK";
+  end
+
+  /* *************************/
+  /* ****************** END DG0LS-READ-TSQ-PAGE ******************/
+  /* *************************/
+end // end DG0LS-TS-READ-FIL
+
+//*** RECORD=DG0LW01 ****
+// /*********************************************************
+// /*  working storage record used to hold the concatinated
+// /*  table key and the table record.
+// /*********************************************************
+// /* DATE      USERID     DESC. OF CHANGE
+// /* --------  ------     ----------------------------------
+// /* 05/15/96  LRAINE     CREATED RECORD
+// /*
+// /*********************************************************
+// ***********************
+Record DG0LW01 type basicRecord
+  10 XOTGROUP XOTGROUP ; 
+    15 XOTCD XOTCD ; 
+    15 XOTDESC XOTDESC ; 
+    15 XOTABRV XOTABRV ; 
+    15 XOTSABRV XOTSABRV ; 
+    15 XOTLDAYS XOTLDAYS ; 
+    15 XOTPROPF XOTPROPF ; 
+    15 XOTATONF XOTATONF ; 
+    15 XOTFUTRF XOTFUTRF ; 
+    15 XOTSMPLF XOTSMPLF ; 
+    15 XOTACOGS XOTACOGS ; 
+    15 XOTABILL XOTABILL ; 
+    15 XOTPRCDT XOTPRCDT ; 
+    15 XOTSMLCH XOTSMLCH ; 
+    15 XOTAPRNT XOTAPRNT ; 
+    15 XOTBOFL XOTBOFL ; 
+    15 XOTAUTHF XOTAUTHF ; 
+    15 XOTADIRS XOTADIRS ; 
+    15 XOTABULK XOTABULK ; 
+    15 XOTDSAVL XOTDSAVL ; 
+    15 XOTOALOC XOTOALOC ; 
+    15 XDVCD XDVCD ; 
+    15 XGPCD XGPCD ; 
+    15 XPYCD XPYCD ; 
+    15 XOTALWDV XOTALWDV ; 
+    15 XDVCD1 XDVCD1 ; 
+    15 XDVCD2 XDVCD2 ; 
+    15 XDVCD3 XDVCD3 ; 
+    15 XDVCD4 XDVCD4 ; 
+    15 XDVCD5 XDVCD5 ; 
+    15 XOTXTRAS XOTXTRAS ; 
+    15 XOTSZVER XOTSZVER ; 
+    15 XOTSZIND XOTSZIND ; 
+    15 XOTPRCVP XOTPRCVP ; 
+    15 XQACD1 XQACD1 ; 
+    15 XQACD2 XQACD2 ; 
+    15 XQACD3 XQACD3 ; 
+    15 XLCCD1 XLCCD1 ; 
+    15 XLCCD2 XLCCD2 ; 
+    15 XLCCD3 XLCCD3 ; 
+    15 XLCCD4 XLCCD4 ; 
+    15 XLCCD5 XLCCD5 ; 
+    15 COCMFL COCMFL ; 
+    15 XOTAVDFL XOTAVDFL ; 
+    15 XOTANSUM XOTANSUM ; 
+    15 XOTDMRPF XOTDMRPF ; 
+    15 XOTXLDD XOTXLDD ; 
+    15 XOTPRGDD XOTPRGDD ; 
+    15 XOTMRSCD XOTMRSCD ; 
+    15 XOTCRLIF XOTCRLIF ; 
+    15 XXXSTAT XXXSTAT ; 
+    15 ZZZSDT ZZZSDT ; 
+    15 ZZZCHGDT ZZZCHGDT ; 
+    15 ZZZCHGTM ZZZCHGTM ; 
+    15 ZZZCHGCT ZZZCHGCT ; 
+  10 DA-CCAT-KEY-TXT DA-CCAT-KEY-TXT ; 
+    15 DG0LW-KEY-XOTCD DG0LW-KEY-XOTCD ; 
+    15 DG0LW-FILLER char(18) ; // AND REDUCE SIZE OF FILLER
+  10 DA-PLOG-TXT1 DA-PLOG-TXT1 ; 
+  10 DA-PLOG-TXT2 DA-PLOG-TXT2 ; 
+end // end DG0LW01
+
+//*** RECORD=DG0LW02 ****
+// /*********************************************************
+// /* Temp storage record for the application
+// /*********************************************************
+// /*
+// /* DATE      USERID     DESC. OF CHANGE
+// /* --------  ------     ----------------------------------
+// /* 05/15/96  LRAINE     CREATED RECORD
+// /*
+// /*********************************************************
+// ***********************
+Record DG0LW02 type basicRecord
+  5 DA00W-TEMP-STORAGE-RECORD char(1362) ; // TEMP STORAGE RECORD FOR DA0A
+    10 DAW-TEMP-STORAGE-LENGTH DAW-TEMP-STORAGE-LENGTH ; 
+    10 DA00W-TEMP-STORAGE-ROW char(97) [14] ; // DA0A TSQ ROW
+      15 DAW-RECORD-TYPE DAW-RECORD-TYPE ; 
+      15 DAW-SELECT-CD DAW-SELECT-CD ; 
+      15 XOTCD XOTCD ; 
+      15 XOTDESC XOTDESC ; 
+      15 XOTABRV XOTABRV ; 
+      15 XXXSTAT XXXSTAT ; 
+      15 DAW-STATUS-DESC DAW-STATUS-DESC ; 
+      15 DA-CHNG-USER-ID DA-CHNG-USER-ID ; 
+      15 DAW-CHNG-DT-MDY DAW-CHNG-DT-MDY ; 
+      15 DAW-VDATRN01-KEY DAW-VDATRN01-KEY ; 
+        20 XXX-TBL-PFX XXX-TBL-PFX ; 
+        20 DA-CCAT-KEY-TXT DA-CCAT-KEY-TXT ; 
+        20 ZZ-CHNG-DT ZZ-CHNG-DT ; 
+end // end DG0LW02
+
+// TABLE KEY - ADD MORE IF NEEDED
+DataItem DG0LW-KEY-XOTCD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem XOTGROUP char(123)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

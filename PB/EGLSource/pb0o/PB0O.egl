@@ -1,0 +1,956 @@
+package pb0o;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import fy.common.*;
+import pa.common.*;
+import pc.common.*;
+import sy.common.*;
+import ta.common.*;
+//*** PROGRAM=PB0O ****
+// ************************************************************
+// *
+// *   THIS PROGRAM IS USED TO SUBMIT THE FOOTWEAR BATCH
+// *   load FOR SALESMAN SAMPLE po's into the system.
+// *   no parm is passed to the batch update program pc4210.
+// *
+// *   THE USER WILL HIT THE ENTER KEY TO SUBMIT THE JOB.
+// *
+// *   DATE       USERID           COMMENTS
+// *  _______    ________         ________________________
+// *  8/19/92    sdifle           NEW APPLICATION
+// * 12/29/93    gamen            add theater of ops code
+// * 12/02/97    BMUSTI           modified  jcl table
+// * 05/18/98    DRAMMO           PCF168- Added parm rec to
+// * 05/18/98    spitch           changed to display normal end
+// *                              messgae till return code of 4
+// ************************************************************
+// *********************
+Program PB0O type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "PC00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  PB0OW00 PB0OW00; // record
+  PB0OW01 PB0OW01; // record
+  PB0OW02 PB0OW02; // record
+  PCWREC PCWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA6REC TA6REC; // record
+  TAEREC TAEREC; // record
+  XCTHREC XCTHREC; // record
+  XX0XW02 XX0XW02; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use PB0OT01; // table
+  use PB0OT11; // table
+  use XPLTBL {deleteAfterUse = yes}; // table
+  use PB0OM.PB0OM010,  // forms
+      PB0OM.TA0PM001, 
+      PB0OM.XX0XM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPPC001: XPPC001();
+
+     /* ------------------------------------------------------------*/
+
+     /* ------------------------------------------------------------*/
+
+    set PB0OW02 empty; /* Initialize jcl working storage*/
+
+    set ERRSQLCA empty; /* Initialize*/
+    set SQLCA empty; /* Initialize*/
+
+    set TA1REC empty; /* Initialize*/
+    set XCTHREC empty; /* Initialize user record*/
+    set TA6REC empty; /* Initialize Jcl record*/
+    set TAEREC empty; /* Initialize*/
+
+    set PB0OM010 initial; /* Initialize map*/
+
+
+
+
+    PB0O-0500: PB0O-0500();
+    goto PB0O-0500;
+  end // end main
+end // end PB0O
+
+// MAIN PROCESS TO DISPLAY MAP
+Function PB0O-0500()
+   /* ------------------------------------------------------------*/
+      /* CALL SUB-ROUTINE TO FIND WHICH ENVIRONMENT*/
+      /* THE PROGRAM IS EXECUTING IN, DEVELOPMENT*/
+      /* OR PRODUCTION.*/
+   /* ------------------------------------------------------------*/
+
+  set XCTHREC empty;
+  call "XC0910" (XCTHREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (XCTHREC.XCTH-THEATER-RUNTYPE == " ")
+
+    PB0OM010.XXXPRCNM = "PB0O-0500"; /* module identification*/
+    converseLib.validationFailed(8); /* Error encountered with print request*/
+    exit stack;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to show the Map. Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.*/
+
+   /* In all PF Key, "EZEFLO" is used to exit to redisplay the*/
+   /* map when a PF Key is pressed.*/
+   /* ------------------------------------------------------------*/
+
+  if (PCWREC.XGPCD == "02" /* Footware*/
+   && COMMAREA.CACLVL[2] == "Y") /* User can enter*/
+
+    PB0O-0800(); /* Report generation pcocess*/
+
+  else
+    PCWREC.XXXMSGNO = 138; /* Request for application invalid*/
+    COMMAREA.CAUSERA = PCWREC.CAUSERA;
+    COMMAREA.CATOAP = "PC0A"; /* To application*/
+    XSPCS01(); /* Exit to another application*/
+
+    /* ------------------------------------------------------------*/
+     /* IF FOR SOME REASON THE USER IN NOT AUTHORIZED TO GET INTO*/
+     /* THIS PROGRAM AND IS NO AUTHORIZED TO GET TO THE PC0A MENU*/
+     /* THE USER WILL BE KICKED OUT TO THE MAIN MENU. THIS WILL*/
+     /* ALLOW THE PROGRAM TO TERMINATE AND NOT RESULT IN AN*/
+     /* INFINITE LOOP.*/
+    /* ------------------------------------------------------------*/
+    PCWREC.XXXMSGNO = 138; /* Request for application invalid*/
+    COMMAREA.CAUSERA = PCWREC.CAUSERA;
+    COMMAREA.CATOAP = "MN0M"; /* To application*/
+    XSPCS01(); /* Exit to another application*/
+  end
+
+
+
+end // end PB0O-0500
+
+// PROGRAM PROCESS CONTROL
+Function PB0O-0800()
+
+   /* ------------------------------------------------------------*/
+   /* This is the main process used for this program. Process-*/
+   /* ing always returns to the top of this process and falls to*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) Obtain the data to be later displayed on the map.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Reset highlighted fields to normal intensity.*/
+   /* 5) Verify input data.*/
+   /* 6) Process input data.*/
+   /* There is no input data field for this application.*/
+
+
+   /* In all PF Key functions "EZEFLO" is used to redisplay the*/
+   /* map when an error is found.*/
+
+   /* "EZEFLO" is also used to redisplay the map when a major*/
+   /* error occurs.*/
+   /* ------------------------------------------------------------*/
+
+
+  PB0O-2000(); /* Format and display the map*/
+
+  PB0O-3000(); /* Check attention identifier*/
+
+  PB0O-4000(); /* Reset map fields*/
+
+  PB0O-5000(); /* Validate data entered*/
+
+  PB0O-6000(); /* Process the entered data*/
+
+
+end // end PB0O-0800
+
+// DISPLAY SELECT MAP
+Function PB0O-2000()
+
+
+  if (converseVar.validationMsgNum == 0)
+
+      /* NEXT SENTENCE*/
+
+  else
+
+    if (converseVar.validationMsgNum == 190
+     && COMMAREA.CAMSG > " ") /* ===> Job info message*/
+      set PB0OM010 initial; /* Clear map output area*/
+      PB0OW00.PB0OW-FMT-FLG = "Y"; /* Reset map fmt flg*/
+      converseLib.validationFailed(0); /* ===> reset Job submitted message*/
+      PB0OM010.XXXPRCNM = "PB0O-2000"; /* PROCESS NAME*/
+      PB0OM010.VAGen_EZEMSG = COMMAREA.CAMSG; /* ===> Job info message*/
+      COMMAREA.CAMSG = " "; /* ===> reset Job info message*/
+    end
+
+    set PB0OM010 alarm; /* Sound alarm*/
+
+  end
+
+  if (converseVar.validationMsgNum == 0
+   || converseVar.validationMsgNum == 190)
+    if (PB0OW-FMT-FLG != "N") /* Map should be formated*/
+      PB0OM010.PB0OM-XPL-LNCD-FLG = "N";
+      PB0OW00.PB0OW-FMT-FLG = "N"; /* Reset map fmt flg*/
+    end
+  end
+
+  PB0OM010.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+  converse PB0OM010 ;
+  PB0O-2100();
+
+end // end PB0O-2000
+
+Function PB0O-2100()
+  if (PB0OM010.PB0OM-XPL-LNCD1 == "?") /* List requested*/
+    if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+      PB0OM010.XXXPRCNM = "PB0O-4000"; /* Module identification*/
+      set PB0OM010.PB0OM-XPL-LNCD1 cursor, bold;
+      converseLib.validationFailed(19); /* Indicate PF key not valid*/
+      exit stack; /* Exit to display map*/
+    else
+      XPXX001(); /* window initialization*/
+      XX0XW02.XGPCD = "02"; /* GPC code*/
+      XX0XW02.XX0XWHDR = " PRODUCT LINE"; /* Heading*/
+      while (XX0XW02.XX0XWEND == "N") /* Until end of request*/
+        XPXPL01(); /* Display the list*/
+      end
+    end
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection made*/
+                                  /* MOVE PB0OW00.XPLCD1 TO*/
+                                   /* PB0OM010.PB0OM-XPL-LNCD1;/* Restore*/
+                                   /* prior code*/
+    else
+      PB0OM010.PB0OM-XPL-LNCD1 = XPLTBL.XPLCD[XX0XWPIX]; /* Selected cd*/
+    end
+
+    set PB0OM010.PB0OM-XPL-LNCD1 cursor; /* Establish cursor position*/
+  end
+
+  if (PB0OM010.PB0OM-XPL-LNCD2 == "?") /* List requested*/
+    if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+      PB0OM010.XXXPRCNM = "PB0O-4000"; /* Module identification*/
+      set PB0OM010.PB0OM-XPL-LNCD2 cursor, bold;
+      converseLib.validationFailed(19); /* Indicate PF key not valid*/
+      exit stack; /* Exit to display map*/
+    else
+      XPXX001(); /* window initialization*/
+      XX0XW02.XGPCD = "02"; /* GPC code*/
+      XX0XW02.XX0XWHDR = " PRODUCT LINE"; /* Heading*/
+      while (XX0XW02.XX0XWEND == "N") /* Until end of request*/
+        XPXPL01(); /* Display the list*/
+      end
+    end
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection made*/
+                                  /* MOVE PB0OW00.XPLCD2 TO*/
+                                   /* PB0OM010.PB0OM-XPL-LNCD2;/* Restore*/
+                                   /* prior code*/
+    else
+      PB0OM010.PB0OM-XPL-LNCD2 = XPLTBL.XPLCD[XX0XWPIX]; /* Selected cd*/
+    end
+
+    set PB0OM010.PB0OM-XPL-LNCD2 cursor; /* Establish cursor position*/
+  end
+
+  if (PB0OM010.PB0OM-XPL-LNCD3 == "?") /* List requested*/
+    if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+      PB0OM010.XXXPRCNM = "PB0O-4000"; /* Module identification*/
+      set PB0OM010.PB0OM-XPL-LNCD3 cursor, bold;
+      converseLib.validationFailed(19); /* Indicate PF key not valid*/
+      exit stack; /* Exit to display map*/
+    else
+      XPXX001(); /* window initialization*/
+      XX0XW02.XGPCD = "02"; /* GPC code*/
+      XX0XW02.XX0XWHDR = " PRODUCT LINE"; /* Heading*/
+      while (XX0XW02.XX0XWEND == "N") /* Until end of request*/
+        XPXPL01(); /* Display the list*/
+      end
+    end
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection made*/
+                                  /* MOVE PB0OW00.XPLCD3 TO*/
+                                   /* PB0OM010.PB0OM-XPL-LNCD3;/* Restore*/
+                                   /* prior code*/
+    else
+      PB0OM010.PB0OM-XPL-LNCD3 = XPLTBL.XPLCD[XX0XWPIX]; /* Selected cd*/
+    end
+
+    set PB0OM010.PB0OM-XPL-LNCD3 cursor; /* Establish cursor position*/
+  end
+
+  if (PB0OM010.PB0OM-XPL-LNCD4 == "?") /* List requested*/
+    if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+      PB0OM010.XXXPRCNM = "PB0O-4000"; /* Module identification*/
+      set PB0OM010.PB0OM-XPL-LNCD4 cursor, bold;
+      converseLib.validationFailed(19); /* Indicate PF key not valid*/
+      exit stack; /* Exit to display map*/
+    else
+      XPXX001(); /* window initialization*/
+      XX0XW02.XGPCD = "02"; /* GPC code*/
+      XX0XW02.XX0XWHDR = " PRODUCT LINE"; /* Heading*/
+      while (XX0XW02.XX0XWEND == "N") /* Until end of request*/
+        XPXPL01(); /* Display the list*/
+      end
+    end
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection made*/
+                                  /* MOVE PB0OW00.XPLCD4 TO*/
+                                   /* PB0OM010.PB0OM-XPL-LNCD4;/* Restore*/
+                                   /* prior code*/
+    else
+      PB0OM010.PB0OM-XPL-LNCD4 = XPLTBL.XPLCD[XX0XWPIX]; /* Selected cd*/
+    end
+
+    set PB0OM010.PB0OM-XPL-LNCD4 cursor; /* Establish cursor position*/
+  end
+end // end PB0O-2100
+
+// CHECK ATTENTION IDENTIFIERS
+Function PB0O-3000()
+
+   /* ------------------------------------------------------------*/
+   /* Check attention identifier used to invoke the transaction.*/
+   /* If FAST PATH was requested, transfer to the application.*/
+   /* If transfer failed, display returned error message.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+    converseLib.clearScreen();
+     /* Clear the map fields*/
+    exit stack; /* Exit to redisplay map*/
+  end
+
+  if (PB0OM010.CATOAP > " ") /* FAST PATH was requested*/
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      set PCWREC empty; /* Clear the system record*/
+      COMMAREA.CATOAP = PB0OM010.CATOAP; /* To application*/
+      COMMAREA.CAITEM = PB0OM010.CAITEM; /* To application*/
+
+      XSPCS01(); /* Exit to another application*/
+
+    else
+      converseLib.validationFailed(5); /* Indicate PF key not valid*/
+      PB0OM010.XXXPRCNM = "PB0O-3000"; /* Process name*/
+    end
+
+    set PB0OM010.CATOAP cursor, bold; /* Highlight*/
+    PB0OM010.XXXPRCNM = "PB0O-3000"; /* Process name*/
+    return; /* Exit to redisplay map*/
+  end
+
+
+  if (converseVar.eventKey is pf1)
+    COMMAREA.CATOAP = "GD0G";
+    XSPCS01();
+  end
+
+  if (converseVar.eventKey is pf3)
+    COMMAREA.CATOAP = "PC0A";
+    XSPCS01();
+
+    PB0OM010.XXXPRCNM = "PB0O-3000"; /* Process name*/
+    exit stack; /* Redisplay map*/
+  end
+
+  if (converseVar.eventKey is pf4 /* or PF4 was pressed*/
+   || converseVar.eventKey is pf5) /* or PF5 was pressed*/
+
+    XSPCS01(); /* Exit to another application*/
+
+    PB0OM010.XXXPRCNM = "PB0O-3000"; /* Process name*/
+    exit stack; /* Redisplay map*/
+
+  end
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf9)  /* PF9 was not pressed*/
+
+    PB0OM010.XXXPRCNM = "PB0O-3000"; /* Process name*/
+    converseLib.validationFailed(4); /* Indicate invalid attention key*/
+
+    if (converseVar.eventKey is pa1
+     || converseVar.eventKey is pa3)
+
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+
+    end
+
+    exit stack; /* Exit to redisplay map*/
+  end
+
+
+end // end PB0O-3000
+
+// Reset map field attributes
+Function PB0O-4000()
+
+   /* ------------------------------------------------------------*/
+   /* RESET FIELD ATTRIBUTES TO NORMAL*/
+   /* ------------------------------------------------------------*/
+  set PB0OM010.CATOAP initialAttributes; /* Commarea TO application*/
+  set PB0OM010.CAITEM initialAttributes; /* Commarea application data*/
+  set PB0OM010.PB0OM-XPL-LNCD-FLG initialAttributes; /* Prod line cd flag*/
+  set PB0OM010.PB0OM-XPL-LNCD1 initialAttributes; /* Prod line cd1*/
+  set PB0OM010.PB0OM-XPL-LNCD2 initialAttributes; /* Prod line cd2*/
+  set PB0OM010.PB0OM-XPL-LNCD3 initialAttributes; /* Prod line cd3*/
+  set PB0OM010.PB0OM-XPL-LNCD4 initialAttributes; /* Prod line cd4*/
+
+end // end PB0O-4000
+
+// Validate data entered
+Function PB0O-5000()
+
+  if (PB0OM010.PB0OM-XPL-LNCD-FLG != "Y" /* Line cd flg*/
+   && PB0OM010.PB0OM-XPL-LNCD-FLG != "N")
+    PB0OM010.XXXPRCNM = "PB0O-4000"; /* Module identification*/
+    set PB0OM010.PB0OM-XPL-LNCD-FLG cursor, bold;
+    converseLib.validationFailed(42);
+    exit stack; /* Exit to display map*/
+  end
+
+  if (PB0OM010.PB0OM-XPL-LNCD-FLG == "Y"
+   && (PB0OM010.PB0OM-XPL-LNCD1 != " "
+   || PB0OM010.PB0OM-XPL-LNCD2 != " "
+   || PB0OM010.PB0OM-XPL-LNCD3 != " "
+   || PB0OM010.PB0OM-XPL-LNCD4 != " "))
+    PB0OM010.XXXPRCNM = "PB0O-4000"; /* Module identification*/
+    set PB0OM010.PB0OM-XPL-LNCD-FLG cursor, bold;
+    set PB0OM010.PB0OM-XPL-LNCD1 cursor, bold;
+    set PB0OM010.PB0OM-XPL-LNCD2 bold;
+    set PB0OM010.PB0OM-XPL-LNCD3 bold;
+    set PB0OM010.PB0OM-XPL-LNCD4 bold;
+    converseLib.validationFailed(549); /* Cannot enter prod ln cd if ln cd flg*/
+    exit stack; /* is 'Y'*/
+  end
+
+  if (PB0OM010.PB0OM-XPL-LNCD-FLG == "N"
+   && (PB0OM010.PB0OM-XPL-LNCD1 == " "
+   && PB0OM010.PB0OM-XPL-LNCD2 == " "
+   && PB0OM010.PB0OM-XPL-LNCD3 == " "
+   && PB0OM010.PB0OM-XPL-LNCD4 == " "))
+    PB0OM010.XXXPRCNM = "PB0O-4000"; /* Module identification*/
+    set PB0OM010.PB0OM-XPL-LNCD-FLG cursor, bold;
+    set PB0OM010.PB0OM-XPL-LNCD1 cursor, bold;
+    set PB0OM010.PB0OM-XPL-LNCD2 bold;
+    set PB0OM010.PB0OM-XPL-LNCD3 bold;
+    set PB0OM010.PB0OM-XPL-LNCD4 bold;
+    converseLib.validationFailed(550); /* Prod ln cd to be entered if ln cd flg*/
+    exit stack; /* is 'N'*/
+  end
+
+  if (PB0OM010.PB0OM-XPL-LNCD1 != " ")
+    PB0OW00.PB0OWCD1 = PB0OM010.PB0OM-XPL-LNCD1; /* Product line*/
+    PB0OW00.PB0OWCD2 = "02"; /* GPC code*/
+    if (PB0OW00.PB0OWKEY in XPLTBL.XPLKEY) /* Product key in table*/
+
+    else
+      PB0OM010.XXXPRCNM = "PBO0-4000"; /* Module identification*/
+      set PB0OM010.PB0OM-XPL-LNCD1 cursor, bold; /* Highlight*/
+      converseLib.validationFailed(93); /* Product line invalid*/
+      exit stack; /* Exit to display map*/
+    end
+  end
+
+  if (PB0OM010.PB0OM-XPL-LNCD2 != " ")
+    PB0OW00.PB0OWCD1 = PB0OM010.PB0OM-XPL-LNCD2; /* Product line*/
+    PB0OW00.PB0OWCD2 = "02"; /* GPC code*/
+    if (PB0OW00.PB0OWKEY in XPLTBL.XPLKEY) /* Product key in table*/
+
+    else
+      PB0OM010.XXXPRCNM = "PBO0-4000"; /* Module identification*/
+      set PB0OM010.PB0OM-XPL-LNCD2 cursor, bold; /* Highlight*/
+      converseLib.validationFailed(93); /* Product line invalid*/
+      exit stack; /* Exit to display map*/
+    end
+  end
+
+  if (PB0OM010.PB0OM-XPL-LNCD3 != " ")
+    PB0OW00.PB0OWCD1 = PB0OM010.PB0OM-XPL-LNCD3; /* Product line*/
+    PB0OW00.PB0OWCD2 = "02"; /* GPC code*/
+    if (PB0OW00.PB0OWKEY in XPLTBL.XPLKEY) /* Product key in table*/
+
+    else
+      PB0OM010.XXXPRCNM = "PBO0-4000"; /* Module identification*/
+      set PB0OM010.PB0OM-XPL-LNCD3 cursor, bold; /* Highlight*/
+      converseLib.validationFailed(93); /* Product line invalid*/
+      exit stack; /* Exit to display map*/
+    end
+  end
+
+  if (PB0OM010.PB0OM-XPL-LNCD4 != " ")
+    PB0OW00.PB0OWCD1 = PB0OM010.PB0OM-XPL-LNCD4; /* Product line*/
+    PB0OW00.PB0OWCD2 = "02"; /* GPC code*/
+    if (PB0OW00.PB0OWKEY in XPLTBL.XPLKEY) /* Product key in table*/
+
+    else
+      PB0OM010.XXXPRCNM = "PBO0-4000"; /* Module identification*/
+      set PB0OM010.PB0OM-XPL-LNCD4 cursor, bold; /* Highlight*/
+      converseLib.validationFailed(93); /* Product line invalid*/
+      exit stack; /* Exit to display map*/
+    end
+  end
+
+  if (converseVar.validationMsgNum == 0)
+    PB0OM010.VAGen_EZEMSG = "PRESS PF9 TO SUBMIT THIS JOB";
+  else
+    PB0OM010.VAGen_EZEMSG = "                            ";
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the requested lists have been displayed and*/
+   /* that ENTER must be pressed to process any changes.*/
+   /* ------------------------------------------------------------*/
+
+  converseLib.clearScreen();
+
+
+end // end PB0O-5000
+
+// PROCESS THE VALID DATA
+Function PB0O-6000()
+
+   /* ------------------------------------------------------------*/
+       /* PROCESS THE INPUT*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf9 /* Enter pressed*/
+   && converseVar.validationMsgNum == 0) /* No message*/
+
+    /* Move valid data to parm rec*/
+    PB0OW01.PB0OW-XPL-LNCD-FLG = PB0OM010.PB0OM-XPL-LNCD-FLG;
+    PB0OW01.PB0OW-XPL-LNCD1 = PB0OM010.PB0OM-XPL-LNCD1;
+    PB0OW01.PB0OW-XPL-LNCD2 = PB0OM010.PB0OM-XPL-LNCD2;
+    PB0OW01.PB0OW-XPL-LNCD3 = PB0OM010.PB0OM-XPL-LNCD3;
+    PB0OW01.PB0OW-XPL-LNCD4 = PB0OM010.PB0OM-XPL-LNCD4;
+
+    if (XCTHREC.XCTH-THEATER-RUNTYPE == "PROD")
+      PB0O-6200(); /* format production jcl*/
+    else
+      PB0O-6210(); /* format development jcl*/
+    end
+
+    set PB0OW01 empty;
+
+  end
+
+
+end // end PB0O-6000
+
+// SUBMIT THE JCL
+Function PB0O-6200()
+
+   /* ------------------------------------------------------------*/
+   /* CREATE THE APPROPRIATE JCL*/
+   /* ------------------------------------------------------------*/
+
+   /* ------------------------------------------------------------*/
+   /* Initialize the work areas and indexes to be used.*/
+   /* ------------------------------------------------------------*/
+
+  set TA6REC empty; /* Subroutine work area*/
+
+  TA6REC.TA6-MAX-COND-CODE = 0002;
+  PB0OW02.PB0OWOIX = 0; /* Initialize override index*/
+  PB0OW02.PB0OWLIX = 1; /* Initialize table line index*/
+  TA6REC.TA6INDEX = 1; /* Initialize parameters index*/
+
+   /* ------------------------------------------------------------*/
+   /* Format JCL and parameters into the subroutine work area.*/
+   /* ------------------------------------------------------------*/
+
+  while (PB0OW02.PB0OWLIX > 0) /* Until end of table*/
+
+    /* ------------------------------------------------------------*/
+     /* Format the Job Control Language statement from the table.*/
+    /* ------------------------------------------------------------*/
+
+    if (PB0OT01.TARTYPE[PB0OWLIX] == "P") /* parm statement*/
+      TA6REC.TARJCL[TA6INDEX] = PB0OW01.PARM-REC;
+      TA6REC.TARTYPE[TA6INDEX] = "P";
+    else
+      TA6REC.TARJCL[TA6INDEX] = PB0OT01.TARJCL[PB0OWLIX]; /* JCL*/
+      TA6REC.TARTYPE[TA6INDEX] = PB0OT01.TARTYPE[PB0OWLIX]; /* Type*/
+    end
+
+    TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment parms index*/
+
+    /* ------------------------------------------------------------*/
+     /* If not end of table, increment the table index.*/
+    /* ------------------------------------------------------------*/
+
+    if (PB0OT01.TARJCL[PB0OWLIX] == "/*EOF") /* End of table*/
+
+      PB0OW02.PB0OWLIX = 0; /* Indicate end of table*/
+
+    else
+
+      PB0OW02.PB0OWLIX = PB0OW02.PB0OWLIX + 1; /* Increment table index*/
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for batch execution.*/
+   /* ------------------------------------------------------------*/
+
+  PB0OS-96(); /* Submit the JCL*/
+
+   /* ------------------------------------------------------------*/
+   /* Display results of print request.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* If print was successful*/
+   && SQLCA.VAGen_SQLCODE == 0)     
+
+    PB0OM010.XXXPRCNM = "PB0O-6200"; /* Process name*/
+    PB0OM010.VAGen_EZEMSG = COMMAREA.CAMSG; /* ===> Job info messege*/
+       /* MOVE 190 TO EZEMNO          ; Selections queued to print*/
+
+  else
+
+    PB0OM010.XXXPRCNM = "PB0O-6200"; /* Process name*/
+    converseLib.validationFailed(10); /* Error encountered with print request*/
+
+    exit stack;
+
+  end
+
+
+end // end PB0O-6200
+
+// SUBMIT THE JCL
+Function PB0O-6210()
+
+   /* ------------------------------------------------------------*/
+   /* CREATE THE APPROPRIATE JCL*/
+   /* ------------------------------------------------------------*/
+
+   /* -----------------------------------------------------------*/
+   /* Initialize the work areas and indexes to be used.*/
+   /* ------------------------------------------------------------*/
+
+  set TA6REC empty; /* Subroutine work area*/
+
+  TA6REC.TA6-MAX-COND-CODE = 0002;
+  PB0OW02.PB0OWOIX = 0; /* Initialize over. index*/
+  PB0OW02.PB0OWLIX = 1; /* Initialize table index*/
+  TA6REC.TA6INDEX = 1; /* Initialize parameters index*/
+
+   /* ------------------------------------------------------------*/
+   /* Format JCL and parameters into the subroutine work area.*/
+   /* ------------------------------------------------------------*/
+
+  while (PB0OW02.PB0OWLIX > 0) /* Until end of table*/
+
+    /* ------------------------------------------------------------ -*/
+    /* Format the Job Control Language statement from the table.*/
+    /* ------------------------------------------------------------ -*/
+    if (PB0OT11.TARTYPE[PB0OWLIX] == "P") /* parm statement*/
+      TA6REC.TARJCL[TA6INDEX] = PB0OW01.PARM-REC;
+      TA6REC.TARTYPE[TA6INDEX] = "P";
+    else
+      TA6REC.TARJCL[TA6INDEX] = PB0OT11.TARJCL[PB0OWLIX]; /* JCL*/
+      TA6REC.TARTYPE[TA6INDEX] = PB0OT11.TARTYPE[PB0OWLIX]; /* Type*/
+    end
+
+    TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment parms index*/
+
+    /* ------------------------------------------------------------*/
+     /* If not end of table, increment the table index.*/
+    /* ------------------------------------------------------------*/
+
+    if (PB0OT11.TARJCL[PB0OWLIX] == "/*EOF") /* End of table*/
+
+      PB0OW02.PB0OWLIX = 0; /* Indicate end of table*/
+
+    else
+
+      PB0OW02.PB0OWLIX = PB0OW02.PB0OWLIX + 1; /* Increment table index*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for batch execution.*/
+   /* ------------------------------------------------------------*/
+
+  PB0OS-96(); /* Submit the JCL*/
+
+   /* ------------------------------------------------------------*/
+   /* Display results of print request.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* If print was successful*/
+   && SQLCA.VAGen_SQLCODE == 0)     
+
+    PB0OM010.XXXPRCNM = "PB0O-6210"; /* Process name*/
+    PB0OM010.VAGen_EZEMSG = COMMAREA.CAMSG; /* ===> Job info messege*/
+       /* MOVE 190 TO EZEMNO          ; Selections queued to print*/
+
+  else
+
+    PB0OM010.XXXPRCNM = "PB0O-6210"; /* Process name*/
+    converseLib.validationFailed(10); /* Error encountered with print request*/
+
+    exit stack;
+
+  end
+
+
+end // end PB0O-6210
+
+// SUBMIT JCL TO INTERNAL READER
+Function PB0OS-96()
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for batch execution.*/
+   /* ------------------------------------------------------------*/
+
+  TA6REC.TA6SUBSW = "Y"; /* Display, tailer & submit jcl*/
+  TA6REC.TA6MSGSW = "Y"; /* CICS job completed message*/
+                                 /* send on-line msg to user at eoj*/
+
+  while (TA6REC.TA6RTNCD < "0") /* Until subroutine completed*/
+    XPTA0P(); /* Print Request Subroutine*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If a successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "0")        /* and normal return*/
+
+    converseLib.validationFailed(190); /* Return message*/
+    PB0OM010.XXXPRCNM = "PB0OS-96"; /* Process name*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If user cancelled request, indicate user cancelled.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "1")        /* and user cancelled request*/
+
+    converseLib.validationFailed(86); /* Indicate user cancelled*/
+    PB0OM010.XXXPRCNM = "PB0O-S96"; /* Process name*/
+  else
+    converseLib.validationFailed(10); /* Indicate system error*/
+    PB0OM010.XXXPRCNM = "PB0OS-96"; /* Process name*/
+
+  end
+
+  exit stack; /* Exit to display map*/
+
+
+end // end PB0OS-96
+
+//*** RECORD=PB0OW00 ****
+// This record is a working storage recd
+// ***********************
+Record PB0OW00 type basicRecord
+  10 PB0OWKEY PB0OWKEY ; 
+    15 PB0OWCD1 PB0OWCD1 ; 
+    15 PB0OWCD2 PB0OWCD2 ; 
+  10 PB0OW-FMT-FLG PB0OW-FMT-FLG ; 
+end // end PB0OW00
+
+//*** RECORD=PB0OW01 ****
+// This record is a pram rec
+// ***********************
+Record PB0OW01 type basicRecord
+  10 PARM-REC PARM-REC ; 
+    15 PB0OW-XPL-LNCD-FLG PB0OW-XPL-LNCD-FLG ; 
+    15 PB0OW-XPL-LNCD1 PB0OW-XPL-LNCD1 ; 
+    15 PB0OW-XPL-LNCD2 PB0OW-XPL-LNCD2 ; 
+    15 PB0OW-XPL-LNCD3 PB0OW-XPL-LNCD3 ; 
+    15 PB0OW-XPL-LNCD4 PB0OW-XPL-LNCD4 ; 
+    15 * char(71) ; 
+end // end PB0OW01
+
+//*** RECORD=PB0OW02 ****
+// ************************************************************
+// *
+// *      JCL WORKING STORAGE FOR  PB0O
+// *
+// *  DATE              USERID       COMMENTS
+// * ________          _________    _______________________
+// * 08/20/92          sdifle       new record
+// *
+// ************************************************************
+// ***********************
+Record PB0OW02 type basicRecord
+  10 PB0OWJCE PB0OWJCE ; 
+    15 PB0OWEX1 PB0OWEX1 ; 
+    15 PB0OWPGM PB0OWPGM ; 
+    15 * char(58) ; 
+  10 PB0OWJCP PB0OWJCP ; 
+  10 PB0OWTYP PB0OWTYP ; 
+  10 PB0OWOVR PB0OWOVR [6] ; 
+  10 PB0OWJCC PB0OWJCC [6] ; 
+    15 * char(19) ; 
+    15 PB0OWCLG PB0OWCLG ; 
+    15 * char(36) ; 
+  10 PB0OWOIX PB0OWOIX ; 
+  10 PB0OWLIX PB0OWLIX ; 
+end // end PB0OW02
+
+// Map format flag
+DataItem PB0OW-FMT-FLG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// special run indicator
+DataItem PB0OW-XPL-LNCD-FLG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// XGP_GPC_CD
+DataItem PB0OW-XPL-LNCD1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// XDV_DIV_CD
+DataItem PB0OW-XPL-LNCD2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// XDV_DIV_CD
+DataItem PB0OW-XPL-LNCD3 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// XDV_DIV_CD
+DataItem PB0OW-XPL-LNCD4 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// code 1 for table edits
+DataItem PB0OWCD1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem PB0OWCD2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Condition logic
+DataItem PB0OWCLG char(25)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// execute stat. constants
+DataItem PB0OWEX1 char(15)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Condition statement
+DataItem PB0OWJCC char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// execute statement
+DataItem PB0OWJCE char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// parm. statement
+DataItem PB0OWJCP char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Key for table edits
+DataItem PB0OWKEY char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// line index
+DataItem PB0OWLIX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// override index
+DataItem PB0OWOIX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// override statement
+DataItem PB0OWOVR char(17)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// program name
+DataItem PB0OWPGM char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jcl type
+DataItem PB0OWTYP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

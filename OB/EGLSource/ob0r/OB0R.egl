@@ -1,0 +1,893 @@
+package ob0r;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import dg.common.*;
+import ku.common.*;
+import ob.common.*;
+import op.common.*;
+import pc.common.*;
+import pw.common.*;
+import sm.common.*;
+import sp.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+//*** PROGRAM=OB0R ****
+// ;OVERVIEW: Several applications in the Online Airspeed
+// ;          System provide the capability of cancelling or
+// ;          reinstating an entire order or deleting individ-
+// ;          ual line items.  The applications that offer
+// ;          these functions call the CSP subprogram, OB0R.
+// ;          OB0R decides whether to cancel the order by
+// ;          setting the status to 'XL' or to reinstate a
+// ;          cancelled order by setting the status to 'NC'
+// ;          or to cancel an item by deleting it from the
+// ;          database.  All applications providing the cancel/
+// ;          reinstate function access OB0R with PF24.
+// ;
+// ;DATABASE TABLES:
+// ;
+// ; Order Header     DORDB.VOBHDR01      OB1REC   Input/Output
+// ; Order Item       DORDB.VBITEM01      OB2REC   Input/Output
+// ; Order Item/Size  DORDB.VBITEM01      OB2REC   Input/Output
+// ;                  DORDB.VOBSIZ01      OB3REC   Input/Output
+// ; Temp Storage 1   OBF1                OBAREC   Input/Output
+// ; Temp Storage 4   OBF4                OBDREC   Input/Output
+// ;
+// ;PROCESSES/STATEMENT GROUPS:
+// ;
+// ;   OB0R000    PROC  Application entry validation
+// ;   OB0RS01    STMT  Initialization of OB0R application
+// ;   OB0RS10    STMT  Edit OBWREC.OBWXLIND
+// ;   OB0RS20    STMT  Execute update (Header or Item)
+// ;   OB0RS25    STMT  Process Header update
+// ;   OB0RS30    STMT  Change Header status
+// ;   OB0RS35    STMT  Update OB1REC
+// ;   OB0RS40    STMT  Process Header temp storage
+// ;   OB0RS50    STMT  Process Item update
+// ;   OB0RS55    STMT  Read Item record
+// ;   OB0RS60    STMT  Delete Item record
+// ;   OB0RS65    STMT  Process Item temp storage
+// ;
+// ;***********************************************************
+// ;*            M A I N T E N A N C E   L O G                *
+// ;***********************************************************
+// ;
+// ;    DATE      NAME    DESCRIPTION OF CHANGE
+// ;  --------   ------   -------------------------------------
+// ;  06/28/90   schase   created.
+// ;  02/15/91   dmeier   regen for database changes
+// ;  05/19/94   scantr   virtual airspeed project changes
+// ;  06/15/94   craine   virtual airspeed changes
+// ;  08/18/94   craine   added s75 to set status to xl when
+// ;                      last item deleted from the order.
+// ;  09/06/94   craine   change to obwrec
+// ;  10/26/94   schase   change to obwrec
+// ;  11/14/94   craine   change to delete item err/hold msgs
+// ;  01/03/95   craine   change to obwrec
+// ;  04/27/95   craine   allow for new yobcd 'pd' and 'lp'.
+// ;  08/07/95   craine   DATABASE CHANGES
+// ;  06/03/97   rgilli   YR2000 - Regen to ensure correct ver.
+// ;                               of xx0xs01 is included.
+// *********************
+Program OB0R type basicProgram //VAGen Info - called batch program
+  (
+   OBWREC OBWREC // record
+  )
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA { initialized = yes }; // record
+  ERRSQLCA ERRSQLCA; // record
+  OB0RW01 OB0RW01; // record
+  OB1REC OB1REC; // record
+  OB2REC OB2REC; // record
+  OB3REC OB3REC; // record
+  OB4REC OB4REC; // record
+  OB7REC OB7REC; // record
+  OBAREC OBAREC; // record
+  OBBREC OBBREC; // record
+  OBCREC OBCREC; // record
+  OBDREC OBDREC; // record
+  OBEREC OBEREC; // record
+  OBFREC OBFREC; // record
+  OBKREC OBKREC; // record
+  OBSFREC OBSFREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OB0R000: OB0R000();
+
+    exit program; /* return to calling application*/
+
+  end // end main
+end // end OB0R
+
+// EXECUTE PROCESS
+Function OB0R000()
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.commit(); /* commit any prior work*/
+
+  OB0RS01(); /* initialize application*/
+
+  OB0RS10(); /* edit OBWREC.OBWXLIND*/
+
+  OB0RS03(); /* read order header (OB1REC)*/
+
+  OB0RS20(); /* execute update (header or item)*/
+
+
+end // end OB0R000
+
+// INITIALIZE OB0R APPLICATION
+Function OB0RS01()
+
+  set OBAREC empty;
+  set OBBREC empty;
+  set OBCREC empty;
+  set OBDREC empty;
+  set OBEREC empty;
+  set OBFREC empty;
+  set OBKREC empty;
+  set OBSFREC empty;
+  set OB1REC empty;
+  set OB2REC empty;
+  set OB3REC empty;
+  set ERRSQLCA empty;
+  set SQLCA empty;
+  set TA1REC empty;
+  set TA5REC empty;
+  set TAEREC empty;
+  set XX0XW01 empty;
+
+  XX0XS01(); /* get current date and time*/
+
+  OBWREC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* change date*/
+  OBWREC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* change time*/
+
+end // end OB0RS01
+
+// POST & RETURN TO CALLING APPL
+Function OB0RS02()
+
+  XSOBEDP(); /* post ta1rec*/
+
+  OBWREC.CAMSG = "DATABASE BUSY"; /* format camsg*/
+
+
+end // end OB0RS02
+
+// READ CURRENT ORDER HEADER
+Function OB0RS03()
+
+  set OB1REC empty;
+  set OBFREC empty;
+  set SQLCA empty;
+
+      /* format order number as numeric to use as key*/
+  OBWREC.OBWFMT = OBWREC.OBWORDER; /* move to w-s*/
+  XSOBS07(); /* suppress zeros*/
+  OBWREC.OBWORDER = OBWREC.OBWFMT; /* move order number*/
+
+  OB1REC.OP1CUOID = OBWREC.OBWCUOID;
+  OB1REC.OP1NORID = OBWREC.OBWNOID;
+  OB1REC.OP1PARTN = OBWREC.OP1PARTN;
+
+  OBFREC.OBFTASK = "S ";
+
+  call "IO5160" (OBFREC, SQLCA, OB1REC) {isNoRefresh = yes, isExternal = yes}; /* i/o mod-select scan*/
+
+   /* check db2 return code*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DORDB   "; /* data base name*/
+    TA1REC.TA1TBLVU = "VOBHDR01"; /* table view*/
+    TA1REC.TA1LOCAT[1] = "S       "; /* calling option*/
+    TA1REC.TA1LOCAT[2] = "IO5160  "; /* i/o mod name*/
+    TA1REC.TA1LOCAT[3] = "XSOBS03 "; /* statement group*/
+    if (SQLCA.VAGen_SQLCODE == -911)
+      OB0RS02(); /* post*/
+      exit program;
+    else
+      XSOBEDP(); /* post*/
+      OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST";
+      exit program; /* return to calling appl*/
+    end
+  end
+
+
+      /* suppress leading zeros to display order number*/
+  OBWREC.OBWFMT = OBWREC.OBWORDER; /* move to w-s*/
+  XSOBS06(); /* suppress zeros*/
+  OBWREC.OBWORDER = OBWREC.OBWFMT; /* move order number*/
+
+
+end // end OB0RS03
+
+// EDIT CANCEL INDICATOR
+Function OB0RS10()
+
+  if (OBWREC.OBWXLIND == "H" /* indicator for header*/
+   || OBWREC.OBWXLIND == "I") /* indicator for item*/
+     /* next sentence*/
+  else
+    OBWREC.CAMSG = "UNABLE TO CANCEL OR REINSTATE";
+    TA1REC.TA1LOCAT[3] = "OB0RS10"; /* database name*/
+    TA1REC.TA1LOCAT[4] = OBWREC.OBWXLIND; /* indicator*/
+    XSOBEDP(); /* post error*/
+    exit program; /* return to calling application*/
+  end
+
+
+end // end OB0RS10
+
+// EXECUTE UPDATE
+Function OB0RS20()
+
+  OBWREC.OBWER911 = "Y"; /* set -911 flag on*/
+
+  if (OBWREC.OBWXLIND == "H") /* indicator for header*/
+    OB0RS25(); /* process header update*/
+  else
+    OB0RS50(); /* process item update*/
+  end
+
+
+end // end OB0RS20
+
+// PROCESS HEADER UPDATE
+Function OB0RS25()
+
+  OB0RS30(); /* change header status*/
+
+  OB0RS35(); /* update OB1REC*/
+
+  OB0RS40(); /* process temp storage*/
+
+
+end // end OB0RS25
+
+// CHANGE HEADER STATUS
+Function OB0RS30()
+
+  if (OB1REC.YOBCD == "XL") /* cancelled status*/
+    OB1REC.YOBCD = "NC"; /* change to now changed status*/
+    OBWREC.CAMSG = "ORDER REINSTATED"; /* format camsg*/
+  else
+    if (OB1REC.YOBCD == "LP" /* lost demand reported*/
+     || OB1REC.YOBCD == "PD") /* postponed demand reported*/
+      /* leave the status as it is*/
+    else
+      OB1REC.YOBCD = "XL"; /* change to cancelled status*/
+      OBWREC.CAMSG = "ORDER CANCELLED"; /* format camsg*/
+    end
+  end
+
+
+end // end OB0RS30
+
+// UPDATE OB1REC
+Function OB0RS35()
+
+  set SQLCA empty;
+  set OBFREC empty;
+
+  OBFREC.OBFTASK = "U"; /* format update task for io-mod*/
+
+  OB1REC.ZZZCHGDT = OBWREC.ZZZCHGDT; /* change date*/
+  OB1REC.ZZZCHGTM = OBWREC.ZZZCHGTM; /* change time*/
+
+  call "IO5160" (OBFREC, SQLCA, OB1REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* good return*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* not found*/
+      OBWREC.CAMSG = "ORDER HAS BEEN UPDATED BY ANOTHER SERVICE REP";
+      exit program; /* return to calling appl*/
+    else
+      TA1REC.TA1DBASE = "DORDB"; /* database name*/
+      TA1REC.TA1TBLVU = "VOBHDR01"; /* table view*/
+      TA1REC.TA1LOCAT[1] = "U       "; /* calling option*/
+      TA1REC.TA1LOCAT[2] = "IO5160  "; /* i/o mod name*/
+      TA1REC.TA1LOCAT[3] = "OB0RS35 "; /* statement group*/
+      TA1REC.TA1LOCAT[4] = OBWREC.OBWXLIND; /* INDICATOR*/
+      if (SQLCA.VAGen_SQLCODE == -911) /* deadlock*/
+        OB0RS02(); /* post*/
+        exit program; /* return to calling appl*/
+      else
+        XSOBEDP(); /* post*/
+        OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST"; /* format camsg*/
+        exit program; /* return to calling appl*/
+      end
+    end
+  end
+
+
+end // end OB0RS35
+
+// PROCESS HEADER TEMP STORAGE
+Function OB0RS40()
+
+  XSOBT1R(); /* read temp storage (OBF1)*/
+
+  OBAREC.OBAMSEL[OBWTSF1S] = "U"; /* format update option*/
+  OBAREC.YOBCD[OBWTSF1S] = OB1REC.YOBCD; /* format order status*/
+
+  XSOBT1U(); /* update temp storage*/
+
+
+end // end OB0RS40
+
+// PROCESS ITEM UPDATE
+Function OB0RS50()
+
+
+  OB0RS55(); /* read item record*/
+
+
+  OB1REC.OP1OTUNT = OB1REC.OP1OTUNT - OB2REC.OP2TONOQ; /* subtract qty*/
+
+  OB1REC.OP1OVALU = OB1REC.OP1OVALU - OB2REC.OP2LNIVL; /* subtract value*/
+
+
+  OB0RS60(); /* delete item record*/
+
+  OB0RS80(); /* delete item errors*/
+
+  OB0RS70(); /* process last comment for item*/
+
+  OB0RS75(); /* see if any products are left*/
+
+  OB0RS35(); /* update order header (OB1REC)*/
+
+
+  OB0RS65(); /* process temp storage*/
+  OB0RS40();
+
+
+
+end // end OB0RS50
+
+// READ ITEM RECORD
+Function OB0RS55()
+
+  set SQLCA empty;
+  set OBKREC empty;
+  set OB2REC empty;
+
+  OBKREC.OBKTASK = "S"; /* format task option*/
+
+  OB2REC.OP1PARTN = OB1REC.OP1PARTN; /* part char*/
+  OB2REC.OP1CUOID = OB1REC.OP1CUOID; /* cust ord id*/
+  OB2REC.OP1NORID = OB1REC.OP1NORID; /* nike ord id*/
+
+  OB2REC.OP2LNINB = OBWREC.OBWLNINB; /* line number*/
+
+  call "IO5170" (OBKREC, SQLCA, OB2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* good return*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* not found*/
+      OBWREC.CAMSG = "ITEM SELECTED HAS BEEN CANCELLED";
+      OB0RS65(); /* process temp storage before leaving*/
+      exit program; /* return to calling appl*/
+    else
+      TA1REC.TA1DBASE = "DORDB"; /* database name*/
+      TA1REC.TA1TBLVU = "VBITEM01"; /* table view*/
+      TA1REC.TA1LOCAT[1] = "S       "; /* calling option*/
+      TA1REC.TA1LOCAT[2] = "IO5170  "; /* i/o mod name*/
+      TA1REC.TA1LOCAT[3] = "OB0RS55 "; /* statement group*/
+      TA1REC.TA1LOCAT[4] = OBWREC.OBWXLIND; /* INDICATOR*/
+      if (SQLCA.VAGen_SQLCODE == -911) /* deadlock*/
+        OB0RS02(); /* post*/
+        exit program; /* return to calling appl*/
+      else
+        XSOBEDP(); /* post*/
+        OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST"; /* format camsg*/
+        exit program; /* return to calling appl*/
+      end
+    end
+  end
+
+
+end // end OB0RS55
+
+// DELETE ITEM
+Function OB0RS60()
+
+  set OBSFREC empty;
+  set OB3REC empty;
+
+  OB3REC.OB2KEY = OB2REC.OB2KEY; /* move in item key*/
+
+  OBSFREC.OBSF-TASK = "D"; /* delete task option*/
+  OBSFREC.OBSF-CALLER-LOC-1 = "D      "; /* format task option*/
+  OBSFREC.OBSF-CALLER-LOC-2 = "OB1690 "; /* format pgm name*/
+  OBSFREC.OBSF-CALLER-LOC-3 = "OB0RS60"; /* format stmt grp name*/
+  OBSFREC.OBSF-CALLING-APPL = "OB0R";
+  OBSFREC.OB3GROUP = OB3REC.OB3GROUP;
+  OBSFREC.OBSF-RETURN-CD = 99;
+
+  call "OB1690" (OBSFREC) {isNoRefresh = yes, isExternal = yes};
+
+  OB3REC.OB3GROUP = OBSFREC.OB3GROUP;
+
+  if (OBSFREC.OBSF-RETURN-CD == 0 /* good return*/
+   || OBSFREC.OBSF-RETURN-CD == 1 /* item not found*/
+   || OBSFREC.OBSF-RETURN-CD == 11) /* size not found*/
+    OBWREC.CAMSG = "ITEM DELETED"; /* format camsg*/
+  else
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VBITEM01"; /* table view*/
+    TA1REC.TA1LOCAT[1] = "D       "; /* calling option*/
+    TA1REC.TA1LOCAT[2] = "IO5170  "; /* i/o mod name*/
+    TA1REC.TA1LOCAT[3] = "OB0RS60 "; /* statement group*/
+    TA1REC.TA1LOCAT[4] = OBWREC.OBWXLIND; /* INDICATOR*/
+    TA1REC.TA1TBLKE = OBSFREC.OBSF-DIAG-KEY; /* table key*/
+    if (OBSFREC.OBSF-RETURN-CD == 14 /* deadlock on item*/
+     || OBSFREC.OBSF-RETURN-CD == 15) /* deadlock on size*/
+      OB0RS02(); /* post*/
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback(); /* rollback*/
+      exit program; /* return to calling appl*/
+    else
+      XSOBEDP(); /* post*/
+      OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST"; /* format camsg*/
+      exit program;
+    end
+  end
+
+
+end // end OB0RS60
+
+// PROCESS ITEM TEMP STORAGE
+Function OB0RS65()
+
+  XSOBT4R(); /* read temp storage (OBF4)*/
+
+  OBDREC.OBDMSEL[OBWTSF4S] = "*"; /* format update option*/
+
+  XSOBT4U(); /* update temp storage*/
+
+
+end // end OB0RS65
+
+// insert comment for deleted itm
+Function OB0RS70()
+
+
+     /* call io5180 for max rec seq number to insert new comment*/
+
+  set OBKREC empty;
+  set OB4REC empty;
+  set SQLCA empty;
+
+  OBKREC.OBKTASK = "SM"; /* select max*/
+  OB4REC.OP1PARTN = OB1REC.OP1PARTN; /* part char id*/
+  OB4REC.OP1CUOID = OB1REC.OP1CUOID; /* cust ord id*/
+  OB4REC.OP1NORID = OB1REC.OP1NORID; /* nike ord id*/
+  OB4REC.OP4TRTYP = "C"; /* comment type id*/
+
+  call "IO5180" (OBKREC, SQLCA, OB4REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OBKREC.OBKMAX = OBKREC.OBKMAX + 1;
+    OB4REC.OP4TRSEQ = OBKREC.OBKMAX;
+  else
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VBTEXT01"; /* table view*/
+    TA1REC.TA1LOCAT[1] = "SM      "; /* calling option*/
+    TA1REC.TA1LOCAT[2] = "IO5180  "; /* i/o mod name*/
+    TA1REC.TA1LOCAT[3] = "OB0RS70 "; /* statement group*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* deadlock*/
+      OB0RS02(); /* post*/
+      exit program; /* return to calling appl*/
+    else
+      XSOBEDP(); /* post*/
+      OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST"; /* format camsg*/
+      exit program; /* return to calling appl*/
+    end
+  end
+
+
+  OB0RS71(); /* format ob4rec*/
+
+     /* call io5180 to insert text comment for deleted product*/
+
+  set OBKREC empty;
+  set SQLCA empty;
+  OBKREC.OBKTASK = "A "; /* select max*/
+
+  call "IO5180" (OBKREC, SQLCA, OB4REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VBTEXT01"; /* table view*/
+    TA1REC.TA1LOCAT[1] = "A       "; /* calling option*/
+    TA1REC.TA1LOCAT[2] = "IO5180  "; /* i/o mod name*/
+    TA1REC.TA1LOCAT[3] = "OB0RS70 "; /* statement group*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* deadlock*/
+      OB0RS02(); /* post*/
+      exit program; /* return to calling appl*/
+    else
+      XSOBEDP(); /* post*/
+      OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST"; /* format camsg*/
+      exit program; /* return to calling appl*/
+    end
+  end
+
+
+end // end OB0RS70
+
+// format ob4rec for comment
+Function OB0RS71()
+
+
+  set OB4REC empty;
+
+  OB4REC.OP1PARTN = OB1REC.OP1PARTN; /* part char id*/
+  OB4REC.OP1CUOID = OB1REC.OP1CUOID; /* cust ord id*/
+  OB4REC.OP1NORID = OB1REC.OP1NORID; /* nike ord id*/
+  OB4REC.OP4TRTYP = "C"; /* comment type id*/
+  OB4REC.OP4TRSEQ = OBKREC.OBKMAX; /* format seq number*/
+  OB4REC.XNDCD = " "; /* format nike dept code*/
+  OB4REC.OP4TXTOF = "N"; /* text override flag*/
+  OB0RW01.OB0RWMS1 = "CANCELLED PRODUCT "; /* message 1*/
+  OB0RW01.OB0RWMS2 = OB2REC.SY1STNBR; /* message 2*/
+  OB0RW01.OB0RWMS3 = "-"; /* message 3*/
+  OB0RW01.OB0RWMS4 = OB2REC.SY2CLRID; /* message 4*/
+  OB0RW01.OB0RWMS5 = " IN ORDER BATCH"; /* message 5*/
+  OB4REC.OP4TXT = OB0RW01.OB0RWMSG; /* format text line*/
+  OB4REC.ZZZCHGDT = OBWREC.ZZZCHGDT; /* change date*/
+  OB4REC.ZZZCHGTM = OBWREC.ZZZCHGTM; /* change time*/
+  OB4REC.ZZZCHGCT = 0; /* change count*/
+
+
+end // end OB0RS71
+
+// READ ITEM RECORD
+Function OB0RS75()
+
+  set SQLCA empty;
+  set OBKREC empty;
+  set OB2REC empty;
+
+  OBKREC.OBKTASK = "MC"; /* format task option*/
+
+  OB2REC.OP1PARTN = OB1REC.OP1PARTN; /* part char*/
+  OB2REC.OP1CUOID = OB1REC.OP1CUOID; /* cust ord id*/
+  OB2REC.OP1NORID = OB1REC.OP1NORID; /* nike ord id*/
+
+  OB2REC.OP2LNINB = OBWREC.OBWLNINB; /* line number*/
+
+  call "IO5170" (OBKREC, SQLCA, OB2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* good return*/
+    if (OBKREC.OBKCOUNT == 0) /* cancel order if no items left on it*/
+      OB1REC.YOBCD = "DL";
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* not found*/
+      OBWREC.CAMSG = "ITEM SELECTED HAS BEEN CANCELLED";
+      OB0RS65(); /* process temp storage before leaving*/
+      exit program; /* return to calling appl*/
+    else
+      TA1REC.TA1DBASE = "DORDB"; /* database name*/
+      TA1REC.TA1TBLVU = "VBITEM01"; /* table view*/
+      TA1REC.TA1LOCAT[1] = "MC      "; /* calling option*/
+      TA1REC.TA1LOCAT[2] = "IO5170  "; /* i/o mod name*/
+      TA1REC.TA1LOCAT[3] = "OB0RS75 "; /* statement group*/
+      TA1REC.TA1LOCAT[4] = OBWREC.OBWXLIND; /* INDICATOR*/
+      if (SQLCA.VAGen_SQLCODE == -911) /* deadlock*/
+        OB0RS02(); /* post*/
+        exit program; /* return to calling appl*/
+      else
+        XSOBEDP(); /* post*/
+        OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST"; /* format camsg*/
+        exit program; /* return to calling appl*/
+      end
+    end
+  end
+
+
+end // end OB0RS75
+
+// delete item er/hold msgs
+Function OB0RS80()
+
+   /* delete err/hold messages*/
+
+  set OB7REC empty;
+  OB7REC.OB7MSGTP = "E"; /* first delete errors*/
+
+  OB0RW01.OB0RWEOF = "N";
+  OB0RS81(); /* open cursor*/
+
+  OB0RS82(); /* fetch first record*/
+
+  while (OB0RW01.OB0RWEOF == "N"
+  )
+    if (OB7REC.OP2LNINB == OBWREC.OBWLNINB)
+      OB0RS84(); /* delete the error message*/
+    end
+    OB0RS82();
+
+  end
+
+  OB0RS83(); /* close cursor*/
+
+  OBWREC.OBW-GET-ERRORS-FL = "Y";
+
+
+   /* now delete any holds*/
+
+  OB7REC.OB7MSGTP = "H"; /* first delete errors*/
+
+  OB0RW01.OB0RWEOF = "N";
+  OB0RS81(); /* open cursor*/
+
+  OB0RS82(); /* fetch first record*/
+
+  while (OB0RW01.OB0RWEOF == "N"
+  )
+    if (OB7REC.OP2LNINB == OBWREC.OBWLNINB)
+      OB0RS84(); /* delete the error message*/
+    end
+    OB0RS82();
+
+  end
+
+  OB0RS83(); /* close cursor*/
+
+  OBWREC.OBW-GET-HOLDS-FL = "Y";
+
+end // end OB0RS80
+
+// open er/hold msgs cursor
+Function OB0RS81()
+
+   /* open cursor err/hold messages*/
+
+
+  set OBKREC empty;
+  set SQLCA empty;
+
+  OB7REC.OP1PARTN = OB1REC.OP1PARTN; /* format part char*/
+  OB7REC.OP1CUOID = OB1REC.OP1CUOID; /* format cust ord id*/
+  OB7REC.OP1NORID = OB1REC.OP1NORID; /* format nike ord id*/
+
+  OBKREC.OBKTASK = "S1";
+
+  call "IO5210" (OBKREC, SQLCA, OB7REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* good return*/
+  )                            /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VOBMSG01"; /* table view*/
+    TA1REC.TA1LOCAT[1] = "D"; /* calling option*/
+    TA1REC.TA1LOCAT[2] = "IO5210"; /* i/o mod name*/
+    TA1REC.TA1LOCAT[3] = "OB0RS80"; /* statement group*/
+    TA1REC.TA1LOCAT[4] = OBWREC.OBWXLIND; /* INDICATOR*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* deadlock*/
+      OB0RS02(); /* post*/
+      exit program; /* return to calling appl*/
+    else
+      XSOBEDP(); /* post*/
+      OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST"; /* format camsg*/
+      exit program; /* return to calling appl*/
+    end
+  end
+
+
+
+
+end // end OB0RS81
+
+// fetch error/hold msgs
+Function OB0RS82()
+
+   /* fetch err/hold messages*/
+
+
+  set OBKREC empty;
+  set SQLCA empty;
+
+
+  OBKREC.OBKTASK = "N1";
+
+  call "IO5210" (OBKREC, SQLCA, OB7REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* good return*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* or not found*/
+      OB0RW01.OB0RWEOF = "Y";
+    else
+      TA1REC.TA1DBASE = "DORDB"; /* database name*/
+      TA1REC.TA1TBLVU = "VOBMSG01"; /* table view*/
+      TA1REC.TA1LOCAT[1] = "D"; /* calling option*/
+      TA1REC.TA1LOCAT[2] = "IO5210"; /* i/o mod name*/
+      TA1REC.TA1LOCAT[3] = "OB0RS80"; /* statement group*/
+      TA1REC.TA1LOCAT[4] = OBWREC.OBWXLIND; /* INDICATOR*/
+      if (SQLCA.VAGen_SQLCODE == -911) /* deadlock*/
+        OB0RS02(); /* post*/
+        exit program; /* return to calling appl*/
+      else
+        XSOBEDP(); /* post*/
+        OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST"; /* format camsg*/
+        exit program; /* return to calling appl*/
+      end
+    end
+  end
+
+
+
+
+end // end OB0RS82
+
+// close error/hold msg cursor
+Function OB0RS83()
+
+   /* close err/hold message cursor*/
+
+
+  set OBKREC empty;
+  set SQLCA empty;
+
+  OB7REC.OP1PARTN = OB1REC.OP1PARTN; /* format part char*/
+  OB7REC.OP1CUOID = OB1REC.OP1CUOID; /* format cust ord id*/
+  OB7REC.OP1NORID = OB1REC.OP1NORID; /* format nike ord id*/
+
+
+  OBKREC.OBKTASK = "C1";
+
+  call "IO5210" (OBKREC, SQLCA, OB7REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* good return*/
+   || SQLCA.VAGen_SQLCODE == 100) /* or not found*/
+     /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VOBMSG01"; /* table view*/
+    TA1REC.TA1LOCAT[1] = "D"; /* calling option*/
+    TA1REC.TA1LOCAT[2] = "IO5210"; /* i/o mod name*/
+    TA1REC.TA1LOCAT[3] = "OB0RS80"; /* statement group*/
+    TA1REC.TA1LOCAT[4] = OBWREC.OBWXLIND; /* INDICATOR*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* deadlock*/
+      OB0RS02(); /* post*/
+      exit program; /* return to calling appl*/
+    else
+      XSOBEDP(); /* post*/
+      OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST"; /* format camsg*/
+      exit program; /* return to calling appl*/
+    end
+  end
+
+
+
+
+end // end OB0RS83
+
+// delete item er/hold msgs
+Function OB0RS84()
+
+   /* delete err/hold messages*/
+
+
+  set OBKREC empty;
+  set SQLCA empty;
+
+  OBKREC.OBKTASK = "D ";
+
+  call "IO5210" (OBKREC, SQLCA, OB7REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* good return*/
+   || SQLCA.VAGen_SQLCODE == 100) /* or not found*/
+     /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VOBMSG01"; /* table view*/
+    TA1REC.TA1LOCAT[1] = "D"; /* calling option*/
+    TA1REC.TA1LOCAT[2] = "IO5210"; /* i/o mod name*/
+    TA1REC.TA1LOCAT[3] = "OB0RS80"; /* statement group*/
+    TA1REC.TA1LOCAT[4] = OBWREC.OBWXLIND; /* INDICATOR*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* deadlock*/
+      OB0RS02(); /* post*/
+      exit program; /* return to calling appl*/
+    else
+      XSOBEDP(); /* post*/
+      OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST"; /* format camsg*/
+      exit program; /* return to calling appl*/
+    end
+  end
+
+
+
+
+end // end OB0RS84
+
+Record OB0RW01 type basicRecord
+  10 OB0RWMSG OB0RWMSG ; 
+    15 OB0RWMS1 OB0RWMS1 ; 
+    15 OB0RWMS2 OB0RWMS2 ; 
+    15 OB0RWMS3 OB0RWMS3 ; 
+    15 OB0RWMS4 OB0RWMS4 ; 
+    15 OB0RWMS5 OB0RWMS5 ; 
+  10 OB0RWEOF OB0RWEOF ; 
+end // end OB0RW01
+
+// end of file flag
+DataItem OB0RWEOF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// message 1
+DataItem OB0RWMS1 char(18)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// message 2
+DataItem OB0RWMS2 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// message 3
+DataItem OB0RWMS3 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// message 4
+DataItem OB0RWMS4 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// message 5
+DataItem OB0RWMS5 char(15)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// message group
+DataItem OB0RWMSG char(43)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

@@ -1,0 +1,1462 @@
+package sp0k;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import ko.common.*;
+import sp.common.*;
+import ta.common.*;
+//*** PROGRAM=SP0K ****
+// SALES PROGRAM UPDATE-  ORDER TYPE DATES ONLY
+// 
+// overview:
+// 
+// 
+// date created:  1987
+// 
+// maintenance history:
+// 
+// 
+//   when       who        what
+// --------  ---------  --------------------------------------
+// 08-09-88   SJOB      added century to screen modified dates.
+// 11-28-88   SJOB      carried order type from SP0T to SP0K.
+// 12-16-88   JWOOD     ADDED NONCSP OPTION TO CALLS
+// 12-16-88   JWOOD     ADDED XSSEGTR LOGIC
+// 11-30-88   sjob      ADDED spgm comment line #1
+// y2kfix 11-05-97 pharwo changes to sp0k600, sp0k700 and
+//                      sp0k710 for year 2000 compliane.
+// *********************
+Program SP0K type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "SP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  SP0KW01 SP0KW01; // record
+  SP1REC SP1REC; // record
+  SP2REC SP2REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XOTTBL {deleteAfterUse = yes}; // table
+  use SP0KM.SP0KM020 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    SP0K100: SP0K100();
+
+
+    goto SP0K200;
+
+
+
+    SP0K200: SP0K200();
+
+
+    goto SP0K200;
+
+
+
+  end // end main
+end // end SP0K
+
+// initialization and reset
+Function SP0K100()
+
+
+   /* ************************************************************/
+      /* this process is used to initialize the necessary*/
+      /* fields for the order type date maintenance.*/
+   /* ************************************************************/
+
+  XSENTRY(); /* security*/
+
+
+  XSSEGTR(); /* SET SEGMENTED TRANSACTION ID*/
+
+  set SP0KM020 initial; /* clear map*/
+  set SP1REC empty; /* clear s.p.header rec*/
+  set SP2REC empty; /* clear s.p. order type rec*/
+  set SP0KW01 empty; /* clear application work area*/
+  set SQLCA empty; /* clear error return area*/
+
+  if (COMMAREA.CAITEM != " ") /* key is being passed*/
+    SP0KW01.SP0KWITM = COMMAREA.CAITEM;
+                                   /* move key to working storage*/
+    SP0KM020.SP1ID = SP0KW01.SP0KWSP; /* move sales program id to map*/
+    SP0KM020.XOTCD = SP0KW01.SP0KWOT; /* order type code*/
+    COMMAREA.CAITEM = " "; /* reset commarea*/
+  end
+
+
+
+end // end SP0K100
+
+// master loop for application
+Function SP0K200()
+
+
+
+   /* ************************************************************/
+      /* purpose:  this is the main control loop of this*/
+                /* application...........*/
+   /* ************************************************************/
+
+
+
+  SP0K300(); /* process any key changes*/
+
+  SP0K400(); /* converse the map*/
+
+  SP0K500(); /* reset any errors*/
+
+  SP0K600(); /* edit map*/
+
+  if (converseVar.validationMsgNum == 0
+   && SP0KW01.SP0KWUPF == "Y") /* data modified......*/
+    SP0K700(); /* update the database*/
+  end
+
+
+
+end // end SP0K200
+
+// get data for key change
+Function SP0K300()
+
+
+
+    /* ***************************************************/
+    /* *  purpose:  process key changes and load map    **/
+    /* ***************************************************/
+
+
+  if (SP0KM020.SP1ID == " ") /* blank sales pgm*/
+    SP0K360(); /* clear map area*/
+    converseLib.validationFailed(46); /* enter sales program and order type*/
+    set SP0KM020.SP1ID cursor, bold;
+    return;
+  end
+
+
+  if (SP0KM020.SP1ID != SP0KW01.SP1ID) /* new sales pgm*/
+    SP0K320(); /* get sales pgm header*/
+    if (converseVar.validationMsgNum == 0) /* no problems?*/
+      SP0K330(); /* get order type records (set)*/
+      if (SP0KM020.XOTCD != " ") /* order type is not blank*/
+        SP0K350(); /* fill screen with specific o.t.*/
+      end
+    end
+  else
+                                   /* ; same sales program...*/
+    if (SP0KM020.XOTCD != SP0KW01.XOTCD /* new order type in same s.p.*/
+     && SP0KM020.XOTCD != " ")         
+      SP0K350(); /* fill screen with specific o.t.*/
+    end
+  end
+
+
+  if (converseVar.validationMsgNum == 0
+   && SP0KM020.XOTCD == " ") /* order type is blank*/
+    SP0K370(); /* clear map area*/
+    converseLib.validationFailed(47); /* enter a valid order type*/
+    set SP0KM020.XOTCD cursor, bold;
+  end
+
+  if (converseVar.validationMsgNum == 0
+   && SP1REC.SP1STAT == "F") /* finished status*/
+    converseLib.validationFailed(48); /* sales program in finished status*/
+    set SP0KM020.SP2RPBDT protect;
+    set SP0KM020.SP2RPXDT protect;
+    set SP0KM020.SP2BKBDT protect;
+    set SP0KM020.SP2BKXDT protect;
+    set SP0KM020.SP2DLBDT protect;
+    set SP0KM020.SP2DLXDT protect;
+    set SP0KM020.SP2LEDTM protect;
+    set SP0KM020.SP2LCDT protect;
+  end
+
+
+
+end // end SP0K300
+
+// obtain sales prog. header rec
+Function SP0K320()
+
+
+
+    /* ***************************************************/
+    /* *  purpose:  get sp1rec...sales program header   **/
+    /* ***************************************************/
+
+  SP0K360(); /* clear map area*/
+
+  SP1REC.SP1ID = SP0KM020.SP1ID; /* new sales pgm*/
+  call "IO0070" ("S ", SQLCA, SP1REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    move SP1REC to SP0KM020 withV60Compat; /* move header rec to map*/
+    SP0KW01.SP1ID = SP1REC.SP1ID; /* hold key......*/
+  else
+    if (SQLCA.VAGen_SQLCODE == +100) /* s.p. does not exist*/
+      converseLib.validationFailed(43); /* invalid sales program id*/
+      set SP0KM020.SP1ID cursor, bold;
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(45); /* database in use - try again later*/
+      else
+        set TA1REC empty;
+        set ERRSQLCA empty;
+        TA1REC.TA1TYPE = "DB2";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "SP0K";
+        TA1REC.TA1LOCAT[1] = "S";
+        TA1REC.TA1LOCAT[2] = "SP0K320";
+        TA1REC.TA1LOCAT[3] = "IO0070 ";
+        TA1REC.TA1LOCAT[4] = " ";
+        TA1REC.TA1LOCAT[4] = "SP0KM020";
+        TA1REC.TA1DBASE = "DSPGM.";
+        TA1REC.TA1TBLVU = "VSPGM001";
+        TA1TBLKE = SP1REC.SP1KEY;
+        move SQLCA to ERRSQLCA withV60Compat;
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+        XSPF4();
+        SP0KM020.SP0KMMSG = COMMAREA.CAMSG;
+      end
+    end
+  end
+
+
+  if (SQLCA.VAGen_SQLCODE == +0) /* found a s.p. header rec*/
+    if (SP1REC.SP1STAT == "P") /* partial status....*/
+      SP0KM020.SP0KMST = "PARTIAL";
+    end
+    if (SP1REC.SP1STAT == "C") /* complete status...*/
+      SP0KM020.SP0KMST = "COMPLETE";
+    end
+    if (SP1REC.SP1STAT == "A") /* active status.....*/
+      SP0KM020.SP0KMST = "ACTIVE";
+    end
+    if (SP1REC.SP1STAT == "I") /* inactive status...*/
+      SP0KM020.SP0KMST = "INACTIVE";
+    end
+    if (SP1REC.SP1STAT == "F") /* finished status...*/
+      SP0KM020.SP0KMST = "FINISHED";
+    end
+  end
+
+
+
+
+end // end SP0K320
+
+// obtain set of order types
+Function SP0K330()
+
+
+
+    /* *****************************************************/
+    /* *  purpose:  get sp2rec set .. sales pgm order types*/
+    /* *****************************************************/
+
+  set SP2REC empty;
+  SP2REC.SP1ID = SP0KM020.SP1ID; /* sales pgm id*/
+  call "IO0080" ("SS", SQLCA, SP2REC) {isNoRefresh = yes, isExternal = yes}; /* set of order type recs.*/
+
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    SP0KW01.SP0KWSB1 = 1; /* initialize subscript.*/
+    SP0K340(); /* get first order type.*/
+    if (SQLCA.VAGen_SQLCODE == +0)
+      SP0KW01.SP0KWOTF = "Y"; /* are there any order types? flag*/
+      while (SQLCA.VAGen_SQLCODE == +0)
+        SP0K340(); /* continue to get order type records*/
+      end
+    else
+      converseLib.validationFailed(42); /* there are no order type records for s.p*/
+      SP0KW01.SP0KWOTF = "N"; /* are there order types flag*/
+      SP0K370(); /* darken all map fields*/
+    end
+    call "IO0080" ("CS", SQLCA, SP2REC) {isNoRefresh = yes, isExternal = yes}; /* close set*/
+    if (SQLCA.VAGen_SQLCODE != +0) /* could not close....*/
+      TA1REC.TA1LOCAT[1] = "CS";
+      TA1REC.TA1LOCAT[2] = "SP0K330";
+    end
+  else
+    TA1REC.TA1LOCAT[1] = "SS";
+    TA1REC.TA1LOCAT[2] = "SP0K330";
+  end
+
+
+  if (SQLCA.VAGen_SQLCODE == +0 /* good return..*/
+   || SQLCA.VAGen_SQLCODE == +100) /* end of file*/
+     /* everything is fine....*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(45); /* database in use - try again later*/
+    else
+      set TA1REC empty;
+      set ERRSQLCA empty;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "SP0K";
+      TA1REC.TA1LOCAT[3] = "IO0080 ";
+      TA1REC.TA1LOCAT[4] = " ";
+      TA1REC.TA1LOCAT[4] = "SP0KM020";
+      TA1REC.TA1DBASE = "DSPGM.";
+      TA1REC.TA1TBLVU = "VORTYP01";
+      TA1TBLKE = SP2REC.SP2KEY;
+      move SQLCA to ERRSQLCA withV60Compat;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      XSPF4();
+      SP0KM020.SP0KMMSG = COMMAREA.CAMSG;
+    end
+  end
+
+
+
+
+
+end // end SP0K330
+
+// select next order type rec.
+Function SP0K340()
+
+
+
+    /* ***************************************************/
+    /* *  purpose:  get next sp2rec...order type        **/
+    /* ***************************************************/
+
+  call "IO0080" ("SN", SQLCA, SP2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    if (SP0KW01.SP0KWSB1 <= 15) /* can only display 15*/
+      SP0KM020.SP0KMSID[SP0KWSB1] = SP2REC.XOTCD;
+      if (SP0KMSID[SP0KWSB1] in XOTTBL.XOTCD)
+        SP0KMDES[SP0KWSB1] = XOTTBL.XOTABRV[sysVar.arrayIndex];
+      end
+    end
+
+
+    SP0KW01.SP0KWSB1 = SP0KW01.SP0KWSB1 + 1; /* bump up subscript*/
+
+  else
+    TA1REC.TA1LOCAT[1] = "SN";
+    TA1REC.TA1LOCAT[2] = "SP0K340";
+  end
+
+
+
+end // end SP0K340
+
+// obtain specific order type
+Function SP0K350()
+
+
+
+    /* ***************************************************/
+    /* *  purpose:  get unique sp2rec...order type      **/
+    /* ***************************************************/
+
+  if (SP0KW01.SP0KWOTF == "N") /* order types avaliable flag*/
+    SP0K370(); /* darken input fields*/
+    converseLib.validationFailed(42); /* there are no order type records for s.p*/
+    return;
+  end
+
+
+  set SP2REC empty;
+  SP2REC.SP1ID = SP0KM020.SP1ID; /* sales pgm*/
+  SP2REC.XOTCD = SP0KM020.XOTCD; /* order type*/
+  call "IO0080" ("S ", SQLCA, SP2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    move SP2REC to SP0KM020 withV60Compat; /* move header rec to map*/
+    move SP2REC to SP0KW01 withV60Compat; /* move header rec to working storage*/
+    SP0KW01.ZZZCHGCT = SP2REC.ZZZCHGCT; /* hold change counter*/
+    if (SP0KM020.XOTCD in XOTTBL.XOTCD)
+      SP0KM020.XOTDESC = XOTTBL.XOTDESC[sysVar.arrayIndex];
+    end /* description*/
+  else
+    if (SQLCA.VAGen_SQLCODE == +100)
+      converseLib.validationFailed(44); /* order type does not exist for s.p.*/
+      set SP0KM020.XOTCD cursor, bold;
+      SP0K370(); /* darken date area on map*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(45); /* database in use - try again later*/
+      else
+        set TA1REC empty;
+        set ERRSQLCA empty;
+        TA1REC.TA1TYPE = "DB2";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "SP0K";
+        TA1REC.TA1LOCAT[1] = "S ";
+        TA1REC.TA1LOCAT[2] = "SP0K350";
+        TA1REC.TA1LOCAT[3] = "IO0080 ";
+        TA1REC.TA1LOCAT[4] = " ";
+        TA1REC.TA1LOCAT[4] = "SP0KM020";
+        TA1REC.TA1DBASE = "DSPGM.";
+        TA1REC.TA1TBLVU = "VORTYP01";
+        TA1TBLKE = SP2REC.SP2KEY;
+        move SQLCA to ERRSQLCA withV60Compat;
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+        XSPF4();
+        SP0KM020.SP0KMMSG = COMMAREA.CAMSG;
+      end
+    end
+  end
+
+
+
+end // end SP0K350
+
+// clear map area
+Function SP0K360()
+
+
+
+    /* ***************************************************/
+    /* *  purpose:  clear map area of old data.......   **/
+    /* ***************************************************/
+
+  set SP1REC empty;
+  SP0KW01.SP1ID = SP0KM020.SP1ID; /* hold sp-id in w.s.*/
+  SP0KW01.XOTCD = SP0KM020.XOTCD; /* hold order type in w.s.*/
+  set SP0KM020 empty; /* ; clear map area*/
+  SP0KM020.SP1ID = SP0KW01.SP1ID; /* replace sp id*/
+  SP0KM020.XOTCD = SP0KW01.XOTCD; /* replace order type on map*/
+  SP0KW01.SP1ID = " ";
+  SP0KW01.XOTCD = " ";
+  SP0KM020.SP0KMTDT = VGVar.currentShortGregorianDate; /* today..*/
+
+    /* ***************************************************/
+    /* *  reset fields for new sales pgm.............   **/
+    /* ***************************************************/
+
+  set SP0KM020.SP2RPBDT initialAttributes;
+  set SP0KM020.SP2RPXDT initialAttributes;
+  set SP0KM020.SP2BKBDT initialAttributes;
+  set SP0KM020.SP2BKXDT initialAttributes;
+  set SP0KM020.SP2DLBDT initialAttributes;
+  set SP0KM020.SP2DLXDT initialAttributes;
+  set SP0KM020.SP2LEDTM initialAttributes;
+  set SP0KM020.SP2LCDT initialAttributes;
+
+
+
+end // end SP0K360
+
+// darken order type data
+Function SP0K370()
+
+
+
+    /* ***************************************************/
+    /* *  purpose:  darken order type data.......       **/
+    /* ***************************************************/
+
+  set SP0KM020.SP2RPBDT invisible;
+  set SP0KM020.SP2RPXDT invisible;
+  set SP0KM020.SP2BKBDT invisible;
+  set SP0KM020.SP2BKXDT invisible;
+  set SP0KM020.SP2DLBDT invisible;
+  set SP0KM020.SP2DLXDT invisible;
+  set SP0KM020.SP2LEDTM invisible;
+  set SP0KM020.SP2LCDT invisible;
+
+
+
+end // end SP0K370
+
+// s.p. order type dates  (map)
+Function SP0K400()
+
+  converse SP0KM020 ;
+
+end // end SP0K400
+
+// reset prev.errors & ck. pfkeys
+Function SP0K500()
+
+
+
+    /* ***************************************************/
+    /* *  purpose:  check fastpathing and reset any     **/
+    /* *            previous errors.                    **/
+    /* ***************************************************/
+
+  set SP0KM020.SP1ID cursor;
+
+  if (SP0KM020.CATOAP != " ")
+    COMMAREA.CATOAP = SP0KM020.CATOAP;
+    COMMAREA.CAITEM = SP0KM020.CAITEM;
+    XSEXIT();
+  end
+
+  if (converseVar.eventKey is pf3
+   || converseVar.eventKey is pf4
+   || converseVar.eventKey is pa2
+   || converseVar.eventKey is enter)
+      /* no random button pressing here*/
+  else
+    converseLib.validationFailed(1); /* invalid pa/pf key*/
+    exit stack;
+  end
+
+
+  if (converseVar.eventKey is pf3)
+    COMMAREA.CATOAP = "SP0M"; /* transfer to s.p. menu*/
+    COMMAREA.CAFROMAP = "SP0K";
+    XSEXIT();
+  end
+
+  if (converseVar.eventKey is pf4)
+    COMMAREA.CATOAP = "MN0M"; /* transfer to master menu*/
+    COMMAREA.CAFROMAP = "SP0K";
+    XSEXIT();
+  end
+
+  if (converseVar.eventKey is pa2)
+    SP0KW01.SP1ID = " "; /* force a key change -refreshes map*/
+    SP0KW01.XOTCD = " ";
+    exit stack;
+  end
+
+  set SP0KM020.SP1ID initialAttributes; /* sales program id*/
+  set SP0KM020.XOTCD initialAttributes; /* order type code*/
+  set SP0KM020.SP2RPBDT initialAttributes; /* rep booking start date*/
+  set SP0KM020.SP2RPXDT initialAttributes; /* rep booking end date*/
+  set SP0KM020.SP2BKBDT initialAttributes; /* order booking start date*/
+  set SP0KM020.SP2BKXDT initialAttributes; /* order booking ending date*/
+  set SP0KM020.SP2DLBDT initialAttributes; /* delivery start date*/
+  set SP0KM020.SP2DLXDT initialAttributes; /* delivery ending date*/
+  set SP0KM020.SP2LEDTM initialAttributes; /* leadtime*/
+  set SP0KM020.SP2LCDT initialAttributes; /* last cancel date*/
+
+
+
+
+end // end SP0K500
+
+// perform screen data edits
+Function SP0K600()
+
+
+
+    /* ***************************************************/
+    /* *  purpose:  edit all fields available for entry **/
+    /* ***************************************************/
+
+  if (SP0KM020.SP1ID != SP0KW01.SP1ID /* change in sales pgm...*/
+   || SP0KM020.XOTCD != SP0KW01.XOTCD) /* change in order type code.*/
+    exit stack;
+  end
+
+
+    /* ***************************************************/
+    /* *  did any field change content?  will stop      **/
+    /* *  redundant updates.....                        **/
+    /* ***************************************************/
+
+  SP0KW01.SP0KWUPF = "N";
+
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2RPBDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE '19' TO SP0KW01.SP0KWDC1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  if (SP0KW01.SP2RPBDT != SP0KW01.SP0KWDT1)
+    SP0KW01.SP0KWUPF = "Y";
+  end
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2RPXDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE '19' TO SP0KW01.SP0KWDC1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  if (SP0KW01.SP2RPXDT != SP0KW01.SP0KWDT1)
+    SP0KW01.SP0KWUPF = "Y";
+  end
+
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2BKBDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE '19' TO SP0KW01.SP0KWDC1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  if (SP0KW01.SP2BKBDT != SP0KW01.SP0KWDT1)
+    SP0KW01.SP0KWUPF = "Y";
+  end
+
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2BKXDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE '19' TO SP0KW01.SP0KWDC1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  if (SP0KW01.SP2BKXDT != SP0KW01.SP0KWDT1)
+    SP0KW01.SP0KWUPF = "Y";
+  end
+
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2DLBDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE '19' TO SP0KW01.SP0KWDC1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  if (SP0KW01.SP2DLBDT != SP0KW01.SP0KWDT1)
+    SP0KW01.SP0KWUPF = "Y";
+  end
+
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2DLXDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE '19' TO SP0KW01.SP0KWDC1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  if (SP0KW01.SP2DLXDT != SP0KW01.SP0KWDT1)
+    SP0KW01.SP0KWUPF = "Y";
+  end
+
+  if (SP0KW01.SP2LEDTM != SP0KM020.SP2LEDTM)
+    SP0KW01.SP0KWUPF = "Y";
+  end
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2LCDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE '19' TO SP0KW01.SP0KWDC1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  if (SP0KW01.SP2LCDT != SP0KW01.SP0KWDT1)
+    SP0KW01.SP0KWUPF = "Y";
+  end
+
+
+  if (SP0KW01.SP0KWUPF == "N")
+    return;
+  end
+
+
+    /* ***************************************************/
+    /* ** last cancel date lt first booking date. ********/
+    /* ***************************************************/
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2LCDT;
+  SP0KW01.SP0KWDT2 = SP0KM020.SP2BKBDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 19 TO SP0KW01.SP0KWDC1;*/
+   /* MOVE 19 TO SP0KW01.SP0KWDC2;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+  if (SP0KW01.SP0KWDY2 > 60)
+    SP0KW01.SP0KWDC2 = 19;
+  else
+    SP0KW01.SP0KWDC2 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+
+  if (SP0KW01.SP0KWDT1 < SP0KW01.SP0KWDT2)
+    set SP0KM020.SP2LCDT cursor, modified, bold;
+    set SP0KM020.SP2BKBDT modified, bold;
+    converseLib.validationFailed(37); /* cancellation date is prior to order*/
+                                   /* date*/
+  end
+
+
+    /* ***************************************************/
+    /* ** last cancel date gt last delivery date. ********/
+    /* ***************************************************/
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2LCDT;
+  SP0KW01.SP0KWDT2 = SP0KM020.SP2DLXDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 19 TO SP0KW01.SP0KWDC1;*/
+   /* MOVE 19 TO SP0KW01.SP0KWDC2;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+  if (SP0KW01.SP0KWDY2 > 60)
+    SP0KW01.SP0KWDC2 = 19;
+  else
+    SP0KW01.SP0KWDC2 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END   -------------------------*/
+
+  if (SP0KW01.SP0KWDT1 > SP0KW01.SP0KWDT2)
+    set SP0KM020.SP2LCDT cursor, modified, bold;
+    set SP0KM020.SP2DLXDT modified, bold;
+    converseLib.validationFailed(38); /* cancellation date exceeds delivery*/
+                                   /* date*/
+  end
+
+
+    /* ***************************************************/
+    /* ** first delivery date gt last delivery date ******/
+    /* ***************************************************/
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2DLBDT;
+  SP0KW01.SP0KWDT2 = SP0KM020.SP2DLXDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 19 TO SP0KW01.SP0KWDC1;*/
+   /* MOVE 19 TO SP0KW01.SP0KWDC2;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+  if (SP0KW01.SP0KWDY2 > 60)
+    SP0KW01.SP0KWDC2 = 19;
+  else
+    SP0KW01.SP0KWDC2 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END   -------------------------*/
+
+  if (SP0KW01.SP0KWDT1 > SP0KW01.SP0KWDT2)
+    set SP0KM020.SP2DLBDT cursor, modified, bold;
+    set SP0KM020.SP2DLXDT modified, bold;
+    converseLib.validationFailed(39); /* beginning date exceeds the ending*/
+                                   /* date*/
+  end
+
+
+    /* ***************************************************/
+    /* ** first booking gt last booking date.     ********/
+    /* ***************************************************/
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2BKBDT;
+  SP0KW01.SP0KWDT2 = SP0KM020.SP2BKXDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 19 TO SP0KW01.SP0KWDC1;*/
+   /* MOVE 19 TO SP0KW01.SP0KWDC2;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+  if (SP0KW01.SP0KWDY2 > 60)
+    SP0KW01.SP0KWDC2 = 19;
+  else
+    SP0KW01.SP0KWDC2 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END   -------------------------*/
+
+  if (SP0KW01.SP0KWDT1 > SP0KW01.SP0KWDT2)
+    set SP0KM020.SP2BKBDT cursor, modified, bold;
+    set SP0KM020.SP2BKXDT modified, bold;
+    converseLib.validationFailed(40); /* beginning date exceeds the ending*/
+                                   /* date*/
+  end
+
+
+    /* ***************************************************/
+    /* ** first rep booking date gt last rep booking  ****/
+    /* ***************************************************/
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2RPBDT;
+  SP0KW01.SP0KWDT2 = SP0KM020.SP2RPXDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 19 TO SP0KW01.SP0KWDC1;*/
+   /* MOVE 19 TO SP0KW01.SP0KWDC2;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+  if (SP0KW01.SP0KWDY2 > 60)
+    SP0KW01.SP0KWDC2 = 19;
+  else
+    SP0KW01.SP0KWDC2 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END   -------------------------*/
+
+  if (SP0KW01.SP0KWDT1 > SP0KW01.SP0KWDT2)
+    set SP0KM020.SP2RPBDT cursor, modified, bold;
+    set SP0KM020.SP2RPXDT modified, bold;
+    converseLib.validationFailed(40); /* beginning date exceeds the ending*/
+                                   /* date*/
+  end
+
+
+    /* ***************************************************/
+    /* ** first delivery date lt order deadline date  ****/
+    /* ***************************************************/
+
+  SP0KW01.SP0KWDT1 = SP0KM020.SP2DLBDT;
+  SP0KW01.SP0KWDT2 = SP0KM020.SP2BKBDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 19 TO SP0KW01.SP0KWDC1;*/
+   /* MOVE 19 TO SP0KW01.SP0KWDC2;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDY1 > 60)
+    SP0KW01.SP0KWDC1 = 19;
+  else
+    SP0KW01.SP0KWDC1 = 20;
+  end
+   /*  */
+  if (SP0KW01.SP0KWDY2 > 60)
+    SP0KW01.SP0KWDC2 = 19;
+  else
+    SP0KW01.SP0KWDC2 = 20;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END   -------------------------*/
+
+  if (SP0KW01.SP0KWDT1 < SP0KW01.SP0KWDT2)
+    set SP0KM020.SP2DLBDT cursor, modified, bold;
+    set SP0KM020.SP2BKBDT modified, bold;
+    converseLib.validationFailed(41); /* delivery date is before the order*/
+                                   /* deadline dt.*/
+  end
+
+
+
+
+end // end SP0K600
+
+// update database with sp2rec
+Function SP0K700()
+
+
+
+    /* ***************************************************/
+    /* *  purpose:  update order type record - sp2rec   **/
+    /* ***************************************************/
+
+  set SP2REC empty;
+  SP2REC.SP1ID = SP0KM020.SP1ID; /* sales pgm*/
+  SP2REC.XOTCD = SP0KM020.XOTCD; /* order type*/
+  call "IO0080" ("S ", SQLCA, SP2REC) {isNoRefresh = yes, isExternal = yes};
+
+
+  if (SQLCA.VAGen_SQLCODE != +0)
+    if (SQLCA.VAGen_SQLCODE == +100)
+      converseLib.validationFailed(49); /* order type has been deleted.......*/
+      set SP0KM020.XOTCD cursor, bold;
+      set SP0KM020.SP2RPBDT invisible; /* darken dates on map*/
+      set SP0KM020.SP2RPXDT invisible; /* darken dates on map*/
+      set SP0KM020.SP2BKBDT invisible; /* darken dates on map*/
+      set SP0KM020.SP2BKXDT invisible; /* darken dates on map*/
+      set SP0KM020.SP2DLBDT invisible; /* darken dates on map*/
+      set SP0KM020.SP2DLXDT invisible; /* darken dates on map*/
+      set SP0KM020.SP2LEDTM invisible; /* darken dates on map*/
+      set SP0KM020.SP2LCDT invisible; /* darken dates on map*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(45); /* database in use - try again later*/
+      else
+        set TA1REC empty;
+        set ERRSQLCA empty;
+        TA1REC.TA1TYPE = "DB2";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "SP0K";
+        TA1REC.TA1LOCAT[1] = "S ";
+        TA1REC.TA1LOCAT[2] = "SP0K700";
+        TA1REC.TA1LOCAT[3] = "IO0080 ";
+        TA1REC.TA1LOCAT[4] = " ";
+        TA1REC.TA1LOCAT[4] = "SP0KM020";
+        TA1REC.TA1DBASE = "DSPGM.";
+        TA1REC.TA1TBLVU = "VORTYP01";
+        TA1TBLKE = SP2REC.SP2KEY;
+        move SQLCA to ERRSQLCA withV60Compat;
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+        XSPF4();
+        SP0KM020.SP0KMMSG = COMMAREA.CAMSG;
+      end
+    end
+  end
+
+
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    if (SP2REC.ZZZCHGCT != SP0KW01.ZZZCHGCT)
+                                   /* someone slipped in-changed rec*/
+      converseLib.validationFailed(50);
+                                   /* order type updated since last display*/
+      move SP2REC to SP0KM020 withV60Compat; /* refresh map with new data*/
+      move SP2REC to SP0KW01 withV60Compat; /* use to verify any add. changes*/
+      return;
+    else
+      move SP0KM020 to SP2REC withV60Compat; /* move new map data to record*/
+      SP0K710(); /* load dates with century to sp2rec*/
+      /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+      /*  */
+      /* MOVE EZEDTE TO SP0KWD2;      /* date*/
+      /* MOVE '19' TO SP0KW01.SP0KWD1;/* centry*/
+      /*  */
+      /* ------------------------  Y2K OUT END  -------------------------*/
+      /* -----------------------  Y2K IN BEGIN  -------------------------*/
+      /*  */
+      SP0KWD = VGVar.currentGregorianDate; /* date*/
+      /*  */
+      /* ------------------------  Y2K IN END  --------------------------*/
+      SP2REC.ZZZCHGDT = SP0KW01.SP0KWD; /* change date*/
+      SP0KW01.SP0KWT1 = VGVar.currentFormattedTime;
+      SP0KW01.SP0KWTH2 = SP0KW01.SP0KWTH1;
+      SP0KW01.SP0KWTM2 = SP0KW01.SP0KWTM1;
+      SP2REC.ZZZCHGTM = SP0KW01.SP0KWT2; /* change time*/
+
+      call "IO0080" ("U ", SQLCA, SP2REC) {isNoRefresh = yes, isExternal = yes};
+
+      if (SQLCA.VAGen_SQLCODE == +0)
+        converseLib.validationFailed(51);
+        SP0KW01.ZZZCHGCT = SP0KW01.ZZZCHGCT + 1;
+      else
+        if (SQLCA.VAGen_SQLCODE == -911)
+          converseLib.validationFailed(45); /* database in use - try again later*/
+        else
+          set TA1REC empty;
+          set ERRSQLCA empty;
+          TA1REC.TA1TYPE = "DB2";
+          TA1REC.TA1FUNC = "RETN";
+          TA1REC.TA1PGMNM = "SP0K";
+          TA1REC.TA1LOCAT[1] = "S ";
+          TA1REC.TA1LOCAT[2] = "SP0K700";
+          TA1REC.TA1LOCAT[3] = "IO0080 ";
+          TA1REC.TA1LOCAT[4] = " ";
+          TA1REC.TA1LOCAT[4] = "SP0KM020";
+          TA1REC.TA1DBASE = "DSPGM.";
+          TA1REC.TA1TBLVU = "VORTYP01";
+          TA1TBLKE = SP2REC.SP2KEY;
+          move SQLCA to ERRSQLCA withV60Compat;
+          VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+          VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+          sysLib.rollback();
+          VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+          
+          call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+          XSPF4();
+          SP0KM020.SP0KMMSG = COMMAREA.CAMSG;
+        end
+      end
+    end
+  end
+
+
+
+
+end // end SP0K700
+
+// order type header add/change
+Function SP0K710()
+
+
+   /* ************************************************************/
+         /* used to change order type dates for a sales program.*/
+   /* ************************************************************/
+
+
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE EZEDTE TO SP0KW01.SP0KWD;*/
+   /* MOVE 019 TO SP0KW01.SP0KWD1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  SP0KW01.SP0KWD = VGVar.currentGregorianDate;
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  SP2REC.ZZZCHGDT = SP0KW01.SP0KWD;
+  SP0KW01.SP0KWD = SP2REC.SP2LCDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 019 TO SP0KW01.SP0KWD1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDYY > 60)
+    SP0KW01.SP0KWD1 = 019;
+  else
+    SP0KW01.SP0KWD1 = 020;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  SP2REC.SP2LCDT = SP0KW01.SP0KWD;
+  SP0KW01.SP0KWD = SP2REC.SP2RPBDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 019 TO SP0KW01.SP0KWD1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDYY > 60)
+    SP0KW01.SP0KWD1 = 019;
+  else
+    SP0KW01.SP0KWD1 = 020;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  SP2REC.SP2RPBDT = SP0KW01.SP0KWD;
+  SP0KW01.SP0KWD = SP2REC.SP2RPXDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 019 TO SP0KW01.SP0KWD1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDYY > 60)
+    SP0KW01.SP0KWD1 = 019;
+  else
+    SP0KW01.SP0KWD1 = 020;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  SP2REC.SP2RPXDT = SP0KW01.SP0KWD;
+  SP0KW01.SP0KWD = SP2REC.SP2BKBDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 019 TO SP0KW01.SP0KWD1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDYY > 60)
+    SP0KW01.SP0KWD1 = 019;
+  else
+    SP0KW01.SP0KWD1 = 020;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  SP2REC.SP2BKBDT = SP0KW01.SP0KWD;
+  SP0KW01.SP0KWD = SP2REC.SP2BKXDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 019 TO SP0KW01.SP0KWD1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDYY > 60)
+    SP0KW01.SP0KWD1 = 019;
+  else
+    SP0KW01.SP0KWD1 = 020;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  SP2REC.SP2BKXDT = SP0KW01.SP0KWD;
+  SP0KW01.SP0KWD = SP2REC.SP2DLBDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 019 TO SP0KW01.SP0KWD1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDYY > 60)
+    SP0KW01.SP0KWD1 = 019;
+  else
+    SP0KW01.SP0KWD1 = 020;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  SP2REC.SP2DLBDT = SP0KW01.SP0KWD;
+  SP0KW01.SP0KWD = SP2REC.SP2DLXDT;
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 019 TO SP0KW01.SP0KWD1;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+   /*  */
+  if (SP0KW01.SP0KWDYY > 60)
+    SP0KW01.SP0KWD1 = 019;
+  else
+    SP0KW01.SP0KWD1 = 020;
+  end
+   /*  */
+   /* ------------------------  Y2K IN END  --------------------------*/
+  SP2REC.SP2DLXDT = SP0KW01.SP0KWD;
+
+
+
+end // end SP0K710
+
+//*** RECORD=SP0KW01 ****
+// **
+// ***********************
+Record SP0KW01 type basicRecord
+  10 SP1ID SP1ID ; 
+  10 SP1STAT SP1STAT ; 
+  10 XOTCD XOTCD ; 
+  10 SP0KWITM SP0KWITM ; 
+    15 SP0KWSP SP0KWSP ; 
+    15 SP0KWOT SP0KWOT ; 
+    15 * char(12) ; 
+  10 SP2RPBDT SP2RPBDT ; 
+  10 SP2RPXDT SP2RPXDT ; 
+  10 SP2BKBDT SP2BKBDT ; 
+  10 SP2BKXDT SP2BKXDT ; 
+  10 SP2DLBDT SP2DLBDT ; 
+  10 SP2DLXDT SP2DLXDT ; 
+  10 SP2LEDTM SP2LEDTM ; 
+  10 SP2LCDT SP2LCDT ; 
+  10 ZZZCHGCT ZZZCHGCT ; 
+  10 * char(3) ; 
+  10 SP0KWUPF SP0KWUPF ; 
+  10 SP0KWOTF SP0KWOTF ; 
+  10 SP0KWSB1 SP0KWSB1 ; 
+  10 SP0KWSB2 SP0KWSB2 ; 
+  10 * char(3) ; 
+  10 SP0KWD SP0KWD ; 
+    20 SP0KWD1 SP0KWD1 ; 
+    20 SP0KWD2 SP0KWD2 ; 
+      25 SP0KWDYY SP0KWDYY ; 
+      25 SP0KWDMM SP0KWDMM ; 
+      25 SP0KWDDD SP0KWDDD ; 
+  10 SP0KWT1 SP0KWT1 ; 
+    20 SP0KWTH1 SP0KWTH1 ; 
+    20 SP0KWTC1 SP0KWTC1 ; 
+    20 SP0KWTM1 SP0KWTM1 ; 
+    20 SP0KWTC2 SP0KWTC2 ; 
+    20 SP0KWTS1 SP0KWTS1 ; 
+  10 SP0KWT2 SP0KWT2 ; 
+    20 SP0KWTH2 SP0KWTH2 ; 
+    20 SP0KWTM2 SP0KWTM2 ; 
+  10 * char(3) ; 
+  10 SP0KWDT1 SP0KWDT1 ; 
+    15 SP0KWDC1 SP0KWDC1 ; 
+    15 * num(6) ; 
+      20 SP0KWDY1 num(2) ; 
+      20 * num(4) ; 
+  10 SP0KWDT2 SP0KWDT2 ; 
+    15 SP0KWDC2 SP0KWDC2 ; 
+    15 * num(6) ; 
+      20 SP0KWDY2 num(4) ; 
+      20 * num(2) ; 
+end // end SP0KW01
+
+// ws date
+DataItem SP0KWD num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws date century
+DataItem SP0KWD1 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws date yymmdd
+DataItem SP0KWD2 num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// centry
+DataItem SP0KWDC1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// centry
+DataItem SP0KWDC2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws date yymmdd
+DataItem SP0KWDDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws date yymmdd
+DataItem SP0KWDMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// compare date 1
+DataItem SP0KWDT1 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// compare date 2
+DataItem SP0KWDT2 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws date yymmdd
+DataItem SP0KWDYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// incomming caitem field
+DataItem SP0KWITM char(18)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// incomming order type
+DataItem SP0KWOT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// order types exist flag
+DataItem SP0KWOTF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// w.s. subscript 1
+DataItem SP0KWSB1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// w.s. subscript2
+DataItem SP0KWSB2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// incomming sales program
+DataItem SP0KWSP char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ws time #1
+DataItem SP0KWT1 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ws time #2
+DataItem SP0KWT2 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws time colon 1
+DataItem SP0KWTC1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ws time colon 2
+DataItem SP0KWTC2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ws time hour #1
+DataItem SP0KWTH1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws time hour #2
+DataItem SP0KWTH2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws time minute #1
+DataItem SP0KWTM1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws time minute #2
+DataItem SP0KWTM2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws time second #1
+DataItem SP0KWTS1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// data modified flag
+DataItem SP0KWUPF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

@@ -1,0 +1,1205 @@
+package om0n;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import dg.common.*;
+import ku.common.*;
+import ob.common.*;
+import om.common.*;
+import op.common.*;
+import pc.common.*;
+import pw.common.*;
+import sm.common.*;
+import sp.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import vv.common.*;
+//*** PROGRAM=OM0N ****
+// ************************************************************
+// *
+// *   This application re-figures what the order status should
+// *   be after product statuses have been changed either by
+// *   maintenance or by cancellation.
+// *   Total order units and value are re-computed.
+// *
+// *   The basic logic is to:
+// *      1. read thru all of the products setting a flag in
+// *         an array for each product-status found.
+// *      2. test the array to determine which order-status
+// *         to assign.
+// *
+// *      so, in the following example, the array has flags
+// *      set in buckets 1 and 9 (open and cancelled)...
+// *
+// *        | op | pr | rs | pa | al | pk | ps | sh | xl  |
+// *        |----|----|----|----|----|----|----|----|-----|
+// *        | 1  | 0  | 0  | 0  | 0  | 0  | 0  | 0  | 1   |
+// *        |----|----|----|----|----|----|----|----|-----|
+// *        |<-----active status array-------->|completed |
+// *                     (om0nwasa)            | status   |
+// *                                           |  array   |
+// *                                           |(om0nwcsa)|
+// *        |<------product status array (om0nwpsa)------>|
+// *
+// *     which yields an order status of open.
+// *
+// *     Note that the buckets are not counters, but flags...
+// *     a flag in any bucket means at least one product on
+// *     the order was in that status.
+// *
+// *     Note that the array of nine buckets
+// *     (om0nwrec.om0nwpsa) is broken down into two groups...
+// *     1. the first seven buckets (om0nwrec.om0nwasa)
+// *        constitute active product statuses (hence 'asa').
+// *     2. the last two buckets (om0nwrec.om0nwcsa)
+// *        constitute completed statues (hence 'csa').
+// *
+// ************************************************************
+// ************************************************************
+// * special considerations ***
+// *     Note that some checks must be done before other
+// *     checks (ex. the test for partial-allocated must be
+// *     before the test for partial-reserved).
+// *
+// ************************************************************
+// ************************************************************
+// *    data base views    dorder.voptag01 order tag table
+// *                       dorder.vitem001 item table
+// *                       dorder.vorhdr01 order header table
+// ************************************************************
+// ************************************************************
+// *    sub-programs called    ta0020
+// *                           ta0040
+// ************************************************************
+// ************************************************************
+// *    called paramaters      omwrec
+// ************************************************************
+//    maint log
+// 
+//   03/17/87  jvande  changed s30 to show key and which status
+//                     had problems when blow downs occur.
+// 
+//   04/02/87  craine  correct om0ns26 (partial status check)
+// 
+//   12/07/87  tfox    updated documentation
+//   03/31/89  skott   added noncsp to database calls
+//   10/04/90  dviert  removed op9rec from records list -
+//                     tag logic  no longer necessary.
+//   02/12/91  tfox    regen for db chgs
+//   08/23/93  bbake2  csp4.1 conversion.  replaced XFER's to
+//                     main menu with valuing of return code
+//                     in new passed w/s record OMEREC.
+//                     000,s35,s40,s45,s15,s30.s50,s55
+//   02/28/94  scantr  db changes: resize om0mw02
+//   10/28/97  mburle  Y2KFIX: regenerated for new version
+//                     of xx0xs01.
+//   08/27/98  udafon  #178 Increased size of OMWREC to 3505
+//                     bytes. Re-compiled application.
+//   10/02/98  svargh  made changes to om0ns55 to update bulk
+//                     quantities in the vbulks02 table when
+//                     the header table is updated.
+// *********************
+Program OM0N type basicProgram //VAGen Info - called batch program
+  (
+   OMWREC OMWREC, // record
+   OMEREC OMEREC // record
+  )
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA { initialized = yes }; // record
+  ERRSQLCA ERRSQLCA; // record
+  OBFREC OBFREC; // record
+  OM0NWREC OM0NWREC; // record
+  OMAREC OMAREC; // record
+  OP1REC OP1REC; // record
+  OP2REC OP2REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  VBULKS02 VBULKS02; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XOSTBL {deleteAfterUse = yes}; // table
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OM0N000: OM0N000();
+
+
+
+    exit program; /* no flow processing...return to calling appl.*/
+
+
+
+  end // end main
+end // end OM0N
+
+// update order header status
+Function OM0N000()
+
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+  OP1REC.OP1GROUP = OMWREC.OP1GROUP;
+  OME-RETURN-CD = "00";
+
+  TA1REC.TA1PGMNM = "OM0N";
+  TA1REC.TA1DBASE = "DORDER";
+  TA1REC.TA1LOCAT[1] = "OM0N000";
+  TA1REC.TA1MAP = " ";
+
+  OM0NWREC.OP1OVALU = 0; /* init. ws order total value*/
+  OM0NWREC.OP1OTUNT = 0; /* init. ws order total units*/
+
+  OM0NWREC.OM0NWPSA = "000000000000000"; /* init. prod. status array*/
+
+
+  OM0NS10(); /* accumulate product info*/
+
+
+  OM0NS15(); /* determine new order status*/
+
+
+  OM0NS30();
+                                   /* validate ord/prd status relationships*/
+
+
+  OM0NS20(); /* update order header*/
+
+
+  OMWREC.OP1GROUP = OP1REC.OP1GROUP;
+  OMWREC.OMWCHTAG = "N"; /* set switch to write record*/
+
+  if (OMWREC.OMWCHTAG == "Y")
+    exit stack;
+  end
+
+
+      /* get current date and time*/
+
+  set TA2REC empty;
+  TA2REC.TA2DTOPT = "GETDATE";
+
+  call "TA0040" (TA2REC) {isNoRefresh = yes}; /* get current date and time*/
+
+  if (TA2REC.TA2RTNCD != 0) /* if error, then abort*/
+    TA1REC.TA1DBASE = " ";
+    TA1REC.TA1TBLVU = " ";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOCAT[3] = "OM0N000";
+    TA1REC.TA1LOCAT[4] = "TA0040";
+    TA1REC.TA1LOCAT[1] = "GETDATE";
+    set SQLCA empty;
+
+    TA1REC.TA1TYPE = "DB2"; /* abend type*/
+    TA1REC.TA1FUNC = "RETN"; /* abend func*/
+    set ERRSQLCA empty; /* clear area*/
+    move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    try
+      call "TA0020" (TA1REC, ERRSQLCA);
+    end /* abend module*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+   /* **************** end of statement group *********************/
+
+end // end OM0N000
+
+// CHECK FOR ORDER TO UPDATE BULK
+Function OM0NS-CHECK-UPDATE()
+   /* tcs include begin*/
+  set VBULKS02 empty;
+  set OBFREC empty;
+  set SQLCA empty;
+  VBULKS02.OP1PARTN = OP1REC.OP1PARTN;
+  VBULKS02.OP1CUOID = OP1REC.OP1CUOID;
+  VBULKS02.OP1NORID = OP1REC.OP1NORID;
+
+  OBFREC.OBFTASK = "S ";
+  call "VBULKS02" (OBFREC, SQLCA, VBULKS02) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OM0NS-UPDTE-VBULK(); /* if there are records update*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+
+    else
+      TA1REC.TA1DBASE = "DORDB   "; /* data base name*/
+      TA1REC.TA1TBLVU = "VBULKS02"; /* table view*/
+      TA1REC.TA1LOCAT[2] = "OM0NS-CHECK-UPDATE"; /* stmt. group*/
+      TA1REC.TA1LOCAT[3] = "VBULKS02";
+      TA1REC.TA1LOCAT[4] = "U ";
+      TA1REC.TA1TBLKE = OP1REC.OP1KEY;
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+    /* tcs include end*/
+  end
+end // end OM0NS-CHECK-UPDATE
+
+// UPDATE VBULKS02
+Function OM0NS-UPDTE-VBULK()
+   /* tcs include begin*/
+   /* to update vbulk*/
+  set OBFREC empty;
+  set SQLCA empty;
+  VBULKS02.KUMSTRID = OP1REC.KUMSTRID;
+  VBULKS02.XNXCD = OP1REC.XNXCD;
+  VBULKS02.XBDCD = OP1REC.XBDCD;
+  VBULKS02.OP1CUPO = OP1REC.OP1CUPO;
+  VBULKS02.XDVCD = OP1REC.XDVCD;
+  VBULKS02.XSOCD = OP1REC.XSOCD;
+  VBULKS02.XWHCD = OP1REC.XWHCD;
+  VBULKS02.OP1CUNDT = OP1REC.OP1CUNDT;
+  VBULKS02.OP1DSADT = OP1REC.OP1DSADT;
+  VBULKS02.SP1ID = OP1REC.SP1ID;
+  VBULKS02.SM4REPID = OP1REC.SM4REPID;
+  OBFREC.OBFTASK = "U ";
+  call "VBULKS02" (OBFREC, SQLCA, VBULKS02) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+
+  else
+    TA1REC.TA1LOCAT[1] = "U ";
+    TA1REC.TA1LOCAT[2] = "VBULKS02";
+    TA1REC.TA1LOCAT[3] = "OMONS-UPDTE-VBULK";
+    TA1REC.TA1DBASE = "DORDB  "; /* data base name*/
+    TA1REC.TA1TBLVU = "VBULKS02"; /* data base view*/
+    TA1REC.TA1TBLKE = OP1REC.OP1KEY;
+    TA1REC.TA1TYPE = "DB2"; /* abend type*/
+    TA1REC.TA1FUNC = "RETN"; /* abend func*/
+    set ERRSQLCA empty; /* clear area*/
+    move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* abend module*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+   /* tcs include END*/
+end // end OM0NS-UPDTE-VBULK
+
+// accumulate product info
+Function OM0NS10()
+
+
+  OM0NS35(); /* select set of line items*/
+
+
+  OM0NS40(); /* get first line-item*/
+
+  OM0NWREC.OM0NWEOF = "N";
+  while (OM0NWREC.OM0NWEOF == "N")
+
+    if (OP2REC.OP2LNIST == "OP") /* if item is open*/
+      OM0NWREC.OM0NWASF[1] = "1";
+    else
+      if (OP2REC.OP2LNIST == "PR") /* if item is part reserved*/
+        OM0NWREC.OM0NWASF[2] = "1";
+      else
+        if (OP2REC.OP2LNIST == "RS") /* if item is reserved*/
+          OM0NWREC.OM0NWASF[3] = "1";
+        else
+          if (OP2REC.OP2LNIST == "PA") /* if item is part alloc*/
+            OM0NWREC.OM0NWASF[4] = "1";
+          else
+            if (OP2REC.OP2LNIST == "AL") /* if item is alloc*/
+              OM0NWREC.OM0NWASF[5] = "1";
+            else
+              if (OP2REC.OP2LNIST == "PK") /* if item is alloc*/
+                OM0NWREC.OM0NWASF[6] = "1";
+              else
+                if (OP2REC.OP2LNIST == "PS") /* if item is part shipped*/
+                  OM0NWREC.OM0NWASF[7] = "1";
+                else
+                  if (OP2REC.OP2LNIST == "SH") /* if item is shipped*/
+                    OM0NWREC.OM0NWCSF[1] = "1";
+                  else
+                    if (OP2REC.OP2LNIST == "XL") /* if item is cancelled*/
+                      OM0NWREC.OM0NWCSF[2] = "1";
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    OM0NWREC.OP1OVALU = OM0NWREC.OP1OVALU + OP2REC.OP2LNIVL;
+    OM0NWREC.OM0NWQTY = 0;
+    OM0NWREC.OM0NWQTY = OP2REC.OP2TONOQ + OP2REC.OP2TSHPQ;
+    OM0NWREC.OP1OTUNT = OM0NWREC.OP1OTUNT + OM0NWREC.OM0NWQTY;
+
+    OM0NS40(); /* get next line item*/
+
+  end
+
+
+
+end // end OM0NS10
+
+// determine new order status
+Function OM0NS15()
+   /* *********************************************************/
+   /* *   At this point we have read thru all of the product*/
+   /* *   records and set the flag(s) in the product-status-*/
+   /* *   array to correspond with the product statuses*/
+   /* *   we found.*/
+   /* *   Now we go thru the logic to determine what order*/
+   /* *   status corresponds to the product statuses.*/
+   /* *   The order-status-code (xoscd) is used as a flag to*/
+   /* *   tell us when we're done...if we've found an order*/
+   /* *   status then we're thru with this group.*/
+   /* *   Note that, if we get to the end of this statement*/
+   /* *   group and still have not found an order status,*/
+   /* *   then something is grossly wrong so we abort*/
+   /* *********************************************************/
+
+
+
+  OM0NWREC.XOSCD = " ";
+
+   /* OM0NS29                         ; check if in-picking*/
+
+   /* IF OM0NWREC.XOSCD NE ' ';*/
+    /* EZERTN;*/
+   /* END ;*/
+
+
+  OM0NS24(); /* check if partially allocated*/
+
+  if (OM0NWREC.XOSCD != " ")
+    return;
+  end
+
+
+  OM0NS22(); /* check if partially reserved*/
+
+  if (OM0NWREC.XOSCD != " ")
+    return;
+  end
+
+
+  OM0NS26(); /* check if partially shipped*/
+
+  if (OM0NWREC.XOSCD != " ")
+    return;
+  end
+
+
+  OM0NS21(); /* check if open*/
+
+  if (OM0NWREC.XOSCD != " ")
+    return;
+  end
+
+
+  OM0NS25(); /* check if allocated*/
+
+  if (OM0NWREC.XOSCD != " ")
+    return;
+  end
+
+
+  OM0NS23(); /* check if reserved*/
+
+  if (OM0NWREC.XOSCD != " ")
+    return;
+  end
+
+
+  OM0NS27(); /* check if shipped*/
+
+  if (OM0NWREC.XOSCD != " ")
+    return;
+  end
+
+
+  OM0NS28(); /* check if cancelled*/
+
+  if (OM0NWREC.XOSCD == " ")
+    TA1REC.TA1TBLKE = OP1REC.OP1KEY;
+    TA1REC.TA1LOCAT[4] = "OM0NS15";
+
+    TA1REC.TA1TYPE = "DB2"; /* abend type*/
+    TA1REC.TA1FUNC = "RETN"; /* abend func*/
+    set ERRSQLCA empty; /* clear area*/
+    move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    try
+      call "TA0020" (TA1REC, ERRSQLCA);
+    end /* abend module*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+    /* *************************************************************/
+  end
+end // end OM0NS15
+
+// update status of order header
+Function OM0NS20()
+
+
+
+  OM0NS50(); /* select unique order header record*/
+
+
+  OP1REC.OP1OVALU = OM0NWREC.OP1OVALU; /* total order value*/
+  OP1REC.OP1OTUNT = OM0NWREC.OP1OTUNT; /* total number of units*/
+
+  XX0XS01(); /* get current date and time*/
+  OP1REC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  OP1REC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+
+
+  if (OM0NWREC.XOSCD == OP1REC.XOSCD)
+    /* next sentence*/
+  else
+    OP1REC.XOSCD = OM0NWREC.XOSCD;
+    OP1REC.OP1OSADT = XX0XWDAT;
+  end
+
+
+  if (OM0NWREC.XOSCD == "XL") /* only upd order-maint-code if cancel*/
+    OP1REC.XOMCD = OMWREC.XOMCD;
+    OP1REC.OP1OMDT = XX0XWDAT;
+    OP1REC.OP1MTREP = OMWREC.OP1MTREP;
+  end
+
+
+
+  OM0NS55(); /* rewrite order header record*/
+
+
+
+end // end OM0NS20
+
+// check if ord stat is open
+Function OM0NS21()
+
+  if (OM0NWREC.OM0NWPSA == "100000000" /* all products are open*/
+   || OM0NWREC.OM0NWPSA == "100000001") /* prods are open or cancelled*/
+    OM0NWREC.XOSCD = "OP";
+  end
+end // end OM0NS21
+
+// check of ord stat is part rsvd
+Function OM0NS22()
+
+  if (OM0NWREC.OM0NWASF[2] == "1") /* if any prod is part rsvd*/
+    OM0NWREC.XOSCD = "PR"; /* order is part rsvd*/
+  else
+    if (OM0NWREC.OM0NWASF[3] == "1" /* if any prod is reserved*/
+     && OM0NWREC.OM0NWASA != "0010000") /* other prods are still active*/
+      OM0NWREC.XOSCD = "PR"; /* order is part rsvd*/
+    end
+  end
+end // end OM0NS22
+
+// check if ord stat is reserved
+Function OM0NS23()
+
+  if (OM0NWREC.OM0NWASA == "0010000") /* if all active prods are reserved*/
+    OM0NWREC.XOSCD = "RS"; /* order is reserved*/
+  end
+
+
+end // end OM0NS23
+
+// check if ord stat is part allc
+Function OM0NS24()
+
+  if (OM0NWREC.OM0NWASF[4] == "1") /* if any product is part allocated*/
+    OM0NWREC.XOSCD = "PA";
+  else
+    if (OM0NWREC.OM0NWASF[5] == "1" /* if any product is allocated*/
+     && OM0NWREC.OM0NWASA != "0000100") /* and any other prd stat is active*/
+      OM0NWREC.XOSCD = "PA";
+    end
+  end
+end // end OM0NS24
+
+// check if ord stat is allocated
+Function OM0NS25()
+
+
+  if (OM0NWREC.OM0NWASA == "0000100") /* if all active prds are allocated*/
+    OM0NWREC.XOSCD = "AL";
+  end
+end // end OM0NS25
+
+// check if ord stat is part shpd
+Function OM0NS26()
+
+
+  if (OM0NWREC.OM0NWASF[7] == "1") /* if any prod is part shipped*/
+    OM0NWREC.XOSCD = "PS";
+  else
+    if (OM0NWREC.OM0NWCSF[1] == "1" /* if any prod is shipped*/
+     && OM0NWREC.OM0NWASA == "1000000") /* and any prd is still active*/
+      OM0NWREC.XOSCD = "PS";
+    end
+  end
+
+
+end // end OM0NS26
+
+// check if ord stat is shipped
+Function OM0NS27()
+
+
+  if (OM0NWREC.OM0NWCSF[1] == "1" /* if any product is shipped*/
+   && OM0NWREC.OM0NWASA == "0000000") /* and no other prods are active*/
+    OM0NWREC.XOSCD = "SH";
+  end
+
+
+end // end OM0NS27
+
+// check if ord stat is cancelled
+Function OM0NS28()
+
+
+  if (OM0NWREC.OM0NWPSA == "000000001") /* all products are cancelled*/
+    OM0NWREC.XOSCD = "XL";
+  end
+
+
+end // end OM0NS28
+
+// validate order/prd stat relatn
+Function OM0NS30()
+   /* ************************************************************/
+   /* *   OK, now we have an order status that we determined*/
+   /* *   based on the current product statuses.*/
+   /* *   We now go thru a verification process to make sure*/
+   /* *   that all products in this order are in valid statuses*/
+   /* *   for this (new) order status.*/
+   /* *   Note that om0nwrec.xoscd is the new order status that*/
+   /* *   we have established.  We read the  xostbl to get the*/
+   /* *   set of valid product statuses associated with this*/
+   /* *   order status.*/
+   /* ************************************************************/
+
+
+
+  if (OM0NWREC.XOSCD in XOSTBL.XOSCD) /* this better be a valid code*/
+    OM0NWREC.XOSVPRST = XOSTBL.XOSVPRST[sysVar.arrayIndex];
+  else
+    TA1REC.TA1LOCAT[2] = "OM0NS30"; /* or else something's*/
+    TA1REC.TA1LOCAT[3] = OM0NWREC.XOSCD; /* terribly wrong*/
+    TA1REC.TA1DBASE = "XOSTBL";
+    TA1REC.TA1TBLVU = "XOSCD";
+    TA1REC.TA1TBLKE = OP1REC.OP1KEY;
+
+    TA1REC.TA1TYPE = "DB2"; /* abend type*/
+    TA1REC.TA1FUNC = "RETN"; /* abend func*/
+    set ERRSQLCA empty; /* clear area*/
+    move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* abend module*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+
+  if (OM0NWREC.OM0NWASF[1] == "1") /* if there are open prds*/
+    if (OM0NWREC.OM0NWVPS[1] == "1") /* and open's valid for this ord stat*/
+      /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[4] = "OM0NS30";
+      OM0NWREC.OM0NWPAR = OP1REC.OP1PARTN;
+      OM0NWREC.OM0NWCOI = OP1REC.OP1CUOID;
+      OM0NWREC.OM0NWNOI = OP1REC.OP1NORID;
+      TA1REC.TA1TBLKE = OM0NWREC.OM0NWDOR;
+      TA1REC.TA1LOCAT[2] = "OP";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+
+  if (OM0NWREC.OM0NWASF[2] == "1") /* if there are part rsvd prds*/
+    if (OM0NWREC.OM0NWVPS[2] == "1") /* and part rsvd is valid*/
+      /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[4] = "OM0NS30";
+      OM0NWREC.OM0NWPAR = OP1REC.OP1PARTN;
+      OM0NWREC.OM0NWCOI = OP1REC.OP1CUOID;
+      OM0NWREC.OM0NWNOI = OP1REC.OP1NORID;
+      TA1REC.TA1TBLKE = OM0NWREC.OM0NWDOR;
+      TA1REC.TA1LOCAT[2] = "PR";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+
+  if (OM0NWREC.OM0NWASF[3] == "1") /* if there are reserved prds*/
+    if (OM0NWREC.OM0NWVPS[3] == "1") /* and reserved is valid*/
+      /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[4] = "OM0NS30";
+      OM0NWREC.OM0NWPAR = OP1REC.OP1PARTN;
+      OM0NWREC.OM0NWCOI = OP1REC.OP1CUOID;
+      OM0NWREC.OM0NWNOI = OP1REC.OP1NORID;
+      TA1REC.TA1TBLKE = OM0NWREC.OM0NWDOR;
+      TA1REC.TA1LOCAT[2] = "RS";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+
+
+  if (OM0NWREC.OM0NWASF[4] == "1") /* if there are part alloc prds*/
+    if (OM0NWREC.OM0NWVPS[4] == "1") /* and part alloc is valid*/
+      /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[4] = "OM0NS30";
+      OM0NWREC.OM0NWPAR = OP1REC.OP1PARTN;
+      OM0NWREC.OM0NWCOI = OP1REC.OP1CUOID;
+      OM0NWREC.OM0NWNOI = OP1REC.OP1NORID;
+      TA1REC.TA1TBLKE = OM0NWREC.OM0NWDOR;
+      TA1REC.TA1LOCAT[2] = "PA";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+
+
+  if (OM0NWREC.OM0NWASF[5] == "1") /* if there are alloc prds*/
+    if (OM0NWREC.OM0NWVPS[5] == "1") /* and alloc is valid*/
+      /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[4] = "OM0NS30";
+      OM0NWREC.OM0NWPAR = OP1REC.OP1PARTN;
+      OM0NWREC.OM0NWCOI = OP1REC.OP1CUOID;
+      OM0NWREC.OM0NWNOI = OP1REC.OP1NORID;
+      TA1REC.TA1TBLKE = OM0NWREC.OM0NWDOR;
+      TA1REC.TA1LOCAT[2] = "AL";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+
+
+  if (OM0NWREC.OM0NWASF[6] == "1") /* if there are to-pick prds*/
+    if (OM0NWREC.OM0NWVPS[6] == "1") /* and to-pick is valid*/
+      /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[4] = "OM0NS30";
+      OM0NWREC.OM0NWPAR = OP1REC.OP1PARTN;
+      OM0NWREC.OM0NWCOI = OP1REC.OP1CUOID;
+      OM0NWREC.OM0NWNOI = OP1REC.OP1NORID;
+      TA1REC.TA1TBLKE = OM0NWREC.OM0NWDOR;
+      TA1REC.TA1LOCAT[2] = "PK";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+
+
+  if (OM0NWREC.OM0NWASF[7] == "1") /* if there are part shipped prds*/
+    if (OM0NWREC.OM0NWVPS[7] == "1") /* and part shipped is valid*/
+      /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[4] = "OM0NS30";
+      OM0NWREC.OM0NWPAR = OP1REC.OP1PARTN;
+      OM0NWREC.OM0NWCOI = OP1REC.OP1CUOID;
+      OM0NWREC.OM0NWNOI = OP1REC.OP1NORID;
+      TA1REC.TA1TBLKE = OM0NWREC.OM0NWDOR;
+      TA1REC.TA1LOCAT[2] = "PS";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+
+
+  if (OM0NWREC.OM0NWCSF[1] == "1") /* if there are shipped prds*/
+    if (OM0NWREC.OM0NWVPS[8] == "1") /* and shipped is valid*/
+      /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[4] = "OM0NS30";
+      OM0NWREC.OM0NWPAR = OP1REC.OP1PARTN;
+      OM0NWREC.OM0NWCOI = OP1REC.OP1CUOID;
+      OM0NWREC.OM0NWNOI = OP1REC.OP1NORID;
+      TA1REC.TA1TBLKE = OM0NWREC.OM0NWDOR;
+      TA1REC.TA1LOCAT[2] = "SH";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+
+
+  if (OM0NWREC.OM0NWCSF[2] == "1") /* if there are cancelled prds*/
+    if (OM0NWREC.OM0NWVPS[9] == "1") /* and cancelled is valid*/
+      /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[4] = "OM0NS30";
+      OM0NWREC.OM0NWPAR = OP1REC.OP1PARTN;
+      OM0NWREC.OM0NWCOI = OP1REC.OP1CUOID;
+      OM0NWREC.OM0NWNOI = OP1REC.OP1NORID;
+      TA1REC.TA1TBLKE = OM0NWREC.OM0NWDOR;
+      TA1REC.TA1LOCAT[2] = "XL";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+end // end OM0NS30
+
+// select set of line items
+Function OM0NS35()
+
+
+  OP2REC.OP1PARTN = OP1REC.OP1PARTN;
+  OP2REC.OP1CUOID = OP1REC.OP1CUOID;
+  OP2REC.OP1NORID = OP1REC.OP1NORID;
+  OP2REC.OP2LNINB = 0;
+
+
+  call "IO0440" ("SS", SQLCA, OP2REC) {isNoRefresh = yes, isExternal = yes}; /* select all line-items*/
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1TBLVU = "VITEM001";
+    TA1REC.TA1TBLKE = OP2REC.OP2KEY;
+    TA1REC.TA1LOCAT[2] = "OM0NS10";
+    TA1REC.TA1LOCAT[3] = "OM0NS35";
+    TA1REC.TA1LOCAT[4] = "IO0440";
+
+    TA1REC.TA1TYPE = "DB2"; /* abend type*/
+    TA1REC.TA1FUNC = "RETN"; /* abend func*/
+    set ERRSQLCA empty; /* clear area*/
+    move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* abend module*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+
+
+end // end OM0NS35
+
+// get next line item
+Function OM0NS40()
+
+
+  call "IO0440" ("SN", SQLCA, OP2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* if no more line-items*/
+      OM0NWREC.OM0NWEOF = "Y"; /* set end-of-file to yes*/
+      OM0NS45(); /* close cursor*/
+    else
+      TA1REC.TA1DBASE = "DORDER";
+      TA1REC.TA1TBLVU = "VITEM001";
+      TA1REC.TA1TBLKE = OP2REC.OP2KEY;
+      TA1REC.TA1LOCAT[2] = "OM0NS40";
+      TA1REC.TA1LOCAT[4] = "IO0440";
+
+      TA1REC.TA1TYPE = "DB2"; /* abend type*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      set ERRSQLCA empty; /* clear area*/
+      move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* abend module*/
+      OMEREC.OME-RETURN-CD = "01";
+      exit program;
+    end
+  end
+end // end OM0NS40
+
+// close item cursor
+Function OM0NS45()
+
+
+  call "IO0440" ("CS", SQLCA, OP2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DORDER";
+    TA1REC.TA1TBLVU = "VITEM001";
+    TA1REC.TA1TBLKE = OP2REC.OP2KEY;
+    TA1REC.TA1LOCAT[2] = "OM0NS40";
+    TA1REC.TA1LOCAT[3] = "OM0NS45";
+    TA1REC.TA1LOCAT[4] = "IO0440";
+
+    TA1REC.TA1TYPE = "DB2"; /* abend type*/
+    TA1REC.TA1FUNC = "RETN"; /* abend func*/
+    set ERRSQLCA empty; /* clear area*/
+    move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* abend module*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+end // end OM0NS45
+
+// select unique order header rec
+Function OM0NS50()
+
+
+  call "IO0430" ("S ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* read order header*/
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OMWREC.OP1GROUP = OP1REC.OP1GROUP;
+  else
+    TA1REC.TA1DBASE = "DORDER";
+    TA1REC.TA1TBLVU = "VORHDR01";
+    TA1REC.TA1TBLKE = OP1REC.OP1KEY;
+    TA1REC.TA1LOCAT[2] = "OM0NS20";
+    TA1REC.TA1LOCAT[3] = "OM0NS50";
+    TA1REC.TA1LOCAT[4] = "IO0430";
+
+    TA1REC.TA1TYPE = "DB2"; /* abend type*/
+    TA1REC.TA1FUNC = "RETN"; /* abend func*/
+    set ERRSQLCA empty; /* clear area*/
+    move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* abend module*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+
+end // end OM0NS50
+
+// rewrite order header rec
+Function OM0NS55()
+
+
+  call "IO0430" ("U ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* update order header*/
+
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* Tcs include begin 08/25/98*/
+    OM0NS-CHECK-UPDATE(); /* for updating corresp vbulk recs*/
+     /* Tcs include end   08/25/98*/
+
+  else
+    TA1REC.TA1DBASE = "DORDER";
+    TA1REC.TA1TBLVU = "VORHDR01";
+    TA1REC.TA1TBLKE = OP1REC.OP1KEY;
+    TA1REC.TA1LOCAT[2] = "OM0NS20";
+    TA1REC.TA1LOCAT[3] = "OM0NS55";
+    TA1REC.TA1LOCAT[4] = "IO0430";
+
+    TA1REC.TA1TYPE = "DB2"; /* abend type*/
+    TA1REC.TA1FUNC = "RETN"; /* abend func*/
+    set ERRSQLCA empty; /* clear area*/
+    move SQLCA to ERRSQLCA withV60Compat; /* save orig sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* synpoint rollback*/
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* abend module*/
+    OMEREC.OME-RETURN-CD = "01";
+    exit program;
+  end
+
+end // end OM0NS55
+
+Record OM0NWREC type basicRecord
+  5 OM0NWGRP OM0NWGRP ; 
+    10 OM0NWDOR OM0NWDOR ; 
+      15 OM0NWPAR OM0NWPAR ; 
+      15 OM0NWCOI OM0NWCOI ; 
+      15 OM0NWNOI OM0NWNOI ; 
+    10 OM0NWEOF OM0NWEOF ; 
+    10 OP1OVALU OP1OVALU ; 
+    10 OP1OTUNT OP1OTUNT ; 
+    10 OM0NWQTY OM0NWQTY ; 
+    10 XOSCD XOSCD ; 
+    10 XOSVPRST XOSVPRST ; 
+      15 OM0NWVPS OM0NWVPS [9] ; 
+    10 OM0NWPSA OM0NWPSA ; 
+      15 OM0NWASA OM0NWASA ; 
+        20 OM0NWASF OM0NWASF [7] ; 
+      15 OM0NWCSA OM0NWCSA ; 
+        20 OM0NWCSF OM0NWCSF [2] ; 
+end // end OM0NWREC
+
+// active status flag array
+DataItem OM0NWASA char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// active status flag
+DataItem OM0NWASF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// customer ord id
+DataItem OM0NWCOI num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// completed status flag array
+DataItem OM0NWCSA char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// completed status flag
+DataItem OM0NWCSF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// display order number
+DataItem OM0NWDOR char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end of file flag
+DataItem OM0NWEOF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// om0nwrec group level
+DataItem OM0NWGRP char(47)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OM0NWNOI num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// part character
+DataItem OM0NWPAR num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws product status flag array
+DataItem OM0NWPSA char(9)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ws number of units
+DataItem OM0NWQTY int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// valid product status flag
+DataItem OM0NWVPS char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

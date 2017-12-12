@@ -1,0 +1,4203 @@
+package gn0a;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import dg.common.*;
+import ep.common.*;
+import in1.common.*;
+import ku.common.*;
+import ni.common.*;
+import om.common.*;
+import op.common.*;
+import pk.common.*;
+import pw.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+//*** PROGRAM=GN0A ****
+// ==========================================================
+// =======    GN0A ~ ORDER-TO-POST UPDATE & DELETE    =======
+// ==========================================================
+// 
+// This application enables users to select a specific order.
+// They have the option of performing maintenance on select
+// fields or deleting the order if the status is valid.  Only
+// orders that are allocated or planned are available for
+// updates on this screen.  Orders in other statuses may be
+// displayed, however, for inquiry.
+// 
+// The user enters the warehouse (if other than the default
+// from the user's commarea) and the order number.  A special
+// iomod (GN1030) is called to get the order information as
+// as well as to do the updates or deletes.
+// 
+// Only users with the commarea change flag set to "Y" will
+// be allowed to update and delete data.  All users can
+// inquire and view data.
+// 
+// If the order only exists in Orders-to-Post, the order
+// is displayed and updates are performed to Orders-to-Post
+// header only.  If the order exists in both Orders-to-Post
+// and the Pick Pool, then the header information from the
+// Pick Pool is displayed.  Updates are performed on both
+// Orders-to-Post and the Pick Pool.
+// 
+// The delete function will delete every associated record
+// for the order from both the Orders-to-Post and Pick Pool
+// tables.
+// 
+// GN0A has the standard PF3/PF4 exits as well as fastpath.
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE    USERID  DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// NEW      04/03/00  ESMIT2  New application.
+//          07/20/00  OVAZQU  Add ONETIME-SHIP-FL
+//                            and XPA-CUST-PACK-CD process.
+// DLVRUSA  02/13/01  OVAZQU  chnges for NSC USA
+// TT15719  01/03/02  RBALAM  Stat code edit check not to
+//                            perform for NIL orders. Added
+//                            XDV-DIV-CD NE '02' in GN0A-42000
+//                            proc.
+// TT16006  01/30/02  BMAHAL  Stat code edit check for spaces
+//                            not to perform for NIL orders.
+//                            Added XDV-DIV-CD NE '02' in
+//                            GN0A-42000.
+// TT#16532 02/13/02  SVENKA  Inorder to keep track of all the
+//                            updates and deletes in the appl.
+//                            GN0A, the table DORDER.VOPPKM01
+//                            is inserted with the records that
+//                            are being changed.
+// KIN#58226 04/24/03 RATHAL commented  satements for new NIL
+//                               process  changes in
+//  GN0A-20000, GN0A-22000,
+//                              GN0A-42000, GN0A-50000
+//  (submitts the GNwwNL job)
+// *********************
+Program GN0A type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "GN00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  GN0AW00 GN0AW00; // record
+  GN0AW01 GN0AW01; // record
+  GN0AW04 GN0AW04; // record
+  GNWREC GNWREC; // record
+  GNXREC GNXREC; // record
+  OMBREC OMBREC; // record
+  PWHREC PWHREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA3REC TA3REC; // record
+  TA6REC TA6REC; // record
+  TAEREC TAEREC; // record
+  TARREC TARREC; // record
+  TF1REC TF1REC; // record
+  WGN1031 WGN1031; // record
+  WGN3171 WGN3171; // record
+  XX0XW01 XX0XW01; // record
+  XX0XW02 XX0XW02; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use GN0AT01 {deleteAfterUse = yes}; // table
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use XPPTBL {deleteAfterUse = yes}; // table
+  use XCTTBL {deleteAfterUse = yes}; // table
+  use XSTTBL {deleteAfterUse = yes}; // table
+  use XOTTBL {deleteAfterUse = yes}; // table
+  use XPATBL {deleteAfterUse = yes}; // table
+  use GN0ATP1 {deleteAfterUse = yes}; // table
+  use GN0ATT1 {deleteAfterUse = yes}; // table
+  use GN0ATP2 {deleteAfterUse = yes}; // table
+  use GN0ATT2 {deleteAfterUse = yes}; // table
+  use GN0AM.GN0AM001,  // forms
+      GN0AM.XX0XM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPGN-00000: XPGN-00000();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and display storage areas.*/
+     /* ------------------------------------------------------------*/
+
+    set GN0AM001 initial; /* M001 input/output*/
+    set GN0AW00 empty; /* Working storage*/
+    set GN0AW01 empty; /* M001 display storage*/
+    set WGN1031 empty; /* GN1030 work area*/
+    set WGN3171 empty; /* GN3170 work area*/
+    set TF1REC empty; /* Carrier code table*/
+    set SQLCA empty; /* SQL communication area*/
+    set ERRSQLCA empty; /* SQL communication area*/
+    set TAEREC empty; /* Error diagnosis information*/
+    set TA1REC empty; /* Error diagnosis parameters*/
+    set TA2REC empty; /* Date routine information*/
+    set TA3REC empty; /* CICS Query routine information*/
+    set PWHREC empty; /**/
+    set XX0XW01 empty; /* Date/time subroutine parameters*/
+    set XX0XW02 empty; /**/
+
+    GN0AM001.CU-CO-ID = 0;
+    GN0AM001.GR-ORD-STAT-CD = " ";
+
+    GN0AW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+    GN0AW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+    GNWREC.GNW-FIRST-TM-SW = "Y"; /* First time in switch*/
+
+    GNWREC.GNW-MSG-NO = 0; /* Initialize on 1st entry*/
+
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto GN0A-00000; /* Converse the main process*/
+
+
+    GN0A-00000: GN0A-00000();
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto GN0A-00000; /* Converse the main process*/
+
+
+  end // end main
+end // end GN0A
+
+// Main process to display a map
+Function GN0A-00000()
+   /* ============================================================*/
+   /* GN0A     M A I N   P R O C E S S*/
+   /* ============================================================*/
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) Obtain the data to display.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Verify the data that was entered.*/
+   /* 5) Process a valid input request.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+
+  GN0A-10000(); /* Obtain the data to display*/
+
+  GN0A-20000(); /* Format and display the map*/
+
+  GN0A-30000(); /* Check attention identifier*/
+
+  GN0A-40000(); /* Verify the entered data*/
+
+  GN0A-50000(); /* Process valid input request*/
+
+
+end // end GN0A-00000
+
+// Obtain the data to display
+Function GN0A-10000()
+   /* ===========================================================*/
+   /* GN0A-10000   OBTAIN THE DATA TO DISPLAY*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "10000"; /* Msg location*/
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Area to accomplish any onetime entry tasks specific to GN0A.*/
+   /* Check for first time into the application and reset to no.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GNWREC.GNW-FIRST-TM-SW == "Y") /* First time in*/
+
+    GNWREC.GNW-FIRST-TM-SW = "N"; /* Set to NO*/
+    GN0AM001.XWH-WHSE-CD = COMMAREA.XWHCD; /* Warehouse cd*/
+    GN0AW01.XWH-WHSE-CD = COMMAREA.XWHCD;
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If data was not requested or an error was found, return to*/
+   /* the previous process.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AW00.XXX-RQT-DATA-FL != "Y" /* Data not rqstd*/
+   || converseVar.validationMsgNum != 0) /* or error found*/
+
+    return; /* Return*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Reset some flags*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  GN0AW00.XXX-RQT-DATA-FL = "N"; /* Data Rqst over*/
+  GN0AW00.XXX-MAP-FMAT-FL = "N"; /* Format map*/
+  GN0AW00.GN0AW-OK-TO-UPDT-NIL-FL = "N";
+  GN0AW00.GN0AW-JOB-SUBD-FL = "N"; /* JCL submitted flag*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Clear the map display storage area and get the data.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Re-init DNSB date in GN0AW00*/
+  GN0AW00.GN0AW-DNSB-DT-CC = 0;
+  GN0AW00.GN0AW-DNSB-DT-YY = 0;
+  GN0AW00.GN0AW-DNSB-DT-MM = 0;
+  GN0AW00.GN0AW-DNSB-DT-DD = 0;
+
+   /* Re-init DNSA date in GN0AW00*/
+  GN0AW00.GN0AW-DNSA-DT-CC = 0;
+  GN0AW00.GN0AW-DNSA-DT-YY = 0;
+  GN0AW00.GN0AW-DNSA-DT-MM = 0;
+  GN0AW00.GN0AW-DNSA-DT-DD = 0;
+
+  set GN0AW01 empty;
+  set WGN1031 empty;
+
+
+  WGN1031.XWH-WHSE-CD = GN0AM001.XWH-WHSE-CD; /* Warehouse*/
+  WGN1031.OP-CUST-ORD-ID = GN0AM001.OP-CUST-ORD-ID; /* Order nbr*/
+  WGN1031.OP-NIKE-ORD-ID = 1; /* Default subord*/
+  WGN1031.SQLCAREC = SQLCA.SQLCAREC; /* sqlca rec*/
+  GN0AW-GN1030-FUNC-CD = "S"; /* Get order*/
+
+  try
+    call "GN1030" (WGN1031) {isNoRefresh = yes, isExternal = yes};
+  end /* GN1030 call*/
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If the call was successful, return to the previous process.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (WGN1031.GN0AW-GN1030-RETURN-CD == 0) /* Good Return*/
+
+      GN0AW00.XXX-MAP-FMAT-FL = "Y"; /* Format map flag*/
+
+       /* Save data retrieved on workarea 1*/
+      GN0AW01.XWH-WHSE-CD = WGN1031.XWH-WHSE-CD;
+      GN0AW01.CU-CO-ID = WGN1031.CU-CO-ID;
+      GN0AW01.CU-STOR-ID = WGN1031.CU-STOR-ID;
+      GN0AW01.XNX-DEPT-ID-XREF = WGN1031.XNX-DEPT-ID-XREF;
+      GN0AW01.OP-CUST-ORD-ID = WGN1031.OP-CUST-ORD-ID;
+      GN0AW01.PK-SAP-CUST-NBR = WGN1031.PK-SAP-CUST-NBR;
+      GN0AW01.XOT-ORD-TYP-CD = WGN1031.XOT-ORD-TYP-CD;
+      GN0AW01.XDV-DIV-CD = WGN1031.XDV-DIV-CD;
+      GN0AW01.PK-SAP-SLS-DOC-NBR = WGN1031.PK-SAP-SLS-DOC-NBR;
+      GN0AW01.GR-ORD-STAT-CD = WGN1031.GR-ORD-STAT-CD;
+      GN0AW01.NI-CUST-ORD-ID = WGN1031.NI-CUST-ORD-ID;
+      GN0AW01.NI-NIKE-ORD-ID = WGN1031.NI-NIKE-ORD-ID;
+      GN0AW01.XPACD = WGN1031.XPACD;
+      GN0AW01.OP-CUST-PO = WGN1031.OP-CUST-PO;
+      GN0AW01.XPP-PICK-PRTY-CD = WGN1031.XPP-PICK-PRTY-CD;
+      GN0AW01.OP-DNT-SHIP-BFR-DT = WGN1031.OP-DNT-SHIP-BFR-DT;
+      GN0AW01.OP-DNT-SHIP-AFT-DT = WGN1031.OP-DNT-SHIP-AFT-DT;
+      GN0AW01.TF-CARR-CD = WGN1031.TF-CARR-CD;
+      GN0AW01.OP-ALT-NM = WGN1031.OP-ALT-NM;
+      GN0AW01.XXX-ADDR1 = WGN1031.XXX-ADDR1;
+      GN0AW01.XXX-ADDR2 = WGN1031.XXX-ADDR2;
+      GN0AW01.XXX-ADDR3 = WGN1031.XXX-ADDR3;
+      GN0AW01.XXX-CITY = WGN1031.XXX-CITY;
+      GN0AW01.XST-ST-CD = WGN1031.XST-ST-CD;
+      GN0AW01.XXX-ZIP = WGN1031.XXX-ZIP;
+      GN0AW01.XCT-CTRY-CD = WGN1031.XCT-CTRY-CD;
+      GN0AW01.OP-ONETIME-SHIP-FL = WGN1031.OP-ONETIME-SHIP-FL;
+      GN0AW01.DCMS-ERROR-FL = WGN1031.DCMS-ERROR-FL;
+
+      GN0AW00.GN0AW-DNSB-DT-GROUP = WGN1031.OP-DNT-SHIP-BFR-DT;
+      GN0AW00.GN0AW-DNSA-DT-GROUP = WGN1031.OP-DNT-SHIP-AFT-DT;
+
+   /* TT#16532 changes begin*/
+
+      set OMBREC empty;
+
+      OMBREC.XWHCD = GN0AW01.XWH-WHSE-CD; /* Warehouse code*/
+
+      GN0AW00.GN0AW-CUST-ORD-ID = GN0AW01.OP-CUST-ORD-ID;
+      OMBREC.OP1PARTN = GN0AW00.GN0AW-CUST-ORD-I2;
+
+      OMBREC.OP1CUOID = GN0AW01.OP-CUST-ORD-ID; /* Order nbr*/
+      OMBREC.OP1NORID = 1; /* Default sub order*/
+
+      OMBREC.XPACD = GN0AW01.XPACD; /* Customer pack cd*/
+      OMBREC.OP1CUPO = GN0AW01.OP-CUST-PO; /* Customer PO*/
+      OMBREC.XPPCD = GN0AW01.XPP-PICK-PRTY-CD; /* Pick priority*/
+      OMBREC.TF1CARCD = GN0AW01.TF-CARR-CD; /* Carrier code*/
+
+      OMBREC.OP1DSBDT = GN0AW01.OP-DNT-SHIP-BFR-DT; /* DNSB DATE*/
+
+      OMBREC.OP1DSADT = GN0AW01.OP-DNT-SHIP-AFT-DT; /* DSNA DATE*/
+
+      OMBREC.OP5ALTNM = GN0AW01.OP-ALT-NM; /* Alternate name*/
+      OMBREC.XXXADDR1 = GN0AW01.XXX-ADDR1; /* Address line 1*/
+      OMBREC.XXXADDR2 = GN0AW01.XXX-ADDR2; /* Address line 2*/
+      OMBREC.XXXADDR3 = GN0AW01.XXX-ADDR3; /* Address line 3*/
+      OMBREC.XXXCITY = GN0AW01.XXX-CITY; /* City*/
+      OMBREC.XSTCD = GN0AW01.XST-ST-CD; /* State*/
+      OMBREC.XXXZIP = GN0AW01.XXX-ZIP; /* ZIP code*/
+      OMBREC.XCTCD = GN0AW01.XCT-CTRY-CD; /* Country*/
+      OMBREC.OP4TXT[1] = "RECORD BEFORE UPDATE"; /* /text field*/
+      OMBREC.OP4TXT[8] = COMMAREA.CAUSERID; /* /text field*/
+      OMBREC.OMBMRTYP = "Y"; /* so that it is not picked by SR1200*/
+
+      XX0XS01(); /* Get date and time*/
+
+      OMBREC.OP4TXT[9] = GN0AW01.OP-ONETIME-SHIP-FL;
+
+      OMBREC.ZZZSDT = 0;
+      OMBREC.ZZHHMMSS = 0;
+
+      if (OMBREC.TF1CARCD > " ")
+        OMBREC.OP4TXT[10] = "10";
+      else
+        if (OMBREC.XWHCD == "51")
+          OMBREC.OP4TXT[10] = "51";
+        else
+          OMBREC.OP4TXT[10] = " ";
+        end
+      end
+
+      OMBREC.OP4TXT[12] = XX0XW01.XX0XWDAT;
+      OMBREC.OP4TXT[11] = XX0XW01.XX0XWTIM;
+
+   /* TT#16532 changes end*/
+
+      return; /* Return*/
+    end
+
+    if (WGN1031.GN0AW-GN1030-RETURN-CD == 10) /* Not found*/
+
+      GN0AW01.XWH-WHSE-CD = WGN1031.XWH-WHSE-CD;
+      GN0AW01.OP-CUST-ORD-ID = WGN1031.OP-CUST-ORD-ID;
+      GN0AW00.XXX-MAP-FMAT-FL = "Y"; /* Format map flag*/
+      converseLib.validationFailed(12); /* Not found msg*/
+
+      return; /* Return*/
+    end
+
+    if (WGN1031.GN0AW-GN1030-RETURN-CD == 88) /* Invalid function*/
+
+      converseLib.validationFailed(73); /* Bad funct msg*/
+
+      return; /* Return*/
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = WGN1031.SQLCAREC; /* SQL commarea*/
+
+  GNWREC.XXX-MSG-LOC-ID = "10000"; /* Msg location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && WGN1031.GN0AW-GN1030-RETURN-CD == 9) /* resource unavailable*/
+
+    converseLib.validationFailed(22); /* Data in use*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+  else
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back*/
+
+    converseLib.validationFailed(01); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = GNWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = WGN1031.GN0AW-GN1030-DATABASE-NM;
+  TA1REC.TA1TBLVU = WGN1031.GN0AW-GN1030-VIEW-NM;
+  TA1REC.TA1TBLKE = " "; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Err diag*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end GN0A-10000
+
+// Format and converse the map
+Function GN0A-20000()
+   /* ===========================================================*/
+   /* GN0A-20000   FORMAT AND CONVERSE THE MAP*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "20000"; /* Message location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Save the error message number.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    GNWREC.GNW-MSG-NO = converseVar.validationMsgNum; /* Message number*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If the map must be formatted, format the data in the map.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AW00.XXX-MAP-FMAT-FL == "Y") /* Format map*/
+    GN0A-21000();
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Format descriptions, and protected data every time.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  GN0A-23000();
+
+  GN0AW00.GN0AW-NEW-KEY-FL = "N";
+
+
+  /****** KIN#58226 NIL process changes starts*********************/
+
+  /*IF GN0AW01.XDV-DIV-CD EQ '02';   /* NIL order*/
+  /*  SET GN0AM001.GN0AM-NIL-LIT1 DEFINED;*/
+  /*  SET GN0AM001.GN0AM-NIL-LIT2 DEFINED;*/
+  /*  IF GN0AW01.NI-CUST-ORD-ID GT 0; /* NIL SO already exists*/
+  /*    SET GN0AM001.GN0AM-NIL-PFKEY DEFINED;*/
+  /*  ELSE;                                /* NIL SO has not been entered yet*/
+  /*    SET GN0AM001.GN0AM-NIL-PFKEY DARK,NOHILITE,AUTOSKIP;*/
+  /*  END;*/
+  /*  IF EZEMNO EQ 0;                /* no errors exist*/
+  /*    SET GN0AM001.NI-CUST-ORD-ID DEFINED;*/
+  /*    SET GN0AM001.NI-NIKE-ORD-ID DEFINED;*/
+  /*  END;*/
+  /*  IF GN0AW00.GN0AW-OK-TO-UPDT-NIL-FL EQ 'Y' /* NIL PF key was pressed*/
+  /*    OR GN0AW01.NI-CUST-ORD-ID EQ 0; /* NIL SO not assigned yet*/
+  /*        /* continue*/
+  /*  ELSE;*/
+  /*    SET GN0AM001.NI-CUST-ORD-ID AUTOSKIP;*/
+  /*    SET GN0AM001.NI-NIKE-ORD-ID AUTOSKIP;*/
+  /*  END;*/
+  /*ELSE;                                /* not a NIL order*/
+
+  /****** KIN#58226 NIL process changes ends*********************/
+  set GN0AM001.GN0AM-NIL-LIT1 invisible, noHighLight, skip;
+  set GN0AM001.GN0AM-NIL-LIT2 invisible, noHighLight, skip;
+  set GN0AM001.NI-CUST-ORD-ID invisible, noHighLight, skip;
+  set GN0AM001.NI-NIKE-ORD-ID invisible, noHighLight, skip;
+  set GN0AM001.GN0AM-NIL-PFKEY invisible, noHighLight, skip;
+  /****** KIN#58226 NIL process changes starts*********************/
+  /*END;*/
+  /****** KIN#58226 NIL process changes ends *********************/
+
+
+  if (GN0AW01.XWH-WHSE-CD == "51" /* Memphis Apparel*/
+   && GN0AW01.DCMS-ERROR-FL != "Y") /* and not in error*/
+
+    set GN0AM001.GN0AM-PF13 invisible, noHighLight, skip;
+    set GN0AM001.GN0AM-PF14 invisible, noHighLight, skip;
+  else
+    set GN0AM001.GN0AM-PF13 initialAttributes;
+    set GN0AM001.GN0AM-PF14 initialAttributes;
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Determine whether to protect any of the modifiable fields.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  GN0A-22000();
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Format the current date and any FAST PATH information.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  GN0AM001.XXX-CURR-DT = VGVar.currentShortGregorianDate; /* Current date*/
+  GN0AM001.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  GN0AM001.CAITEM = COMMAREA.CAITEM; /* Application data*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /* otherwise, set the cursor to the appropriate place*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GNWREC.GNW-MSG-NO == 0) /* No error msg exists*/
+
+    set GN0AM001.OP-CUST-ORD-ID cursor;
+
+    if (GN0AW01.OP-CUST-ORD-ID > 0 /* DN already retrieved*/
+     && COMMAREA.CACHGFL == "Y")   /* and user authorized to update?*/
+
+  /*KIN#58226 NIL process changes starts*/
+  /*    IF GN0AW01.XDV-DIV-CD EQ '02' /* NIL order*/
+  /*      AND (GN0AW00.GN0AW-OK-TO-UPDT-NIL-FL EQ 'Y' /* NIL PF key was hit*/
+  /*      OR GN0AW01.NI-CUST-ORD-ID EQ 0); /* or NIL SO not assigned yet*/
+  /*;*/
+  /*      SET GN0AM001.NI-CUST-ORD-ID CURSOR;*/
+  /*    ELSE;*/
+      set GN0AM001.OP-CUST-PO cursor;
+  /*    END;*/
+  /*KIN#58226 NIL process changes ends*/
+    end
+
+  else /* message exists*/
+
+    if (GNWREC.GNW-MSG-NO == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(GNWREC.GNW-MSG-NO);
+    end /* Msg nbr*/
+    GN0AM001.XXX-MSG-LOC-ID = GNWREC.XXX-MSG-LOC-ID; /* Msg loc*/
+
+    if (GNWREC.GNW-MSG-NO == 101 /* Updt ok*/
+     || GNWREC.GNW-MSG-NO == 102 /* Del ok*/
+     || GNWREC.GNW-MSG-NO == 131) /* NIL warning*/
+
+      set GN0AM001.OP-CUST-ORD-ID cursor;
+    else
+      set GN0AM001 alarm; /* Sound alarm*/
+    end
+  end
+
+
+  converse GN0AM001 ;
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  GNWREC.XXX-MSG-LOC-ID = " "; /* Message location*/
+  GNWREC.GNW-MSG-NO = 0; /* Message number*/
+  converseLib.validationFailed(0);
+  COMMAREA.CAMSG = " "; /* Message text*/
+
+  COMMAREA.CATOAP = GN0AM001.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = GN0AM001.CAITEM; /* Application data*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Reset delete request PF13 if not followed by PF14 confirm.*/
+   /* Reset nix    request PF15 if not followed by PF16 confirm.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  if (GN0AW00.GN0AW-DELETE-REQUESTED-FL == "Y" /* Delete requested*/
+   && converseVar.eventKey not pf14)           /* No confirm follows*/
+
+    GN0AW00.GN0AW-DELETE-REQUESTED-FL = "N"; /* Reset*/
+  end
+
+  if (GN0AW00.GN0AW-DELETE-REQUESTED-FL == "X" /* Nix requested*/
+   && converseVar.eventKey not pf16)           /* No confirm follows*/
+
+    GN0AW00.GN0AW-DELETE-REQUESTED-FL = "N"; /* Reset*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Reset modifiable field attributes to normal intensity.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  set GN0AM001.XWH-WHSE-CD normal; /* Warehouse code*/
+  set GN0AM001.OP-CUST-ORD-ID normal; /* Order nbr (del note nbr)*/
+  set GN0AM001.OP-CUST-PO normal; /* Customer PO*/
+  set GN0AM001.XPP-PICK-PRTY-CD normal; /* Pick priority*/
+  set GN0AM001.GN0AW-DNSB-DT-MM normal; /* DNSB date*/
+  set GN0AM001.GN0AW-DNSB-DT-DD normal; /* DNSB date*/
+  set GN0AM001.GN0AW-DNSB-DT-YY normal; /* DNSB date*/
+  set GN0AM001.GN0AW-DNSA-DT-MM normal; /* DNSA date*/
+  set GN0AM001.GN0AW-DNSA-DT-DD normal; /* DNSA date*/
+  set GN0AM001.GN0AW-DNSA-DT-YY normal; /* DNSA date*/
+  set GN0AM001.TF-CARR-CD normal; /* Carrier code*/
+  set GN0AM001.OP-ALT-NM normal; /* Alternate name*/
+  set GN0AM001.XXX-ADDR1 normal; /* Address line 1*/
+  set GN0AM001.XXX-ADDR2 normal; /* Address line 2*/
+  set GN0AM001.XXX-ADDR3 normal; /* Address line 3*/
+  set GN0AM001.XXX-CITY normal; /* City*/
+  set GN0AM001.XST-ST-CD normal; /* State*/
+  set GN0AM001.XXX-ZIP normal; /* Zip code*/
+  set GN0AM001.XCT-CTRY-CD normal; /* Country code*/
+
+  /***************************************************************/
+  /*KIN#58226 NIL process changes starts*/
+  /***************************************************************/
+  /*IF GN0AW01.XDV-DIV-CD EQ '02';   /* NIL order*/
+  /*  IF GN0AW01.NI-CUST-ORD-ID EQ 0; /* no NIL SO exists*/
+  /*    SET GN0AM001.NI-CUST-ORD-ID NORMAL;*/
+  /*    SET GN0AM001.NI-NIKE-ORD-ID NORMAL;*/
+  /*  ELSE;*/
+  /*    IF GN0AW00.GN0AW-OK-TO-UPDT-NIL-FL EQ 'Y'; /* NIL PF key pressed*/
+  /*      SET GN0AM001.NI-CUST-ORD-ID NORMAL;*/
+  /*      SET GN0AM001.NI-NIKE-ORD-ID NORMAL;*/
+  /*    END;*/
+  /*  END;*/
+  /*END;*/
+  /***************************************************************/
+  /*KIN#58226 NIL process changes ends*/
+  /***************************************************************/
+
+  set GN0AM001.CATOAP normal; /* TO application*/
+  set GN0AM001.CAITEM normal; /* Application data*/
+
+
+end // end GN0A-20000
+
+// Format the data in the map
+Function GN0A-21000()
+   /* ===========================================================*/
+   /* GN0A-21000   FORMAT THE DATA IN THE MAP*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "21000"; /* Message location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Clear the fields in the map storage area to be formatted.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  set GN0AM001 initial; /* Map 1*/
+
+  GN0AW00.XXX-MAP-FMAT-FL = "N"; /* Format map flag*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Place cursor on first empty field.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  set GN0AM001.OP-CUST-ORD-ID cursor; /* Order number*/
+  if (GN0AM001.OP-CUST-ORD-ID > 0)
+    if (COMMAREA.CACHGFL == "Y") /* User authorized to update?*/
+      set GN0AM001.OP-ALT-NM cursor; /* Alternate name*/
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Format the map fields from the display storage area.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  GN0AM001.XWH-WHSE-CD = GN0AW01.XWH-WHSE-CD; /* Warehouse code*/
+  GN0AM001.OP-CUST-ORD-ID = GN0AW01.OP-CUST-ORD-ID; /* Order nbr*/
+
+  GN0AM001.NI-CUST-ORD-ID = GN0AW01.NI-CUST-ORD-ID; /* NIL Order nbr*/
+  GN0AM001.NI-NIKE-ORD-ID = GN0AW01.NI-NIKE-ORD-ID; /* NIL Nike Order nbr*/
+
+  GN0AM001.OP-CUST-PO = GN0AW01.OP-CUST-PO; /* Customer PO*/
+  GN0AM001.XPP-PICK-PRTY-CD = GN0AW01.XPP-PICK-PRTY-CD; /* Pick priority*/
+  GN0AM001.TF-CARR-CD = GN0AW01.TF-CARR-CD; /* Carrier code*/
+
+  GN0AW00.GN0AW-DATE-GROUP = GN0AW01.OP-DNT-SHIP-BFR-DT;
+  GN0AM001.GN0AW-DNSB-DT-MM = GN0AW00.GN0AW-DATE-MM; /* DNSB date month*/
+  GN0AM001.GN0AW-DNSB-DT-DD = GN0AW00.GN0AW-DATE-DD; /* DNSB date day*/
+  GN0AM001.GN0AW-DNSB-DT-YY = GN0AW00.GN0AW-DATE-YY; /* DNSB date year*/
+
+  GN0AW00.GN0AW-DATE-GROUP = GN0AW01.OP-DNT-SHIP-AFT-DT;
+  GN0AM001.GN0AW-DNSA-DT-MM = GN0AW00.GN0AW-DATE-MM; /* DNSA date month*/
+  GN0AM001.GN0AW-DNSA-DT-DD = GN0AW00.GN0AW-DATE-DD; /* DNSA date day*/
+  GN0AM001.GN0AW-DNSA-DT-YY = GN0AW00.GN0AW-DATE-YY; /* DNSA date year*/
+
+  GN0AM001.OP-ALT-NM = GN0AW01.OP-ALT-NM; /* Alternate name*/
+  GN0AM001.XXX-ADDR1 = GN0AW01.XXX-ADDR1; /* Address line 1*/
+  GN0AM001.XXX-ADDR2 = GN0AW01.XXX-ADDR2; /* Address line 2*/
+  GN0AM001.XXX-ADDR3 = GN0AW01.XXX-ADDR3; /* Address line 3*/
+  GN0AM001.XXX-CITY = GN0AW01.XXX-CITY; /* City*/
+  GN0AM001.XST-ST-CD = GN0AW01.XST-ST-CD; /* State*/
+  GN0AM001.XXX-ZIP = GN0AW01.XXX-ZIP; /* Zip*/
+  GN0AM001.XCT-CTRY-CD = GN0AW01.XCT-CTRY-CD; /* Country*/
+  GN0AM001.OP-ONETIME-SHIP-FL = GN0AW01.OP-ONETIME-SHIP-FL; /* Onetime ship flag*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Indicate that the request for data is complete.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  GN0AW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+
+
+end // end GN0A-21000
+
+// Check change authorization
+Function GN0A-22000()
+   /* ===========================================================*/
+   /* GN0A-22000   CHECK CHANGE AUTHORIZATION*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "22000"; /* Message location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If the user is authorized to change data on the screen*/
+   /* return to the previous process (no fields protected).*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (COMMAREA.CACHGFL == "Y") /* User authorized for change?*/
+
+    return; /* Return*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If the user is authorized to view data on the screen*/
+   /* allow entry of key data but restrict other fields.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (COMMAREA.CAINQFL == "Y") /* User authorized for inqyuiry?*/
+
+     /* next sentence*/
+
+  else
+
+    set GN0AM001.XWH-WHSE-CD skip; /* Warehouse code*/
+    set GN0AM001.OP-CUST-ORD-ID skip; /* Order nbr*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Otherwise, protect the modifiable fields on the screen.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AW01.XDV-DIV-CD == "02") /* NIL order*/
+  /******KIN#58226 NIL process changes starts*/
+  /*  SET GN0AM001.NI-CUST-ORD-ID DEFINED;*/
+    set GN0AM001.NI-CUST-ORD-ID skip;
+  /*  SET GN0AM001.NI-NIKE-ORD-ID DEFINED;*/
+    set GN0AM001.NI-NIKE-ORD-ID skip;
+  /******KIN#58226 NIL process changes ends*/
+  else
+    set GN0AM001.NI-CUST-ORD-ID invisible, noHighLight, skip;
+    set GN0AM001.NI-NIKE-ORD-ID invisible, noHighLight, skip;
+  end
+
+  set GN0AM001.OP-CUST-PO skip; /* Customer PO*/
+  set GN0AM001.XPP-PICK-PRTY-CD skip; /* Pick priority*/
+  set GN0AM001.TF-CARR-CD skip; /* Carrier code*/
+
+  set GN0AM001.GN0AW-DNSB-DT-MM skip; /* DNSB date month*/
+  set GN0AM001.GN0AW-DNSB-DT-DD skip; /* DNSB date day*/
+  set GN0AM001.GN0AW-DNSB-DT-YY skip; /* DNSB date year*/
+  set GN0AM001.GN0AW-DNSA-DT-MM skip; /* DNSA date month*/
+  set GN0AM001.GN0AW-DNSA-DT-DD skip; /* DNSA date day*/
+  set GN0AM001.GN0AW-DNSA-DT-YY skip; /* DNSA date year*/
+
+  set GN0AM001.OP-ALT-NM skip; /* Alternate name*/
+  set GN0AM001.XXX-ADDR1 skip; /* Address line 1*/
+  set GN0AM001.XXX-ADDR2 skip; /* Address line 2*/
+  set GN0AM001.XXX-ADDR3 skip; /* Address line 3*/
+  set GN0AM001.XXX-CITY skip; /* City*/
+  set GN0AM001.XST-ST-CD skip; /* State*/
+  set GN0AM001.XXX-ZIP skip; /* zip code*/
+  set GN0AM001.XCT-CTRY-CD skip; /* Country*/
+
+
+end // end GN0A-22000
+
+// Format Counts, Desc, Protected
+Function GN0A-23000()
+   /* ===========================================================*/
+   /* GN0A-23000   FORMAT DESCRIPTIONS & PROTECTED DATA*/
+   /* BEFORE EVERY CONVERSE OF THE MAP*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "23000"; /* Message location*/
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Format protected data: customer, order type, order status.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  GN0AM001.CU-CO-ID = GN0AW01.CU-CO-ID; /* Company id*/
+  GN0AM001.CU-STOR-ID = GN0AW01.CU-STOR-ID; /* Store id*/
+  GN0AM001.GN0AM-XNX-DEPT-ID-XREF = GN0AW01.XNX-DEPT-ID-XREF; /* Department id*/
+  GN0AM001.PK-SAP-CUST-NBR = GN0AW01.PK-SAP-CUST-NBR; /* SAP cust#*/
+  GN0AM001.PK-SAP-SLS-DOC-NBR = GN0AW01.PK-SAP-SLS-DOC-NBR; /* SAP sales doc#*/
+  GN0AM001.XOT-ORD-TYP-CD = GN0AW01.XOT-ORD-TYP-CD; /* Order type cd*/
+  GN0AM001.GR-ORD-STAT-CD = GN0AW01.GR-ORD-STAT-CD; /* Order stat cd*/
+  GN0AM001.XPACD = GN0AW01.XPACD; /* Cust pack cd*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Format description for pick code*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.XPP-PICK-PRTY-CD > " ")
+
+    if (GN0AM001.XPP-PICK-PRTY-CD in XPPTBL.XPPCD)
+      GN0AM001.XPPABRV = XPPTBL.XPPABRV[sysVar.arrayIndex];
+    else
+      GN0AM001.XPPABRV = "************"; /* Default*/
+    end
+
+  else
+
+    GN0AM001.XPPABRV = " ";
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Obtain the Carrier Name*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.TF-CARR-CD > " ")
+
+    if (GN0AM001.TF-CARR-CD == TF1REC.TF1CARCD) /* Carrier same as before*/
+
+      GN0AM001.TF-CARR-ABRV = TF1REC.TF1ABRV;
+
+    else
+
+      set TF1REC empty; /* Init rec*/
+      TF1REC.TF1CARCD = GN0AM001.TF-CARR-CD; /* Carrier*/
+
+      try
+        call "IO0860" ("S ", SQLCA, TF1REC) {isNoRefresh = yes, isExternal = yes};
+      end
+
+      if (sysVar.errorCode == "00000000" /* Successful*/
+       && SQLCA.VAGen_SQLCODE == 0)     
+
+        GN0AM001.TF-CARR-ABRV = TF1REC.TF1ABRV;
+      else
+        set TF1REC empty; /* Init rec*/
+        GN0AM001.TF-CARR-ABRV = "************";
+      end
+    end
+
+  else
+
+    GN0AM001.TF-CARR-ABRV = " ";
+  end
+
+
+   /* Order type abbreviation*/
+  if (GN0AM001.XOT-ORD-TYP-CD > " ")
+
+    if (GN0AM001.XOT-ORD-TYP-CD in XOTTBL.XOTCD)
+      GN0AM001.XOTABRV = XOTTBL.XOTABRV[sysVar.arrayIndex];
+    else
+      GN0AM001.XOTABRV = "******";
+    end
+
+  else
+
+    GN0AM001.XOTABRV = " ";
+  end
+
+
+   /* Order status description*/
+  if (GN0AM001.GR-ORD-STAT-CD > " ")
+
+    if (GN0AW01.XWH-WHSE-CD == "51" /* Memphis apparel*/
+     && GN0AW01.DCMS-ERROR-FL == "Y") /* in error*/
+
+      GN0AM001.GN0AT-ORD-STAT-DESC = "IN REVIEW";
+      set GN0AM001.GN0AT-ORD-STAT-DESC red;
+    else
+
+      if (GN0AM001.GR-ORD-STAT-CD in GN0AT01.GR-ORD-STAT-CD)
+
+        GN0AM001.GN0AT-ORD-STAT-DESC = GN0AT01.GN0AT-ORD-STAT-DESC[sysVar.arrayIndex];
+      else
+        GN0AM001.GN0AT-ORD-STAT-DESC = "************";
+      end
+    end
+  else
+    GN0AM001.GN0AT-ORD-STAT-DESC = " ";
+  end
+
+
+   /* Customer pack description*/
+  if (GN0AM001.XPACD > " ")
+
+    if (GN0AM001.XPACD in XPATBL.XPACD)
+      GN0AM001.XPAABRV = XPATBL.XPAABRV[sysVar.arrayIndex];
+    else
+      GN0AM001.XPAABRV = "******";
+    end
+
+    set GN0AM001.GN0AM-XPACD-LIT skip;
+  else
+    GN0AM001.XPAABRV = " ";
+    set GN0AM001.GN0AM-XPACD-LIT invisible, protect;
+  end
+
+
+end // end GN0A-23000
+
+// Check attention identifier
+Function GN0A-30000()
+   /* ===========================================================*/
+   /* GN0A-30000   CHECK ATTENTION IDENTIFIER*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "30000"; /* Message location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If CANCEL was requested, clear the map fields and exit.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+
+    if (GN0AW00.XXX-RQT-DATA-FL == "Y") /* Request for data pending*/
+      set GN0AW01 empty; /* M001 display storage*/
+    end
+
+    GN0AW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+    GN0AW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+    GN0AW00.GN0AW-OK-TO-UPDT-NIL-FL = "N";
+    GN0AW00.GN0AW-JOB-SUBD-FL = "N"; /* JCL submitted flag*/
+
+    COMMAREA.CATOAP = " "; /* TO application*/
+    COMMAREA.CAITEM = " "; /* Application data*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If FAST PATH was requested, transfer to the application.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.CATOAP > " ") /* FAST PATH was requested*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      COMMAREA.CATOAP = GN0AM001.CATOAP;
+      XSGNS-EXIT(); /* Exit to another app*/
+      set GN0AM001.CATOAP cursor, bold; /* Highlight*/
+    else
+
+      converseLib.validationFailed(74); /* PA/PF key may not be used*/
+    end
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If a PF key transfer requested, exit to another application.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.eventKey is pf3 /* or PF3 was pressed*/
+   || converseVar.eventKey is pf4) /* or PF4 was pressed*/
+
+    if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+      COMMAREA.CATOAP = "PK0A"; /* System Menu*/
+    end
+
+    if (converseVar.eventKey is pf4) /* PF3 was pressed*/
+      COMMAREA.CATOAP = "MN0M"; /* GOAL Master Menu*/
+    end
+
+    XSGNS-EXIT(); /* Exit to another application*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.eventKey is enter) /* ENTER was pressed, or*/
+     /* next sentence*/
+  else
+    if (converseVar.eventKey is pf6) /* Update order*/
+       /* next sentence*/
+    else
+      if (converseVar.eventKey is pf13 /* Delete order*/
+       && (GN0AW01.XWH-WHSE-CD != "51" /* for non-memph-apparel*/
+       || (GN0AW01.XWH-WHSE-CD == "51" /* or (memph-apparel*/
+       && GN0AW01.DCMS-ERROR-FL == "Y"))) /* in error)*/
+         /* next sentence*/
+      else
+        if (converseVar.eventKey is pf14 /* Confirm delete*/
+         && (GN0AW01.XWH-WHSE-CD != "51" /* for non-memph-apparel*/
+         || (GN0AW01.XWH-WHSE-CD == "51" /* or (memph-apparel*/
+         && GN0AW01.DCMS-ERROR-FL == "Y"))) /* in error)*/
+           /* next sentence*/
+        else
+          if (converseVar.eventKey is pf15   /* Nix order*/
+           && (COMMAREA.CAUSERID == "DEMO51" /* & (user authorized*/
+           || COMMAREA.XNDCD == "SYSD"))     /* or systems dept)*/
+             /* next sentence*/
+          else
+            if (converseVar.eventKey is pf16   /* Confirm nix*/
+             && (COMMAREA.CAUSERID == "DEMO51" /* & (user authorized*/
+             || COMMAREA.XNDCD == "SYSD"))     /* or systems dept)*/
+               /* next sentence*/
+            else
+              if ((converseVar.eventKey is pf18 /* or (request to allow NIL update*/
+               && GN0AW01.XDV-DIV-CD == "02"    /* and NIL order*/
+               && GN0AW01.NI-CUST-ORD-ID > 0)) 
+                                   /* and NIL SO already exists)*/
+                 /* next sentence*/
+              else
+
+                converseLib.validationFailed(4); /* PA/PF key pressed is not valid*/
+
+                if (converseVar.eventKey is pakey) /* PA key was pressed*/
+                  converseLib.clearScreen();
+                   /* Clear screen before display*/
+                end
+
+                exit stack; /* Exit to display map*/
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Check if PF allowed for user*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (COMMAREA.CACHGFL != "Y") /* User not authorized to update*/
+
+    if (converseVar.eventKey is pf6  /* update requested*/
+     || converseVar.eventKey is pf13 /* or delete request*/
+     || converseVar.eventKey is pf14 /* or delete confirmation*/
+     || converseVar.eventKey is pf18) /* or request to allow NIL update*/
+
+      converseLib.validationFailed(03); /* user not authorized to do maint*/
+
+      exit stack; /* Exit to display map*/
+    end
+  end
+
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Check for PF14 - Confirm delete*/
+   /* Check for PF16 - Confirm nix*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.eventKey is pf14 /* PF14 was pressed*/
+   && GN0AW00.GN0AW-DELETE-REQUESTED-FL != "Y") /* no PF13 was prior*/
+
+    converseLib.validationFailed(76); /* Need PF13 before PF14*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+  if (converseVar.eventKey is pf16 /* PF16 was pressed*/
+   && GN0AW00.GN0AW-DELETE-REQUESTED-FL != "X") /* no PF15 was prior*/
+
+    converseLib.validationFailed(76); /* Need PF15 before PF16*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Verify that order selected or key has not chg'd w/PF updates*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.eventKey is pf6  /* Update request*/
+   || converseVar.eventKey is pf13 /* or delete request*/
+   || converseVar.eventKey is pf14 /* or delete confirmation*/
+   || converseVar.eventKey is pf15 /* or nix    request*/
+   || converseVar.eventKey is pf16 /* or nix    confirmation*/
+   || converseVar.eventKey is pf18) /* or request to allow NIL update*/
+
+    /* --- IF select key has changed OR order not yet selected*/
+    if (GN0AM001.XWH-WHSE-CD != GN0AW01.XWH-WHSE-CD
+     || GN0AM001.OP-CUST-ORD-ID != GN0AW01.OP-CUST-ORD-ID
+     || GN0AW01.CU-CO-ID <= 0)
+
+      /* --- IF no data was returned from GN1030*/
+      if (GN0AW01.XWH-WHSE-CD <= " " /* Sel key not in link record*/
+       || GN0AW01.OP-CUST-ORD-ID <= 0
+       || GN0AW01.CU-CO-ID <= 0)     /* or last fetch was not found*/
+
+        converseLib.validationFailed(122); /* Must sel order before update*/
+      else
+
+        if (converseVar.eventKey is pf6 /* Update request*/
+         || converseVar.eventKey is pf18) /* or request to allow NIL update*/
+
+          converseLib.validationFailed(123); /* Cannot chg sel key w/update*/
+        else
+
+          converseLib.validationFailed(121); /* Cannot chg sel key w/delete*/
+        end
+      end
+
+      set GN0AM001.OP-CUST-ORD-ID cursor, bold;
+      set GN0AM001.XWH-WHSE-CD bold;
+
+      exit stack;
+    end
+  end
+
+
+end // end GN0A-30000
+
+// Verify data that was entered
+Function GN0A-40000()
+   /* ===========================================================*/
+   /* GN0A-40000   VERIFY DATA THAT WAS ENTERED*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "40000"; /* Message location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If any lists were requested, display the popup window.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.XPP-PICK-PRTY-CD == "?" /* PICK PRTY  list requested*/
+   || GN0AM001.XST-ST-CD == "?"        /* or STATE CD   list requested*/
+   || GN0AM001.XCT-CTRY-CD == "?")     /* or COUNTRY CD list requested*/
+    /**/
+    GN0A-41000(); /* Display corporate table lists*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Highlight any application data that was entered.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (COMMAREA.CAITEM > " ") /* Application data was entered*/
+    /**/
+    converseLib.validationFailed(58); /* Enter only with FAST PATH*/
+    set GN0AM001.CAITEM cursor, bold; /* Highlight*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Verify if a delete request is valid for the order.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.eventKey is pf13 /* Delete order*/
+   || converseVar.eventKey is pf14 /* Confirm delete*/
+   || converseVar.eventKey is pf15 /* Nix    order*/
+   || converseVar.eventKey is pf16) /* Confirm nix*/
+    /**/
+    if (GN0AW01.GR-ORD-STAT-CD == "AL" 
+     || GN0AW01.GR-ORD-STAT-CD == "PL" /* Allocated or Planned*/
+     || GN0AW01.GR-ORD-STAT-CD == "DS") /* DeScheduled*/
+           /* next sentence*/
+    else
+      set GN0AM001.OP-CUST-ORD-ID cursor, bold; /* Highlight*/
+      converseLib.validationFailed(103); /* Order can't be deleted*/
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Check for changes and perform necessary edits.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  GN0AW00.GN0AW-DATA-CHANGED-FL = "N";
+  GN0AW00.GN0AW-DTS-OR-PO-DATA-CHANGED-FL = "N";
+  GN0AW00.GN0AW-NIL-CHANGED-FL = "N";
+
+   /* If variable order data has changed*/
+  if (GN0AM001.XPP-PICK-PRTY-CD != GN0AW01.XPP-PICK-PRTY-CD
+   || GN0AM001.TF-CARR-CD != GN0AW01.TF-CARR-CD
+   || GN0AM001.OP-ALT-NM != GN0AW01.OP-ALT-NM
+   || GN0AM001.XXX-ADDR1 != GN0AW01.XXX-ADDR1
+   || GN0AM001.XXX-ADDR2 != GN0AW01.XXX-ADDR2
+   || GN0AM001.XXX-ADDR3 != GN0AW01.XXX-ADDR3
+   || GN0AM001.XXX-CITY != GN0AW01.XXX-CITY
+   || GN0AM001.XST-ST-CD != GN0AW01.XST-ST-CD
+   || GN0AM001.XXX-ZIP != GN0AW01.XXX-ZIP
+   || GN0AM001.XCT-CTRY-CD != GN0AW01.XCT-CTRY-CD)
+    /**/
+    GN0AW00.GN0AW-DATA-CHANGED-FL = "Y";
+    /**/
+        /* if address changed set onetime flag to 'y'*/
+    if (GN0AW01.OP-ONETIME-SHIP-FL == "Y")
+          /* continue*/
+    else
+      if (GN0AM001.XXX-ADDR1 != GN0AW01.XXX-ADDR1
+       || GN0AM001.XXX-ADDR2 != GN0AW01.XXX-ADDR2
+       || GN0AM001.XXX-ADDR3 != GN0AW01.XXX-ADDR3
+       || GN0AM001.XXX-CITY != GN0AW01.XXX-CITY
+       || GN0AM001.XST-ST-CD != GN0AW01.XST-ST-CD
+       || GN0AM001.XXX-ZIP != GN0AW01.XXX-ZIP
+       || GN0AM001.XCT-CTRY-CD != GN0AW01.XCT-CTRY-CD)
+        /**/
+        GN0AM001.OP-ONETIME-SHIP-FL = "Y";
+      else
+        GN0AM001.OP-ONETIME-SHIP-FL = "N";
+      end
+    end
+  end
+
+   /* If dates or PO data has changed*/
+  if (GN0AM001.OP-CUST-PO != GN0AW01.OP-CUST-PO
+   || GN0AM001.GN0AW-DNSB-DT-MM != GN0AW00.GN0AW-DNSB-DT-MM
+   || GN0AM001.GN0AW-DNSB-DT-DD != GN0AW00.GN0AW-DNSB-DT-DD
+   || GN0AM001.GN0AW-DNSB-DT-YY != GN0AW00.GN0AW-DNSB-DT-YY
+   || GN0AM001.GN0AW-DNSA-DT-MM != GN0AW00.GN0AW-DNSA-DT-MM
+   || GN0AM001.GN0AW-DNSA-DT-DD != GN0AW00.GN0AW-DNSA-DT-DD
+   || GN0AM001.GN0AW-DNSA-DT-YY != GN0AW00.GN0AW-DNSA-DT-YY
+  )
+    GN0AW00.GN0AW-DTS-OR-PO-DATA-CHANGED-FL = "Y";
+  end
+
+  if (GN0AM001.NI-CUST-ORD-ID != GN0AW01.NI-CUST-ORD-ID
+   || GN0AM001.NI-NIKE-ORD-ID != GN0AW01.NI-NIKE-ORD-ID)
+    /**/
+    GN0AW00.GN0AW-NIL-CHANGED-FL = "Y";
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Edit changes*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AW00.GN0AW-DATA-CHANGED-FL == "Y"           /* data changed*/
+   || GN0AW00.GN0AW-DTS-OR-PO-DATA-CHANGED-FL == "Y" /* po or dates changed*/
+   || GN0AW00.GN0AW-NIL-CHANGED-FL == "Y")           /* nil data changed*/
+    /**/
+     /* Order data changed and delete request*/
+    if (converseVar.eventKey is pf13 /* delete request*/
+     || converseVar.eventKey is pf14 
+     || converseVar.eventKey is pf15 
+     || converseVar.eventKey is pf16)
+      /**/
+      GN0A-43000(); /* Highlight chgs*/
+      /**/
+      converseLib.validationFailed(120); /* Can't chg data w/del reqst*/
+    end
+    /**/
+     /* Order data changed and pf18 request*/
+    if (converseVar.eventKey is pf18) /* or allow NIL change request*/
+      /**/
+      GN0A-43000(); /* Highlight chgs*/
+      /**/
+      converseLib.validationFailed(126); /* Can't chg data w/pfkey action reqst*/
+    end
+    /**/
+     /* If order key has not been selected*/
+    if (GN0AW01.OP-CUST-ORD-ID <= 0) /* No select has occurred yet*/
+      /**/
+      GN0A-43000(); /* Highlight changes*/
+      /**/
+      converseLib.validationFailed(125); /* Must select order before chg*/
+    end
+    /**/
+     /* If order key has changed*/
+    if (GN0AM001.XWH-WHSE-CD != GN0AW01.XWH-WHSE-CD
+     || GN0AM001.OP-CUST-ORD-ID != GN0AW01.OP-CUST-ORD-ID)
+      /**/
+      GN0A-43000(); /* Highlight changes*/
+      /**/
+      converseLib.validationFailed(124); /* Can't chg data w/key chg*/
+    else /* Order key hasn't chg'd*/
+      /**/
+      if (converseVar.eventKey is pf6
+       || converseVar.eventKey is enter) /* PF6 Chg request or ENTER*/
+        /**/
+        GN0A-42000(); /* Edit changes*/
+      end
+    end
+    /**/
+  else /* no changes*/
+    /**/
+    if (converseVar.eventKey is pf6)
+      set GN0AM001.OP-CUST-ORD-ID cursor, bold; /* Highlight*/
+      converseLib.validationFailed(110); /* No changes to update*/
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If NIL JCL was already submitted, it should not do any more*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AW00.GN0AW-JOB-SUBD-FL == "Y") /* NIL had been submitted*/
+    /**/
+    if (converseVar.eventKey is pf6  /* Update request*/
+     || converseVar.eventKey is pf13 /* delete request*/
+     || converseVar.eventKey is pf14 
+     || converseVar.eventKey is pf15 
+     || converseVar.eventKey is pf16 
+     || converseVar.eventKey is pf18) /* allow NIL change request*/
+      /**/
+      GN0A-43000(); /* Highlight chgs*/
+      /**/
+      converseLib.validationFailed(94); /* Invalid after NIL JCL submitted*/
+      /**/
+      exit stack;
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Verify the warehouse code*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.XWH-WHSE-CD <= " ") /* Warehouse not entered*/
+    /**/
+    converseLib.validationFailed(70); /* Cannot be blank msg*/
+    set GN0AM001.XWH-WHSE-CD cursor, bold; /* Highlight*/
+    /**/
+  else
+    /**/
+    if (GN0AM001.XWH-WHSE-CD in XWHTBL.XWHCD /* Code in table*/
+     && XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+      /**/
+       /* NEXT SENTENCE*/
+    else
+      /**/
+      set GN0AM001.XWH-WHSE-CD cursor, bold; /* Highlight*/
+      converseLib.validationFailed(71); /* Whse invalid msg*/
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If any error was found, exit to display the map.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    /**/
+    exit stack; /* Exit to display map*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If ENTER and no errors, data validated; make request with PF.*/
+   /* Note - ENTER is not used as a request key on this screen*/
+   /* except that it will perform the edits to insure*/
+   /* all data is valid.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.eventKey is enter) /* EDIT defaulted with <ENTER>*/
+    /**/
+    if (GN0AM001.XWH-WHSE-CD == GN0AW01.XWH-WHSE-CD
+     && GN0AM001.OP-CUST-ORD-ID == GN0AW01.OP-CUST-ORD-ID)
+      /**/
+      GNWREC.XXX-MSG-LOC-ID = "40000"; /* Message location*/
+      /**/
+      if (GN0AW00.GN0AW-DATA-CHANGED-FL == "Y"           /* data changed*/
+       || GN0AW00.GN0AW-DTS-OR-PO-DATA-CHANGED-FL == "Y" /* dts or po chngd*/
+       || GN0AW00.GN0AW-NIL-CHANGED-FL == "Y")           /* nil data changed*/
+        /**/
+        converseLib.validationFailed(77); /* Please make your request w/PF key*/
+      end
+      /**/
+      exit stack; /* Exit to display map*/
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* was a change to NIL requested?*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.eventKey is pf18)
+    /**/
+    GN0AW00.GN0AW-OK-TO-UPDT-NIL-FL = "Y";
+    /**/
+    exit stack; /* Exit to display map*/
+  end
+
+
+end // end GN0A-40000
+
+// Display corporate table lists
+Function GN0A-41000()
+   /* ===========================================================*/
+   /* GN0A-41000   DISPLAY CORPORATE TABLE LISTS*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "41000"; /* Message location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Determine whether ENTER was pressed to request the lists.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+
+    converseLib.validationFailed(29); /* PA/PF key may not be used*/
+
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If requested, display the list of PICK PRIORITY codes.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  if (GN0AM001.XPP-PICK-PRTY-CD == "?") /* Pk Prty rqstd*/
+
+    XPXX001(); /* Window init*/
+
+    XX0XW02.XX0XWHDR = "PICK PRIORITY CODES        "; /* Heading*/
+
+
+    while (XX0XW02.XX0XWEND == "N")
+
+      XPXPP01(); /* Display list*/
+
+    end
+
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection*/
+
+      GN0AM001.XPP-PICK-PRTY-CD = GN0AW01.XPP-PICK-PRTY-CD; /* Pick priority*/
+
+    else
+
+      GN0AM001.XPP-PICK-PRTY-CD = XPPTBL.XPPCD[XX0XWPIX]; /* Selected code*/
+
+    end
+
+    set GN0AM001.XPP-PICK-PRTY-CD cursor; /* Position csr*/
+
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If requested, display the list of STATE codes.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  if (GN0AM001.XST-ST-CD == "?") /* State cd rqst*/
+
+    XPXX001(); /* Window init*/
+
+    XX0XW02.XX0XWHDR = "STATE CODES                "; /* Heading*/
+
+
+    while (XX0XW02.XX0XWEND == "N")
+
+      XPXST01(); /* Display list*/
+
+    end
+
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection*/
+
+      GN0AM001.XST-ST-CD = GN0AW01.XST-ST-CD; /* State code*/
+
+    else
+
+      GN0AM001.XST-ST-CD = XSTTBL.XSTCD[XX0XWPIX]; /* Selected code*/
+
+    end
+
+
+    set GN0AM001.XST-ST-CD cursor; /* Position csr*/
+
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If requested, display the list of COUNTRY codes.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  if (GN0AM001.XCT-CTRY-CD == "?") /* Country code*/
+
+    XPXX001(); /* Window init*/
+
+    XX0XW02.XX0XWHDR = "COUNTRY CODES              "; /* Heading*/
+
+
+    while (XX0XW02.XX0XWEND == "N")
+
+      XPXCT01(); /* Display list*/
+
+    end
+
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection*/
+
+      GN0AM001.XCT-CTRY-CD = GN0AW01.XCT-CTRY-CD; /* Country code*/
+
+    else
+
+      GN0AM001.XCT-CTRY-CD = XCTTBL.XCTCD[XX0XWPIX]; /* Selected code*/
+
+    end
+
+
+    set GN0AM001.XCT-CTRY-CD cursor; /* Position csr*/
+
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Reset screen from pop-up window activity.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  converseLib.clearScreen();
+   /* Clear screen before display*/
+
+
+end // end GN0A-41000
+
+// Check for required key fields
+Function GN0A-42000()
+   /* ===========================================================*/
+   /* GN0A-42000   CHECK CHANGES*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "42000"; /* Message location*/
+
+   /* -----------------------------------------------------------*/
+   /* Verify variable fields.  Edits are done from the bottom*/
+   /* up so that when the map is re-displayed, the cursor will*/
+   /* set on the topmost error with all errors being highlighted.*/
+   /* -----------------------------------------------------------*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Verify if a maintenance request is valid for the order status*/
+   /* Note - If request invalid, bypass edits and display map.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AW00.GN0AW-DATA-CHANGED-FL == "Y") /* if order data changed*/
+    /**/
+    if (GN0AW01.GR-ORD-STAT-CD == "AL" 
+     || GN0AW01.GR-ORD-STAT-CD == "PL" /* Allocated or Planned*/
+     || GN0AW01.GR-ORD-STAT-CD == "DS") /* DeScheduled*/
+        /* next sentence*/
+    else
+      /**/
+      GN0A-42120(); /* highlite changed fields*/
+      /**/
+      converseLib.validationFailed(100); /* Order cannot be updated*/
+    end
+  end
+
+  if (GN0AW00.GN0AW-DTS-OR-PO-DATA-CHANGED-FL == "Y") /* dts or po mod*/
+    /**/
+    if (GN0AW01.GR-ORD-STAT-CD == "AL"  
+     || GN0AW01.GR-ORD-STAT-CD == "PL"  /* Allocated or Planned*/
+     || (GN0AW01.XWH-WHSE-CD == "51"    /* (Memphis apparel and*/
+     && (GN0AW01.GR-ORD-STAT-CD == "PH" /* ((Pack&hold or*/
+     || GN0AW01.GR-ORD-STAT-CD == "DS"  /* DeScheduled*/
+     || GN0AW01.GR-ORD-STAT-CD == "SC"))) /* (Scheduled)*/
+         /* next sentence*/
+    else
+      /**/
+      GN0A-42140(); /* highlite changed fields*/
+      /**/
+      converseLib.validationFailed(100); /* Order cannot be updated*/
+    end
+  end
+
+  if (GN0AW00.GN0AW-NIL-CHANGED-FL == "Y") /* Nil data changed*/
+    /**/
+    if (GN0AW01.GR-ORD-STAT-CD == "PU" /* purged order*/
+     || GN0AW01.GR-ORD-STAT-CD == "SH" /* shipped order*/
+     || GN0AW01.GR-ORD-STAT-CD == "SS" /* stop shipment*/
+    )                                 
+      GN0A-42160(); /* highlite changed fields*/
+      /**/
+      converseLib.validationFailed(100); /* Order cannot be updated*/
+    end
+  end
+
+  if (converseVar.validationMsgNum == 100) /* changes not good with status*/
+    /**/
+    exit stack; /* Exit to display map*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Verify the Onetime Ship-to Override Address*/
+   /* If any one of the required address fields has a value*/
+   /* then all other required fields must be entered.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.OP-ONETIME-SHIP-FL == "Y")
+    if (GN0AM001.XCT-CTRY-CD > " "
+     || GN0AM001.XXX-ZIP > " "
+     || GN0AM001.XST-ST-CD > " "
+     || GN0AM001.XXX-CITY > " "
+     || GN0AM001.XXX-ADDR3 > " "
+     || GN0AM001.XXX-ADDR2 > " "
+     || GN0AM001.XXX-ADDR1 > " ") /* Any addr field entered*/
+      /**/
+      if (GN0AM001.XCT-CTRY-CD > " ") /* Country cd entered*/
+        /**/
+        if (GN0AM001.XCT-CTRY-CD in XCTTBL.XCTCD /* Code in table*/
+         && XCTTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+          /**/
+           /* NEXT SENTENCE*/
+        else
+          /**/
+          set GN0AM001.XCT-CTRY-CD cursor, bold; /* Highlight*/
+          converseLib.validationFailed(80); /* Country invalid*/
+        end
+      end
+      /**/
+      /**/
+      if (GN0AM001.XST-ST-CD > " ") /* State cd entered*/
+        /**/
+        if (GN0AW01.XDV-DIV-CD != "02") /* not NIL order TT15719*/
+          /**/
+          if (GN0AM001.XST-ST-CD in XSTTBL.XSTCD /* Code in table*/
+           && XSTTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+            /**/
+             /* NEXT SENTENCE*/
+          else
+            /**/
+            set GN0AM001.XST-ST-CD bold, cursor;
+            converseLib.validationFailed(81); /* State invalid*/
+          end
+        end
+      end
+      /**/
+      /**/
+       /* Note - Zip code is not a required field nor can it be validated*/
+      if ((GN0AM001.XXX-CITY == " "
+       || GN0AM001.XCT-CTRY-CD == " ")) /* One or more req'd are blank*/
+        /**/
+        if (GN0AM001.XCT-CTRY-CD == " ")
+          set GN0AM001.XCT-CTRY-CD bold, cursor;
+        end
+        /**/
+        if (GN0AM001.XXX-CITY == " ")
+          set GN0AM001.XXX-CITY bold, cursor;
+        end
+        /**/
+        converseLib.validationFailed(180); /* if one, all req'd*/
+      end
+      /**/
+       /* State code check is not done for NIL orders - TT16006 START*/
+      if (GN0AW01.XDV-DIV-CD != "02") /* not NIL order*/
+        if (GN0AM001.XST-ST-CD == " ")
+          set GN0AM001.XST-ST-CD bold, cursor; /* Cursor position*/
+          converseLib.validationFailed(180); /* if one, all req'd*/
+        end
+      end
+       /* State code check is not done for NIL orders - TT16006 END*/
+      /**/
+      if (GN0AM001.XXX-ADDR1 == " "
+       && GN0AM001.XXX-ADDR2 == " "
+       && GN0AM001.XXX-ADDR3 == " ")
+        /**/
+        set GN0AM001.XXX-ADDR3 bold;
+        set GN0AM001.XXX-ADDR2 bold;
+        set GN0AM001.XXX-ADDR1 bold, cursor;
+        converseLib.validationFailed(180); /* if one, all req'd*/
+      end
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Verify the Do Not Ship After Date*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.GN0AW-DNSA-DT-MM != 0
+   && GN0AM001.GN0AW-DNSA-DT-DD != 0)
+    /**/
+    GN0AW00.GN0AW-DATE-MM = GN0AM001.GN0AW-DNSA-DT-MM;
+    GN0AW00.GN0AW-DATE-DD = GN0AM001.GN0AW-DNSA-DT-DD;
+    GN0AW00.GN0AW-DATE-YY = GN0AM001.GN0AW-DNSA-DT-YY;
+    /**/
+    if (GN0AW00.GN0AW-DATE-YY > 90)
+      GN0AW00.GN0AW-DATE-CC = 19;
+    else
+      GN0AW00.GN0AW-DATE-CC = 20;
+    end
+    /**/
+    /**/
+    set TA2REC empty;
+    TA2REC.TA2GRGGN = GN0AW00.GN0AW-DATE;
+    GN0A-42200(); /* Validate the date*/
+    /**/
+    if (TA2REC.TA2RTNCD != 0)
+      /**/
+      converseLib.validationFailed(179); /* invalid date*/
+      set GN0AM001.GN0AW-DNSA-DT-MM cursor, bold;
+      set GN0AM001.GN0AW-DNSA-DT-DD bold;
+      set GN0AM001.GN0AW-DNSA-DT-YY bold;
+    end
+    /**/
+  else
+    /**/
+     /* DNSA date not required, but zero out year if entered*/
+     /* and month/day not entered*/
+    GN0AM001.GN0AW-DNSA-DT-YY = 0;
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Verify the Do Not Ship Before Date*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.GN0AW-DNSB-DT-MM != 0
+   && GN0AM001.GN0AW-DNSB-DT-DD != 0)
+    /**/
+    GN0AW00.GN0AW-DATE-MM = GN0AM001.GN0AW-DNSB-DT-MM;
+    GN0AW00.GN0AW-DATE-DD = GN0AM001.GN0AW-DNSB-DT-DD;
+    GN0AW00.GN0AW-DATE-YY = GN0AM001.GN0AW-DNSB-DT-YY;
+    /**/
+    if (GN0AW00.GN0AW-DATE-YY > 90)
+      GN0AW00.GN0AW-DATE-CC = 19;
+    else
+      GN0AW00.GN0AW-DATE-CC = 20;
+    end
+    /**/
+    /**/
+    set TA2REC empty;
+    TA2REC.TA2GRGGN = GN0AW00.GN0AW-DATE;
+    GN0A-42200(); /* Validate the date*/
+    /**/
+    if (TA2REC.TA2RTNCD != 0)
+      /**/
+      converseLib.validationFailed(181); /* invalid date*/
+      set GN0AM001.GN0AW-DNSB-DT-MM cursor, bold;
+      set GN0AM001.GN0AW-DNSB-DT-DD bold;
+      set GN0AM001.GN0AW-DNSB-DT-YY bold;
+    end
+    /**/
+  else /* DNSB req'd*/
+    /**/
+    converseLib.validationFailed(182); /* Dnsb dt is required*/
+    set GN0AM001.GN0AW-DNSB-DT-MM cursor, bold;
+    set GN0AM001.GN0AW-DNSB-DT-DD bold;
+    set GN0AM001.GN0AW-DNSB-DT-YY bold;
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  /* Verify the Carrier Code*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.TF-CARR-CD > " ")
+    /**/
+    if (GN0AM001.TF-CARR-CD == TF1REC.TF1CARCD) /* Carrier same as before*/
+      /**/
+       /* next sentence*/
+    else
+      /**/
+      set TF1REC empty; /* Init rec*/
+      TF1REC.TF1CARCD = GN0AM001.TF-CARR-CD; /* Carrier*/
+      /**/
+      try
+        call "IO0860" ("S ", SQLCA, TF1REC) {isNoRefresh = yes, isExternal = yes};
+      end
+      /**/
+      if (sysVar.errorCode == "00000000" /* Successful*/
+       && SQLCA.VAGen_SQLCODE == 0)     
+        /**/
+         /* next sentence*/
+      else
+        set TF1REC empty; /* Init rec*/
+        set GN0AM001.TF-CARR-CD bold, cursor;
+        converseLib.validationFailed(78);
+      end
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Verify the pick priority code*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.XPP-PICK-PRTY-CD in XPPTBL.XPPCD /* Code in table*/
+   && XPPTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+    /**/
+     /* NEXT SENTENCE*/
+  else
+    /**/
+    set GN0AM001.XPP-PICK-PRTY-CD cursor, bold; /* Highlight*/
+    converseLib.validationFailed(79); /* Prty invalid msg*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Verify the customer PO*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.OP-CUST-PO > " ")
+    /**/
+      /* No edits at this time*/
+  end
+
+
+   /* **************************************************************/
+   /* KIN#58226 NIL process changes starts*/
+   /* **************************************************************/
+   /* ; /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* ; /* Verify NIL order number*/
+   /* ; /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* IF GN0AW00.GN0AW-NIL-CHANGED-FL EQ 'Y'; /* Nil data changed*/
+   /* ;*/
+   /* GN0A-42400();                  /* Edit NIL order*/
+   /* ;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 0; /* Nil order is valid*/
+   /* ;*/
+   /* ;      /* Next sentence*/
+   /* ELSE;*/
+   /* ;*/
+   /* SET GN0AM001.NI-CUST-ORD-ID CURSOR,BRIGHT;*/
+   /* SET GN0AM001.NI-NIKE-ORD-ID BRIGHT;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 5;*/
+   /* MOVE 130 TO EZEMNO;        /* Not in OTP*/
+   /* ELSE;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 15;*/
+   /* MOVE 132 TO EZEMNO;      /* Not a NIL DN*/
+   /* ELSE;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 20;*/
+   /* MOVE 133 TO EZEMNO;    /* Not in Shiprec*/
+   /* ELSE;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 30;*/
+   /* MOVE 134 TO EZEMNO;  /* Stop ship*/
+   /* ELSE;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 40;*/
+   /* MOVE 135 TO EZEMNO; /* Not in Order table*/
+   /* ELSE;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 45;*/
+   /* MOVE 136 TO EZEMNO; /* Whse not = in OP Order*/
+   /* ELSE;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 50;*/
+   /* MOVE 137 TO EZEMNO; /* Already loaded on NIL P/L*/
+   /* ELSE;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 60;*/
+   /* MOVE 138 TO EZEMNO; /* No Shiprec item found*/
+   /* ELSE;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 70;*/
+   /* MOVE 139 TO EZEMNO; /* Shiprec itm not on OP itm*/
+   /* ELSE;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 9900;*/
+   /* MOVE 140 TO EZEMNO; /* Shiprec itm not on OP itm*/
+   /* ELSE;*/
+   /* IF WGN3171.GN0AW-GN3170-RETURN-CD EQ 10;*/
+   /* IF EZEAID IS ENTER;*/
+   /* MOVE 131 TO EZEMNO; /* warning - NIL SO update*/
+   /* END;*/
+   /* ELSE;*/
+   /* MOVE 141 TO EZEMNO; /* Shiprec itm not on OP itm*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+   /* END;*/
+  /* **************************************************************/
+   /* KIN#58226 NIL process changes ends*/
+   /* **************************************************************/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Verify the order number, a.k.a. delivery note number*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.OP-CUST-ORD-ID <= 0) /* Order number missing*/
+    /**/
+    converseLib.validationFailed(72); /* Cannot be blank msg*/
+    set GN0AM001.OP-CUST-ORD-ID cursor, bold; /* Highlight*/
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If any errors were found, exit to display the map.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.validationMsgNum > 0 /* Errors found*/
+   && converseVar.validationMsgNum != 141) /* and not just a warning*/
+    /**/
+    exit stack; /* Exit to display map*/
+  end
+
+
+end // end GN0A-42000
+
+// Set csr for chg'd fields
+Function GN0A-42120()
+   /* ===========================================================*/
+   /* GN0A-42120   SET CURSOR AND HIGHLIGHTS FOR CHANGED FIELDS*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "42120"; /* Message location*/
+
+
+  if (GN0AM001.XCT-CTRY-CD != GN0AW01.XCT-CTRY-CD) /* Country chg'd*/
+    set GN0AM001.XCT-CTRY-CD cursor, bold;
+  end
+
+  if (GN0AM001.XXX-ZIP != GN0AW01.XXX-ZIP) /* Zip chg'd*/
+    set GN0AM001.XXX-ZIP cursor, bold;
+  end
+
+  if (GN0AM001.XST-ST-CD != GN0AW01.XST-ST-CD) /* State chg'd*/
+    set GN0AM001.XST-ST-CD cursor, bold;
+  end
+
+  if (GN0AM001.XXX-CITY != GN0AW01.XXX-CITY) /* City chg'd*/
+    set GN0AM001.XXX-CITY cursor, bold;
+  end
+
+  if (GN0AM001.XXX-ADDR3 != GN0AW01.XXX-ADDR3) /* Addr line 3 chg'd*/
+    set GN0AM001.XXX-ADDR3 cursor, bold;
+  end
+
+  if (GN0AM001.XXX-ADDR2 != GN0AW01.XXX-ADDR2) /* Addr line 2 chg'd*/
+    set GN0AM001.XXX-ADDR2 cursor, bold;
+  end
+
+  if (GN0AM001.XXX-ADDR1 != GN0AW01.XXX-ADDR1) /* Addr line 1 chg'd*/
+    set GN0AM001.XXX-ADDR1 cursor, bold;
+  end
+
+  if (GN0AM001.OP-ALT-NM != GN0AW01.OP-ALT-NM) /* Alternate name chg'd*/
+    set GN0AM001.OP-ALT-NM cursor, bold;
+  end
+
+                                  /* Pick priority chg'd*/
+  if (GN0AM001.TF-CARR-CD != GN0AW01.TF-CARR-CD)
+    set GN0AM001.TF-CARR-CD cursor, bold;
+  end
+                                  /* Pick priority chg'd*/
+  if (GN0AM001.XPP-PICK-PRTY-CD != GN0AW01.XPP-PICK-PRTY-CD)
+    set GN0AM001.XPP-PICK-PRTY-CD cursor, bold;
+  end
+
+
+end // end GN0A-42120
+
+// Set csr for chg'd fields
+Function GN0A-42140()
+   /* ===========================================================*/
+   /* GN0A-42140   SET CURSOR AND HIGHLIGHTS FOR CHANGED FIELDS*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "42140"; /* Message location*/
+
+                                  /* DNSA date chg'd*/
+  if (GN0AM001.GN0AW-DNSA-DT-YY != GN0AW00.GN0AW-DNSA-DT-YY)
+    set GN0AM001.GN0AW-DNSA-DT-YY cursor, bold;
+  end
+
+  if (GN0AM001.GN0AW-DNSA-DT-MM != GN0AW00.GN0AW-DNSA-DT-MM)
+    set GN0AM001.GN0AW-DNSA-DT-MM cursor, bold;
+  end
+
+  if (GN0AM001.GN0AW-DNSA-DT-DD != GN0AW00.GN0AW-DNSA-DT-DD)
+    set GN0AM001.GN0AW-DNSA-DT-DD cursor, bold;
+  end
+
+                                  /* DNSB date chg'd*/
+  if (GN0AM001.GN0AW-DNSB-DT-YY != GN0AW00.GN0AW-DNSB-DT-YY)
+    set GN0AM001.GN0AW-DNSB-DT-YY cursor, bold;
+  end
+
+  if (GN0AM001.GN0AW-DNSB-DT-MM != GN0AW00.GN0AW-DNSB-DT-MM)
+    set GN0AM001.GN0AW-DNSB-DT-MM cursor, bold;
+  end
+
+  if (GN0AM001.GN0AW-DNSB-DT-DD != GN0AW00.GN0AW-DNSB-DT-DD)
+    set GN0AM001.GN0AW-DNSB-DT-DD cursor, bold;
+  end
+
+
+  if (GN0AM001.OP-CUST-PO != GN0AW01.OP-CUST-PO) /* Cust PO chg'd*/
+    set GN0AM001.OP-CUST-PO cursor, bold;
+  end
+
+
+end // end GN0A-42140
+
+// Set csr for chg'd fields
+Function GN0A-42160()
+   /* ===========================================================*/
+   /* GN0A-42160   SET CURSOR AND HIGHLIGHTS FOR CHANGED FIELDS*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "42160"; /* Message location*/
+
+
+  if (GN0AM001.NI-CUST-ORD-ID != GN0AW01.NI-CUST-ORD-ID) /* NIL order Id*/
+    set GN0AM001.NI-CUST-ORD-ID cursor, bold;
+  end
+
+  if (GN0AM001.NI-NIKE-ORD-ID != GN0AW01.NI-NIKE-ORD-ID) /* NIL nike ord id*/
+    set GN0AM001.NI-NIKE-ORD-ID cursor, bold;
+  end
+
+
+end // end GN0A-42160
+
+// Validate dates
+Function GN0A-42200()
+   /* ===========================================================*/
+   /* GN0A-42200   VALIDATE DATES*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "42200"; /* Msg location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Validate a date passed in ccyymmdd format.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  TA2REC.TA2DTOPT = "GREGGREG"; /* Gregorian date*/
+  TA2REC.TA2GRTYP = "G"; /* Type*/
+
+  try
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Date routine*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Indicate error if the date doesn't pass the verification.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA2REC.TA2RTNCD < 888)         /* subroutine completed*/
+
+     /* next sentence*/
+
+  else
+
+    TAEREC.TAEDESC1 = sysVar.errorCode;
+    TAEREC.TAEDESC2 = TA2REC.TA2GROUP;
+
+    TA1REC.TA1FUNC = "RETN"; /* Termination*/
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1LOC = "VERIFY DATE ";
+    TA1REC.TA1PGMAP = "GN0A"; /* Program*/
+
+
+    call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error routine*/
+
+
+    TA1REC.TA1PGMNO = GNWREC.XXX-MSG-LOC-ID; /* Module id*/
+    converseLib.validationFailed(01); /* System error*/
+
+
+    exit stack; /* exit to map*/
+
+  end
+
+
+end // end GN0A-42200
+
+// Set csr for chg'd fields
+Function GN0A-43000()
+   /* ===========================================================*/
+   /* GN0A-43000   SET CURSOR AND HIGHLIGHTS FOR CHANGED FIELDS*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+
+
+  if (GN0AM001.XCT-CTRY-CD != GN0AW01.XCT-CTRY-CD) /* Country chg'd*/
+    set GN0AM001.XCT-CTRY-CD cursor, bold;
+  end
+
+  if (GN0AM001.XXX-ZIP != GN0AW01.XXX-ZIP) /* Zip chg'd*/
+    set GN0AM001.XXX-ZIP cursor, bold;
+  end
+
+  if (GN0AM001.XST-ST-CD != GN0AW01.XST-ST-CD) /* State chg'd*/
+    set GN0AM001.XST-ST-CD cursor, bold;
+  end
+
+  if (GN0AM001.XXX-CITY != GN0AW01.XXX-CITY) /* City chg'd*/
+    set GN0AM001.XXX-CITY cursor, bold;
+  end
+
+  if (GN0AM001.XXX-ADDR3 != GN0AW01.XXX-ADDR3) /* Addr line 3 chg'd*/
+    set GN0AM001.XXX-ADDR3 cursor, bold;
+  end
+
+  if (GN0AM001.XXX-ADDR2 != GN0AW01.XXX-ADDR2) /* Addr line 2 chg'd*/
+    set GN0AM001.XXX-ADDR2 cursor, bold;
+  end
+
+  if (GN0AM001.XXX-ADDR1 != GN0AW01.XXX-ADDR1) /* Addr line 1 chg'd*/
+    set GN0AM001.XXX-ADDR1 cursor, bold;
+  end
+
+  if (GN0AM001.OP-ALT-NM != GN0AW01.OP-ALT-NM) /* Alternate name chg'd*/
+    set GN0AM001.OP-ALT-NM cursor, bold;
+  end
+
+                                  /* DNSA date chg'd*/
+  if (GN0AM001.GN0AW-DNSA-DT-YY != GN0AW00.GN0AW-DNSA-DT-YY)
+    set GN0AM001.GN0AW-DNSA-DT-YY cursor, bold;
+  end
+
+  if (GN0AM001.GN0AW-DNSA-DT-MM != GN0AW00.GN0AW-DNSA-DT-MM)
+    set GN0AM001.GN0AW-DNSA-DT-MM cursor, bold;
+  end
+
+  if (GN0AM001.GN0AW-DNSA-DT-DD != GN0AW00.GN0AW-DNSA-DT-DD)
+    set GN0AM001.GN0AW-DNSA-DT-DD cursor, bold;
+  end
+
+                                  /* DNSB date chg'd*/
+  if (GN0AM001.GN0AW-DNSB-DT-YY != GN0AW00.GN0AW-DNSB-DT-YY)
+    set GN0AM001.GN0AW-DNSB-DT-YY cursor, bold;
+  end
+
+  if (GN0AM001.GN0AW-DNSB-DT-MM != GN0AW00.GN0AW-DNSB-DT-MM)
+    set GN0AM001.GN0AW-DNSB-DT-MM cursor, bold;
+  end
+
+  if (GN0AM001.GN0AW-DNSB-DT-DD != GN0AW00.GN0AW-DNSB-DT-DD)
+    set GN0AM001.GN0AW-DNSB-DT-DD cursor, bold;
+  end
+
+                                  /* Pick priority chg'd*/
+  if (GN0AM001.TF-CARR-CD != GN0AW01.TF-CARR-CD)
+    set GN0AM001.TF-CARR-CD cursor, bold;
+  end
+                                  /* Pick priority chg'd*/
+  if (GN0AM001.XPP-PICK-PRTY-CD != GN0AW01.XPP-PICK-PRTY-CD)
+    set GN0AM001.XPP-PICK-PRTY-CD cursor, bold;
+  end
+
+  if (GN0AM001.OP-CUST-PO != GN0AW01.OP-CUST-PO) /* Cust PO chg'd*/
+    set GN0AM001.OP-CUST-PO cursor, bold;
+  end
+
+  if (GN0AM001.NI-CUST-ORD-ID != GN0AW01.NI-CUST-ORD-ID) /* NIL order Id*/
+    set GN0AM001.NI-CUST-ORD-ID cursor, bold;
+  end
+
+  if (GN0AM001.NI-NIKE-ORD-ID != GN0AW01.NI-NIKE-ORD-ID) /* NIL nike ord id*/
+    set GN0AM001.NI-NIKE-ORD-ID cursor, bold;
+  end
+
+
+end // end GN0A-43000
+
+// Process valid input request
+Function GN0A-50000()
+   /* ===========================================================*/
+   /* GN0A-50000   PROCESS VALID INPUT REQUEST*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "50000"; /* Message location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Change in select keys.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (GN0AM001.XWH-WHSE-CD != GN0AW01.XWH-WHSE-CD
+   || GN0AM001.OP-CUST-ORD-ID != GN0AW01.OP-CUST-ORD-ID)
+
+    /* selection keys have changed*/
+    GN0AW00.GN0AW-NEW-KEY-FL = "Y"; /* Key has changed*/
+    GN0AW00.XXX-RQT-DATA-FL = "Y"; /* Select the new data*/
+    GN0AW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+    GN0AW00.GN0AW-OK-TO-UPDT-NIL-FL = "N"; /* No OK to change NIL*/
+    GN0AW00.GN0AW-JOB-SUBD-FL = "N"; /* JCL submitted flag*/
+
+    exit stack;
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Check to see if sameday job running before an update*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (converseVar.eventKey is pf6  /* Update request*/
+   || converseVar.eventKey is pf14 /* or Delete request*/
+   || converseVar.eventKey is pf16) /* or Nix    request*/
+
+    /* --- Check whether sameday is running ---*/
+    GN0A-53000(); /* Select DPICK.VPKPGM01*/
+
+    if (PWHREC.XXXCMTCT != 0)
+
+      /* --- Sameday is running...try again later ---*/
+      converseLib.validationFailed(64);
+
+      exit stack;
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Process the requested function.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+   /* --- REQUEST TO UPDATE ORDER (PF6)*/
+  if (converseVar.eventKey is pf6)
+
+    if (GN0AW00.GN0AW-DATA-CHANGED-FL == "Y" /* Data changed*/
+     || GN0AW00.GN0AW-DTS-OR-PO-DATA-CHANGED-FL == "Y") /* dts or po chngd*/
+
+      GN0A-51000(); /* Order update*/
+    end
+
+  /*KIN#58226 NIL process changes starts*/
+  /**/
+  /*  IF GN0AW00.GN0AW-NIL-CHANGED-FL EQ 'Y'; /* NIL change*/
+  /*;*/
+  /*    GN0A-54000();                /* submit GNwwNL job*/
+  /*;*/
+  /*    MOVE 'Y' TO GN0AW00.GN0AW-JOB-SUBD-FL; /* JCL submitted*/
+  /*  END;*/
+  /**/
+  /*KIN#58226 NIL process changes ends*/
+  end
+
+
+   /* --- REQUEST TO DELETE ORDER (PF13) OR NIX (PF15);*/
+  if (converseVar.eventKey is pf13 /* PF13 pressed*/
+   || converseVar.eventKey is pf15) /* PF15 pressed*/
+
+    if (converseVar.eventKey is pf13) /* PF13 pressed*/
+      GN0AW00.GN0AW-DELETE-REQUESTED-FL = "Y"; /* Delete requested*/
+    else
+      GN0AW00.GN0AW-DELETE-REQUESTED-FL = "X"; /* Nix    requested*/
+    end
+
+    converseLib.validationFailed(75); /* PF14 to confirm msg*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+   /* --- CONFIRMATION TO DELETE ORDER (PF14) OR NIX ORDER (PF16);*/
+  if (converseVar.eventKey is pf14 /* Confirm order Delete*/
+   || converseVar.eventKey is pf16) /* Confirm order Nix*/
+
+    GN0A-52000(); /* Order delete*/
+  end
+
+
+  if (converseVar.eventKey is pf6  /* if change was performed request*/
+   || converseVar.eventKey is pf14 /* or delete was performed request*/
+   || converseVar.eventKey is pf16) /* or nix was performed request*/
+
+    GN0AW01.XWH-WHSE-CD = GN0AM001.XWH-WHSE-CD;
+    GN0AW01.CU-CO-ID = GN0AM001.CU-CO-ID;
+    GN0AW01.CU-STOR-ID = GN0AM001.CU-STOR-ID;
+    GN0AW01.XNX-DEPT-ID-XREF = GN0AM001.GN0AM-XNX-DEPT-ID-XREF;
+    GN0AW01.OP-CUST-ORD-ID = GN0AM001.OP-CUST-ORD-ID;
+    GN0AW01.PK-SAP-CUST-NBR = GN0AM001.PK-SAP-CUST-NBR;
+    GN0AW01.XOT-ORD-TYP-CD = GN0AM001.XOT-ORD-TYP-CD;
+    GN0AW01.PK-SAP-SLS-DOC-NBR = GN0AM001.PK-SAP-SLS-DOC-NBR;
+    GN0AW01.GR-ORD-STAT-CD = GN0AM001.GR-ORD-STAT-CD;
+    GN0AW01.NI-CUST-ORD-ID = GN0AM001.NI-CUST-ORD-ID;
+    GN0AW01.NI-NIKE-ORD-ID = GN0AM001.NI-NIKE-ORD-ID;
+    GN0AW01.XPACD = GN0AM001.XPACD;
+    GN0AW01.OP-CUST-PO = GN0AM001.OP-CUST-PO;
+    GN0AW01.XPP-PICK-PRTY-CD = GN0AM001.XPP-PICK-PRTY-CD;
+    GN0AW01.TF-CARR-CD = GN0AM001.TF-CARR-CD;
+    GN0AW00.GN0AW-DNSB-DT-MM = GN0AM001.GN0AW-DNSB-DT-MM;
+    GN0AW00.GN0AW-DNSB-DT-DD = GN0AM001.GN0AW-DNSB-DT-DD;
+    GN0AW00.GN0AW-DNSB-DT-YY = GN0AM001.GN0AW-DNSB-DT-YY;
+    GN0AW00.GN0AW-DNSA-DT-MM = GN0AM001.GN0AW-DNSA-DT-MM;
+    GN0AW00.GN0AW-DNSA-DT-DD = GN0AM001.GN0AW-DNSA-DT-DD;
+    GN0AW00.GN0AW-DNSA-DT-YY = GN0AM001.GN0AW-DNSA-DT-YY;
+    if (GN0AM001.GN0AW-DNSB-DT-MM == 0
+     && GN0AM001.GN0AW-DNSB-DT-DD == 0)
+      GN0AW00.GN0AW-DNSB-DT-CC = 00;
+    else
+      if (GN0AW00.GN0AW-DNSB-DT-YY > 90)
+        GN0AW00.GN0AW-DNSB-DT-CC = 19;
+      else
+        GN0AW00.GN0AW-DNSB-DT-CC = 20;
+      end
+    end
+    if (GN0AM001.GN0AW-DNSA-DT-MM == 0
+     && GN0AM001.GN0AW-DNSA-DT-DD == 0)
+      GN0AW00.GN0AW-DNSA-DT-CC = 00;
+    else
+      if (GN0AW00.GN0AW-DNSA-DT-YY > 90)
+        GN0AW00.GN0AW-DNSA-DT-CC = 19;
+      else
+        GN0AW00.GN0AW-DNSA-DT-CC = 20;
+      end
+    end
+    GN0AW01.OP-DNT-SHIP-AFT-DT = GN0AW00.GN0AW-DNSA-DT;
+    GN0AW01.OP-DNT-SHIP-BFR-DT = GN0AW00.GN0AW-DNSB-DT;
+    GN0AW01.OP-ALT-NM = GN0AM001.OP-ALT-NM;
+    GN0AW01.XXX-ADDR1 = GN0AM001.XXX-ADDR1;
+    GN0AW01.XXX-ADDR2 = GN0AM001.XXX-ADDR2;
+    GN0AW01.XXX-ADDR3 = GN0AM001.XXX-ADDR3;
+    GN0AW01.XXX-CITY = GN0AM001.XXX-CITY;
+    GN0AW01.XST-ST-CD = GN0AM001.XST-ST-CD;
+    GN0AW01.XXX-ZIP = GN0AM001.XXX-ZIP;
+    GN0AW01.XCT-CTRY-CD = GN0AM001.XCT-CTRY-CD;
+    GN0AW01.OP-ONETIME-SHIP-FL = GN0AM001.OP-ONETIME-SHIP-FL;
+    GN0AW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+    GN0AW00.GN0AW-OK-TO-UPDT-NIL-FL = "N";
+  end
+
+
+  GN0AW00.GN0AW-DELETE-REQUESTED-FL = "N"; /* Reset delete rqst flag*/
+  GN0AW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+  GN0AW00.GN0AW-DATA-CHANGED-FL = "N"; /* Reset data chg sw*/
+  GN0AW00.GN0AW-DTS-OR-PO-DATA-CHANGED-FL = "N"; /* reset dts chg sw*/
+  GN0AW00.GN0AW-NIL-CHANGED-FL = "N"; /* nil change*/
+
+
+end // end GN0A-50000
+
+// Order update
+Function GN0A-51000()
+   /* ===========================================================*/
+   /* GN0A-51000   ORDER UPDATE*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "51000"; /* Message location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Format the parms for the the io call.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  set WGN1031 empty;
+
+  WGN1031.GN0AW-GN1030-RETURN-CD = 99; /* Initialize*/
+  WGN1031.GN0AW-GN1030-FUNC-CD = "U"; /* Function option*/
+  WGN1031.SQLCAREC = SQLCA.SQLCAREC;
+
+  WGN1031.XWH-WHSE-CD = GN0AM001.XWH-WHSE-CD; /* Warehouse code*/
+  WGN1031.OP-CUST-ORD-ID = GN0AM001.OP-CUST-ORD-ID; /* Order nbr*/
+  WGN1031.OP-NIKE-ORD-ID = 1; /* Default sub order*/
+
+
+   /* Note: Need to keep customer, etc. in wgn1031 for subsequent*/
+   /* logic that assumes this is always non-zero if a valid*/
+   /* order is on the screen.  GN1030 doesn't update this.*/
+  WGN1031.CU-CO-ID = GN0AM001.CU-CO-ID; /* Customer id*/
+  WGN1031.CU-STOR-ID = GN0AM001.CU-STOR-ID; /* Store id*/
+  WGN1031.XNX-DEPT-ID-XREF = GN0AM001.GN0AM-XNX-DEPT-ID-XREF; /* Dept id*/
+  WGN1031.PK-SAP-CUST-NBR = GN0AM001.PK-SAP-CUST-NBR; /* SAP cust#*/
+  WGN1031.PK-SAP-SLS-DOC-NBR = GN0AM001.PK-SAP-SLS-DOC-NBR; /* SAP sales doc#*/
+  WGN1031.XOT-ORD-TYP-CD = GN0AM001.XOT-ORD-TYP-CD; /* Order type*/
+  WGN1031.GR-ORD-STAT-CD = GN0AM001.GR-ORD-STAT-CD; /* Status code*/
+  WGN1031.XPACD = GN0AM001.XPACD; /* Customer pack cd*/
+  WGN1031.OP-CUST-PO = GN0AM001.OP-CUST-PO; /* Customer PO*/
+  WGN1031.XPP-PICK-PRTY-CD = GN0AM001.XPP-PICK-PRTY-CD; /* Pick priority*/
+  WGN1031.TF-CARR-CD = GN0AM001.TF-CARR-CD; /* Carrier code*/
+
+   /* format DNSB date*/
+  if (GN0AM001.GN0AW-DNSB-DT-MM == 0
+   || GN0AM001.GN0AW-DNSB-DT-DD == 0)
+    GN0AW00.GN0AW-DATE-CC = 0;
+    GN0AW00.GN0AW-DATE-YY = 0;
+  else
+    if (GN0AM001.GN0AW-DNSB-DT-YY > 90)
+      GN0AW00.GN0AW-DATE-CC = 19;
+    else
+      GN0AW00.GN0AW-DATE-CC = 20;
+    end
+  end
+
+  GN0AW00.GN0AW-DATE-YY = GN0AM001.GN0AW-DNSB-DT-YY;
+  GN0AW00.GN0AW-DATE-MM = GN0AM001.GN0AW-DNSB-DT-MM;
+  GN0AW00.GN0AW-DATE-DD = GN0AM001.GN0AW-DNSB-DT-DD;
+  WGN1031.OP-DNT-SHIP-BFR-DT = GN0AW00.GN0AW-DATE; /* DNSB date*/
+  GN0AW00.GN0AW-DNSB-DT-GROUP = GN0AW00.GN0AW-DATE-GROUP;
+
+   /* format DNSA date*/
+  if (GN0AM001.GN0AW-DNSA-DT-MM == 0
+   || GN0AM001.GN0AW-DNSA-DT-DD == 0)
+    GN0AW00.GN0AW-DATE-CC = 0;
+    GN0AW00.GN0AW-DATE-YY = 0;
+  else
+    if (GN0AM001.GN0AW-DNSA-DT-YY > 90)
+      GN0AW00.GN0AW-DATE-CC = 19;
+    else
+      GN0AW00.GN0AW-DATE-CC = 20;
+    end
+  end
+
+  GN0AW00.GN0AW-DATE-YY = GN0AM001.GN0AW-DNSA-DT-YY;
+  GN0AW00.GN0AW-DATE-MM = GN0AM001.GN0AW-DNSA-DT-MM;
+  GN0AW00.GN0AW-DATE-DD = GN0AM001.GN0AW-DNSA-DT-DD;
+  WGN1031.OP-DNT-SHIP-AFT-DT = GN0AW00.GN0AW-DATE; /* DNSA date*/
+  GN0AW00.GN0AW-DNSA-DT-GROUP = GN0AW00.GN0AW-DATE-GROUP;
+
+  WGN1031.OP-ALT-NM = GN0AM001.OP-ALT-NM; /* Alternate name*/
+  WGN1031.XXX-ADDR1 = GN0AM001.XXX-ADDR1; /* Address line 1*/
+  WGN1031.XXX-ADDR2 = GN0AM001.XXX-ADDR2; /* Address line 2*/
+  WGN1031.XXX-ADDR3 = GN0AM001.XXX-ADDR3; /* Address line 3*/
+  WGN1031.XXX-CITY = GN0AM001.XXX-CITY; /* City*/
+  WGN1031.XST-ST-CD = GN0AM001.XST-ST-CD; /* State*/
+  WGN1031.XXX-ZIP = GN0AM001.XXX-ZIP; /* ZIP code*/
+  WGN1031.XCT-CTRY-CD = GN0AM001.XCT-CTRY-CD; /* Country*/
+  WGN1031.OP-ONETIME-SHIP-FL = GN0AM001.OP-ONETIME-SHIP-FL; /* Onetime ship flag*/
+
+  XX0XS01(); /* Get date and time*/
+
+  WGN1031.ZZ-CHNG-DT = XX0XW01.XX0XWDAT; /* Change date*/
+  WGN1031.ZZ-CHNG-HHMM = XX0XW01.XX0XWTIM; /* Change time*/
+
+
+  try
+    call "GN1030" (WGN1031) {isNoRefresh = yes, isExternal = yes};
+  end /* GN1030 call*/
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+  if (sysVar.errorCode != "00000000") /* Call NOT successful*/
+
+    TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+    TAEREC.SQLCAREC = WGN1031.SQLCAREC; /* SQL Commarea*/
+
+    converseLib.validationFailed(01); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = GNWREC.XXX-MSG-LOC-ID; /* Message location*/
+    TA1REC.TA1LOC = "BAD GN1030 CALL     "; /* Description*/
+    TA1REC.TA1DBASE = "EZERT8: "; /* Data base name*/
+    TA1REC.TA1TBLVU = sysVar.errorCode; /* Table view name*/
+    TA1REC.TA1TBLKE = "EZERT8 NE 0"; /* Table key*/
+
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+  if (WGN1031.GN0AW-GN1030-RETURN-CD == 99) /* Not normal*/
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Reset any updates*/
+
+    TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+    TAEREC.SQLCAREC = WGN1031.SQLCAREC; /* SQL Commarea*/
+
+    converseLib.validationFailed(01); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = GNWREC.XXX-MSG-LOC-ID; /* Message location*/
+    TA1REC.TA1LOC = "GN1030 DB2 ERROR    "; /* Description*/
+    TA1REC.TA1DBASE = WGN1031.GN0AW-GN1030-DATABASE-NM; /* Data base name*/
+    TA1REC.TA1TBLVU = WGN1031.GN0AW-GN1030-VIEW-NM; /* Table view name*/
+    TA1REC.TA1TBLKE = "UNEXPECTED SQL"; /* Table key*/
+
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+  if (WGN1031.GN0AW-GN1030-RETURN-CD == 9) /* Contention*/
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Reset any updates*/
+    converseLib.validationFailed(53); /* Try again later*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+  /* dlvrusa - carrier assignment change for whse-51 - start*/
+  if (WGN1031.GN0AW-GN1030-RETURN-CD == 20) /* wcarr not found*/
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Reset any updates*/
+    converseLib.validationFailed(220); /* Try again later*/
+    set GN0AM001.TF-CARR-CD cursor;
+
+    exit stack; /* Exit to display map*/
+  end
+
+  if (WGN1031.GN0AW-GN1030-RETURN-CD == 21) /* multi wcarr*/
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Reset any updates*/
+    converseLib.validationFailed(221); /* Try again later*/
+    set GN0AM001.TF-CARR-CD cursor;
+
+    exit stack; /* Exit to display map*/
+  end
+  /* dlvrusa - carrier assignment change for whse-51 - end*/
+
+   /* TT#16532 changes begin*/
+
+  try
+    call "IO1680" ("A ", SQLCA, OMBREC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  set OMBREC empty;
+
+  OMBREC.XWHCD = GN0AM001.XWH-WHSE-CD; /* Warehouse code*/
+  GN0AW00.GN0AW-CUST-ORD-ID = GN0AM001.OP-CUST-ORD-ID;
+  OMBREC.OP1PARTN = GN0AW00.GN0AW-CUST-ORD-I2;
+  OMBREC.OP1CUOID = GN0AM001.OP-CUST-ORD-ID; /* Order nbr*/
+  OMBREC.OP1NORID = 1; /* Default sub order*/
+
+  OMBREC.XPACD = GN0AM001.XPACD; /* Customer pack cd*/
+  OMBREC.OP1CUPO = GN0AM001.OP-CUST-PO; /* Customer PO*/
+  OMBREC.XPPCD = GN0AM001.XPP-PICK-PRTY-CD; /* Pick priority*/
+  OMBREC.TF1CARCD = GN0AM001.TF-CARR-CD; /* Carrier code*/
+
+   /* format DNSB date*/
+  if (GN0AM001.GN0AW-DNSB-DT-MM == 0
+   || GN0AM001.GN0AW-DNSB-DT-DD == 0)
+    GN0AW00.GN0AW-DATE-CC = 0;
+    GN0AW00.GN0AW-DATE-YY = 0;
+  else
+    if (GN0AM001.GN0AW-DNSB-DT-YY > 90)
+      GN0AW00.GN0AW-DATE-CC = 19;
+    else
+      GN0AW00.GN0AW-DATE-CC = 20;
+    end
+  end
+
+  GN0AW00.GN0AW-DATE-YY = GN0AM001.GN0AW-DNSB-DT-YY;
+  GN0AW00.GN0AW-DATE-MM = GN0AM001.GN0AW-DNSB-DT-MM;
+  GN0AW00.GN0AW-DATE-DD = GN0AM001.GN0AW-DNSB-DT-DD;
+  OMBREC.OP1DSBDT = GN0AW00.GN0AW-DATE; /* DNSB date*/
+  GN0AW00.GN0AW-DNSB-DT-GROUP = GN0AW00.GN0AW-DATE-GROUP;
+
+   /* format DNSA date*/
+  if (GN0AM001.GN0AW-DNSA-DT-MM == 0
+   || GN0AM001.GN0AW-DNSA-DT-DD == 0)
+    GN0AW00.GN0AW-DATE-CC = 0;
+    GN0AW00.GN0AW-DATE-YY = 0;
+  else
+    if (GN0AM001.GN0AW-DNSA-DT-YY > 90)
+      GN0AW00.GN0AW-DATE-CC = 19;
+    else
+      GN0AW00.GN0AW-DATE-CC = 20;
+    end
+  end
+
+  GN0AW00.GN0AW-DATE-YY = GN0AM001.GN0AW-DNSA-DT-YY;
+  GN0AW00.GN0AW-DATE-MM = GN0AM001.GN0AW-DNSA-DT-MM;
+  GN0AW00.GN0AW-DATE-DD = GN0AM001.GN0AW-DNSA-DT-DD;
+  OMBREC.OP1DSADT = GN0AW00.GN0AW-DATE; /* DNSA date*/
+  GN0AW00.GN0AW-DNSA-DT-GROUP = GN0AW00.GN0AW-DATE-GROUP;
+
+  OMBREC.OP5ALTNM = GN0AM001.OP-ALT-NM; /* Alternate name*/
+  OMBREC.XXXADDR1 = GN0AM001.XXX-ADDR1; /* Address line 1*/
+  OMBREC.XXXADDR2 = GN0AM001.XXX-ADDR2; /* Address line 2*/
+  OMBREC.XXXADDR3 = GN0AM001.XXX-ADDR3; /* Address line 3*/
+  OMBREC.XXXCITY = GN0AM001.XXX-CITY; /* City*/
+  OMBREC.XSTCD = GN0AM001.XST-ST-CD; /* State*/
+  OMBREC.XXXZIP = GN0AM001.XXX-ZIP; /* ZIP code*/
+  OMBREC.XCTCD = GN0AM001.XCT-CTRY-CD; /* Country*/
+  OMBREC.OP4TXT[1] = "RECORD AFTER  UPDATE"; /* /text field*/
+
+  XX0XS01(); /* Get date and time*/
+
+  OMBREC.OP4TXT[9] = GN0AW01.OP-ONETIME-SHIP-FL;
+  OMBREC.OMBMRTYP = "Y"; /* so that it is not picked by SR1200*/
+
+  OMBREC.OP4TXT[8] = COMMAREA.CAUSERID; /* /text field*/
+
+  OMBREC.ZZZSDT = 0;
+  OMBREC.ZZHHMMSS = 0;
+
+  if (OMBREC.TF1CARCD > " ")
+    OMBREC.OP4TXT[10] = "10";
+  else
+    if (OMBREC.XWHCD == "51")
+      OMBREC.OP4TXT[10] = "51";
+    else
+      OMBREC.OP4TXT[10] = " ";
+    end
+  end
+
+  OMBREC.OP4TXT[12] = XX0XW01.XX0XWDAT;
+  OMBREC.OP4TXT[11] = XX0XW01.XX0XWTIM;
+
+  try
+    call "IO1680" ("A ", SQLCA, OMBREC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+   /* TT#16532 changes end*/
+
+  converseLib.validationFailed(101); /* Update Successful*/
+
+
+end // end GN0A-51000
+
+// Order delete
+Function GN0A-52000()
+   /* ===========================================================*/
+   /* GN0A-52000   ORDER DELETE*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "52000"; /* Message location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Format the parms for the the io call.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  WGN1031.GN0AW-GN1030-RETURN-CD = 99; /* Initialize*/
+  WGN1031.SQLCAREC = SQLCA.SQLCAREC;
+
+  if (converseVar.eventKey is pf14) /* Delete request?*/
+
+    if (GN0AW01.XWH-WHSE-CD == "51" /* Memphis apparel*/
+     && GN0AW01.DCMS-ERROR-FL == "Y") /* in error*/
+
+      WGN1031.GN0AW-GN1030-FUNC-CD = "X"; /* Nix order*/
+    else
+      WGN1031.GN0AW-GN1030-FUNC-CD = "D"; /* Delete order*/
+    end
+  else
+    WGN1031.GN0AW-GN1030-FUNC-CD = "X"; /* Nix order*/
+  end
+
+  WGN1031.XWH-WHSE-CD = GN0AM001.XWH-WHSE-CD; /* Warehouse code*/
+  WGN1031.OP-CUST-ORD-ID = GN0AM001.OP-CUST-ORD-ID; /* Order nbr*/
+  WGN1031.OP-NIKE-ORD-ID = 1; /* Default sub order*/
+  WGN1031.CU-CO-ID = GN0AM001.CU-CO-ID; /* Customer*/
+  WGN1031.CU-STOR-ID = GN0AM001.CU-STOR-ID; /* Store*/
+  WGN1031.XNX-DEPT-ID-XREF = GN0AM001.GN0AM-XNX-DEPT-ID-XREF; /* Department*/
+
+  XX0XS01(); /* Get date and time*/
+
+  WGN1031.ZZ-CHNG-DT = XX0XW01.XX0XWDAT; /* Change date*/
+  WGN1031.ZZ-CHNG-HHMM = XX0XW01.XX0XWTIM; /* Change time*/
+
+
+  try
+    call "GN1030" (WGN1031) {isNoRefresh = yes, isExternal = yes};
+  end /* GN1030 call*/
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  if (sysVar.errorCode != "00000000") /* Call NOT successful*/
+
+    TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+    TAEREC.SQLCAREC = WGN1031.SQLCAREC; /* SQL Commarea*/
+    converseLib.validationFailed(01); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = GNWREC.XXX-MSG-LOC-ID; /* Message location*/
+    TA1REC.TA1LOC = "BAD GN1030 CALL     "; /* Description*/
+    TA1REC.TA1DBASE = "EZERT8: "; /* Data base name*/
+    TA1REC.TA1TBLVU = sysVar.errorCode; /* Table view name*/
+    TA1REC.TA1TBLKE = "EZERT8 NE 0"; /* Table key*/
+
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+  if (WGN1031.GN0AW-GN1030-RETURN-CD == 99) /* Not normal*/
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Reset any updates*/
+
+    TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+    TAEREC.SQLCAREC = WGN1031.SQLCAREC; /* SQL Commarea*/
+    converseLib.validationFailed(01); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = GNWREC.XXX-MSG-LOC-ID; /* Message location*/
+    TA1REC.TA1LOC = "GN1030 DB2 ERROR    "; /* Description*/
+    TA1REC.TA1DBASE = WGN1031.GN0AW-GN1030-DATABASE-NM; /* Data base name*/
+    TA1REC.TA1TBLVU = WGN1031.GN0AW-GN1030-VIEW-NM; /* Table view name*/
+    TA1REC.TA1TBLKE = "UNEXPECTED SQL"; /* Table key*/
+
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+  if (WGN1031.GN0AW-GN1030-RETURN-CD == 9) /* Contention*/
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Reset any updates*/
+    converseLib.validationFailed(53); /* Try again later*/
+
+    exit stack; /* Exit to display map*/
+  end
+
+
+  /* IF WGN1031.XWH-WHSE-CD EQ '51'   /* Apparel*/
+  /* AND GN0AW01.DCMS-ERROR-FL NE 'Y'/* and not in error*/
+  /* AND EZEAID IS PF14              /* and delete request*/
+  /* AND WGN1031.GN0AW-GN1030-RETURN-CD EQ 0;/* and DN tagged for del?*/
+  /*  */
+  /* PERFORM GN0A-52200;          /* Submit EP51XO JCL (order dealoc)*/
+  /* END;*/
+
+
+  GN0AM001.GR-ORD-STAT-CD = "PU";
+  GN0AW01.GR-ORD-STAT-CD = "PU";
+
+  converseLib.validationFailed(102); /* Delete successful*/
+
+   /* Re-init DNSB date in GN0AW00*/
+  GN0AW00.GN0AW-DNSB-DT-CC = 0;
+  GN0AW00.GN0AW-DNSB-DT-YY = 0;
+  GN0AW00.GN0AW-DNSB-DT-MM = 0;
+  GN0AW00.GN0AW-DNSB-DT-DD = 0;
+
+   /* Re-init DNSA date in GN0AW00*/
+  GN0AW00.GN0AW-DNSA-DT-CC = 0;
+  GN0AW00.GN0AW-DNSA-DT-YY = 0;
+  GN0AW00.GN0AW-DNSA-DT-MM = 0;
+  GN0AW00.GN0AW-DNSA-DT-DD = 0;
+
+   /* TT#16532 changes begin*/
+
+  set OMBREC empty;
+
+  OMBREC.XWHCD = GN0AM001.XWH-WHSE-CD; /* Warehouse code*/
+  GN0AW00.GN0AW-CUST-ORD-ID = GN0AM001.OP-CUST-ORD-ID;
+  OMBREC.OP1PARTN = GN0AW00.GN0AW-CUST-ORD-I2;
+  OMBREC.OP1CUOID = GN0AM001.OP-CUST-ORD-ID; /* Order nbr*/
+  OMBREC.OP1NORID = 1; /* Default sub order*/
+
+  OMBREC.XPACD = GN0AM001.XPACD; /* Customer pack cd*/
+  OMBREC.OP1CUPO = GN0AM001.OP-CUST-PO; /* Customer PO*/
+  OMBREC.XPPCD = GN0AM001.XPP-PICK-PRTY-CD; /* Pick priority*/
+  OMBREC.TF1CARCD = GN0AM001.TF-CARR-CD; /* Carrier code*/
+
+   /* format DNSB date*/
+  if (GN0AM001.GN0AW-DNSB-DT-MM == 0
+   || GN0AM001.GN0AW-DNSB-DT-DD == 0)
+    GN0AW00.GN0AW-DATE-CC = 0;
+    GN0AW00.GN0AW-DATE-YY = 0;
+  else
+    if (GN0AM001.GN0AW-DNSB-DT-YY > 90)
+      GN0AW00.GN0AW-DATE-CC = 19;
+    else
+      GN0AW00.GN0AW-DATE-CC = 20;
+    end
+  end
+
+  GN0AW00.GN0AW-DATE-YY = GN0AM001.GN0AW-DNSB-DT-YY;
+  GN0AW00.GN0AW-DATE-MM = GN0AM001.GN0AW-DNSB-DT-MM;
+  GN0AW00.GN0AW-DATE-DD = GN0AM001.GN0AW-DNSB-DT-DD;
+  OMBREC.OP1DSBDT = GN0AW00.GN0AW-DATE; /* DNSB date*/
+  GN0AW00.GN0AW-DNSB-DT-GROUP = GN0AW00.GN0AW-DATE-GROUP;
+
+   /* format DNSA date*/
+  if (GN0AM001.GN0AW-DNSA-DT-MM == 0
+   || GN0AM001.GN0AW-DNSA-DT-DD == 0)
+    GN0AW00.GN0AW-DATE-CC = 0;
+    GN0AW00.GN0AW-DATE-YY = 0;
+  else
+    if (GN0AM001.GN0AW-DNSA-DT-YY > 90)
+      GN0AW00.GN0AW-DATE-CC = 19;
+    else
+      GN0AW00.GN0AW-DATE-CC = 20;
+    end
+  end
+
+  GN0AW00.GN0AW-DATE-YY = GN0AM001.GN0AW-DNSA-DT-YY;
+  GN0AW00.GN0AW-DATE-MM = GN0AM001.GN0AW-DNSA-DT-MM;
+  GN0AW00.GN0AW-DATE-DD = GN0AM001.GN0AW-DNSA-DT-DD;
+  OMBREC.OP1DSADT = GN0AW00.GN0AW-DATE; /* DNSA date*/
+  GN0AW00.GN0AW-DNSA-DT-GROUP = GN0AW00.GN0AW-DATE-GROUP;
+
+  OMBREC.OP5ALTNM = GN0AM001.OP-ALT-NM; /* Alternate name*/
+  OMBREC.XXXADDR1 = GN0AM001.XXX-ADDR1; /* Address line 1*/
+  OMBREC.XXXADDR2 = GN0AM001.XXX-ADDR2; /* Address line 2*/
+  OMBREC.XXXADDR3 = GN0AM001.XXX-ADDR3; /* Address line 3*/
+  OMBREC.XXXCITY = GN0AM001.XXX-CITY; /* City*/
+  OMBREC.XSTCD = GN0AM001.XST-ST-CD; /* State*/
+  OMBREC.XXXZIP = GN0AM001.XXX-ZIP; /* ZIP code*/
+  OMBREC.XCTCD = GN0AM001.XCT-CTRY-CD; /* Country*/
+  OMBREC.OP4TXT[1] = "RECORD DELETED"; /* /text field*/
+
+  XX0XS01(); /* Get date and time*/
+
+  OMBREC.OP4TXT[8] = COMMAREA.CAUSERID; /* /text field*/
+  OMBREC.OP4TXT[9] = GN0AW01.OP-ONETIME-SHIP-FL;
+  OMBREC.OMBMRTYP = "Y"; /* so that it is not picked by SR1200*/
+
+  OMBREC.ZZZSDT = 0;
+  OMBREC.ZZHHMMSS = 0;
+
+  if (OMBREC.TF1CARCD > " ")
+    OMBREC.OP4TXT[10] = "10";
+  else
+    if (OMBREC.XWHCD == "51")
+      OMBREC.OP4TXT[10] = "51";
+    else
+      OMBREC.OP4TXT[10] = " ";
+    end
+  end
+
+  OMBREC.OP4TXT[12] = XX0XW01.XX0XWDAT;
+  OMBREC.OP4TXT[11] = XX0XW01.XX0XWTIM;
+
+
+  try
+    call "IO1680" ("A ", SQLCA, OMBREC) {isNoRefresh = yes, isExternal = yes};
+  end
+   /* TT#16532 changes end*/
+
+
+end // end GN0A-52000
+
+// Check for sameday run
+Function GN0A-53000()
+   /* ===========================================================*/
+   /* GN0A-53000   CHECK FOR SAMEDAY RUN*/
+   /* ===========================================================*/
+
+  GNWREC.XXX-MSG-LOC-ID = "53000"; /* Message location*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* Select dpick.vpkpgm01 table row*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  set PWHREC empty; /* Init DB2 record*/
+
+  PWHREC.XWHCD = GN0AM001.XWH-WHSE-CD;
+  PWHREC.XXXPGMNO = "PK121S";
+
+
+  try
+    call "IO4240" ("S ", SQLCA, PWHREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select set*/
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If successful, return to the previous process.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0
+     || SQLCA.VAGen_SQLCODE == 100) /* Normal return code*/
+
+      return;
+
+    end
+  end
+
+
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(28); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    /* Note - Not found is a serious system error too*/
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = GNWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "CHECK SAMEDAY RUN   ";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = GNWREC.XXX-MSG-LOC-ID; /* Program number*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPKPGM01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PWHREC.PWHKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end GN0A-53000
+
+// Application initialization
+Function XPGN-00000()
+   /* ------------------------------------------------------------*/
+   /* XPGN001*/
+   /*  */
+   /* This procedure is intended to be performed as the first*/
+   /* statement in an application.  It determines whether the*/
+   /* application was entered via the menu system.*/
+   /*  */
+   /* NOTE - THIS PROCEDURE IS SPECIFIC TO GN APPLICATIONS.  PUT*/
+   /* LOGIC FOR NON-GN 'FROM' SYTEMS IN THE FLOW OF XPGN.*/
+    /*  */
+   /* ------------------------------------------------------------*/
+
+  XSENTRY(); /* Application entry validation*/
+
+
+  XSSEGTR(); /* SET SEGMENTD TRANS ID*/
+
+
+  if (COMMAREA.CAFROMAP != COMMAREA.CACURRAP) /* Appl has changed*/
+
+    if (COMMAREA.CAFRMSYS == "GN") /* From GN system*/
+      GNWREC.GNW-GROUP = COMMAREA.CAUSERA; /* Restore work*/
+    else
+      set GNWREC empty; /* Clear work record*/
+    end
+
+  end
+
+  VGVar.handleHardIOErrors = 1; /* Return file errors*/
+  converseVar.commitOnConverse = 1; /* Commit on converse*/
+
+
+end // end XPGN-00000
+
+// converse pop up window
+Function XPXPP01()
+   /* ------------------------------------------------------------*/
+
+              /* CONVERSE POP UP WINDOW*/
+
+      /* 1) If no errors, clear the map and set up for*/
+         /* scrolling.  If PF7, PF8, or first time through,*/
+         /* scroll the table.*/
+      /* 2) Converse the map.*/
+      /* 3) Reset selection fields to normal after converse.*/
+      /* 4) Check for PFkey and scroll errors.*/
+      /* 5) If ENTER pressed, check for any user selections.*/
+
+   /* ------------------------------------------------------------*/
+
+   /* **********************************************************/
+   /* ***  If no errors clear page and set up for scrolling ****/
+   /* **********************************************************/
+
+  if (XX0XW02.XX0XWERR == "N") /* If error flag not yes*/
+
+     /* **********************************************************/
+     /* *** Make sure table count is set for next page.       ****/
+     /* *** Clear map and set up header for new scroll screen.****/
+     /* **********************************************************/
+
+    if (XX0XW02.XX0XWFFL == "N") /* if not the first time through*/
+      XX0XW02.XX0XWCT1 = XX0XW02.XX0XWINX[10] + 1; /* set up scroll pf8*/
+    end
+
+    set XX0XM001 initial; /* Clear map output area*/
+    XX0XM001.XX0XMHDR = XX0XW02.XX0XWHDR; /* Place heading on map*/
+    XX0XM001.XX0XMTR1 = "              SELECT & ENTER          ";
+    XX0XM001.XX0XMTR2 = "   PF7:BACK                   PF8:FRWD";
+
+     /* *********************************************************/
+     /* ***      If PF8 was pressed then scroll forward      ****/
+     /* *********************************************************/
+
+    if (converseVar.eventKey is pf8 /* If PF8 pressed*/
+     || XX0XW02.XX0XWFFL == "Y")    /* Or it is the first time thru*/
+      XX0XW02.XX0XWCT2 = 1; /* Set up screen index*/
+      while (XX0XW02.XX0XWCT2 <= 10 /* Until end of screen lines*/
+       && XPPTBL.XPPCD[XX0XWCT1] != "99") /* Or end of data*/
+        if (XPPTBL.XXXSTAT[XX0XWCT1] == "A") /* If active status on code*/
+          XX0XM001.XX0XMCD[XX0XWCT2] = XPPTBL.XPPCD[XX0XWCT1];
+          XX0XM001.XX0XMDES[XX0XWCT2] = XPPTBL.XPPDESC[XX0XWCT1];
+          XX0XW02.XX0XWINX[XX0XWCT2] = XX0XW02.XX0XWCT1;
+                                   /* Save array*/
+          if (XX0XW02.XX0XWFFL == "Y") /* If first time thru*/
+            XX0XW02.XX0XWSIX = XX0XW02.XX0XWCT1; /* Save last index*/
+          end
+          set XX0XM001.XX0XMSEL[XX0XWCT2] normal; /* Set selects to normal*/
+          XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 + 1;
+                                   /* Increment screen index*/
+        end
+        XX0XW02.XX0XWCT1 = XX0XW02.XX0XWCT1 + 1; /* Increment table index*/
+      end
+      XX0XW02.XX0XWFFL = "N"; /* Set first time flag to no*/
+    end
+
+     /* ******************************************************/
+     /* ***    If PF7 was pressed then scroll backward    ****/
+     /* ******************************************************/
+
+    if (converseVar.eventKey is pf7) /* If PF7 pressed*/
+      XX0XW02.XX0XWCT1 = XX0XW02.XX0XWINX[1] - 1; /* Set up table index*/
+      XX0XW02.XX0XWCT2 = 10; /* Set up screen index*/
+      while (XX0XW02.XX0XWCT2 >= 1) /* Load from the bottom up*/
+        if (XPPTBL.XXXSTAT[XX0XWCT1] == "A") /* If the status is active*/
+          XX0XM001.XX0XMCD[XX0XWCT2] = XPPTBL.XPPCD[XX0XWCT1];
+          XX0XM001.XX0XMDES[XX0XWCT2] = XPPTBL.XPPDESC[XX0XWCT1];
+          XX0XW02.XX0XWINX[XX0XWCT2] = XX0XW02.XX0XWCT1;
+                                   /* Save array*/
+          set XX0XM001.XX0XMSEL[XX0XWCT2] normal; /* Set select visible*/
+          XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 - 1;
+                                   /* Decrement screen index*/
+        end
+        XX0XW02.XX0XWCT1 = XX0XW02.XX0XWCT1 - 1; /* Decrement table index*/
+      end
+      if (XX0XW02.XX0XWCT1 < 1) /* If the table index was decremented*/
+        XX0XW02.XX0XWCT1 = 1;
+                                   /* to zero, set it up to 1 (valid value)*/
+      end
+    end
+  end
+
+
+  converse XX0XM001 ;
+
+  XX0XW02.XX0XWERR = "N"; /* Reset error flag*/
+
+     /* *********************************************************/
+     /* ******  Reset selection fields after converse     *******/
+     /* *********************************************************/
+
+  XX0XW02.XX0XWCT2 = 1; /* Screen index*/
+  while (XX0XW02.XX0XWCT2 <= 10 /* Set all fields with data to normal*/
+   && XX0XM001.XX0XMCD[XX0XWCT2] != " ")
+    set XX0XM001.XX0XMSEL[XX0XWCT2] normal;
+    XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 + 1;
+  end
+
+    /* *********************************************************/
+    /* ******  Check for PFkey errors and scroll errors  *******/
+    /* *********************************************************/
+
+  if (converseVar.eventKey is pf8 /* If PF8 pressed*/
+   && XPPTBL.XPPCD[XX0XWCT1] == "99") /* And end of table*/
+    XX0XW02.XX0XWERR = "Y"; /* Set error flag*/
+  else
+    if (converseVar.eventKey is pf7 /* If PF7 pressed*/
+     && XX0XW02.XX0XWINX[1] <= XX0XW02.XX0XWSIX)
+      XX0XW02.XX0XWERR = "Y"; /* Set error flag*/
+    else
+      if (converseVar.eventKey is enter) /* If enter pressed*/
+        XX0XW02.XX0XWEND = "Y"; /* Set end flag*/
+
+         /* *********************************************************/
+         /* ******          Check for user selection          *******/
+         /* *********************************************************/
+
+        XX0XW02.XX0XWCT2 = 1; /* Screen index*/
+        while (XX0XW02.XX0XWCT2 <= 10) /* Until end of screen data*/
+          if (XX0XM001.XX0XMSEL[XX0XWCT2] == "S") /* Check for selection*/
+            XX0XW02.XX0XWPIX = XX0XW02.XX0XWINX[XX0XWCT2];
+            XX0XW02.XX0XWCT2 = 11; /* End loop*/
+          end
+          XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 + 1;
+        end
+      else
+        if (converseVar.eventKey not pf7 /* invalid pf key*/
+         && converseVar.eventKey not pf8 
+         && converseVar.eventKey not enter)
+          XX0XW02.XX0XWERR = "Y"; /* set error flag*/
+        end
+      end
+    end
+  end
+
+
+end // end XPXPP01
+
+// Exit to another application
+Function XSGNS-EXIT()
+   /* ------------------------------------------------------------*/
+   /* Set the application to be invoked for PF4.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf4) /* PF4 was pressed*/
+
+    COMMAREA.CATOAP = "MN0M"; /* Indicate Master Menu*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Save the application user area in the COMMAREA if indicated.*/
+   /* ------------------------------------------------------------*/
+
+   /* Going to a GN app from a GN app*/
+  if (COMMAREA.CATOSYS == "GN" /* Xfer in GN system*/
+   && COMMAREA.CAFRMSYS == "GN")
+
+    COMMAREA.CAUSERA = GNWREC.GNW-GROUP; /* Save user area*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Transfer control to the specified application.*/
+   /* ------------------------------------------------------------*/
+
+  XSEXIT(); /* Exit to another application*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Reestablish the COMMAREA application and item fields.*/
+   /* ------------------------------------------------------------*/
+
+  COMMAREA.CAEZSG3 = "0"; /* Force zero third character*/
+  COMMAREA.CACURRAP = COMMAREA.CAEZSAP; /* CURR application*/
+
+  if (converseVar.eventKey is pfkey) /* PF key was pressed*/
+
+    COMMAREA.CATOAP = " "; /* Clear TO application*/
+
+  end
+
+
+end // end XSGNS-EXIT
+
+//*** RECORD=GN0AW00 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// ***********************
+Record GN0AW00 type basicRecord
+  10 XXX-RQT-DATA-FL XXX-RQT-DATA-FL ; 
+  10 XXX-MAP-FMAT-FL XXX-MAP-FMAT-FL ; 
+  10 GN0AW-DELETE-REQUESTED-FL GN0AW-DELETE-REQUESTED-FL ; 
+  10 GN0AW-DATA-CHANGED-FL GN0AW-DATA-CHANGED-FL ; 
+  10 GN0AW-DTS-OR-PO-DATA-CHANGED-FL GN0AW-DTS-OR-PO-DATA-CHANGED-FL ; 
+  10 GN0AW-NIL-CHANGED-FL GN0AW-NIL-CHANGED-FL ; 
+  10 GN0AW-NEW-KEY-FL GN0AW-NEW-KEY-FL ; 
+  10 GN0AW-OK-TO-UPDT-NIL-FL GN0AW-OK-TO-UPDT-NIL-FL ; 
+  10 GN0AW-JOB-SUBD-FL GN0AW-JOB-SUBD-FL ; 
+  10 * char(1) ; 
+  10 GN0AW-DNSB-DT-GROUP GN0AW-DNSB-DT-GROUP ; 
+    15 GN0AW-DNSB-DT-ZERO GN0AW-DNSB-DT-ZERO ; 
+    15 GN0AW-DNSB-DT GN0AW-DNSB-DT ; 
+      20 GN0AW-DNSB-DT-CC GN0AW-DNSB-DT-CC ; 
+      20 GN0AW-DNSB-DT-YY GN0AW-DNSB-DT-YY ; 
+      20 GN0AW-DNSB-DT-MM GN0AW-DNSB-DT-MM ; 
+      20 GN0AW-DNSB-DT-DD GN0AW-DNSB-DT-DD ; 
+  10 * char(1) ; 
+  10 GN0AW-DNSA-DT-GROUP GN0AW-DNSA-DT-GROUP ; 
+    15 GN0AW-DNSA-DT-ZERO GN0AW-DNSA-DT-ZERO ; 
+    15 GN0AW-DNSA-DT GN0AW-DNSA-DT ; 
+      20 GN0AW-DNSA-DT-CC GN0AW-DNSA-DT-CC ; 
+      20 GN0AW-DNSA-DT-YY GN0AW-DNSA-DT-YY ; 
+      20 GN0AW-DNSA-DT-MM GN0AW-DNSA-DT-MM ; 
+      20 GN0AW-DNSA-DT-DD GN0AW-DNSA-DT-DD ; 
+  10 * char(1) ; 
+  10 GN0AW-DATE-GROUP GN0AW-DATE-GROUP ; 
+    15 GN0AW-DATE-ZERO GN0AW-DATE-ZERO ; 
+    15 GN0AW-DATE GN0AW-DATE ; 
+      20 GN0AW-DATE-CC GN0AW-DATE-CC ; 
+      20 GN0AW-DATE-YY GN0AW-DATE-YY ; 
+      20 GN0AW-DATE-MM GN0AW-DATE-MM ; 
+      20 GN0AW-DATE-DD GN0AW-DATE-DD ; 
+  10 GN0AW-CUST-ORD-ID GN0AW-CUST-ORD-ID ; 
+    15 GN0AW-CUST-ORD-I1 GN0AW-CUST-ORD-I1 ; 
+    15 GN0AW-CUST-ORD-I2 GN0AW-CUST-ORD-I2 ; 
+end // end GN0AW00
+
+//*** RECORD=GN0AW01 ****
+// ******************** gn0aw01 Record ************************
+// 
+//   DATE      NAME    DESCRIPTION
+// --------   ------   ----------------------------------------
+// 05/11/01   ovazqu   work area record
+// 
+// ***********************
+Record GN0AW01 type basicRecord
+  10 XWH-WHSE-CD XWH-WHSE-CD ; 
+  10 CU-CO-ID CU-CO-ID ; 
+  10 CU-STOR-ID CU-STOR-ID ; 
+  10 XNX-DEPT-ID-XREF XNX-DEPT-ID-XREF ; 
+  10 OP-CUST-ORD-ID OP-CUST-ORD-ID ; 
+  10 PK-SAP-CUST-NBR PK-SAP-CUST-NBR ; 
+  10 XOT-ORD-TYP-CD XOT-ORD-TYP-CD ; 
+  10 XDV-DIV-CD XDV-DIV-CD ; 
+  10 PK-SAP-SLS-DOC-NBR PK-SAP-SLS-DOC-NBR ; 
+  10 GR-ORD-STAT-CD GR-ORD-STAT-CD ; 
+  10 NI-CUST-ORD-ID NI-CUST-ORD-ID ; 
+  10 NI-NIKE-ORD-ID NI-NIKE-ORD-ID ; 
+  10 XPACD XPACD ; 
+  10 OP-CUST-PO OP-CUST-PO ; 
+  10 XPP-PICK-PRTY-CD XPP-PICK-PRTY-CD ; 
+  10 OP-DNT-SHIP-BFR-DT OP-DNT-SHIP-BFR-DT ; 
+  10 OP-DNT-SHIP-AFT-DT OP-DNT-SHIP-AFT-DT ; 
+  10 TF-CARR-CD char(4) ; // CARRIER CODE
+  10 OP-ALT-NM OP-ALT-NM ; 
+  10 XXX-ADDR1 XXX-ADDR1 ; 
+  10 XXX-ADDR2 XXX-ADDR2 ; 
+  10 XXX-ADDR3 XXX-ADDR3 ; 
+  10 XXX-CITY XXX-CITY ; 
+  10 XST-ST-CD XST-ST-CD ; 
+  10 XXX-ZIP XXX-ZIP ; 
+  10 XCT-CTRY-CD XCT-CTRY-CD ; 
+  10 OP-ONETIME-SHIP-FL OP-ONETIME-SHIP-FL ; 
+  10 DCMS-ERROR-FL DCMS-ERROR-FL ; 
+end // end GN0AW01
+
+//*** RECORD=GN0AW04 ****
+// JCL variable card overrides for TARJCL table
+// ***********************
+Record GN0AW04 type basicRecord
+  10 GN0AWIDX1 GN0AWIDX1 ; 
+  10 TA3DB2SS TA3DB2SS ; 
+    15 GN0AW-DB2-LIT GN0AW-DB2-LIT ; 
+    15 GN0AW-DB2-VALUE GN0AW-DB2-VALUE ; 
+  10 TA3APLID TA3APLID ; 
+    15 GN0AW-CICS-LIT GN0AW-CICS-LIT ; 
+    15 GN0AW-CICS-VALUE GN0AW-CICS-VALUE ; 
+    15 * char(1) ; 
+  10 GN0AW-NOTIFY-CARD char(80) ; // NOTIFY card
+    15 * char(22) ; 
+    15 TA3USRID TA3USRID ; 
+    15 * char(50) ; 
+  10 GN0AW-SYSTSIN-CARD char(80) ; // JCL Systsin card
+    15 * char(11) ; 
+    15 GN0AW-DSN-VALUE char(4) ; // DB2 Subsystem value
+    15 * char(65) ; 
+  10 GN0AW-TYPE-CARD GN0AW-TYPE-CARD ; 
+    15 * char(15) ; 
+    15 GN0AW-TYPE-VALUE GN0AW-TYPE-VALUE ; 
+    15 * char(64) ; 
+  10 GN0AW-JOB-CARD GN0AW-JOB-CARD ; 
+    15 * char(4) ; 
+    15 GN0AW-JOB-XWH-WHSE-CD GN0AW-JOB-XWH-WHSE-CD ; 
+    15 * char(2) ; 
+    15 GN0AW-JOB-TYPE-VALUE GN0AW-JOB-TYPE-VALUE ; 
+    15 * char(71) ; 
+  10 GN0AW-WHSE-CARD GN0AW-WHSE-CARD ; 
+    15 * char(15) ; 
+    15 XWH-WHSE-CD XWH-WHSE-CD ; 
+    15 * char(63) ; 
+  10 GN0AW-DD-CARD GN0AW-DD-CARD ; 
+    15 * char(19) ; 
+    15 GN0AW-DD-TYPE-VALUE GN0AW-DD-TYPE-VALUE ; 
+    15 * char(60) ; 
+  10 GN0AW-GN3160-PARM-CARD GN0AW-GN3160-PARM-CARD ; 
+    15 GN0AW-GN3160-XWH-WHSE-CD GN0AW-GN3160-XWH-WHSE-CD ; 
+    15 GN0AW-GN3160-OP-CUST-ORD-ID GN0AW-GN3160-OP-CUST-ORD-ID ; 
+    15 GN0AW-GN3160-OP-NIKE-ORD-ID GN0AW-GN3160-OP-NIKE-ORD-ID ; 
+    15 GN0AW-GN3160-NI-CUST-ORD-ID GN0AW-GN3160-NI-CUST-ORD-ID ; 
+    15 GN0AW-GN3160-NI-NIKE-ORD-ID GN0AW-GN3160-NI-NIKE-ORD-ID ; 
+    15 * char(52) ; 
+end // end GN0AW04
+
+//*** RECORD=GNWREC ****
+// ************************************************************
+// 
+//                "GN" GDS/NSC
+//            COMMON WORKING STORAGE FIELDS
+//            =============================
+// 
+// ************************************************************
+// 
+// OVERVIEW:
+// ========
+//           These working storage fields are generally used
+//           by all "GN" applications.
+// 
+// 
+// MAINTENANCE HISTORY:
+// ===================
+// 
+//   Date     By Whom     Overview of Changes
+// --------  -----------  -------------------------------------
+// 04-03-00  esmit2       created
+// ************************************************************
+// ************************************************************
+// **********************
+Record GNWREC type basicRecord
+  5 GNW-GROUP GNW-GROUP ; 
+    10 GNW-ERR-SW GNW-ERR-SW ; 
+    10 GNW-SAME-KEY-SW GNW-SAME-KEY-SW ; 
+    10 GNW-FIRST-TM-SW GNW-FIRST-TM-SW ; 
+    10 GNW-EOF-SW GNW-EOF-SW ; 
+    10 GNW-SPCL-EXIT-SW GNW-SPCL-EXIT-SW ; 
+    10 GNW-VAL-ERR-SW GNW-VAL-ERR-SW ; 
+    10 GNW-LN-START-SW GNW-LN-START-SW ; 
+    10 GNW-LAST-PF GNW-LAST-PF ; 
+    10 GNW-LAST-RL-PF GNW-LAST-RL-PF ; 
+    10 GNW-MSG-NO GNW-MSG-NO ; 
+    10 GNW-LN-PER-PG GNW-LN-PER-PG ; 
+    10 GNW-TSSUM-IDX GNW-TSSUM-IDX ; 
+    10 GNW-TSDTL-IDX GNW-TSDTL-IDX ; 
+    10 GNW-TSSUM-MAX-NBR GNW-TSSUM-MAX-NBR ; 
+    10 GNW-TSDTL-MAX-NBR GNW-TSDTL-MAX-NBR ; 
+    10 GNW-NXT-TSQ-SUM GNW-NXT-TSQ-SUM ; 
+    10 GNW-NXT-TSQ-DTL GNW-NXT-TSQ-DTL ; 
+    10 GNW-LN-LEFT-TSPG GNW-LN-LEFT-TSPG ; 
+    10 GNW-LN-NEED-TSPG GNW-LN-NEED-TSPG ; 
+    10 ELWBUFLX ELWBUFLX ; 
+    10 GNW-LST-SUMPG-IDX GNW-LST-SUMPG-IDX ; 
+    10 GNW-LAST-DTL-IDX GNW-LAST-DTL-IDX ; 
+    10 GNW-IDX GNW-IDX ; 
+    10 GNW-WORK-IDX1 GNW-WORK-IDX1 ; 
+    10 GNW-WORK-IDX2 GNW-WORK-IDX2 ; 
+    10 GNW-WORK-IDX3 GNW-WORK-IDX3 ; 
+    10 GNW-WORK-IDX4 GNW-WORK-IDX4 ; 
+    10 GNW-WORK-IDX5 GNW-WORK-IDX5 ; 
+    10 GNW-WORK-IDX6 GNW-WORK-IDX6 ; 
+    10 GNW-WORK-CTR1 GNW-WORK-CTR1 ; 
+    10 GNW-WORK-REMNDR GNW-WORK-REMNDR ; 
+    10 VAGen_SQLCODE VAGen_SQLCODE ; 
+    10 XXXMAPNM XXXMAPNM ; 
+    10 XXXTITLE XXXTITLE ; 
+    10 XXXRVNBR XXXRVNBR ; 
+    10 XXX-MSG-LOC-ID XXX-MSG-LOC-ID ; 
+    10 GNW-TA-LST-LOC GNW-TA-LST-LOC ; 
+    10 GNW-TA-LST-MAP GNW-TA-LST-MAP ; 
+    10 * char(4) ; 
+    10 CAITEM CAITEM ; 
+      15 GNW-CA-SEL-NBR GNW-CA-SEL-NBR ; 
+      15 * char(19) ; 
+    10 GNW-SUM-TSQ-ID GNW-SUM-TSQ-ID ; 
+    10 GNW-DTL-TSQ-ID GNW-DTL-TSQ-ID ; 
+    10 * char(1) ; 
+    10 GNW-WRKDT-CCYYMMDD GNW-WRKDT-CCYYMMDD ; 
+      15 GNW-WRKDT-CC GNW-WRKDT-CC ; 
+      15 GNW-SHORTDT-YYMMDD GNW-SHORTDT-YYMMDD ; 
+        20 GNW-WRKDT-YY GNW-WRKDT-YY ; 
+        20 GNW-WRKDT-MM GNW-WRKDT-MM ; 
+        20 GNW-WRKDT-DD GNW-WRKDT-DD ; 
+    10 GNW-IN-DATE-MMDDYY GNW-IN-DATE-MMDDYY ; 
+      15 GNW-IN-DATE-MM GNW-IN-DATE-MM ; 
+      15 GNW-IN-DATE-DD GNW-IN-DATE-DD ; 
+      15 GNW-IN-DATE-YY GNW-IN-DATE-YY ; 
+    10 * char(62) ; 
+    10 GNW-FROM-MAP-SEL GNW-FROM-MAP-SEL ; 
+      15 GNW-FROM-MAP-SEL-NUM GNW-FROM-MAP-SEL-NUM ; 
+    10 * char(22) ; 
+    10 GN-FILLER GN-FILLER ; 
+    10 GNWUSERA GNWUSERA ; 
+end // end GNWREC
+
+//*** RECORD=GNXREC ****
+// ************ DEVELOPMENT MODEL SYSTEM COMMAREA *************
+// 
+// This record contains data fields that are passed between the
+// Development Model System applications.
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE    USERID  DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// NEW      04/27/01  OVAZQU  New record copied from ALXREC
+// **********************
+Record GNXREC type basicRecord
+  5 CAUSERA CAUSERA ; 
+    10 XXX-MSG-LOC-ID XXX-MSG-LOC-ID ; 
+    10 XXX-MSG-NBR XXX-MSG-NBR ; 
+    10 XWHCD XWHCD ; 
+    10 OP1CUOID OP1CUOID ; 
+    10 OP1NORID OP1NORID ; 
+    10 CAMSG CAMSG ; 
+    10 * char(1604) ; 
+end // end GNXREC
+
+//*** RECORD=WGN1031 ****
+// ******************** WGN1031 Record ************************
+// 
+// DB2 TABLE VIEWS:     DORDER.VOPPKH05  OTP header
+//                      DORDER.VOPPKI02  OTP item
+//                      DORDER.VOPPKS02  OTP size
+//                      DORDER.VOPPKT02  OTP text
+//                      DORDER.VOPPKP02  OTP prepack
+//                      DORDER.VCSPRP02  Cust Specified Prepack
+//                      DPICK.VPOOLH01   POOL header
+//                      DPICK.VPOOLI01   POOL item
+//                      DPICK.VPOOLT01   POOL text
+//                      DPICK.VORSPP01   Picking Prepack
+// 
+// INCLUDE MEMBER:      WGN1031
+// 
+// I/O MODULE:          GN1030
+// 
+//   DATE      NAME    DESCRIPTION
+// --------   ------   ----------------------------------------
+// 03/31/00   esmit2   New record used in call for GN1030
+//                     which is a special iomod for GN0A only.
+// 
+// ***********************
+Record WGN1031 type basicRecord
+  5 WGN1031-GROUP WGN1031-GROUP ; 
+    10 GN0AW-GN1030-FUNC-CD GN0AW-GN1030-FUNC-CD ; 
+    10 XWH-WHSE-CD XWH-WHSE-CD ; 
+    10 OP-CUST-ORD-ID OP-CUST-ORD-ID ; 
+    10 OP-NIKE-ORD-ID OP-NIKE-ORD-ID ; 
+    10 CU-CO-ID CU-CO-ID ; 
+    10 CU-STOR-ID CU-STOR-ID ; 
+    10 XNX-DEPT-ID-XREF XNX-DEPT-ID-XREF ; 
+    10 XOT-ORD-TYP-CD XOT-ORD-TYP-CD ; 
+    10 XPACD XPACD ; 
+    10 GR-ORD-STAT-CD GR-ORD-STAT-CD ; 
+    10 OP-CUST-PO OP-CUST-PO ; 
+    10 XPP-PICK-PRTY-CD XPP-PICK-PRTY-CD ; 
+    10 OP-DNT-SHIP-BFR-DT OP-DNT-SHIP-BFR-DT ; 
+    10 OP-DNT-SHIP-AFT-DT OP-DNT-SHIP-AFT-DT ; 
+    10 TF-CARR-CD char(4) ; // CARRIER CODE
+    10 OP-ALT-NM OP-ALT-NM ; 
+    10 XXX-ADDR1 XXX-ADDR1 ; 
+    10 XXX-ADDR2 XXX-ADDR2 ; 
+    10 XXX-ADDR3 XXX-ADDR3 ; 
+    10 XXX-CITY XXX-CITY ; 
+    10 XST-ST-CD XST-ST-CD ; 
+    10 XXX-ZIP XXX-ZIP ; 
+    10 XCT-CTRY-CD XCT-CTRY-CD ; 
+    10 OP-ONETIME-SHIP-FL OP-ONETIME-SHIP-FL ; 
+    10 ZZ-CHNG-DT ZZ-CHNG-DT ; 
+    10 ZZ-CHNG-HHMM ZZ-CHNG-HHMM ; 
+    10 XDV-DIV-CD XDV-DIV-CD ; 
+    10 PK-SAP-CUST-NBR PK-SAP-CUST-NBR ; 
+    10 PK-SAP-SLS-DOC-NBR PK-SAP-SLS-DOC-NBR ; 
+    10 NI-CUST-ORD-ID NI-CUST-ORD-ID ; 
+    10 NI-NIKE-ORD-ID NI-NIKE-ORD-ID ; 
+    10 DCMS-ERROR-FL DCMS-ERROR-FL ; 
+    10 * char(95) ; // filler
+    10 GN0AW-GN1030-DATABASE-NM GN0AW-GN1030-DATABASE-NM ; 
+    10 GN0AW-GN1030-VIEW-NM GN0AW-GN1030-VIEW-NM ; 
+    10 GN0AW-GN1030-RETURN-SQLCODE GN0AW-GN1030-RETURN-SQLCODE ; 
+    10 GN0AW-GN1030-RETURN-CD GN0AW-GN1030-RETURN-CD ; 
+    10 TA1-GROUP TA1-GROUP ; 
+    10 SQLCAREC SQLCAREC ; 
+    10 * char(1812) ; // filler
+end // end WGN1031
+
+//*** RECORD=WGN3171 ****
+// ******************** WGN3171 Record ************************
+// 
+// INCLUDE MEMBER:      WGN3171
+// 
+// I/O MODULE:          GN3170
+// 
+//   DATE      NAME    DESCRIPTION
+// --------   ------   ----------------------------------------
+// 05/09/01   ovazqu   New record used in call for GN3170
+//                     which is a special iomod for GN0A.
+// 
+// ***********************
+Record WGN3171 type basicRecord
+  5 WGN3171-GROUP WGN3171-GROUP ; 
+    10 XWH-WHSE-CD XWH-WHSE-CD ; 
+    10 OP-CUST-ORD-ID OP-CUST-ORD-ID ; 
+    10 OP-NIKE-ORD-ID OP-NIKE-ORD-ID ; 
+    10 NI-CUST-ORD-ID NI-CUST-ORD-ID ; 
+    10 NI-NIKE-ORD-ID NI-NIKE-ORD-ID ; 
+    10 GN0AW-GN3170-RETURN-CD GN0AW-GN3170-RETURN-CD ; 
+    10 TA1-GROUP TA1-GROUP ; 
+    10 SQLCAREC SQLCAREC ; 
+    10 * char(2194) ; // filler
+end // end WGN3171
+
+// filler
+DataItem GN-FILLER char(1200)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CICS Region literal (CICSD,T)
+DataItem GN0AW-CICS-LIT char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CICS Region Id
+DataItem GN0AW-CICS-VALUE char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// GN0A date      day
+DataItem GN0AW-CUST-ORD-I1 num(9)  {
+  currency = no, numericSeparator = no, sign = leading, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GN0A date      day
+DataItem GN0AW-CUST-ORD-I2 num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GN0A date      day
+DataItem GN0AW-CUST-ORD-ID num(10)  {
+  currency = no, numericSeparator = no, sign = leading, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Data changed flag
+DataItem GN0AW-DATA-CHANGED-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// GN0A date    variable
+DataItem GN0AW-DATE num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GN0A date      century
+DataItem GN0AW-DATE-CC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GN0A date      day
+DataItem GN0AW-DATE-DD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GN0A date group
+DataItem GN0AW-DATE-GROUP num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GN0A date      month
+DataItem GN0AW-DATE-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GN0A date      year
+DataItem GN0AW-DATE-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GN0A date    zero
+DataItem GN0AW-DATE-ZERO num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem GN0AW-DB2-LIT char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem GN0AW-DB2-VALUE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DD card
+DataItem GN0AW-DD-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DD type T,D,F,Y value
+DataItem GN0AW-DD-TYPE-VALUE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Delete requested
+DataItem GN0AW-DELETE-REQUESTED-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DNSA date    variable
+DataItem GN0AW-DNSA-DT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// DNSA date      century
+DataItem GN0AW-DNSA-DT-CC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem GN0AW-DNSA-DT-DD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DNSA date group
+DataItem GN0AW-DNSA-DT-GROUP num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op-dnt-ship-aft-dt
+DataItem GN0AW-DNSA-DT-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem GN0AW-DNSA-DT-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DNSA date    zero
+DataItem GN0AW-DNSA-DT-ZERO num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// DNSB date    variable
+DataItem GN0AW-DNSB-DT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// DNSB date      century
+DataItem GN0AW-DNSB-DT-CC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem GN0AW-DNSB-DT-DD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DNSB date group
+DataItem GN0AW-DNSB-DT-GROUP num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Dont Ship Before Date
+DataItem GN0AW-DNSB-DT-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem GN0AW-DNSB-DT-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DNSB date    zero
+DataItem GN0AW-DNSB-DT-ZERO num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Dates or PO data changed flag
+DataItem GN0AW-DTS-OR-PO-DATA-CHANGED-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// GN1030 Database Name
+DataItem GN0AW-GN1030-DATABASE-NM char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// GN1030 Function code
+DataItem GN0AW-GN1030-FUNC-CD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// GN1030 return code
+DataItem GN0AW-GN1030-RETURN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GN1030 Sqlcode
+DataItem GN0AW-GN1030-RETURN-SQLCODE int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GN1030 View Name
+DataItem GN0AW-GN1030-VIEW-NM char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// NIL ord id
+DataItem GN0AW-GN3160-NI-CUST-ORD-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// NIL nike ord id
+DataItem GN0AW-GN3160-NI-NIKE-ORD-ID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ord id
+DataItem GN0AW-GN3160-OP-CUST-ORD-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nike ord id
+DataItem GN0AW-GN3160-OP-NIKE-ORD-ID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// DD card
+DataItem GN0AW-GN3160-PARM-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// xwh-whse-cd
+DataItem GN0AW-GN3160-XWH-WHSE-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// GN3170 return code
+DataItem GN0AW-GN3170-RETURN-CD num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// JOB card
+DataItem GN0AW-JOB-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// JCL has been submitted flag
+DataItem GN0AW-JOB-SUBD-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// JOB type T,D,F,Y value
+DataItem GN0AW-JOB-TYPE-VALUE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// xwh-whse-cd
+DataItem GN0AW-JOB-XWH-WHSE-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// New key flag
+DataItem GN0AW-NEW-KEY-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Nil data changed
+DataItem GN0AW-NIL-CHANGED-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// PF key to allow NIL updt flag
+DataItem GN0AW-OK-TO-UPDT-NIL-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TYPE card
+DataItem GN0AW-TYPE-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// T,D,F,Y value
+DataItem GN0AW-TYPE-VALUE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Warehouse card
+DataItem GN0AW-WHSE-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for JCL Table
+DataItem GN0AWIDX1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ca selection number
+DataItem GNW-CA-SEL-NBR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// detail tsq id
+DataItem GNW-DTL-TSQ-ID char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// EOF (=y) switch
+DataItem GNW-EOF-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// general error switch
+DataItem GNW-ERR-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// first time (=y) switch
+DataItem GNW-FIRST-TM-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from map selection
+DataItem GNW-FROM-MAP-SEL char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from map selection-num
+DataItem GNW-FROM-MAP-SEL-NUM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group level for GNWREC
+DataItem GNW-GROUP char(1700)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// special short index
+DataItem GNW-IDX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// input date (dd)
+DataItem GNW-IN-DATE-DD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// input date (mm)
+DataItem GNW-IN-DATE-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// input date (mmddyy)
+DataItem GNW-IN-DATE-MMDDYY num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// input date (yy)
+DataItem GNW-IN-DATE-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// last used det pg line index
+DataItem GNW-LAST-DTL-IDX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// last pfkey (E or 6)
+DataItem GNW-LAST-PF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// last rt/lft pfkey(10or11)
+DataItem GNW-LAST-RL-PF char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// lines left on det tsq pg
+DataItem GNW-LN-LEFT-TSPG num(2)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// lines needed on det tsq pg
+DataItem GNW-LN-NEED-TSPG num(2)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// lines per page
+DataItem GNW-LN-PER-PG num(2)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// line started switch (Y/N)
+DataItem GNW-LN-START-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// last used sum pg line index
+DataItem GNW-LST-SUMPG-IDX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// msg no. save field
+DataItem GNW-MSG-NO smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// next det tsq record no.
+DataItem GNW-NXT-TSQ-DTL num(4)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// next sum tsq record no.
+DataItem GNW-NXT-TSQ-SUM num(4)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// same key (=y) switch
+DataItem GNW-SAME-KEY-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work short date (yymmdd)
+DataItem GNW-SHORTDT-YYMMDD num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// special exit switch
+DataItem GNW-SPCL-EXIT-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// summary tsq id
+DataItem GNW-SUM-TSQ-ID char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TA0020 last process/sgrp
+DataItem GNW-TA-LST-LOC char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TA0020 last map
+DataItem GNW-TA-LST-MAP char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// det tsq rel. rec. no.
+DataItem GNW-TSDTL-IDX num(4)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// max no. of det tsq rec.s
+DataItem GNW-TSDTL-MAX-NBR num(4)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// sum tsq rel. rec. no.
+DataItem GNW-TSSUM-IDX num(4)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// max no. of sum tsq rec.s
+DataItem GNW-TSSUM-MAX-NBR num(4)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// validation error (=y) switch
+DataItem GNW-VAL-ERR-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work counter
+DataItem GNW-WORK-CTR1 num(4)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// 'while' counter/index #1
+DataItem GNW-WORK-IDX1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 'while' counter/index #2
+DataItem GNW-WORK-IDX2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 'while' counter/index #3
+DataItem GNW-WORK-IDX3 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 'while' counter/index #4
+DataItem GNW-WORK-IDX4 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 'while' counter/index #5
+DataItem GNW-WORK-IDX5 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 'while' counter/index #6
+DataItem GNW-WORK-IDX6 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work remainder field
+DataItem GNW-WORK-REMNDR num(4)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no, minimumInput = 1
+}
+end
+
+// work date (cc)
+DataItem GNW-WRKDT-CC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work date (ccyymmdd)
+DataItem GNW-WRKDT-CCYYMMDD num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work date (dd)
+DataItem GNW-WRKDT-DD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work date (mm)
+DataItem GNW-WRKDT-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work date (yy)
+DataItem GNW-WRKDT-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// GNWREC special user area
+DataItem GNWUSERA char(224)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Record Group Level
+DataItem WGN1031-GROUP char(2500)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Record Group Level
+DataItem WGN3171-GROUP char(2500)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

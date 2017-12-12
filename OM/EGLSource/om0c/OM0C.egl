@@ -1,0 +1,1691 @@
+package om0c;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import dg.common.*;
+import ku.common.*;
+import ob.common.*;
+import om.common.*;
+import op.common.*;
+import os.common.*;
+import pc.common.*;
+import pk.common.*;
+import sm.common.*;
+import sp.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+//*** PROGRAM=OM0C ****
+// nike order maintenance   order special instructions
+// 
+// overview: this application displays all special text associ-
+//           ated with a sub-order.
+// 
+// date created: 06/30/86
+//       author: david smith
+// 
+// maintenance history:
+// 
+//     date     by whom     overview of changes made
+//   --------  ----------  ------------------------------------
+//   06/30/86   d smith     program creation.
+//   11/19/87   t fox       added diagnostic information on
+//                          abend to all calls in the program.
+//   12/22/87   tfox        chg om0cw01.om0cwtyp to character
+//   02/02/88   craine      improve diagnostics - om0csoh &sur
+//   03/30/88   craine      found cause of header not found
+//                          abend - changed sup to reselect
+//                          text records,count them and update
+//                          op1rec only when need. remove soh
+//                          from sen (always updated even in
+//                          inquiry) chg s02 (pf2 to change)
+//                          to reselect texts and display.
+//                          abend caused by chg cnt difference
+//                          when updating op1rec.
+//   18/22/88   tfox        chg om0cs02 code to prevent mainten
+//                          ance of rebook bulk orders.
+//   11/03/88   jwood       noncsp opt added to calls
+//   02/20/89   jwood       segmented tran id logic added
+//   05/10/89   jbecke      database changes - om0cw02.
+//   11/14/89   rcoron      database changes.  removed xndtbl
+//                          and xostbl.
+//   01/09/90   cgrice      removed a commit so that the added
+//                          comment would be rolled back if
+//                          there was a problem updating the
+//                          order header.  bug #279 - om0csup
+//   04/04/90   cgrice      database changes -
+//                          renamed op1blkcd to xbdcd.  s02
+//   01/12/91   tfox        regen for bd chgs
+//   05/20/91   tfox        menu services sen,s01,s03,s04
+//                          check for prepacks
+//   06/10/91   CRAINE      DB2 CHANGES - OM0CW02
+//   12/02/91   jhecke      695 - prepack of footwear. s01
+//   03/13/92   scantr      db2 changes - om0cw02
+//   02/28/94   scantr      db2 changes - om0cw02 resize
+//   04/28/94   jather      log 1003. renamed causera to
+//                          ca-user-workarea-4k to hold opwrec
+//                          which has increased to 3072 bytes.
+//   01/13/95   cbrine      added temp storage and ability to
+//                          have mulitple pages of comments
+//   08/27/98   udafon #178 Increased size of OMWREC to 3505
+//                          bytes. Re-compiled application.
+// *********************
+Program OM0C type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  OM0CW01 OM0CW01; // record
+  OM0CW01-WS-REC OM0CW01-WS-REC; // record
+  OM0CW02 OM0CW02; // record
+  OM0CW03 OM0CW03; // record
+  OMAREC OMAREC; // record
+  OMWREC OMWREC; // record
+  OP1REC OP1REC; // record
+  OP4REC OP4REC; // record
+  OSNREC OSNREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XPATBL; // table
+  use OM0CM.OM0CM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OM0C001: OM0C001();
+    goto OM0C005;
+    OM0C005: OM0C005();
+
+
+    if (OMAREC.OMAERR == "Y")
+      OMAREC.OMAERR = "N";
+    else
+      if (OM0CW01.OM0CWCHG == "Y") /* if change authorized*/
+        set OM0CM001.OP4TXT[1] cursor; /* put cursor on first line*/
+      else /* if change not authorized*/
+        set OM0CM001.OM0CMCSR cursor, protect; /* put cursor off screen*/
+      end
+    end
+
+
+    goto OM0C005; /* branch to converse*/
+
+
+  end // end main
+end // end OM0C
+
+// Program Initialization
+Function OM0C001()
+
+
+     /* **********************************************************/
+     /* * this process performs the following functions:        **/
+     /* *     - checks entry security                           **/
+     /* *     - moves the working storage and order processing  **/
+     /* *       record from the incoming common area            **/
+     /* *     - initializes the map and working fields          **/
+     /* **********************************************************/
+
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+  XSENTRY(); /* system security check*/
+
+   /* ****************************************************/
+   /* *** set segmented trans id                      ****/
+   /* ****************************************************/
+
+  CAEZSAP = sysVar.transactionID;
+  CAEZSG12 = "OM";
+  CAEZSG4 = "C";
+  sysVar.transactionID = CAEZSAP;
+
+   /* *************************************************************/
+
+  XSOMS05(); /* check order entry security*/
+
+
+  OM0CSPI(); /* initialize program*/
+  set OM0CW01-WS-REC empty; /* initialize working storage*/
+
+
+  OM0CM001.OPMRVN = 1; /* set map revision number*/
+
+
+  OM0CSDB(); /* call up order header for flag check*/
+
+
+  OM0CS-GET-CMNTS(); /* get all the comments for this order*/
+  OM0CS-BUILD-MAP(); /* move temp storage to map*/
+
+
+end // end OM0C001
+
+// Converse Map and Edit Data
+Function OM0C005()
+     /* **********************************************************/
+     /* * this process performs the following functions:        **/
+     /* *     - presents the change comments screen for data    **/
+     /* *       entry or modification                           **/
+     /* *     - edits the data entered and identifies any       **/
+     /* *       data errors                                     **/
+     /* **********************************************************/
+
+
+
+
+   /* *************************************************************/
+  converse OM0CM001 ;
+   /* *************************************************************/
+
+
+  if (OM0CW01.OM0CWCHG == "Y") /* changes allowed within application?*/
+    OM0CSSM(); /* save modified flags for re-converse*/
+  end
+
+
+  if (converseVar.eventKey is enter)
+    OM0CSEN();
+  else
+    if (converseVar.eventKey is pf2)
+      OM0CS02();
+    else
+      if (converseVar.eventKey is pf3)
+        OM0CS03();
+      else
+        if (converseVar.eventKey is pf4)
+          OM0CS04();
+        else
+          if (converseVar.eventKey is pf7)
+            OM0CS07();
+          else
+            if (converseVar.eventKey is pf8)
+              OM0CS08();
+            else
+              if (converseVar.eventKey is pf19)
+                OM0CS19();
+              else
+                OMAREC.OMAERR = "Y";
+                converseLib.validationFailed(8);
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+
+end // end OM0C005
+
+// BUILD TEMP STORAGE - COMMENTS
+Function OM0CS-BLD-TMP-STRG()
+
+
+
+   /* load and write temp storage*/
+
+  set OM0CW03 empty; /* init temp storage record*/
+
+  OM0CW01-WS-REC.OM0CWF1S = 1; /* init sub to first message*/
+
+  while (OM0CW01-WS-REC.OM0CWF1S <= 15
+   && OM0CW01-WS-REC.OM0CW-OP4REC-EOF-FL == "N")
+
+    /* load temp storage*/
+
+    OM0CW03.OP4TXT[OM0CWF1S] = OP4REC.OP4TXT; /* move comment*/
+    OM0CW03.OM0CMCDT[OM0CWF1S] = OP4REC.ZZZCHGDT; /* change date*/
+    OM0CW03.OM0CWCCT[OM0CWF1S] = OP4REC.ZZZCHGCT; /* change time*/
+    OM0CW03.OM0CWSEQ[OM0CWF1S] = OP4REC.OP4TRSEQ; /* move seq nbr*/
+    OM0CW01-WS-REC.OM0CW-LAST-SEQ = OP4REC.OP4TRSEQ; /* save seq nbr*/
+
+    OM0CSSN(); /* select next message*/
+
+    OM0CW01-WS-REC.OM0CWF1S = OM0CW01-WS-REC.OM0CWF1S + 1; /* add 1 to sub*/
+
+  end
+
+
+   /* write temp storage*/
+
+  OM0CST1W(); /* write temp storage*/
+
+
+
+   /* *************************************************************/
+end // end OM0CS-BLD-TMP-STRG
+
+// LOAD COMMENTS ON MAP FROM TEMP
+Function OM0CS-BUILD-MAP()
+
+
+  OM0CW01.OM0CWCLL = 0; /* initialize last line #*/
+
+  OM0CM001.OM0CMF1P = OM0CW01-WS-REC.OM0CWF1P; /* format current page*/
+  if (OM0CW01.OM0CWCHG == "Y")
+    OM0CM001.OM0CMF1M = OM0CW01-WS-REC.OM0CW-LAST-PAGE;
+  else
+    OM0CM001.OM0CMF1M = OM0CW01-WS-REC.OM0CWF1M; /* format maximum page*/
+  end
+
+  OM0CST1R(); /* read page of temp storage*/
+
+  OM0CW01-WS-REC.OM0CWF1S = 1; /* init subscript*/
+
+  while (OM0CW01-WS-REC.OM0CWF1S <= 15) /* less than or equal to 15*/
+
+    if (OM0CW03.OM0CMCDT[OM0CWF1S] == 0)
+      set OM0CM001.OM0CMCDT[OM0CWF1S] invisible, protect;
+    else
+      OM0CM001.OM0CMCDT[OM0CWF1S] = OM0CW03.OM0CMCDT[OM0CWF1S];
+      OM0CW01.OM0CWCLL = OM0CW01-WS-REC.OM0CWF1S; /* save last line #*/
+      set OM0CM001.OM0CMCDT[OM0CWF1S] initialAttributes;
+    end
+    OM0CM001.OP4TXT[OM0CWF1S] = OM0CW03.OP4TXT[OM0CWF1S];
+
+    OM0CW01-WS-REC.OM0CWF1S = OM0CW01-WS-REC.OM0CWF1S + 1; /* incrmnt by +1*/
+  end
+
+
+end // end OM0CS-BUILD-MAP
+
+// EDIT PAGE NUMBER
+Function OM0CS-EDIT-PG-NBR()
+
+    /* DETERMINE IF CURRENT PAGE NUMBER IS WITHIN RANGE*/
+
+  if (OM0CM001.OM0CMF1P > OM0CM001.OM0CMF1M /* page # > max page #*/
+   || OM0CM001.OM0CMF1P < 1)                /* or less than 1*/
+    converseLib.validationFailed(603); /* page number must be between 1 and last page #*/
+    OMAREC.OMAERR = "Y"; /* set error flag*/
+    set OM0CM001.OM0CMF1P cursor, bold;
+    OM0CM001.OM0CMF1P = OM0CW01-WS-REC.OM0CWF1P; /* reset page number*/
+  else
+    OM0CS-BUILD-MAP();
+  end
+
+
+end // end OM0CS-EDIT-PG-NBR
+
+// get current comments
+Function OM0CS-GET-CMNTS()
+
+
+  set OP4REC empty;
+  OP4REC.OP4KEY = OP1REC.OP1KEY;
+
+  set SQLCA empty;
+
+  OMAREC.OMASUB = 1;
+
+
+   /* select all comments*/
+   /* write a temporary storage record for*/
+   /* each map full of comments - 15 comments per screen*/
+
+   /* set end of file flag to no*/
+
+  OM0CW01-WS-REC.OM0CW-OP4REC-EOF-FL = "N";
+
+  OM0CST1P(); /* purge temp storage to start clean*/
+
+  OM0CSSS(); /* get all the comments*/
+  OM0CSSN(); /* select next comment*/
+
+  if (OM0CW01-WS-REC.OM0CW-OP4REC-EOF-FL == "Y") /* no comments*/
+    set OM0CW03 empty;
+    OM0CST1W(); /* write one blank record*/
+  else
+    /* while there are comments selected*/
+
+    while (OM0CW01-WS-REC.OM0CW-OP4REC-EOF-FL == "N")
+      OM0CS-BLD-TMP-STRG(); /* load and write temp storage*/
+    end
+  end
+
+  OM0CW01-WS-REC.OM0CW-LAST-PAGE = OM0CW01-WS-REC.OM0CWF1M;
+  if (OM0CW01-WS-REC.OM0CWF1S == 16) /* last page is full, write one blank*/
+    set OM0CW03 empty; /* page so program will page forward*/
+    OM0CST1W(); /* for more input*/
+    OM0CW01-WS-REC.OM0CW-LAST-PAGE = OM0CW01-WS-REC.OM0CWF1M;
+    OM0CW01-WS-REC.OM0CWF1M = OM0CW01-WS-REC.OM0CWF1M - 1;
+                                     /* don't have empty screen count*/
+  end /* in page total*/
+
+  OM0CW01-WS-REC.OM0CWF1P = 1; /* set page number*/
+  OM0CW01-WS-REC.OM0CWF1S = 1; /* position cursor on first comment*/
+   /* total number of pages was set OM0CST1W;*/
+
+
+   /* close scan*/
+
+  OM0CSSC(); /* close cursor via IO0470*/
+
+   /* *************************************************************/
+end // end OM0CS-GET-CMNTS
+
+// check for prepack
+Function OM0CS01()
+
+   /* THIS STATEMENT GROUP CHECKS THE PREPACK DATABASE*/
+   /* TO SEE IF THE ORDER EXISTS*/
+
+  OMWREC.OMWPKCHF = "N"; /* pack change flag*/
+  OMWREC.OMWPPEXF = "N"; /* prepack exist flag*/
+
+  if (OP1REC.XGPCD == "03" /* APPAREL ORDER*/
+   || OP1REC.XGPCD == "02") /* footwear order*/
+    sysVar.arrayIndex = 1;
+    if (OP1REC.XPACD in XPATBL.XPACD /* IF VALID PACK CODE*/
+     && XPATBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      if (XPATBL.XPASPFFL[sysVar.arrayIndex] == "Y") /* CUST WANTS PREPACK*/
+           /* NEXT SENTENCE   SEE IF ORDER IS ON DBASE*/
+      else
+        return;
+      end
+    else
+      return;
+    end
+  else
+    return;
+  end
+
+   /* BUILD THE KEY TO SPECIFIED PREPACK TABLE*/
+
+  set OSNREC empty;
+  set SQLCA empty;
+
+  OSNREC.XWHCD = OP1REC.XWHCD; /* WAREHOUSE*/
+  OSNREC.OP1PARTN = OP1REC.OP1PARTN; /* PART CHAR*/
+  OSNREC.OP1CUOID = OP1REC.OP1CUOID; /* ORDER NUM*/
+  OSNREC.OP1NORID = OP1REC.OP1NORID; /* NIKE ORD ID*/
+
+  call "IO5650" ("SE", SQLCA, OSNREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == -811) /* multi records found*/
+    OMWREC.OMWPPEXF = "Y"; /* prepack exists flag*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      OMWREC.OMWPPEXF = "N"; /* prepack exists flag*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        OMWREC.OMWPKCHF = "Y"; /* reseet pack change flag*/
+        OMAREC.OMAERR = "Y";
+        converseLib.validationFailed(672); /* prepack db busy try again*/
+        return;
+      else
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "OM0C    ";
+        TA1REC.TA1LOCAT[1] = "SE      ";
+        TA1REC.TA1LOCAT[2] = "OM0CS01 ";
+        TA1REC.TA1LOCAT[3] = "IO5650  ";
+        TA1REC.TA1DBASE = "DORDER  ";
+        TA1REC.TA1TBLVU = "VCSPRP01";
+        OM0CW01.OM0CWERR = " ";
+        OM0CW01.OM0CWPTN = OP1REC.OP1PARTN;
+        OM0CW01.OM0CWOID = OP1REC.OP1CUOID;
+        OM0CW01.OM0CWNID = OP1REC.OP1NORID;
+        TA1REC.TA1TBLKE = OM0CW01.OM0CWERR;
+        try
+          call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+        end
+        COMMAREA.CAMSGA = "PREPACK DB PROBLEMS";
+        COMMAREA.CAMSGB = "ORDER MAY HAVE PREPACK CALL USER ANALYST";
+        COMMAREA.CACURRAP = "OM0M";
+        transfer to program "OM0M" passing COMMAREA;
+      end
+    end
+  end
+
+
+end // end OM0CS01
+
+// PF2 Pressed Actions
+Function OM0CS02()
+
+
+  if (OMWREC.OMWCHGFL == "Y" /* change mode*/
+   || OM0CW01.OM0CWCHG == "Y") /* change allowed in application?*/
+    OMAREC.OMAERR = "Y";
+    converseLib.validationFailed(2);
+    return; /* return immediately with error msg*/
+  end
+
+
+  OM0CW01.OM0CWCHG = "Y"; /* tentatively authorize change*/
+
+
+  if (COMMAREA.CACHGFL == "Y") /* menu change flag*/
+    if (COMMAREA.XSOCD != OP1REC.XSOCD) /* sales office mismatch*/
+      OM0CW01.OM0CWCHG = "N"; /* deny change authorization*/
+      OMAREC.OMAERR = "Y"; /* set error flag*/
+      converseLib.validationFailed(355); /* display not auth message*/
+      set OM0CM001.OP4TXT[1] cursor;
+    else
+      /* added for rebooking 10/88 tjf*/
+      if (OP1REC.XBDCD == "R")
+        converseLib.validationFailed(392);
+        OM0CW01.OM0CWCHG = "N";
+        OMAREC.OMAERR = "Y";
+      end
+    end
+  else
+    OM0CW01.OM0CWCHG = "N"; /* deny change authorization*/
+    OMAREC.OMAERR = "Y"; /* set error flag*/
+    converseLib.validationFailed(352); /* display not auth message*/
+    set OM0CM001.OP4TXT[1] cursor;
+  end
+
+
+  if (OM0CW01.OM0CWCHG == "Y") /* tentative OK still in effect?*/
+    OMWREC.OMWPF2CH = "Y"; /* set temporary change flag*/
+    OM0CSPI();
+    OM0CSDB();
+    OM0CS-BUILD-MAP(); /* move fields from temp storage*/
+    OM0CM001.OM0CMTTL = " CHANGE"; /* change heading*/
+    set OM0CM001.OM0CMPF2 protect, invisible;
+    OM0CSEK(); /* enable keys for change*/
+    set OM0CM001.OP4TXT[1] cursor;
+  end
+
+
+end // end OM0CS02
+
+// PF3 Pressed Actions
+Function OM0CS03()
+
+
+  OMWREC.OP1GROUP = OM0CW02.OP1GROUP;
+  COMMAREA.CA-USER-WORKAREA-4K = OMWREC.OMWSGRP;
+  COMMAREA.CAFROMAP = "OM0C";
+  if (OMWREC.OMWPKCHF == "Y")
+    OM0CS01(); /* check for prepack*/
+    if (OMAREC.OMAERR == "Y")
+      return;
+    end
+    if (OMWREC.OMWPPEXF == "Y") /* prepack exists*/
+      COMMAREA.CA-USER-WORKAREA-4K = OMWREC.OMWSGRP;
+      COMMAREA.CAMSG = "ORDER MAINTAINED - UPDATE PREPACK";
+      COMMAREA.CACURRAP = "OS0G";
+      transfer to program "OS0G" passing COMMAREA; /* to customer prepack screen*/
+    else
+      COMMAREA.CACURRAP = "OM0M";
+      transfer to program "OM0M" passing COMMAREA;
+    end
+  else
+    COMMAREA.CACURRAP = "OM0M";
+    transfer to program "OM0M" passing COMMAREA;
+  end
+
+
+end // end OM0CS03
+
+// PF4 Pressed Actions
+Function OM0CS04()
+
+
+  OMWREC.OP1GROUP = OM0CW02.OP1GROUP;
+  COMMAREA.CAFROMAP = "OM0C";
+  COMMAREA.CA-USER-WORKAREA-4K = OMWREC.OMWSGRP;
+  if (OMWREC.OMWPKCHF == "Y") /* pack change flag*/
+    OM0CS01(); /* check for a prepack*/
+    if (OMAREC.OMAERR == "Y")
+      return;
+    end
+    if (OMWREC.OMWPPEXF == "Y") /* prepack exists*/
+      COMMAREA.CA-USER-WORKAREA-4K = OMWREC.OMWSGRP;
+      COMMAREA.CAMSG = "ORDER MAINTAINED - UPDATE PREPACK";
+      COMMAREA.CACURRAP = "OS0G";
+      transfer to program "OS0G" passing COMMAREA; /* transfer to prepack screen*/
+    else
+      COMMAREA.CACURRAP = "MN0M";
+      transfer to transaction "MN0M" passing COMMAREA; /* transfer to Order Maintenance Master Menu*/
+    end
+  else
+    COMMAREA.CACURRAP = "MN0M";
+    transfer to transaction "MN0M" passing COMMAREA;
+  end
+
+
+
+
+end // end OM0CS04
+
+// PF7 Pressed Actions
+Function OM0CS07()
+
+
+
+  if (OM0CW01.OM0CWCHG == "Y") /* were changes authorized?*/
+    OM0CSUP(); /* update data base*/
+  end
+
+
+  if (OM0CM001.OM0CMF1P == 1) /* page 1*/
+    converseLib.validationFailed(192); /* cannot scroll backward*/
+    return;
+  end
+
+    /* CHECK FOR PAGE # CHANGING WHEN PF7*/
+
+  if (OM0CM001.OM0CMF1P != OM0CW01-WS-REC.OM0CWF1P) /* curr page has changed*/
+    converseLib.validationFailed(597); /* cannot chg page # and pf7 at same*/
+                                   /* time*/
+    OMAREC.OMAERR = "Y"; /* set error flag*/
+    set OM0CM001.OM0CMF1P cursor, bold;
+    OM0CM001.OM0CMF1P = OM0CW01-WS-REC.OM0CWF1P; /* reset page number*/
+    return;
+  end
+
+
+  OM0CW01-WS-REC.OM0CWF1P = OM0CW01-WS-REC.OM0CWF1P - 1; /* subtrt 1 from pg*/
+  OM0CS-BUILD-MAP();
+
+
+end // end OM0CS07
+
+// PF8 Pressed Actions
+Function OM0CS08()
+
+
+  if (OM0CW01.OM0CWCHG == "Y") /* were changes authorized?*/
+    OM0CSUP(); /* update data base*/
+  end
+
+
+  if (OM0CW01-WS-REC.OM0CW-LAST-ADD-LINE == 15) /* screen is full, need*/
+    set OM0CW03 empty; /* to add blank page so appl will page*/
+    OM0CST1W(); /* forward for more input*/
+    OM0CW01-WS-REC.OM0CW-LAST-PAGE = OM0CW01-WS-REC.OM0CWF1M;
+    /* don't keep empty screen count in page total (for inquiry mode)*/
+    OM0CW01-WS-REC.OM0CWF1M = OM0CW01-WS-REC.OM0CWF1M - 1;
+    OM0CST1R(); /* reset temp storage to current page*/
+  end
+
+
+  if (OM0CW01.OM0CWCHG == "Y") /* if changes allowed*/
+    if (OM0CM001.OM0CMF1P == OM0CW01-WS-REC.OM0CW-LAST-PAGE)
+                                   /* cur page = empty page*/
+      converseLib.validationFailed(191); /* cannot scroll forward*/
+      return;
+    end
+  else
+    if (OM0CM001.OM0CMF1P == OM0CM001.OM0CMF1M) /* current page = last page*/
+      converseLib.validationFailed(191); /* cannot scroll forward*/
+      return;
+    end
+  end
+
+    /* CHECK FOR PAGE # CHANGING WHEN PF8*/
+
+  if (OM0CM001.OM0CMF1P != OM0CW01-WS-REC.OM0CWF1P) /* curr page has changed*/
+    converseLib.validationFailed(597); /* cannot chg page # and pf8 at same*/
+                                   /* time*/
+    OMAREC.OMAERR = "Y"; /* set error flag*/
+    set OM0CM001.OM0CMF1P cursor, bold;
+    OM0CM001.OM0CMF1P = OM0CW01-WS-REC.OM0CWF1P; /* reset page number*/
+    return;
+  end
+
+
+  OM0CW01-WS-REC.OM0CWF1P = OM0CW01-WS-REC.OM0CWF1P + 1; /* add 1 to page*/
+  OM0CS-BUILD-MAP();
+
+
+end // end OM0CS08
+
+// PF19 Pressed Actions
+Function OM0CS19()
+
+
+  OMWREC.OP1GROUP = OM0CW02.OP1GROUP;
+  COMMAREA.CA-USER-WORKAREA-4K = OMWREC.OMWSGRP;
+  COMMAREA.CAFROMAP = "OM0C";
+  COMMAREA.CACURRAP = "OM0C";
+  transfer to program "OM0C" passing COMMAREA;
+
+
+end // end OM0CS19
+
+// Data Base Flag Check
+Function OM0CSDB()
+
+
+  set SQLCA empty;
+
+
+  call "IO0430" ("S ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "OM0C    ";
+    TA1REC.TA1MAP = "OM0CM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VORHDR01";
+    TA1REC.TA1LOCAT[1] = "OM0CSDB";
+    OM0CW01.OM0CWPTN = OP1REC.OP1PARTN;
+    OM0CW01.OM0CWOID = OP1REC.OP1CUOID;
+    OM0CW01.OM0CWNID = OP1REC.OP1NORID;
+    TA1REC.TA1TBLKE = OM0CW01.OM0CWERR;
+    TA1REC.TA1LOCAT[3] = "OM0C";
+    TA1REC.TA1LOCAT[4] = "IO0430";
+    XSOPS02();
+  end
+
+
+  OM0CW02.OP1GROUP = OP1REC.OP1GROUP;
+
+
+end // end OM0CSDB
+
+// Disable Keys for Inquiry Mode
+Function OM0CSDK()
+
+
+  OMAREC.OMASUB = 1;
+
+  while (OMAREC.OMASUB <= 15) /* set all change comments*/
+    set OM0CM001.OP4TXT[OMASUB] protect; /* to inquiry mode*/
+    OMAREC.OMASUB = OMAREC.OMASUB + 1;
+  end
+
+
+end // end OM0CSDK
+
+// Delete Record From Data Base
+Function OM0CSDR()
+
+
+  set SQLCA empty;
+
+
+  call "IO0470" ("D ", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "OM0C    ";
+    TA1REC.TA1MAP = "OM0CM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VTEXT001";
+    TA1REC.TA1LOCAT[1] = "OM0CSDR";
+    OM0CW01.OM0CWPTN = OP4REC.OP1PARTN;
+    OM0CW01.OM0CWOID = OP4REC.OP1CUOID;
+    OM0CW01.OM0CWNID = OP4REC.OP1NORID;
+    OM0CW01.OM0CWTYP = OP4REC.OP4TRTYP;
+    OM0CW01.OM0CWSQN = OP4REC.OP4TRSEQ;
+    TA1REC.TA1TBLKE = OM0CW01.OM0CWERR;
+    TA1REC.TA1LOCAT[3] = "OM0C";
+    TA1REC.TA1LOCAT[4] = "IO0470";
+    XSOPS02();
+  end
+
+
+
+
+
+end // end OM0CSDR
+
+// Enable Keys to Allow Changes
+Function OM0CSEK()
+
+
+  OMAREC.OMASUB = 1;
+
+  while (OMAREC.OMASUB <= 15) /* set all comments unprotected*/
+    set OM0CM001.OP4TXT[OMASUB] initialAttributes; /* for data entry/modification*/
+    OMAREC.OMASUB = OMAREC.OMASUB + 1;
+  end
+
+
+end // end OM0CSEK
+
+// Enter Key Pressed Actions
+Function OM0CSEN()
+
+
+  if (OM0CW01.OM0CWCHG == "Y") /* were changes authorized?*/
+    OM0CSUP(); /* update data base*/
+  end
+
+  if (OM0CM001.OM0CMF1P != OM0CW01-WS-REC.OM0CWF1P) /* page number changed*/
+    OM0CS-EDIT-PG-NBR(); /* edit chged page number*/
+    return;
+  end
+
+  OMWREC.OP1GROUP = OP1REC.OP1GROUP;
+  COMMAREA.CA-USER-WORKAREA-4K = OMWREC.OMWSGRP;
+  if (OMWREC.OMWEOF == "Y")
+    if (OMWREC.OMWPKCHF == "Y") /* pack change flag*/
+      OM0CS01(); /* check for prepack*/
+      if (OMAREC.OMAERR == "Y")
+        return;
+      end
+      if (OMWREC.OMWPPEXF == "Y") /* prepack exists*/
+        COMMAREA.CA-USER-WORKAREA-4K = OMWREC.OMWSGRP;
+        COMMAREA.CAMSG = "ORDER MAINTAINED - UPDATE PREPACK";
+        COMMAREA.CAFROMAP = "OM0C";
+        COMMAREA.CACURRAP = "OS0G";
+        transfer to program "OS0G" passing COMMAREA; /* transfer to prepack screen*/
+      else
+        COMMAREA.CAFROMAP = "OM0C";
+        COMMAREA.CACURRAP = "OM0M";
+        transfer to program "OM0M" passing COMMAREA; /* transfer to Order Maintenance Master Menu*/
+      end
+    else
+      COMMAREA.CAFROMAP = "OM0C";
+      COMMAREA.CACURRAP = "OM0M";
+      transfer to program "OM0M" passing COMMAREA; /* transfer to Order Maintenance Master Menu*/
+    end
+  else
+    if (OMWREC.OMWOPTN == 1)
+      COMMAREA.CAFROMAP = "OM0C";
+      COMMAREA.CACURRAP = "OM0S";
+      transfer to program "OM0S" passing COMMAREA; /* transfer to Product Summary*/
+    else
+      if (OMWREC.OMWOPTN == 2
+       || OMWREC.OMWOPTN == 4)
+        if (OMWREC.OMWCHGFL == "Y")
+          COMMAREA.CAFROMAP = "OM0C";
+          COMMAREA.CACURRAP = "OM0Q";
+          transfer to program "OM0Q" passing COMMAREA; /* transfer to*/
+        else
+          COMMAREA.CAFROMAP = "OM0C";
+          COMMAREA.CACURRAP = "OM0O";
+          transfer to program "OM0O" passing COMMAREA; /* transfer to*/
+        end
+      else
+        if (OMWREC.OMWOPTN == 5)
+          if (OMWREC.OMWCHGFL == "Y")
+            COMMAREA.CAFROMAP = "OM0C";
+            COMMAREA.CACURRAP = "OM0P";
+            transfer to program "OM0P" passing COMMAREA; /* transfer to*/
+          else
+            COMMAREA.CAFROMAP = "OM0C";
+            COMMAREA.CACURRAP = "OM0O";
+            transfer to program "OM0O" passing COMMAREA; /* transfer to*/
+          end
+        else
+          if (OMWREC.OMWOPTN == 6)
+            COMMAREA.CAFROMAP = "OM0C";
+            COMMAREA.CACURRAP = "OM0A";
+            transfer to program "OM0A" passing COMMAREA; /* transfer to*/
+          else
+            if (OMWREC.OMWPKCHF == "Y")
+              OM0CS01(); /* check for prepack*/
+              if (OMWREC.OMWPPEXF == "Y") /* prepack exists*/
+                COMMAREA.CA-USER-WORKAREA-4K = OMWREC.OMWSGRP;
+                COMMAREA.CAMSG = "ORDER MAINTAINED - UPDATE PREPACK";
+                COMMAREA.CAFROMAP = "OM0C";
+                COMMAREA.CACURRAP = "OS0G";
+                transfer to program "OS0G" passing COMMAREA; /* transfer to prepack screen*/
+              else
+                COMMAREA.CAFROMAP = "OM0C";
+                COMMAREA.CACURRAP = "OM0M";
+                transfer to program "OM0M" passing COMMAREA; /* transfer to OM Master Menu*/
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+
+end // end OM0CSEN
+
+// Map Initialization
+Function OM0CSMI()
+
+
+  converseLib.clearScreen();
+  set OM0CM001 initial; /* initializes map*/
+
+
+  OMWREC.OMWORDN = OP1REC.OP1CUOID; /* this series of instructions*/
+  OMWREC.OMWSEP1 = ".";
+  OMWREC.OMWSORDN = OP1REC.OP1NORID; /* formats the order number*/
+
+
+  OMAREC.OMACUCO = OP1REC.KUCCOID; /* this series of instructions*/
+  OMAREC.OMASEP1 = ".";
+  OMAREC.OMACUSR = OP1REC.KUMSTRID; /* formats the customer number*/
+  OMAREC.OMASEP2 = ".";
+  OMAREC.OMACUDP = OP1REC.XNXCD;
+
+
+  OM0CM001.OPMDT = VGVar.currentShortGregorianDate;
+  OM0CM001.OM0CMOID = OMWREC.OMWORD; /* move in order number*/
+  OM0CM001.OM0CMCID = OMAREC.OMACUNO; /* move in customer number*/
+  OM0CM001.KUMSTRNM = OMWREC.KUMSTRNM; /* move in store name*/
+
+
+  if (OMWREC.OMWCHGFL == "N"
+   && OMWREC.OMWPF2CH == "N")
+    OM0CM001.OM0CMTTL = "INQUIRY";
+    OM0CSDK(); /* disable keys - no changes allowed*/
+    set OM0CM001.OM0CMCSR cursor, protect;
+  else
+    OM0CM001.OM0CMTTL = " CHANGE";
+    set OM0CM001.OM0CMPF2 protect, invisible; /* darken 'pf2: change' on map*/
+    set OM0CM001.OP4TXT[1] cursor, normal;
+  end
+
+
+
+
+end // end OM0CSMI
+
+// Update Order Header
+Function OM0CSOH()
+
+
+  set SQLCA empty;
+
+  call "IO0430" ("U ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "OM0C    ";
+    TA1REC.TA1MAP = "OM0CM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VORHDR01";
+    TA1REC.TA1LOCAT[1] = "OM0CSOH";
+    OM0CW01.OM0CWPTN = OP1REC.OP1PARTN;
+    OM0CW01.OM0CWOID = OP1REC.OP1CUOID;
+    OM0CW01.OM0CWNID = OP1REC.OP1NORID;
+    OM0CW01.OM0CWTYP = " ";
+    OM0CW01.OM0CWSQN = 0;
+    TA1REC.TA1TBLKE = OM0CW01.OM0CWERR;
+    TA1REC.TA1LOCAT[3] = "OM0C";
+    TA1REC.TA1LOCAT[4] = "IO0430";
+    XSOPS02();
+  end
+
+
+
+
+
+end // end OM0CSOH
+
+// Program Initialization
+Function OM0CSPI()
+
+
+  set OM0CW01 empty;
+  OP1REC.OP1GROUP = OMWREC.OP1GROUP;
+
+
+  OM0CSMI(); /* initialize map*/
+
+
+  OMAREC.OMAERR = "N";
+  if (OMWREC.OMWOPTN == 12)
+    OMWREC.OMWEOF = "Y";
+  end
+
+
+  OMAREC.OMAWDT = VGVar.currentShortGregorianDate;
+  if (OMAREC.OMAWYY > 56)
+    OMAREC.OMAWCC = 19; /* set up date for db2 call*/
+  else
+    OMAREC.OMAWCC = 20;
+  end
+
+
+  OM0CW01.OM0CWFTM = VGVar.currentFormattedTime;
+  OM0CW01.OM0CWCHH = OM0CW01.OM0CWFHH; /* set up time for db2 call*/
+  OM0CW01.OM0CWCMM = OM0CW01.OM0CWFMM;
+
+
+  if (OMWREC.OMWCHGFL == "N"
+   && OMWREC.OMWPF2CH == "N")
+    OM0CW01.OM0CWCHG = "N"; /* changes are not allowed*/
+  else
+    OM0CW01.OM0CWCHG = "Y"; /* changes are allowed*/
+  end
+
+
+end // end OM0CSPI
+
+// Close Comment cursor
+Function OM0CSSC()
+
+
+  call "IO0470" ("CS", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "OM0C    ";
+    TA1REC.TA1MAP = "OM0CM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VORHDR01";
+    TA1REC.TA1LOCAT[1] = "OM0CSSC";
+    OM0CW01.OM0CWPTN = OP4REC.OP1PARTN;
+    OM0CW01.OM0CWOID = OP4REC.OP1CUOID;
+    OM0CW01.OM0CWNID = OP4REC.OP1NORID;
+    OM0CW01.OM0CWTYP = OP4REC.OP4TRTYP;
+    OM0CW01.OM0CWSQN = OP4REC.OP4TRSEQ;
+    TA1REC.TA1TBLKE = OM0CW01.OM0CWERR;
+    TA1REC.TA1LOCAT[3] = "OM0C";
+    TA1REC.TA1LOCAT[4] = "IO0470";
+    XSOPS02();
+  end
+
+
+end // end OM0CSSC
+
+// Save Modified Flags
+Function OM0CSSM()
+
+
+  OMAREC.OMASUB = 1;
+
+  while (OMAREC.OMASUB <= 15)
+    if (OM0CM001.OP4TXT[OMASUB] != OM0CW03.OP4TXT[OMASUB])
+      set OM0CM001.OP4TXT[OMASUB] modified;
+    end
+    OMAREC.OMASUB = OMAREC.OMASUB + 1;
+  end
+
+
+end // end OM0CSSM
+
+// Select Next Comment
+Function OM0CSSN()
+
+
+  set OP4REC empty;
+  OP4REC.OP4KEY = OP1REC.OP1KEY;
+
+  set SQLCA empty;
+
+  call "IO0470" ("SN", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+  /*  */
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      OM0CW01-WS-REC.OM0CW-OP4REC-EOF-FL = "Y";
+    else
+      TA1REC.TA1PGMNM = "OM0C    ";
+      TA1REC.TA1MAP = "OM0CM001";
+      TA1REC.TA1DBASE = "DORDER  ";
+      TA1REC.TA1TBLVU = "VORHDR01";
+      TA1REC.TA1LOCAT[1] = "OM0CSSN";
+      OM0CW01.OM0CWPTN = OP4REC.OP1PARTN;
+      OM0CW01.OM0CWOID = OP4REC.OP1CUOID;
+      OM0CW01.OM0CWNID = OP4REC.OP1NORID;
+      OM0CW01.OM0CWTYP = OP4REC.OP4TRTYP;
+      OM0CW01.OM0CWSQN = OP4REC.OP4TRSEQ;
+      TA1REC.TA1TBLKE = OM0CW01.OM0CWERR;
+      TA1REC.TA1LOCAT[3] = "OM0C";
+      TA1REC.TA1LOCAT[4] = "IO0470";
+      XSOPS02();
+    end
+  end
+
+
+end // end OM0CSSN
+
+// Select Set of Comments
+Function OM0CSSS()
+
+
+  set OP4REC empty;
+  set SQLCA empty;
+  OP4REC.OP4KEY = OP1REC.OP1KEY;
+  OP4REC.OP4TRTYP = "C";
+
+  call "IO0470" ("SS", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "OM0C    ";
+    TA1REC.TA1MAP = "OM0CM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VTEXT001";
+    TA1REC.TA1LOCAT[1] = "OM0CSSS";
+    OM0CW01.OM0CWPTN = OP4REC.OP1PARTN;
+    OM0CW01.OM0CWOID = OP4REC.OP1CUOID;
+    OM0CW01.OM0CWNID = OP4REC.OP1NORID;
+    OM0CW01.OM0CWTYP = OP4REC.OP4TRTYP;
+    OM0CW01.OM0CWSQN = OP4REC.OP4TRSEQ;
+    TA1REC.TA1TBLKE = OM0CW01.OM0CWERR;
+    TA1REC.TA1LOCAT[3] = "OM0C";
+    TA1REC.TA1LOCAT[4] = "IO0470";
+    XSOPS02();
+  end
+
+
+
+
+end // end OM0CSSS
+
+// PURGE TEMP STORAGE 1-COMMENTS
+Function OM0CST1P()
+
+
+
+   /* purge temporary storage 1*/
+
+  TA5REC.TA5APPID = "OM0C"; /* appl identification*/
+  TA5REC.TA5FNCCD = "P"; /* function code*/
+  call "TA0050" (OM0CW03, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    OM0CW01-WS-REC.OM0CWF1P = 1;
+    OM0CW01-WS-REC.OM0CWF1M = 1;
+    OM0CW01-WS-REC.OM0CWF1S = 1;
+  else
+    TA1REC.TA1LOCAT[1] = "PRG OM0C";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TAEREC.TAEDESC2 = "PROBLEM PURGING TEMP STORAGE";
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "POST";
+    TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    converseLib.validationFailed(487); /* database busy*/
+    OMAREC.OMAERR = "Y"; /* set error message on*/
+
+  end
+end // end OM0CST1P
+
+// READ TEMP STORAGE 1 - COMMENTS
+Function OM0CST1R()
+
+
+
+   /* read temporary storage 1*/
+
+  set OM0CW03 empty;
+
+  TA5REC.TA5APPID = "OM0C"; /* appl identification*/
+  TA5REC.TA5FNCCD = "R"; /* function code*/
+  TA5REC.TA5TSQIX = OM0CW01-WS-REC.OM0CWF1P; /* current page*/
+  OM0CW03.OM0CWLEN = 1024; /* length of record*/
+
+  call "TA0050" (OM0CW03, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    /* next sentence*/
+  else
+    OM0CST1P(); /* purge temp storage*/
+    TA1REC.TA1LOCAT[1] = "READOM0C";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    OMWREC.OMWORDN = OP1REC.OP1CUOID; /* display cust ord id*/
+    OMWREC.OMWSORDN = OP1REC.OP1NORID; /* display nike ord id*/
+    TA1REC.TA1TBLKE = OMWREC.OMWORD; /* first row, first rec*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TAEREC.TAEDESC2 = "PROBLEM READING TEMP STORAGE";
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    COMMAREA.CA-USER-WORKAREA-4K = " "; /* clear user commarea*/
+    XSPF4(); /* master menu*/
+    exit program; /* failure master menu*/
+  end
+end // end OM0CST1R
+
+// UPDATE TEMP STORAGE 1-COMMENTS
+Function OM0CST1U()
+
+
+
+   /* update temporary storage 1*/
+
+  TA5REC.TA5APPID = "OM0C"; /* appl identification*/
+  TA5REC.TA5FNCCD = "U"; /* function code*/
+  TA5REC.TA5TSQIX = OM0CW01-WS-REC.OM0CWF1P; /* current page*/
+  OM0CW03.OM0CWLEN = 1024; /* length of record*/
+
+  call "TA0050" (OM0CW03, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    /* next sentence*/
+  else
+    OM0CST1P(); /* purge temp storage*/
+    TA1REC.TA1LOCAT[1] = "UPD OM0C";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    OMWREC.OMWORDN = OP1REC.OP1CUOID; /* display cust ord id*/
+    OMWREC.OMWSORDN = OP1REC.OP1NORID; /* display nike ord id*/
+    TA1REC.TA1TBLKE = OMWREC.OMWORD; /* first row, first rec*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "POST";
+    TA1REC.TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    converseLib.validationFailed(487); /* database busy*/
+    OMAREC.OMAERR = "Y"; /* set error flag*/
+
+  end
+end // end OM0CST1U
+
+// WRITE TEMP STORAGE 1-COMMENTS
+Function OM0CST1W()
+
+
+
+   /* write temporary storage 1*/
+
+  TA5REC.TA5APPID = "OM0C"; /* appl identification*/
+  TA5REC.TA5FNCCD = "A"; /* function code*/
+  OM0CW03.OM0CWLEN = 1024; /* length of record*/
+
+  call "TA0050" (OM0CW03, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    OM0CW01-WS-REC.OM0CWF1M = TA5REC.TA5TSQIX;
+  else
+    OM0CST1P(); /* purge temp storage*/
+    TA1REC.TA1LOCAT[1] = "ADD OM0C";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    OMWREC.OMWORDN = OP1REC.OP1CUOID; /* display cust ord id*/
+    OMWREC.OMWSORDN = OP1REC.OP1NORID; /* display nike ord id*/
+    TA1REC.TA1TBLKE = OMWREC.OMWORD; /* first row, first rec*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TAEREC.TAEDESC2 = "PROBLEM WRITING TEMP STORAGE";
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    COMMAREA.CA-USER-WORKAREA-4K = " "; /* clear user commarea*/
+    XSPF4(); /* master menu*/
+    exit program; /* master menu failure*/
+
+  end
+end // end OM0CST1W
+
+// Update Comment
+Function OM0CSUC()
+
+
+  set OP4REC empty;
+  OP4REC.OP4KEY = OP1REC.OP1KEY;
+  OP4REC.OP4TRTYP = "C";
+  if (OMAREC.OMASUB <= OM0CW01.OM0CWCLL)
+    OP4REC.OP4TRSEQ = OM0CW03.OM0CWSEQ[OMASUB];
+    OP4REC.ZZZCHGCT = OM0CW03.OM0CWCCT[OMASUB];
+    OM0CW01.OM0CWCAL = "U";
+  else
+    OM0CW01-WS-REC.OM0CW-LAST-SEQ = OM0CW01-WS-REC.OM0CW-LAST-SEQ + 1;
+    OP4REC.OP4TRSEQ = OM0CW01-WS-REC.OM0CW-LAST-SEQ;
+    OP4REC.ZZZCHGCT = 0;
+    OM0CW01.OM0CWCAL = "A";
+  end
+
+
+  if (OM0CM001.OP4TXT[OMASUB] == " ")
+    if (OM0CW01.OM0CWCAL == "U")
+      OM0CSDR(); /* delete text record*/
+      OM0CW03.OP4TXT[OMASUB] = " ";
+      OM0CW03.OM0CMCDT[OMASUB] = 0;
+      OM0CW03.OM0CWSEQ[OMASUB] = 0;
+      OM0CW03.OM0CWCCT[OMASUB] = 0;
+    end
+  else
+    OP4REC.OP4TXT = OM0CM001.OP4TXT[OMASUB];
+    OP4REC.ZZZCHGDT = OMAREC.OMAWDT;
+    OP4REC.ZZZCHGTM = OM0CW01.OM0CWCTM;
+    OM0CSUR(); /* update text record*/
+    OM0CW03.OP4TXT[OMASUB] = OP4REC.OP4TXT;
+    OM0CW03.OM0CMCDT[OMASUB] = OP4REC.ZZZCHGDT;
+    OM0CW03.OM0CWSEQ[OMASUB] = OP4REC.OP4TRSEQ;
+    OM0CW03.OM0CWCCT[OMASUB] = OP4REC.ZZZCHGCT;
+    if (OM0CW01.OM0CWCAL == "A") /* if add, keep line nbr on screen*/
+      OM0CW01-WS-REC.OM0CW-LAST-ADD-LINE = OMAREC.OMASUB;
+    end
+  end
+
+
+end // end OM0CSUC
+
+Function OM0CSUP()
+
+
+  OMAREC.OMASUB = 1;
+  OM0CW01-WS-REC.OM0CW-UPDATES-DONE = "N"; /* initialize switch*/
+  OM0CW01-WS-REC.OM0CW-LAST-ADD-LINE = 0; /* initialize line nbr*/
+
+  while (OMAREC.OMASUB <= 15)
+    if (OM0CM001.OP4TXT[OMASUB] is modified)
+      OM0CSUC();
+      OM0CW01-WS-REC.OM0CW-UPDATES-DONE = "Y";
+    end
+    if (OM0CM001.OP4TXT[OMASUB] == " ")
+      OM0CW01.OM0CWBCT = OM0CW01.OM0CWBCT + 1;
+    end
+    OMAREC.OMASUB = OMAREC.OMASUB + 1;
+  end
+
+
+  if (OM0CW01-WS-REC.OM0CW-UPDATES-DONE == "Y") /* if changes done,*/
+    OM0CST1U(); /* update temp storage*/
+  end
+
+
+  set OP4REC empty;
+  set SQLCA empty;
+  OP4REC.OP4KEY = OP1REC.OP1KEY;
+  OP4REC.OP4TRTYP = "C";
+
+  call "IO0470" ("SS", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+
+  sysVar.arrayIndex = 0;
+  while (SQLCA.VAGen_SQLCODE == 0)
+    call "IO0470" ("SN", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 0)
+      sysVar.arrayIndex = sysVar.arrayIndex + 1; /* count the comments*/
+    end
+  end
+
+  call "IO0470" ("CS", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+
+  OM0CSDB(); /* read the order header*/
+
+  if (sysVar.arrayIndex == 0)
+    if (OP1REC.OP1OMCMF == "N")
+       /* next sentence  ; no need to update flag is already set*/
+    else
+      OP1REC.OP1OMCMF = "N"; /* better update*/
+      OM0CSOH();
+    end
+  else /* there are comments*/
+    if (OP1REC.OP1OMCMF == "Y")
+       /* next sentence  ; no need to update flag is already set*/
+    else
+      OP1REC.OP1OMCMF = "Y"; /* better update*/
+      OM0CSOH();
+    end
+  end
+
+
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+
+
+end // end OM0CSUP
+
+// Add/Update Record on Data Base
+Function OM0CSUR()
+
+
+  set SQLCA empty;
+
+  if (OM0CW01.OM0CWCAL == "U") /* should 'update' function be used?*/
+    call "IO0470" ("U ", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (OM0CW01.OM0CWCAL == "A") /* should 'add' function be used?*/
+    call "IO0470" ("A ", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "OM0C    ";
+    TA1REC.TA1MAP = "OM0CM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VTEXT001";
+    TA1REC.TA1LOCAT[1] = "OM0CSUR";
+    OM0CW01.OM0CWPTN = OP4REC.OP1PARTN;
+    OM0CW01.OM0CWOID = OP4REC.OP1CUOID;
+    OM0CW01.OM0CWNID = OP4REC.OP1NORID;
+    OM0CW01.OM0CWTYP = OP4REC.OP4TRTYP;
+    OM0CW01.OM0CWSQN = OP4REC.OP4TRSEQ;
+    TA1REC.TA1TBLKE = OM0CW01.OM0CWERR;
+    TA1REC.TA1LOCAT[3] = "OM0C";
+    TA1REC.TA1LOCAT[4] = "IO0470";
+    XSOPS02();
+  end
+
+
+
+
+
+
+
+end // end OM0CSUR
+
+Record OM0CW01 type basicRecord
+  10 OM0CWCSQ OM0CWCSQ ; 
+  10 OM0CWCLL OM0CWCLL ; 
+  10 OM0CWCAL OM0CWCAL ; 
+  10 OM0CWBCT OM0CWBCT ; 
+  10 OM0CWCHG OM0CWCHG ; 
+  10 OM0CWFTM OM0CWFTM ; 
+    15 OM0CWFHH OM0CWFHH ; 
+    15 * char(1) ; 
+    15 OM0CWFMM OM0CWFMM ; 
+    15 * char(1) ; 
+    15 OM0CWFSS OM0CWFSS ; 
+  10 OM0CWCTM OM0CWCTM ; 
+    15 OM0CWCHH OM0CWCHH ; 
+    15 OM0CWCMM OM0CWCMM ; 
+  10 OM0CWERR OM0CWERR ; 
+    15 OM0CWPTN OM0CWPTN ; 
+    15 OM0CWOID OM0CWOID ; 
+    15 OM0CWNID OM0CWNID ; 
+    15 OM0CWTYP OM0CWTYP ; 
+    15 OM0CWSQN OM0CWSQN ; 
+  10 OP1OMCMF OP1OMCMF ; 
+end // end OM0CW01
+
+//*** RECORD=OM0CW01-WS-REC ****
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+// *     Additional working storage record added for holding
+// *     fields necessary for paging. These fields were not
+// *     added to Om0CW01 as that record gets refreshed when
+// *     PF2 is pressed.
+// *
+// *     CSP record: OM0CW01-WS-REC
+// *
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+// *  01/13/95  cbrine  Created.
+// ******************************
+Record OM0CW01-WS-REC type basicRecord
+  10 OM0CWF1P OM0CWF1P ; 
+  10 OM0CWF1S OM0CWF1S ; 
+  10 OM0CWF1M OM0CWF1M ; 
+  10 OM0CW-LAST-PAGE OM0CW-LAST-PAGE ; 
+  10 OM0CW-LAST-SEQ OM0CW-LAST-SEQ ; 
+  10 OM0CW-LAST-ADD-LINE OM0CW-LAST-ADD-LINE ; 
+  10 OM0CW-OP4REC-EOF-FL OM0CW-OP4REC-EOF-FL ; 
+  10 OM0CW-UPDATES-DONE OM0CW-UPDATES-DONE ; 
+end // end OM0CW01-WS-REC
+
+//*** RECORD=OM0CW02 ****
+//  04/04/90  cgrice  db changes - op1group from 436 to 438
+//  06/07/91  craine  db changes - op1group from 455 to 426
+//  10/08/91  dmeier  db changes - op1group from 426 to 427
+//  03/13/91  scantr  db changes - op1group from 427 to 421
+//                                 filler from 420 to 414
+//  02/28/94  scantr  db changes - op1group resize
+// ***********************
+Record OM0CW02 type basicRecord
+  10 OP1GROUP OP1GROUP ; 
+    15 OP1KEY OP1KEY ; 
+    15 * char(455) ; 
+end // end OM0CW02
+
+//*** RECORD=OM0CW03 ****
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+// *     Temporary storage record used to hold selected
+// *     comments for the OM0C application
+// *
+// *     CSP Record: OM0CW03
+// *
+// *     OM0C Statement Groups: OM0CST1P - Purge
+// *                            OM0CST1W - Write
+// *                            OM0CST1R - Read
+// *                            OM0CST1U - Update
+// *
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+// *  01/13/95  cbrine  created to handle multiple pages of
+// *                    comments.
+// ***********************
+Record OM0CW03 type basicRecord
+  5 OM0CWGP3 OM0CWGP3 ; 
+    10 OM0CWLEN OM0CWLEN ; 
+    10 OM0CWROW OM0CWROW [15] ; 
+      15 OM0CWSEQ OM0CWSEQ ; 
+      15 OM0CMCDT OM0CMCDT ; 
+      15 OM0CWCCT OM0CWCCT ; 
+      15 OP4TXT OP4TXT ; 
+end // end OM0CW03
+
+// suborder selection
+DataItem OM0CMCDT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change time
+DataItem OM0CW-LAST-ADD-LINE smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change time
+DataItem OM0CW-LAST-PAGE num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change time
+DataItem OM0CW-LAST-SEQ smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change time
+DataItem OM0CW-OP4REC-EOF-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// change time
+DataItem OM0CW-UPDATES-DONE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// blank line count
+DataItem OM0CWBCT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// db call type (update/add)
+DataItem OM0CWCAL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// change comments count
+DataItem OM0CWCCT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change allowed flag
+DataItem OM0CWCHG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// change hours
+DataItem OM0CWCHH num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change last loaded
+DataItem OM0CWCLL smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change minutes
+DataItem OM0CWCMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change working sequence
+DataItem OM0CWCSQ smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change time
+DataItem OM0CWCTM num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error diag fields
+DataItem OM0CWERR char(19)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// change time
+DataItem OM0CWF1M num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change time
+DataItem OM0CWF1P num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change time
+DataItem OM0CWF1S num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format hours
+DataItem OM0CWFHH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// format minutes
+DataItem OM0CWFMM char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// format seconds
+DataItem OM0CWFSS char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// format time
+DataItem OM0CWFTM char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// o/e group ws
+DataItem OM0CWGP3 char(1024)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// temp storage lgnth
+DataItem OM0CWLEN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op-nike-ord-id
+DataItem OM0CWNID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op-cust-ord-id
+DataItem OM0CWOID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op-ord-part-char
+DataItem OM0CWPTN num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// temp storage row
+DataItem OM0CWROW char(68)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// change comment sequence
+DataItem OM0CWSEQ smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op-txt-rec-seq
+DataItem OM0CWSQN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op-txt-rec-typ
+DataItem OM0CWTYP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

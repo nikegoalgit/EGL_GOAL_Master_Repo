@@ -1,0 +1,1691 @@
+package ta0s;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import ta.common.*;
+import vv.common.*;
+//*** PROGRAM=TA0S ****
+// Only users with an entry in the DIMDS.VSECUR01 table that
+// has their name in the XXX-SCRTY-USER-ID, and the word
+// 'SECURITY' in the XXX-RPT-FIL-ID, or that have the add flag
+// switched to yes for this application on the MN0N001 table
+// are to be admitted into the program flow. ( XSTA-00000 ).
+// 
+// This application allows a user to inquire and maintain rows
+// in the DIMDS.VSECUR01 table.
+// 
+// The first screen displayed to the user allows specification
+// of the search criteria to be used to list the rows in the
+// table.  The list is displayed and the user may page backward
+// and forward to view the information.
+// 
+// Only user's with add authority may see and/or play with
+// 'Security' rows.  ( Where XXX-RPT-FIL-ID = 'security' ).
+// User's with add authority have carte blaunche to add and
+// delete any row in the table.
+// 
+// Other user's may only change ( Add, Delete or Replace )
+// report rows that they have a current connection to.  A user
+// is connected to a report if there is a row on the table that
+// has the user in the XXX-SCRTY-USER-ID and the report name in
+// the XXX-RPT-FIL-ID.  The initial row for new reports is
+// created by TA01.
+// 
+// If any data is modified, it is verified and, if complete and
+// correct, the table row is updated with the changed data.
+// The screen is redisplayed to the user, indicating that the
+// update is completed.
+// 
+// The user may exit to any allowed application, via FAST PATH
+// or PF key, at any time.
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE    USERID  DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// NEW      11/15/94  RMORGA  New application.
+// tsup     11/21/95  bkoois  Make Replacing an SA easier
+//                            by adding Replace option, wild
+//                            card selection.  Also added a
+//                            twelfth line to display and
+//                            PF12 to refresh data on screen.
+// tsup     07/28/98  sbusho  re-gen of application to pick up
+//                            changes in XX0XS01 (NIKE standard
+//                            date routine) for Y2K.
+// tsup     04/22/99  JBUCH1  Change TA0M to TA01 in all occurs
+// 
+// *********************
+Program TA0S type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "TA00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  SQLCA SQLCA; // record
+  TA0SW00 TA0SW00; // record
+  TA0SW01 TA0SW01; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  TAWREC TAWREC; // record
+  VSECUR01 VSECUR01; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use TA0SM.TA0SM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPTA-00000: XPTA-00000();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and display storage areas.*/
+     /* ------------------------------------------------------------*/
+
+    set TA0SM001 initial; /* M001 input/output*/
+    set TA0SW00 empty; /* Working storage*/
+    set TA0SW01 empty; /* M001 display storage*/
+    set SQLCA empty; /* SQL communication area*/
+    set TAEREC empty; /* Error diagnosis information*/
+    set TA1REC empty; /* Error diagnosis parameters*/
+    set TA5REC empty; /* Temporary storage parameters*/
+    set XX0XW01 empty; /* Date/time subroutine parameters*/
+
+    TA0SW00.TAW-ERROR-FLAG = "N"; /* No error yet...*/
+    TA0SW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+    TA0SW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    COMMAREA.CAITEM = " "; /* Clear passed data*/
+
+    TA0SW00.XXX-TEMP-STG-LNTH = 380; /* Temporary storage length*/
+    TA0SW00.XXX-INX-LMT-NBR = 12; /* Number of lines on a page*/
+
+     /* ------------------------------------------------------------*/
+     /* Flow to IMDS initialization & security check.*/
+     /* ------------------------------------------------------------*/
+
+    goto XSTAS-SECURITY; /* Check security table.*/
+
+
+    XSTAS-SECURITY: XSTAS-SECURITY();
+
+     /* -----------------------------------------------*/
+     /* Flow to converse main program flow.*/
+     /* -----------------------------------------------*/
+
+    goto TA0S-00000;
+
+
+    TA0S-00000: TA0S-00000();
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto TA0S-00000; /* Converse the main process*/
+
+
+  end // end main
+end // end TA0S
+
+// Main process to display a map
+Function TA0S-00000()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) Obtain the data to display.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Verify the data that was entered.*/
+   /* 5) Process a valid input request.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+  TA0S-10000(); /* Obtain the data to display*/
+
+  TA0S-20000(); /* Format and display the map*/
+
+  TA0S-30000(); /* Check attention identifier*/
+
+  TA0S-40000(); /* Verify the entered data*/
+
+  TA0S-50000(); /* Process valid input request*/
+
+
+end // end TA0S-00000
+
+// Obtain the data to display
+Function TA0S-10000()
+   /* ------------------------------------------------------------*/
+   /* If data was not requested or an error was found, return to*/
+   /* the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SW00.XXX-RQT-DATA-FL != "Y" /* Data was not requested*/
+   || TA0SW00.TAW-ERROR-FLAG == "Y") /* or an error was found*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If no message to display, reset the page number to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (TAWREC.XXX-MSG-NBR == 0) /* No message to display*/
+    TA0SW00.XXX-CURR-PAGE-NBR = 1; /* Page number to display*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Purge any pages from temporary storage and save key fields.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SS-TA0050-P(); /* Purge any temporary storage*/
+
+  TA0SW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+  TA0SW01.TAW-RPT-FIL-KEY = TA0SM001.TAW-RPT-FIL-KEY;
+  TA0SW01.TAW-SCRTY-USER-KEY = TA0SM001.TAW-SCRTY-USER-KEY;
+
+   /* ------------------------------------------------------------*/
+   /* Select the information to display in the map heading.*/
+   /* If a key field is empty, the IO mod expects a '*'.*/
+   /* ------------------------------------------------------------*/
+
+  set VSECUR01 empty;
+
+  if (TA0SW01.TAW-RPT-FIL-KEY <= " ")
+    VSECUR01.XXX-RPT-FIL-ID = "*";
+  else
+    VSECUR01.XXX-RPT-FIL-ID = TA0SW01.TAW-RPT-FIL-KEY;
+  end
+
+  if (TA0SW01.TAW-SCRTY-USER-KEY <= " ")
+    VSECUR01.XXX-SCRTY-USER-ID = "*";
+  else
+    VSECUR01.XXX-SCRTY-USER-ID = TA0SW01.TAW-SCRTY-USER-KEY;
+  end
+
+  TA0SS-IO7020-S1(); /* Select the table row*/
+
+   /* ------------------------------------------------------------*/
+   /* Fetch and format the data into pages until end of cursor.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SW00.XXX-INX-FLD-NBR = 1; /* Display line index*/
+
+  TA0SW00.TA0SW-VSECUR-EOF-FL = "N"; /* End of cursor flag*/
+
+  while (TA0SW00.TA0SW-VSECUR-EOF-FL == "N") /* Until end of cursor*/
+
+    TA0SS-IO7020-N1(); /* Fetch next row in cursor*/
+
+    /* ------------------------------------------------------------*/
+    /* If not end of cursor, save the data in display storage.*/
+    /* ------------------------------------------------------------*/
+
+    if (TA0SW00.TA0SW-VSECUR-EOF-FL == "N") /* Not end of cursor*/
+
+      /* ------------------------------------------------------------*/
+      /* Save the data from the table row in display storage.*/
+      /* Don't save security rows unless user is a security user.*/
+      /* ------------------------------------------------------------*/
+
+      if (VSECUR01.XXX-RPT-FIL-ID != "SECURITY"
+       || COMMAREA.CAADDFL == "Y")
+
+        TA0SW01.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] = VSECUR01.XXX-RPT-FIL-ID;
+        TA0SW01.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR] = VSECUR01.XXX-SCRTY-USER-ID;
+
+        /* ------------------------------------------------------------*/
+        /* Increment the line index to the next row in display storage.*/
+        /* ------------------------------------------------------------*/
+
+        TA0SW00.XXX-INX-FLD-NBR = TA0SW00.XXX-INX-FLD-NBR + 1;
+
+      end
+
+    end
+
+    /* ------------------------------------------------------------*/
+    /* If the page is full, add the page to the storage queue.*/
+    /* ------------------------------------------------------------*/
+
+    if (TA0SW00.XXX-INX-FLD-NBR > TA0SW00.XXX-INX-LMT-NBR) /* Page is full*/
+
+      TA0SS-TA0050-A(); /* Add page to temporary storage*/
+
+      TA0SW00.XXX-INX-FLD-NBR = 1; /* Display line index*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Add any partially formatted last page to the queue.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SW00.XXX-INX-FLD-NBR > 1) /* Page was formatted*/
+    TA0SS-TA0050-A(); /* Add page to temporary storage*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Close the cursor for the selected set.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SS-IO7020-C1(); /* Close selected set cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If no data was saved, indicate no data to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SW00.XXX-HI-PAGE-NBR <= 0
+   && TA0SW00.XXX-INX-FLD-NBR <= 1) /* No data was saved.*/
+
+    TAWREC.XXX-MSG-LOC-ID = "10000"; /* Message location*/
+    converseLib.validationFailed(20); /* No data was found to display*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the request for data is complete.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+
+
+end // end TA0S-10000
+
+// Format and converse the map
+Function TA0S-20000()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, save the error message number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    TAWREC.XXX-MSG-NBR = converseVar.validationMsgNum; /* Message number*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If the map must be formatted, format the data in the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SW00.XXX-MAP-FMAT-FL == "Y") /* Map must be formatted*/
+    TA0S-21000(); /* Format the data in the map*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Format the current date and any FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SM001.XXX-CURR-DT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  TA0SM001.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  TA0SM001.CAITEM = COMMAREA.CAITEM; /* Application data*/
+
+   /* ------------------------------------------------------------*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /* ------------------------------------------------------------*/
+
+  if (TAWREC.XXX-MSG-NBR != 0 /* Message to display*/
+   || COMMAREA.CAMSG != " ")  /* or message text*/
+
+    if (TAWREC.XXX-MSG-NBR != 0) /* Message to display*/
+
+      if (TAWREC.XXX-MSG-NBR == 9999)
+        converseLib.validationFailed();
+      else
+        converseLib.validationFailed(TAWREC.XXX-MSG-NBR);
+      end /* Message number*/
+    else
+      TA0SM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Message text*/
+
+    end
+
+    TA0SM001.XXX-MSG-LOC-ID = TAWREC.XXX-MSG-LOC-ID;
+                                   /* Message location*/
+
+    set TA0SM001 alarm; /* Indicate sound alarm*/
+
+  end
+
+  converse TA0SM001 ;
+
+   /* ------------------------------------------------------------*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  TAWREC.XXX-MSG-LOC-ID = " "; /* Message location*/
+  TAWREC.XXX-MSG-NBR = 0; /* Message number*/
+  COMMAREA.CAMSG = " "; /* Message text*/
+
+  TA0SW00.TAW-ERROR-FLAG = "N"; /* No error yet...*/
+
+  COMMAREA.CATOAP = TA0SM001.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = TA0SM001.CAITEM; /* Application data*/
+
+   /* ------------------------------------------------------------*/
+   /* Reset modifiable field attributes to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  set TA0SM001.TAW-RPT-FIL-KEY initialAttributes, cursor;
+  set TA0SM001.TAW-SCRTY-USER-KEY initialAttributes;
+
+  TA0SW00.XXX-INX-FLD-NBR = 1; /* Initialize line index*/
+
+  while (TA0SW00.XXX-INX-FLD-NBR <= TA0SW00.XXX-INX-LMT-NBR
+   /* Until end of screen*/
+   && TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] > " ")
+                                   /* or end of formatted lines*/
+
+    set TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] initialAttributes;
+    set TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] initialAttributes;
+    set TA0SM001.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR] initialAttributes;
+
+    TA0SW00.XXX-INX-FLD-NBR = TA0SW00.XXX-INX-FLD-NBR + 1;
+                                   /* Increment line index*/
+
+  end
+
+  set TA0SM001.CATOAP initialAttributes; /* TO application*/
+  set TA0SM001.CAITEM initialAttributes; /* Application data*/
+
+
+end // end TA0S-20000
+
+// Format the data in the map
+Function TA0S-21000()
+   /* ------------------------------------------------------------*/
+   /* Clear the fields in the map storage area to be formatted.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SW00.TAW-RPT-FIL-KEY = TA0SM001.TAW-RPT-FIL-KEY;
+  TA0SW00.TAW-SCRTY-USER-KEY = TA0SM001.TAW-SCRTY-USER-KEY;
+  TA0SW00.XXX-NEW-SCRTY-USER-KEY = TA0SM001.XXX-NEW-SCRTY-USER-KEY;
+
+  set TA0SM001 initial; /* M001 input/output area*/
+
+  TA0SW00.XXX-MAP-FMAT-FL = "N"; /* Format the map flag*/
+
+   /* ------------------------------------------------------------*/
+   /* If the page in storage is not the page to be displayed,*/
+   /* obtain the desired page from temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SW00.XXX-HI-PAGE-NBR > 0) /* Pages were formatted*/
+
+    if (TA0SW00.XXX-CURR-PAGE-NBR != TA5REC.TA5TSQIX)
+                                   /* Desired page not current*/
+      /* ------------------------------------------------------------*/
+      /* If the desired page number is greater than the highest page*/
+      /* in storage, default to the highest page number.*/
+      /* ------------------------------------------------------------*/
+
+      if (TA0SW00.XXX-CURR-PAGE-NBR > TA0SW00.XXX-HI-PAGE-NBR)
+                                   /* Desired greater highest*/
+        TA0SW00.XXX-CURR-PAGE-NBR = TA0SW00.XXX-HI-PAGE-NBR;
+                                   /* Default to highest*/
+      end
+
+      TA0SS-TA0050-R(); /* Read temporary storage page*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+    /* Display the page information on the screen.*/
+    /* ------------------------------------------------------------*/
+
+    set TA0SM001.XXX-CURR-PAGE-DESC skip; /* "PAGE" literal*/
+    TA0SM001.XXX-CURR-PAGE-NBR = TA0SW00.XXX-CURR-PAGE-NBR;
+                                   /* Current page*/
+    set TA0SM001.XXX-HI-PAGE-DESC skip; /* "OF" literal*/
+    TA0SM001.XXX-HI-PAGE-NBR = TA0SW00.XXX-HI-PAGE-NBR;
+                                   /* Highest page*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If report file key is missing put cursor there.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SW01.TAW-RPT-FIL-KEY <= " ")
+    set TA0SM001.TAW-RPT-FIL-KEY cursor;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Format the map fields from the display storage area.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SM001.TAW-RPT-FIL-KEY = TA0SW00.TAW-RPT-FIL-KEY;
+  TA0SM001.TAW-SCRTY-USER-KEY = TA0SW00.TAW-SCRTY-USER-KEY;
+  TA0SM001.XXX-NEW-SCRTY-USER-KEY = TA0SW00.XXX-NEW-SCRTY-USER-KEY;
+
+  TA0SW01.TAW-RPT-FIL-KEY = TA0SW00.TAW-RPT-FIL-KEY;
+  TA0SW01.TAW-SCRTY-USER-KEY = TA0SW00.TAW-SCRTY-USER-KEY;
+
+  TA0SW00.XXX-INX-FLD-NBR = 1; /* Initialize line index*/
+
+  while (TA0SW00.XXX-INX-FLD-NBR <= TA0SW00.XXX-INX-LMT-NBR
+   /* Until screen is full*/
+   && TA0SW01.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] > " ")
+                                                    /* or end of       data*/
+
+    if (TA0SW00.XXX-INX-FLD-NBR == 1) /* First select field*/
+
+      set TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] cursor, normal;
+    else
+      set TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] normal;
+
+    end
+
+    TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] = TA0SW01.XXX-LN-SEL-IND[XXX-INX-FLD-NBR];
+    TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] = TA0SW01.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR];
+    TA0SM001.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR] = TA0SW01.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR];
+
+    TA0SW00.XXX-INX-FLD-NBR = TA0SW00.XXX-INX-FLD-NBR + 1;
+                                   /* Increment line index*/
+
+  end
+
+
+end // end TA0S-21000
+
+// Check attention identifier
+Function TA0S-30000()
+   /* ------------------------------------------------------------*/
+   /* If CANCEL was requested, clear the map fields and exit.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+
+    if (TA0SW00.XXX-RQT-DATA-FL == "Y") /* Request for data pending*/
+      set TA0SW01 empty; /* M001 display storage*/
+    end
+
+    TA0SW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+    TA0SW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    COMMAREA.CATOAP = " "; /* TO application*/
+    COMMAREA.CAITEM = " "; /* Application data*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If FAST PATH was requested, transfer to the application.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SM001.CATOAP > " ") /* FAST PATH was requested*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      TA0SS-TA0050-P(); /* Purge any temporary storage*/
+
+      XSTAS-EXIT(); /* Exit to another application*/
+
+      set TA0SM001.CATOAP cursor, bold; /* Highlight*/
+
+    else
+
+      TAWREC.XXX-MSG-LOC-ID = "30000"; /* Message location*/
+      converseLib.validationFailed(21); /* PA/PF key may not be used*/
+      TA0SW00.TAW-ERROR-FLAG = "Y";
+
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If a PF key transfer requested, exit to another application.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf1 /* PF1 was pressed*/
+   || converseVar.eventKey is pf3 /* or PF3 was pressed*/
+   || converseVar.eventKey is pf4 /* or PF4 was pressed*/
+   || converseVar.eventKey is pf16) /* or PF16...*/
+
+    if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+      COMMAREA.CAITEM = "TA0SM001"; /* Application find code*/
+    end
+
+    if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+      COMMAREA.CATOAP = "TA01"; /* System Menu*/
+    end
+
+    if (converseVar.eventKey is pf16)
+      COMMAREA.CATOAP = "TA0T"; /* IMDS STALK update program.*/
+    end
+
+    TA0SS-TA0050-P(); /* Purge any temporary storage*/
+
+    XSTAS-EXIT(); /* Exit to another application*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf12  /* and PF12 was not pressed*/
+   && converseVar.eventKey not pf7   /* and PF7 was not pressed*/
+   && converseVar.eventKey not pf8)  /* and PF8 was not pressed*/
+
+    TAWREC.XXX-MSG-LOC-ID = "30000"; /* Message location*/
+    converseLib.validationFailed(2); /* PA/PF key pressed is not valid*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+end // end TA0S-30000
+
+// Verify data that was entered
+Function TA0S-40000()
+   /* ------------------------------------------------------------*/
+   /* Highlight any application data that was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SM001.CAITEM > " ") /* Application data was entered*/
+
+    TAWREC.XXX-MSG-LOC-ID = "40000"; /* Message location*/
+    converseLib.validationFailed(21); /* Enter only with FAST PATH*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    set TA0SM001.CAITEM cursor, bold; /* Highlight*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll requested, determine if any other field changed.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   || converseVar.eventKey is pf8) /* or scroll forward request*/
+
+    TA0S-41000(); /* Highlight other changed fields*/
+
+    /* ------------------------------------------------------------*/
+    /* Determine whether a valid request to scroll was entered.*/
+    /* ------------------------------------------------------------*/
+
+    TA0S-42000(); /* Verify scroll request*/
+
+  else
+
+    /* ------------------------------------------------------------*/
+    /* If key field changed, determine if any other field changed.*/
+    /* ------------------------------------------------------------*/
+
+    if (TA0SM001.TAW-RPT-FIL-KEY
+     != TA0SW01.TAW-RPT-FIL-KEY
+     || TA0SM001.TAW-SCRTY-USER-KEY
+     != TA0SW01.TAW-SCRTY-USER-KEY)
+
+      TA0S-41000(); /* Highlight other changed fields*/
+
+    else
+
+      /* ------------------------------------------------------------*/
+      /* Otherwise, verify any modifiable data that was changed.*/
+      /* ------------------------------------------------------------*/
+
+      /* IF TA0SW00.XXX-HI-PAGE-NBR GT 0;/* Page was formatted*/
+
+      TA0SW00.XXX-INX-FLD-NBR = TA0SW00.XXX-INX-LMT-NBR;
+                                   /* Line index*/
+
+      while (TA0SW00.XXX-INX-FLD-NBR >= 1) /* Until end of lines*/
+
+        TA0S-43000(); /* Verify data in the line*/
+
+        TA0SW00.XXX-INX-FLD-NBR = TA0SW00.XXX-INX-FLD-NBR - 1;
+                                   /* Decrement line number*/
+
+        /* END;*/
+
+      end
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If any error was found, exit to display the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    exit stack; /* Exit to display map*/
+  end
+
+
+end // end TA0S-40000
+
+// Highlight other changed fields
+Function TA0S-41000()
+   /* ------------------------------------------------------------*/
+   /* If a modifiable field was changed, indicate that field may*/
+   /* not be changed when key is changed or a pf key is pressed.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SW00.XXX-INX-FLD-NBR = TA0SW00.XXX-INX-LMT-NBR; /* Line index*/
+
+  while (TA0SW00.XXX-INX-FLD-NBR > 0) /* Until end of lines*/
+
+    if (TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] != 
+    TA0SW01.XXX-LN-SEL-IND[XXX-INX-FLD-NBR])
+
+      TAWREC.XXX-MSG-LOC-ID = "41000"; /* Message location*/
+      converseLib.validationFailed(22); /* Field may not change*/
+      TA0SW00.TAW-ERROR-FLAG = "Y";
+      set TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] cursor, bold;
+                                   /* Highlight*/
+      TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] = TA0SW01.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR];
+      TA0SM001.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR] = TA0SW01.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR];
+
+    end
+
+    TA0SW00.XXX-INX-FLD-NBR = TA0SW00.XXX-INX-FLD-NBR - 1;
+                                   /* Decrement line number*/
+
+  end
+
+
+end // end TA0S-41000
+
+// Verify scroll request
+Function TA0S-42000()
+   /* ------------------------------------------------------------*/
+   /* Indicate key fields may not change when scroll is requested.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SM001.TAW-SCRTY-USER-KEY != TA0SW01.TAW-SCRTY-USER-KEY)
+
+    TAWREC.XXX-MSG-LOC-ID = "42000"; /* Message location*/
+    converseLib.validationFailed(23); /* Field may not change*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    set TA0SM001.TAW-SCRTY-USER-KEY cursor, bold;
+
+  end
+
+  if (TA0SM001.TAW-RPT-FIL-KEY != TA0SW01.TAW-RPT-FIL-KEY)
+
+    TAWREC.XXX-MSG-LOC-ID = "42000"; /* Message location*/
+    converseLib.validationFailed(23); /* Field may not change*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    set TA0SM001.TAW-RPT-FIL-KEY cursor, bold;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll back was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   && TA0SW00.XXX-CURR-PAGE-NBR < 2) /* and no previous pages*/
+
+    TAWREC.XXX-MSG-LOC-ID = "42000"; /* Message location*/
+    converseLib.validationFailed(3); /* No previous page to display*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll forward was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf8 /* Scroll forward request*/
+   && TA0SW00.XXX-CURR-PAGE-NBR >= TA0SW00.XXX-HI-PAGE-NBR)
+                                   /* and no more pages*/
+
+    TAWREC.XXX-MSG-LOC-ID = "42000"; /* Message location*/
+    converseLib.validationFailed(4); /* No more pages to display*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+
+  end
+
+
+end // end TA0S-42000
+
+// Verify data in the line
+Function TA0S-43000()
+   /* ------------------------------------------------------------*/
+   /* If selection was entered and is not an "A", "D", or "R",*/
+   /* indicate that only those two may be entered on a line.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] != 
+  TA0SW01.XXX-LN-SEL-IND[XXX-INX-FLD-NBR])
+
+    if (TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] != "A"
+     && TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] != "D"
+     && TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] != "R")
+
+      TAWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+      converseLib.validationFailed(33); /* Only "A, D or R" may be entered*/
+      TA0SW00.TAW-ERROR-FLAG = "Y";
+      set TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] cursor, bold;
+                                   /* Highlight*/
+    else
+
+      if (TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] == "A"
+       || TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] == "R")
+        if (TA0SM001.XXX-NEW-SCRTY-USER-KEY <= " "
+         || TA0SM001.XXX-NEW-SCRTY-USER-KEY == "*")
+
+          TAWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+          converseLib.validationFailed(37); /* Must have a user*/
+          TA0SW00.TAW-ERROR-FLAG = "Y";
+
+        end
+      end
+
+      if (TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] <= " "
+       || TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] == "*")
+
+        TAWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+        converseLib.validationFailed(36); /* Must have a report*/
+        TA0SW00.TAW-ERROR-FLAG = "Y";
+        set TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] cursor, bold;
+
+      end
+
+      if (TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] == "SECURITY"
+       && COMMAREA.CAADDFL != "Y")
+
+        TAWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+        converseLib.validationFailed(11); /* Invalid value entered.*/
+        TA0SW00.TAW-ERROR-FLAG = "Y";
+        set TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] cursor, bold;
+
+      end
+
+    end
+
+  end
+
+
+end // end TA0S-43000
+
+// Process valid input request
+Function TA0S-50000()
+   /* ------------------------------------------------------------*/
+   /* If the key fields changed, request the data to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf12
+   || TA0SM001.TAW-RPT-FIL-KEY
+   != TA0SW01.TAW-RPT-FIL-KEY
+   || TA0SM001.TAW-SCRTY-USER-KEY
+   != TA0SW01.TAW-SCRTY-USER-KEY)
+
+    TA0SW00.XXX-RQT-DATA-FL = "Y"; /* Request for data flag*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll backward was requested, decrement the page number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7) /* Scroll back requested*/
+
+    TA0SW00.XXX-CURR-PAGE-NBR = TA0SW00.XXX-CURR-PAGE-NBR - 1;
+                                   /* Decrement page number*/
+
+    TA0SW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll forward was requested, increment the page number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf8) /* Scroll forward requested*/
+
+    TA0SW00.XXX-CURR-PAGE-NBR = TA0SW00.XXX-CURR-PAGE-NBR + 1;
+                                   /* Increment page number*/
+
+    TA0SW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Save any field that was changed in the map display storage.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SW00.XXX-INX-FLD-NBR = TA0SW00.XXX-INX-LMT-NBR;
+
+  while (TA0SW00.XXX-INX-FLD-NBR >= 1)
+                                   /* Until end of lines*/
+
+    if (TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] == "A"
+     || TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] == "D"
+     || TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] == "R")
+
+      TA0S-51000(); /* Add or delete row.*/
+
+    end
+
+    TA0SW00.XXX-INX-FLD-NBR = TA0SW00.XXX-INX-FLD-NBR - 1;
+                                   /* Decrement line index*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Commit all changes if no errors occured.*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0SW00.TAW-ERROR-FLAG == "N") /* No errors occured*/
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.commit(); /* Commit all changes*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+
+  end
+
+
+end // end TA0S-50000
+
+// Check auth'ty to add or delete
+Function TA0S-51000()
+   /* ------------------------------------------------------------*/
+   /* Add or delete selection depending on choice.*/
+   /* ( first find out if user has authority to change this report. )*/
+   /* ( Users with Add authority in GOAL system may do anything. )*/
+   /* ------------------------------------------------------------*/
+
+   /* Prep VSECUR01 for launching.*/
+
+  set VSECUR01 empty;
+
+  VSECUR01.XXX-RPT-FIL-ID = TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR];
+  VSECUR01.XXX-SCRTY-USER-ID = COMMAREA.CAUSERID;
+
+  TA0SS-IO7020-S(); /* Is user already on report? If so, OK.*/
+
+  if (SQLCA.VAGen_SQLCODE == 0
+   || COMMAREA.CAADDFL == "Y") /* User is GOAL approved.*/
+
+
+    if (TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] == "A")
+      VSECUR01.XXX-SCRTY-USER-ID = TA0SM001.XXX-NEW-SCRTY-USER-KEY;
+      TA0S-51100(); /* Add record.*/
+    else
+      if (TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] == "D")
+        VSECUR01.XXX-SCRTY-USER-ID = TA0SM001.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR];
+        TA0S-51200(); /* Delete record.*/
+      else
+        if (TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] == "R")
+          VSECUR01.XXX-SCRTY-USER-ID = TA0SM001.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR];
+          TA0S-51200(); /* Delete record.*/
+          VSECUR01.XXX-SCRTY-USER-ID = TA0SM001.XXX-NEW-SCRTY-USER-KEY;
+          TA0S-51100(); /* Add record.*/
+        end
+      end
+    end
+
+  else
+
+    TAWREC.XXX-MSG-LOC-ID = "51000"; /* Message location*/
+    converseLib.validationFailed(28); /* Not Auth'd to change.*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    set TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] cursor, bold;
+
+    TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] = TA0SW01.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR];
+                                  /* reset fields to previous values.*/
+    TA0SM001.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR] = TA0SW01.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR];
+
+  end
+
+
+end // end TA0S-51000
+
+// Add a record
+Function TA0S-51100()
+   /* ------------------------------------------------------------*/
+   /* Add a new record to VSECUR01 table.*/
+   /* ------------------------------------------------------------*/
+
+   /* ----------------------------------------------------------*/
+   /* Obtain the current date and time.*/
+   /* ----------------------------------------------------------*/
+
+  XX0XS01(); /* Obtain date and time*/
+
+  VSECUR01.ZZ-SDT = XX0XW01.XX0XWDAT; /* Date : CCYYMMDD*/
+
+  VSECUR01.ZZ-CHNG-HHMM = 0;
+
+  TA0SS-IO7020-S();
+
+  if (SQLCA.VAGen_SQLCODE != 100) /* Row currently exists.*/
+
+    TAWREC.XXX-MSG-LOC-ID = "TA0S-51000";
+    converseLib.validationFailed(43); /* Data not found.*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    set TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] cursor, bold;
+
+    return; /* Return to previous process*/
+
+  end
+
+  TA0SS-IO7020-A();
+
+  converseLib.validationFailed(16); /* Record added.*/
+  TAWREC.XXX-MSG-LOC-ID = "TA0S-51000";
+
+  TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] = " ";
+
+
+end // end TA0S-51100
+
+// Delete a record.
+Function TA0S-51200()
+   /* ------------------------------------------------------------*/
+   /* Delete a row from the VSECUR01 table.*/
+   /* ------------------------------------------------------------*/
+
+
+  TA0SS-IO7020-D();
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+
+    converseLib.validationFailed(18); /* Record deleted.*/
+    TAWREC.XXX-MSG-LOC-ID = "TA0S-51000";
+
+  else
+
+    converseLib.validationFailed(41); /* Data not found.*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    TAWREC.XXX-MSG-LOC-ID = "TA0S-51000";
+    set TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] cursor, bold;
+
+    return; /* Return to previous process*/
+
+  end
+
+                                  /* clear out deleted rows.*/
+
+  TA0SM001.XXX-RPT-FIL-ID[XXX-INX-FLD-NBR] = " ";
+  TA0SM001.XXX-SCRTY-USER-ID[XXX-INX-FLD-NBR] = " ";
+  TA0SM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] = " ";
+
+
+end // end TA0S-51200
+
+// Add to streettalk table
+Function TA0SS-IO7020-A()
+   /* ------------------------------------------------------------*/
+   /* Add to security row.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO7020" ("A ", SQLCA, VSECUR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  TAWREC.XXX-MSG-LOC-ID = "IO7020A"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(27); /* Data in use by another*/
+    TA0SW00.TAW-ERROR-FLAG = "Y"; /* Opps error.*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(34); /* Unexpected error occurred*/
+    TA0SW00.TAW-ERROR-FLAG = "Y"; /* Opps error.*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TAWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "ADD TO TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DIMDS   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSECUR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VSECUR01.VSECUR01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TA0SS-IO7020-A
+
+// Close VSECUR01 cursor
+Function TA0SS-IO7020-C1()
+   /* ------------------------------------------------------------*/
+   /* Close the VSECUR01 selected set cursor.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO7020" ("C1", SQLCA, VSECUR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Close cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TAWREC.XXX-MSG-LOC-ID = "IO7020C1"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(34); /* Unexpected error occurred*/
+  TA0SW00.TAW-ERROR-FLAG = "Y";
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TAWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "CLOSE VSECUR01 CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DIMDS   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSECUR01"; /* Table view name*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TA0SS-IO7020-C1
+
+// Delete VSECUR01 row
+Function TA0SS-IO7020-D()
+   /* ------------------------------------------------------------*/
+   /* Delete the selected row from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO7020" ("D ", SQLCA, VSECUR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Delete row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(34); /* Unexpected error occurred*/
+  TA0SW00.TAW-ERROR-FLAG = "Y";
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "DELETE VSECUR01 ROW";
+  TA1REC.TA1PGMNM = "TA0S    "; /* Program name*/
+  TA1REC.TA1DBASE = "DIMDS   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSECUR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VSECUR01.VSECUR01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TA0SS-IO7020-D
+
+// Fetch next row in vsecur01 set
+Function TA0SS-IO7020-N1()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row that was selected from VSECUR01.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO7020" ("N1", SQLCA, VSECUR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+    /* ------------------------------------------------------------*/
+    /* If end of the selected set, indicate end of cursor.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+      TA0SW00.TA0SW-VSECUR-EOF-FL = "Y"; /* End of cursor*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TAWREC.XXX-MSG-LOC-ID = "IO7020N1"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(27); /* Data in use by another*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(34); /* Unexpected error occurred*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TAWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "FETCH NEXT ROW IN CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DIMDS   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSECUR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VSECUR01.VSECUR01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TA0SS-IO7020-N1
+
+// Select security row
+Function TA0SS-IO7020-S()
+   /* ------------------------------------------------------------*/
+   /* Select security row.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO7020" ("S ", SQLCA, VSECUR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  TAWREC.XXX-MSG-LOC-ID = "IO7020S"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(27); /* Data in use by another*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(34); /* Unexpected error occurred*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TAWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DIMDS   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSECUR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VSECUR01.VSECUR01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TA0SS-IO7020-S
+
+// Select and open VSECUR01 set
+Function TA0SS-IO7020-S1()
+   /* ------------------------------------------------------------*/
+   /* Select the requested set of rows from the table join.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO7020" ("S1", SQLCA, VSECUR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Select set*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TAWREC.XXX-MSG-LOC-ID = "IO7020S1"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(27); /* Data in use by another*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(34); /* Unexpected error occurred*/
+    TA0SW00.TAW-ERROR-FLAG = "Y";
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TAWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT SET AND OPEN CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DIMDS   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSECUR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VSECUR01.VSECUR01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TA0SS-IO7020-S1
+
+// Add page to temporary storage
+Function TA0SS-TA0050-A()
+   /* ------------------------------------------------------------*/
+   /* Add the next page to the temporary storage queue.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SW01.XXX-TEMP-STG-LNTH = TA0SW00.XXX-TEMP-STG-LNTH;
+                                   /* Temporary storage length*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+
+  TA5REC.TA5FNCCD = "A"; /* Function code*/
+
+  try
+    call "TA0050" (TA0SW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Add page*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, initialize the storage area and*/
+   /* indicators to be used and return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    set TA0SW01 empty; /* M001 display storage*/
+
+    TA0SW00.XXX-HI-PAGE-NBR = TA5REC.TA5TSQIX; /* Highest page number*/
+
+    TA5REC.TA5TSQIX = 0; /* Clear last page number*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TAWREC.XXX-MSG-LOC-ID = "TA0050A"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(34); /* Unexpected error occurred*/
+  TA0SW00.TAW-ERROR-FLAG = "Y";
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = TAWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TA0SS-TA0050-A
+
+// Purge any temporary storage
+Function TA0SS-TA0050-P()
+   /* ------------------------------------------------------------*/
+   /* Initialize the storage areas and indicators to be used.*/
+   /* ------------------------------------------------------------*/
+
+  set TA0SW01 empty; /* M001 display storage*/
+
+  TA5REC.TA5TSQIX = 0; /* Displayed page number*/
+  TA0SW00.XXX-HI-PAGE-NBR = 0; /* Highest page number*/
+
+   /* ------------------------------------------------------------*/
+   /* Purge any temporary storage for this application.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+
+  TA5REC.TA5FNCCD = "P"; /* Function code*/
+
+  try
+    call "TA0050" (TA0SW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Purge storage*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TAWREC.XXX-MSG-LOC-ID = "TA0050P"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(34); /* Unexpected error occurred*/
+  TA0SW00.TAW-ERROR-FLAG = "Y";
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = TAWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TA0SS-TA0050-P
+
+// Read temporary storage page
+Function TA0SS-TA0050-R()
+   /* ------------------------------------------------------------*/
+   /* Read the next page from the temporary storage queue.*/
+   /* ------------------------------------------------------------*/
+
+  TA0SW01.XXX-TEMP-STG-LNTH = TA0SW00.XXX-TEMP-STG-LNTH;
+                                   /* Temporary storage length*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+  TA5REC.TA5TSQIX = TA0SW00.XXX-CURR-PAGE-NBR; /* Page number*/
+
+  TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+  try
+    call "TA0050" (TA0SW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Read page*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TAWREC.XXX-MSG-LOC-ID = "TA0050R"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(34); /* Unexpected error occurred*/
+  TA0SW00.TAW-ERROR-FLAG = "Y";
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = TAWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "READ TEMPORARY STORAGE PAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TA0SS-TA0050-R
+
+//*** RECORD=TA0SW00 ****
+// ------------------------------------------------------------
+// TA0S Application working storage.
+// ------------------------------------------------------------
+// 
+// MAINTENANCE HISTORY:
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// NONE     02/07/94  RMORGA  NEW RECORD.
+// NONE     11/17/95  bkoois  add new scrty user key field
+// ***********************
+Record TA0SW00 type basicRecord
+  10 XXX-RQT-DATA-FL XXX-RQT-DATA-FL ; 
+  10 XXX-MAP-FMAT-FL XXX-MAP-FMAT-FL ; 
+  10 XXX-MAP-DSP-CD XXX-MAP-DSP-CD ; 
+  10 XXX-TEMP-STG-LNTH XXX-TEMP-STG-LNTH ; 
+  10 XXX-INX-LMT-NBR XXX-INX-LMT-NBR ; 
+  10 XXX-INX-FLD-NBR XXX-INX-FLD-NBR ; 
+  10 XXX-CURR-PAGE-NBR XXX-CURR-PAGE-NBR ; 
+  10 XXX-HI-PAGE-NBR XXX-HI-PAGE-NBR ; 
+  10 TA0SW-VSECUR-EOF-FL TA0SW-VSECUR-EOF-FL ; 
+  10 TAW-ERROR-FLAG TAW-ERROR-FLAG ; 
+  10 XXX-SCRTY-USER-ID XXX-SCRTY-USER-ID ; 
+  10 TAW-RPT-FIL-KEY TAW-RPT-FIL-KEY ; 
+  10 TAW-SCRTY-USER-KEY TAW-SCRTY-USER-KEY ; 
+  10 XXX-NEW-SCRTY-USER-KEY XXX-NEW-SCRTY-USER-KEY ; 
+end // end TA0SW00
+
+//*** RECORD=TA0SW01 ****
+// ------------------------------------------------------------
+// TA0S Map 001 display storage.
+// ------------------------------------------------------------
+// 
+// MAINTENANCE HISTORY:
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// NONE     02/07/94  RMORGA  NEW RECORD.
+// NONE     11/16/95  bkoois  added new fields
+// ***********************
+Record TA0SW01 type basicRecord
+  5 XXX-TEMP-STG-LNTH XXX-TEMP-STG-LNTH ; 
+  5 * char(376) ; 
+    10 TAW-RPT-FIL-KEY TAW-RPT-FIL-KEY ; 
+    10 TAW-SCRTY-USER-KEY TAW-SCRTY-USER-KEY ; 
+    10 XXX-LN-SEL-IND XXX-LN-SEL-IND [12] ; 
+    10 XXX-RPT-FIL-ID XXX-RPT-FIL-ID [12] ; 
+    10 XXX-SCRTY-USER-ID XXX-SCRTY-USER-ID [12] ; 
+end // end TA0SW01
+
+// Cursor end of file flag
+DataItem TA0SW-VSECUR-EOF-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// New user id, in add,replace
+DataItem XXX-NEW-SCRTY-USER-KEY char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

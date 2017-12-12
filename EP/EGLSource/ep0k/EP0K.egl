@@ -1,0 +1,2849 @@
+package ep0k;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import dg.common.*;
+import ep.common.*;
+import ku.common.*;
+import ob.common.*;
+import om.common.*;
+import op.common.*;
+import pc.common.*;
+import pw.common.*;
+import sm.common.*;
+import sp.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import vv.common.*;
+//*** PROGRAM=EP0K ****
+// This application allows a user to inquire and maintain rows
+// in a DB2 table: DPICK.TSTADR00, onetime ship-to addresses.
+// 
+// There are two different screens that may be displayed.
+// 
+// The first screen displayed allows the user to scroll through
+// all addresses for the customer/store passed in from either
+// OM0K or OM0P.  The list is displayed and the user may page
+// backward and forward to view the information.
+// 
+// When a line is selected on the screen, the second screen is
+// displayed, showing all the detail information for the
+// selection.  The user may select more than one detail.  Each
+// subsequent press of <ENTER> will bring in the next selected
+// detail.  All viewed details will have the selection replaced
+// by an "*".
+// 
+// The purge flag is modifiable when the detail is displayed.
+// 
+// When the user exits the second screen (either via PF3 key or
+// after all selections have been viewed) the first screen is
+// redisplayed, indicating the selections that were viewed.
+// 
+// The user may choose to add a new address by pressing PF9
+// on the first menu.
+// 
+// The user may exit ONLY by returning the application they
+// transferred from (COMMAREA.CAFROMAP).
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE    USERID  DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// NEW      06/02/98  esmit2  New application.
+// retrofit 12/10/98  kdenne  added add'l criteria on ctry cd
+//                            & zip cd edits.
+// multgpc  08/06/99  OENFIE  regenerate to pick up changes to
+//                            XPEP-00000
+// *********************
+Program EP0K type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "EP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  EP0KW00 EP0KW00; // record
+  EP0KW01 EP0KW01; // record
+  EP0KW02 EP0KW02; // record
+  EPWREC EPWREC; // record
+  KUMREC KUMREC; // record
+  OMWREC OMWREC; // record
+  OP1REC OP1REC; // record
+  OPWREC OPWREC; // record
+  PWHREC PWHREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  TFWREC TFWREC; // record
+  VSTADR01 VSTADR01; // record
+  XCTREC XCTREC; // record
+  XSTREC XSTREC; // record
+  XX0XW01 XX0XW01; // record
+  XX0XW02 XX0XW02; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XCTTBL {deleteAfterUse = yes}; // table
+  use XSTTBL {deleteAfterUse = yes}; // table
+  use EP0KM.EP0KM001,  // forms
+      EP0KM.EP0KM002, 
+      EP0KM.XX0XM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPEP-00000: XPEP-00000();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and display storage areas.*/
+     /* ------------------------------------------------------------*/
+
+    set EP0KM001 initial; /* M001 input/output*/
+    set EP0KM002 initial; /* M002 input/output*/
+
+    set EP0KW00 empty; /* Working storage*/
+    set EP0KW01 empty; /* M001 display storage*/
+    set EP0KW02 empty; /* M002 display storage*/
+    set EPWREC empty; /* EP common record*/
+    set KUMREC empty; /* Customer store (TSTORE00)*/
+    set OMWREC empty; /* OM common record*/
+    set OPWREC empty; /* OP common record*/
+    set OP1REC empty; /* Orders pass record*/
+    set SQLCA empty; /* SQL communication area*/
+    set TA1REC empty; /* Error diagnosis parameters*/
+    set TA5REC empty; /* Temporary storage parameters*/
+    set TAEREC empty; /* Error diagnosis information*/
+    set VSTADR01 empty; /* Onetime ship-to addresses*/
+    set XX0XW01 empty; /* Date/time subroutine parms*/
+
+    EP0KW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+    EP0KW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+    EP0KW00.EP0KW-FIRST-TIME-FL = "Y"; /* First time in app flag*/
+
+    EP0KW00.XXX-MAP-DSP-CD = "1"; /* Map to be displayed*/
+
+    EP0KW00.XXX-TEMP-STG-LNTH = 2909; /* Temporary storage length*/
+    EP0KW00.XXX-INX-LMT-NBR = 15; /* Number of lines on a page*/
+
+
+     /* ------------------------------------------------------------*/
+     /* Initialize any fields passed from another application.*/
+     /* NOTE - EP0K expects a customer key to be passed in*/
+     /* from OM0K or OP0C.  The customer key cannot be*/
+     /* changed within EP0K.*/
+     /* ------------------------------------------------------------*/
+
+    if (COMMAREA.CAFROMAP == "OM0K"
+     || COMMAREA.CAFROMAP == "OP0C") /* Came from OM0K or OP0C*/
+
+      if (COMMAREA.CAFROMAP == "OM0K") /* Came from OM0K*/
+
+        OMWREC.OMWSGRP = COMMAREA.CA-USER-WORKAREA-4K;
+        OP1REC.OP1GROUP = OMWREC.OP1GROUP;
+
+      end
+
+      if (COMMAREA.CAFROMAP == "OP0C") /* Came from OP0C*/
+
+        OPWREC.OPWSGRP = COMMAREA.CA-USER-WORKAREA-4K;
+        OP1REC.OP1GROUP = OPWREC.OP1GROUP;
+
+      end
+
+      /* Set the addr ID to 0.  If an address is added, changed, or*/
+      /* selected then the ID of that address is moved back into the*/
+      /* ID.  If OM0K or OP0C get back a non-zero addr id, they will*/
+      /* retrieve the address information for that ID from TSTADR00.*/
+
+      OP1REC.OP1SHAID = 0; /* OP_SHGRP_ADDR_ID*/
+
+    end
+
+
+    EP0KW00.CU-CO-ID = OP1REC.KUCCOID; /* Company*/
+    EP0KW00.CU-STOR-ID = OP1REC.KUMSTRID; /* Store*/
+
+    EP0KW00.EP0KW-CU-CO-ID = OP1REC.KUCCOID; /* Company*/
+    EP0KW-LITERAL = "."; /* Period literal*/
+    EP0KW00.EP0KW-CU-STOR-ID = OP1REC.KUMSTRID; /* Store*/
+
+    EP0KW00.XXX-RQT-DATA-FL = "Y"; /* Request data flag*/
+
+
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto EP0K-00000; /* Converse main process*/
+
+
+    EP0K-00000: EP0K-00000();
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto EP0K-00000; /* Converse the main process*/
+
+
+  end // end main
+end // end EP0K
+
+// Determine which map to display
+Function EP0K-00000()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) If specified, display the map that was requested.*/
+   /* 2) Otherwise, indicate error and exit to System Menu.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If first time in this module...*/
+   /* If EP0KW00.CU-CO-ID does not have a non-zero value, force*/
+   /* return to the "from" application.  While the passed store*/
+   /* may be zero, the company MUST ALWAYS be non-zero.  (see flow*/
+   /* of XSEP0001)*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.EP0KW-FIRST-TIME-FL == "Y") /* First time in*/
+
+    if (EP0KW00.CU-CO-ID == 0) /* No company key passed*/
+
+      COMMAREA.CATOAP = COMMAREA.CAFROMAP; /* Return to 'from' app*/
+      XSEXIT();
+
+      /* If transfer to from app failed, return user to main menu*/
+      COMMAREA.CATOAP = "MN0M"; /* Return to main menu*/
+      XSEXIT();
+
+    else
+
+      EP0KW00.EP0KW-FIRST-TIME-FL = "N";
+
+    end
+  end
+
+
+  if (COMMAREA.CAFROMAP == "OM0K"
+   || COMMAREA.CAFROMAP == "OP0C") /* Valid applications*/
+
+    /* next sentence*/
+
+  else
+
+    COMMAREA.CATOAP = COMMAREA.CAFROMAP; /* Return to 'from' app*/
+    XSEXIT();
+
+  end
+
+
+  if (EP0KW00.XXX-MAP-DSP-CD == "1") /* Map 1 was requested*/
+
+    EP0K-10000(); /* Display map 1*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+  if (EP0KW00.XXX-MAP-DSP-CD == "2") /* Map 2 was requested*/
+
+    EP0K-20000(); /* Display map 2*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Write the error to the Error Diagnosis Reporting Facility.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "00000"; /* Message location*/
+  converseLib.validationFailed(01); /* Unexpected error*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "INVALID MAP NUMBER REQUESTED"; /* Description*/
+  TA1REC.TA1MAPNO = EP0KW00.XXX-MAP-DSP-CD; /* Map requested*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Err diag routine*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Exit to display the application system menu.*/
+   /* ------------------------------------------------------------*/
+
+  COMMAREA.CATOAP = COMMAREA.CAFROMAP; /* Return to 'from' app*/
+
+  XSEPS-EXIT(); /* Exit to another app*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Abnormally terminate the transaction if the exit failed.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1FUNC = "ABND"; /* Termination function*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+
+end // end EP0K-00000
+
+// Main process to display a map
+Function EP0K-10000()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display MAP 1.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) Obtain the data to display.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Verify the data that was entered.*/
+   /* 5) Process a valid input request.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+
+  EP0K-11000(); /* Obtain the data to display*/
+
+  EP0K-12000(); /* Format and display the map*/
+
+  EP0K-13000(); /* Check attention identifier*/
+
+  EP0K-14000(); /* Verify the entered data*/
+
+  EP0K-15000(); /* Process valid input request*/
+
+
+end // end EP0K-10000
+
+// Obtain the data to display
+Function EP0K-11000()
+   /* ------------------------------------------------------------*/
+   /* If data was not requested or an error was found, return to*/
+   /* the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.XXX-RQT-DATA-FL != "Y" /* Data was not requested*/
+   || converseVar.validationMsgNum != 0) /* or an error was found*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If no message to display, reset the page number to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.XXX-MSG-NBR == 0) /* No message to display*/
+
+    EP0KW00.XXX-CURR-PAGE-NBR = 1; /* Page number to display*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Purge any pages from temporary storage and save key fields.*/
+   /* NOTE - Key fields passed in and are constant for any*/
+   /* given session.  Keys are saved once in this module.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KS-TA0050-P(); /* Purge temp storage*/
+
+  EP0KW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+  EP0KW01.EP0KM-CUST-STORE = EP0KW00.EP0KW-CUST-STOR-GRP;
+
+
+   /* ------------------------------------------------------------*/
+   /* Select the store name to display in the map heading.*/
+   /* ------------------------------------------------------------*/
+
+  set KUMREC empty; /* Clear row storage area*/
+
+  KUMREC.KUCCOID = EP0KW00.CU-CO-ID; /* Customer ID*/
+  KUMREC.KUMSTRID = EP0KW00.CU-STOR-ID; /* Customer Store ID*/
+
+  EP0KS-IO0340-S(); /* Select the table row*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+    EP0KW00.CU-STOR-NM = KUMREC.KUMSTRNM; /* Store name*/
+  else
+    EP0KW00.CU-STOR-NM = "* NOT FOUND *"; /* Default name*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Select and open the cursor for the set to be formatted.*/
+   /* ------------------------------------------------------------*/
+
+  set VSTADR01 empty; /* Clear DB2 storage*/
+
+  VSTADR01.CU-CO-ID = EP0KW00.CU-CO-ID; /* Customer ID*/
+  VSTADR01.CU-STOR-ID = EP0KW00.CU-STOR-ID; /* Customer Store ID*/
+
+  EP0KS-VSTADR01-S1(); /* Select set, open csr*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Fetch and format the data into pages until end of cursor.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW01.EP0KM-CUST-STORE = EP0KW00.EP0KW-CUST-STOR-GRP; /* Cust+store*/
+  EP0KW01.CU-STOR-NM = EP0KW00.CU-STOR-NM; /* Store name*/
+
+  EP0KW00.XXX-INX-FLD-NBR = 1; /* Display line index*/
+  EP0KW00.EP0KW-VSTADR-EOF-FL = "N"; /* End of cursor flag*/
+
+
+  while (EP0KW00.EP0KW-VSTADR-EOF-FL == "N") /* Until end of cursor*/
+
+    EP0KS-VSTADR01-N1(); /* Fetch next row in csr*/
+
+    /* ------------------------------------------------------------*/
+    /* If not end of cursor, save the data in display storage.*/
+    /* ------------------------------------------------------------*/
+
+    if (EP0KW00.EP0KW-VSTADR-EOF-FL == "N") /* Not eof cursor*/
+
+      /* ------------------------------------------------------------*/
+      /* If first line on each page, save heading information.*/
+      /* ------------------------------------------------------------*/
+
+      if (EP0KW00.XXX-INX-FLD-NBR == 1) /* First line*/
+
+        EP0KW01.EP0KM-CUST-STORE = EP0KW00.EP0KW-CUST-STOR-GRP; /* Cust+store*/
+        EP0KW01.CU-STOR-NM = EP0KW00.CU-STOR-NM; /* Store name*/
+
+      end
+
+
+      /* ------------------------------------------------------------*/
+      /* Save the data from the table row in display storage.*/
+      /* ------------------------------------------------------------*/
+
+      EP0KW01.CU-SHGRP-ADDR-ID[XXX-INX-FLD-NBR] = VSTADR01.CU-SHGRP-ADDR-ID; /* Addr ID*/
+      EP0KW01.OP-ALT-NM[XXX-INX-FLD-NBR] = VSTADR01.OP-ALT-NM; /* Alt name*/
+      EP0KW01.DN-REC-PRGE-FL[XXX-INX-FLD-NBR] = VSTADR01.DN-REC-PRGE-FL; /* Purge flag*/
+      EP0KW01.XXX-ADDR1[XXX-INX-FLD-NBR] = VSTADR01.XXX-ADDR1; /* Addr 1*/
+      EP0KW01.XXX-ADDR2[XXX-INX-FLD-NBR] = VSTADR01.XXX-ADDR2; /* Addr 2*/
+      EP0KW01.XXX-ADDR3[XXX-INX-FLD-NBR] = VSTADR01.XXX-ADDR3; /* Addr 3*/
+      EP0KW01.XXX-CITY[XXX-INX-FLD-NBR] = VSTADR01.XXX-CITY; /* City*/
+      EP0KW01.XCT-CTRY-CD[XXX-INX-FLD-NBR] = VSTADR01.XCT-CTRY-CD; /* Country code*/
+      EP0KW01.XST-ST-CD[XXX-INX-FLD-NBR] = VSTADR01.XST-ST-CD; /* State code*/
+      EP0KW01.XXX-ZIP[XXX-INX-FLD-NBR] = VSTADR01.XXX-ZIP; /* Zip code*/
+
+      /* ------------------------------------------------------------*/
+      /* Increment the line index to the next row in display storage.*/
+      /* ------------------------------------------------------------*/
+
+      EP0KW00.XXX-INX-FLD-NBR = EP0KW00.XXX-INX-FLD-NBR + 1;
+                                                          /* Increment idx*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+    /* If the page is full, add the page to the temporary storage queue.*/
+    /* ------------------------------------------------------------*/
+
+    if (EP0KW00.XXX-INX-FLD-NBR > EP0KW00.XXX-INX-LMT-NBR) /* Page full*/
+
+      EP0KS-TA0050-A(); /* Add to TS*/
+
+      EP0KW00.XXX-INX-FLD-NBR = 1; /* Line index*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Add any partially formatted last page to the queue.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.XXX-INX-FLD-NBR > 1) /* Page was formatted*/
+
+    EP0KS-TA0050-A(); /* Add page to temp storage*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Close the cursor for the selected set.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KS-VSTADR01-C1(); /* Close selected set cursor*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If no pages were formatted, indicate no data to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.XXX-HI-PAGE-NBR == 0) /* No pages formatted*/
+
+    EP0KW00.XXX-MSG-LOC-ID = "11000"; /* Message location*/
+    converseLib.validationFailed(65); /* No data found to display*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the request for data is complete.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+
+
+end // end EP0K-11000
+
+// Format and converse the map
+Function EP0K-12000()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, save the error message number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+
+    EP0KW00.XXX-MSG-NBR = converseVar.validationMsgNum; /* Message number*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If the map must be formatted, format the data in the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.XXX-MAP-FMAT-FL == "Y") /* Map must be formatted*/
+
+    EP0K-12100(); /* Format the data in the map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Format the current date and any FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KM001.XXX-CURR-DT = VGVar.currentShortGregorianDate; /* Current date*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.XXX-MSG-NBR != 0 /* Msg display*/
+   || COMMAREA.CAMSG != " ")   /* or msg text*/
+
+    if (EP0KW00.XXX-MSG-NBR != 0) /* Msg display*/
+
+      if (EP0KW00.XXX-MSG-NBR == 9999)
+        converseLib.validationFailed();
+      else
+        converseLib.validationFailed(EP0KW00.XXX-MSG-NBR);
+      end /* Msg number*/
+    else
+      EP0KM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Msg text*/
+
+    end
+
+    EP0KM001.XXX-MSG-LOC-ID = EP0KW00.XXX-MSG-LOC-ID; /* Msg loc*/
+
+    set EP0KM001 alarm; /* Sound alarm*/
+
+  end
+
+  EP0KM001.CAFROMAP = COMMAREA.CAFROMAP; /* 'Return to' application*/
+
+
+  converse EP0KM001 ;
+
+   /* ------------------------------------------------------------*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW00.XXX-MSG-LOC-ID = " "; /* Message location*/
+  EP0KW00.XXX-MSG-NBR = 0; /* Message number*/
+  COMMAREA.CAMSG = " "; /* Message text*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Reset modifiable field attributes to normal intensity.*/
+   /* Only selection indicator for EP0KM001.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW00.XXX-INX-FLD-NBR = 1; /* Init map idx*/
+
+  while (EP0KW00.XXX-INX-FLD-NBR <= EP0KW00.XXX-INX-LMT-NBR) /* Til eof map*/
+    if (EP0KM001.EP0KM-ADDR1[XXX-INX-FLD-NBR] > " "
+     || EP0KM001.EP0KM-ADDR2[XXX-INX-FLD-NBR] > " "
+     || EP0KM001.EP0KM-ADDR3[XXX-INX-FLD-NBR] > " ") /* or eof data*/
+
+      set EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] normal; /* SEL ind*/
+
+    end
+
+    EP0KW00.XXX-INX-FLD-NBR = EP0KW00.XXX-INX-FLD-NBR + 1; /* Increment idx*/
+
+  end
+
+
+end // end EP0K-12000
+
+// Format the data in the map
+Function EP0K-12100()
+   /* ------------------------------------------------------------*/
+   /* Clear the fields in the map storage area to be formatted.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0KM001 initial; /* M001 i/o area*/
+
+  EP0KW00.XXX-MAP-FMAT-FL = "N"; /* Format map flag*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the page in storage is not the page to be displayed,*/
+   /* obtain the desired page from temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.XXX-HI-PAGE-NBR > 0) /* Pages formatted*/
+
+    if (EP0KW00.XXX-CURR-PAGE-NBR != TA5REC.TA5TSQIX) /* Pg not current*/
+
+      /* ------------------------------------------------------------*/
+      /* If the current page has been changed, update the page in*/
+      /* storage before obtaining the next one to display.*/
+      /* ------------------------------------------------------------*/
+
+      if (EP0KW00.XXX-PAGE-UPD-FL == "Y") /* Curr page changed*/
+
+        EP0KS-TA0050-U(); /* Update temp stor pg*/
+
+        EP0KW00.XXX-PAGE-UPD-FL = "N"; /* Page update flag*/
+
+      end
+
+
+      /* ------------------------------------------------------------*/
+      /* If the desired page number is greater than the highest page*/
+      /* in storage, default to the highest page number.*/
+      /* ------------------------------------------------------------*/
+
+      if (EP0KW00.XXX-CURR-PAGE-NBR > EP0KW00.XXX-HI-PAGE-NBR)
+                                            /* Desired greater highest*/
+        EP0KW00.XXX-CURR-PAGE-NBR = EP0KW00.XXX-HI-PAGE-NBR;
+                                            /* Default to highest*/
+      end
+
+      EP0KS-TA0050-R(); /* Read temporary storage page*/
+
+    end
+
+
+    /* ------------------------------------------------------------*/
+    /* Display the page information on the screen.*/
+    /* ------------------------------------------------------------*/
+
+    set EP0KM001.XXX-CURR-PAGE-DESC skip; /* "PAGE" literal*/
+    EP0KM001.XXX-CURR-PAGE-NBR = EP0KW00.XXX-CURR-PAGE-NBR;
+                                                    /* Current page*/
+    set EP0KM001.XXX-HI-PAGE-DESC skip; /* "OF" literal*/
+    EP0KM001.XXX-HI-PAGE-NBR = EP0KW00.XXX-HI-PAGE-NBR;
+                                                    /* Highest page*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Position cursor on first selection field.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0KM001.XXX-LN-SEL-IND[1] cursor; /* Position cursor*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Format the map fields from the display storage area.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KM001.EP0KM-CUST-STORE = EP0KW01.EP0KM-CUST-STORE; /* Co+Store*/
+  EP0KM001.CU-STOR-NM = EP0KW01.CU-STOR-NM; /* Store nm*/
+
+  EP0KW00.XXX-INX-FLD-NBR = 1; /* Line idx*/
+
+  while (EP0KW00.XXX-INX-FLD-NBR <= EP0KW00.XXX-INX-LMT-NBR) /* Til full*/
+
+    /* Set attributes for selection indicator*/
+    if (XXX-INX-FLD-NBR == 1) /* 1st line*/
+
+      set EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] cursor;
+
+      if (EP0KW01.XXX-ADDR1[XXX-INX-FLD-NBR] > " " /* Data here*/
+       || EP0KW01.XXX-ADDR2[XXX-INX-FLD-NBR] > " " /* Data here*/
+       || EP0KW01.XXX-ADDR3[XXX-INX-FLD-NBR] > " ") /* Data here*/
+        set EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] normal;
+        set EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] underline;
+      else /* No data*/
+        set EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] invisible, protect;
+      end
+
+    else /* Not 1st*/
+
+      if (EP0KW01.XXX-ADDR1[XXX-INX-FLD-NBR] > " " /* Data here*/
+       || EP0KW01.XXX-ADDR2[XXX-INX-FLD-NBR] > " " /* Data here*/
+       || EP0KW01.XXX-ADDR3[XXX-INX-FLD-NBR] > " ") /* Data here*/
+        set EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] normal;
+        set EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] underline;
+      else /* No data*/
+        set EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] invisible, protect;
+      end
+
+    end
+
+    EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] = EP0KW01.XXX-LN-SEL-IND[XXX-INX-FLD-NBR];
+    EP0KM001.EP0KM-ADDR1[XXX-INX-FLD-NBR] = EP0KW01.XXX-ADDR1[XXX-INX-FLD-NBR];
+    EP0KM001.EP0KM-ADDR2[XXX-INX-FLD-NBR] = EP0KW01.XXX-ADDR2[XXX-INX-FLD-NBR];
+    EP0KM001.EP0KM-ADDR3[XXX-INX-FLD-NBR] = EP0KW01.XXX-ADDR3[XXX-INX-FLD-NBR];
+
+    EP0KW00.XXX-INX-FLD-NBR = EP0KW00.XXX-INX-FLD-NBR + 1; /* Increment idx*/
+
+  end
+
+
+end // end EP0K-12100
+
+// Check attention identifier
+Function EP0K-13000()
+   /* ------------------------------------------------------------*/
+   /* If a PF key transfer requested, exit to another application.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf5) /* Exit to from app*/
+
+    if ("S" in EP0KM001.XXX-LN-SEL-IND)
+
+      set EP0KM001.XXX-LN-SEL-IND[sysVar.arrayIndex] cursor, bold;
+      converseLib.validationFailed(130); /* "S"EL ONLY VALID W\ENTER*/
+      EP0KW00.XXX-MSG-LOC-ID = "13000"; /* Message location*/
+      exit stack; /* Exit to display map*/
+
+    end
+
+    EP0KS-TA0050-P(); /* Purge temp storage*/
+
+    if (COMMAREA.CAFROMAP == "OM0K") /* Return back to OM0K*/
+
+      COMMAREA.CAFROMAP = COMMAREA.CACURRAP;
+      OMWREC.OP1GROUP = OP1REC.OP1GROUP;
+      COMMAREA.CA-USER-WORKAREA-4K = OMWREC.OMWSGRP;
+
+      COMMAREA.CACURRAP = "OM0K";
+      transfer to program "OM0K" passing COMMAREA;
+    else
+      if (COMMAREA.CAFROMAP == "OP0C") /* Return back to OP0C*/
+
+        COMMAREA.CAFROMAP = COMMAREA.CACURRAP;
+        OPWREC.OPWREVM = 3; /* Returns in Review mode*/
+        OPWREC.OP1GROUP = OP1REC.OP1GROUP;
+        COMMAREA.CA-USER-WORKAREA-4K = OPWREC.OPWSGRP;
+
+        COMMAREA.CACURRAP = "OP0C";
+        transfer to program "OP0C" passing COMMAREA;
+      end
+    end
+
+    /* If transfer failed, default exit to Master Menu*/
+    COMMAREA.CATOAP = "MN0M"; /* Default exit to menu*/
+
+    XSEPS-EXIT(); /* Exit to another app*/
+
+    /* If Master Menu exit failed (very serious), return to map 1*/
+    converseLib.validationFailed(111); /* Unable to exit msg*/
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf5   /* and PF5 was not pressed*/
+   && converseVar.eventKey not pf7   /* and PF7 was not pressed*/
+   && converseVar.eventKey not pf8   /* and PF8 was not pressed*/
+   && converseVar.eventKey not pf9)  /* and PF9 was not pressed*/
+
+    EP0KW00.XXX-MSG-LOC-ID = "13000"; /* Message location*/
+    converseLib.validationFailed(04); /* PA/PF key pressed not valid*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+end // end EP0K-13000
+
+// Verify data that was entered
+Function EP0K-14000()
+   /* ------------------------------------------------------------*/
+   /* If scroll requested, determine if any other field changed.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   || converseVar.eventKey is pf8) /* or scroll forward request*/
+
+    EP0K-14100(); /* Verify scroll request*/
+
+  else
+
+    /* ------------------------------------------------------------*/
+    /* Otherwise, verify any modifiable data that was changed.*/
+    /* ------------------------------------------------------------*/
+
+    if (EP0KW00.XXX-HI-PAGE-NBR > 0) /* Page*/
+
+      EP0KW00.XXX-INX-FLD-NBR = EP0KW00.XXX-INX-LMT-NBR; /* Ln idx*/
+
+      while (EP0KW00.XXX-INX-FLD-NBR > 0) /* Til eof*/
+
+        EP0K-14200(); /* Val lns*/
+
+        EP0KW00.XXX-INX-FLD-NBR = EP0KW00.XXX-INX-FLD-NBR - 1; /* Ln nbr*/
+
+      end
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If any error was found, exit to display the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+end // end EP0K-14000
+
+// Verify scroll request
+Function EP0K-14100()
+   /* ------------------------------------------------------------*/
+   /* If scroll back was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   && EP0KW00.XXX-CURR-PAGE-NBR < 2) /* and no previous pages*/
+
+    EP0KW00.XXX-MSG-LOC-ID = "14100"; /* Message location*/
+    converseLib.validationFailed(07); /* No previous page to display*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If scroll forward was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf8 /* Scroll forward request*/
+   && EP0KW00.XXX-CURR-PAGE-NBR   
+   >= EP0KW00.XXX-HI-PAGE-NBR)    /* and no more pages*/
+
+    EP0KW00.XXX-MSG-LOC-ID = "14100"; /* Message location*/
+    converseLib.validationFailed(08); /* No more pages to display*/
+
+  end
+
+
+end // end EP0K-14100
+
+// Verify data in the line
+Function EP0K-14200()
+   /* ------------------------------------------------------------*/
+   /* If selection was entered and is not a "S", indicate that*/
+   /* only "S" may be entered to select a line.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] != 
+  EP0KW01.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] /* SEL*/
+   && EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] != "S") /* not "S"*/
+
+    EP0KW00.XXX-MSG-LOC-ID = "14200"; /* Msg loc*/
+    converseLib.validationFailed(228); /* S Only*/
+    set EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] cursor, bold; /* Hilite*/
+
+  end
+
+
+end // end EP0K-14200
+
+// Process valid input request
+Function EP0K-15000()
+   /* ------------------------------------------------------------*/
+   /* If scroll backward was requested, decrement the page number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7) /* Scroll back*/
+
+    EP0KW00.XXX-CURR-PAGE-NBR = EP0KW00.XXX-CURR-PAGE-NBR - 1;
+                                                 /* Decrement page number*/
+
+    EP0KW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    return; /* Return to prior process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If scroll forward was requested, increment the page number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf8) /* Scroll forward*/
+
+    EP0KW00.XXX-CURR-PAGE-NBR = EP0KW00.XXX-CURR-PAGE-NBR + 1;
+                                                 /* Increment page number*/
+
+    EP0KW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    return; /* Return to prior process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Save any field that was changed in the map display storage.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW00.XXX-INX-FLD-NBR = 1; /* Init line index*/
+
+  while (EP0KW00.XXX-INX-FLD-NBR <= EP0KW00.XXX-INX-LMT-NBR)
+                                                    /* Until end of lines*/
+
+    if (EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] != 
+    EP0KW01.XXX-LN-SEL-IND[XXX-INX-FLD-NBR])
+
+      EP0KW01.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] = EP0KM001.XXX-LN-SEL-IND[XXX-INX-FLD-NBR];
+
+      EP0KW00.XXX-PAGE-UPD-FL = "Y"; /* Page update flag*/
+
+    end
+
+    EP0KW00.XXX-INX-FLD-NBR = EP0KW00.XXX-INX-FLD-NBR + 1;
+                                                    /* Increment line index*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If a line was selected and PF9 (ADD new record request),*/
+   /* indicate an error.*/
+   /* ------------------------------------------------------------*/
+
+  if ("S" in EP0KW01.XXX-LN-SEL-IND /* Line was selected*/
+   && converseVar.eventKey is pf9)  /* ADD new record request*/
+
+    EP0KW00.XXX-INX-FLD-NBR = sysVar.arrayIndex; /* Establish index value*/
+
+    EP0KW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+    EP0KW00.XXX-MAP-DSP-CD = "1"; /* Map to be displayed*/
+
+    EP0KW00.XXX-MSG-LOC-ID = "15000"; /* Message location*/
+    converseLib.validationFailed(66); /* No select w/ADD rqst*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If a line was selected, format the key fields and indicate*/
+   /* that map 002 is to be displayed.*/
+   /* ------------------------------------------------------------*/
+
+  if ("S" in EP0KW01.XXX-LN-SEL-IND) /* Line was selected*/
+
+    EP0KW00.XXX-INX-FLD-NBR = sysVar.arrayIndex; /* Establish index value*/
+
+    EP0KW00.XXX-RQT-DATA-FL = "Y"; /* Request for data flag*/
+    EP0KW00.XXX-MAP-DSP-CD = "2"; /* Map to be displayed*/
+    EP0KW00.EP0KW-MODE-IND = " "; /* Inquiry w/chg option*/
+
+    exit stack;
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If PF9, indicate add mode requested for map 002 display.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf9) /* Add mode requested*/
+
+    EP0KW00.XXX-RQT-DATA-FL = "Y"; /* Request for data flag*/
+    EP0KW00.XXX-MAP-DSP-CD = "2"; /* Map to be displayed*/
+    EP0KW00.EP0KW-MODE-IND = "A"; /* Add mode*/
+
+    exit stack;
+
+  end
+
+
+end // end EP0K-15000
+
+// Main process to display a map
+Function EP0K-20000()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display MAP 2.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) Obtain the data to display.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Verify the data that was entered.*/
+   /* 5) Process a valid input request.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+
+  EP0K-21000(); /* Obtain the data to display*/
+
+  EP0K-22000(); /* Format and display the map*/
+
+  EP0K-23000(); /* Check attention identifier*/
+
+  EP0K-24000(); /* Verify the entered data*/
+
+  EP0K-25000(); /* Process valid input request*/
+
+
+end // end EP0K-20000
+
+// Obtain the data to display
+Function EP0K-21000()
+   /* ------------------------------------------------------------*/
+   /* If data was not requested or an error was found,*/
+   /* return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.XXX-RQT-DATA-FL != "Y" /* Data was not requested*/
+   || converseVar.validationMsgNum != 0) /* or an error was found*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Clear the map display storage area and save data to display*/
+   /* depending on whether this is ADD mode or not.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0KW02 empty; /* M002 display storage*/
+
+  EP0KW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+  EP0KW02.EP0KM-CUST-STORE = EP0KW01.EP0KM-CUST-STORE; /* Cust+Store*/
+  EP0KW02.CU-STOR-NM = EP0KW01.CU-STOR-NM; /* Store name*/
+
+  if (EP0KW-MODE-IND == "A") /* Request to add new*/
+
+    EP0KW02.CU-SHGRP-ADDR-ID = 0; /* Addr ID*/
+    EP0KW02.DN-REC-PRGE-FL = "Y"; /* Delete default*/
+
+    EP0KW02.OP-ALT-NM = EP0KW00.CU-STOR-NM; /* Alternate name*/
+    EP0KW02.XXX-ADDR1 = " "; /* Address line 1*/
+    EP0KW02.XXX-ADDR2 = " "; /* Address line 2*/
+    EP0KW02.XXX-ADDR3 = " "; /* Address line 3*/
+    EP0KW02.XXX-CITY = " "; /* City*/
+    EP0KW02.XST-ST-CD = " "; /* State*/
+    EP0KW02.XCT-CTRY-CD = "USA "; /* Country default*/
+    EP0KW02.XXX-ZIP = " "; /* ZIP*/
+
+  else /* Inquiry w/chg option*/
+
+    EP0KW02.CU-SHGRP-ADDR-ID = EP0KW01.CU-SHGRP-ADDR-ID[XXX-INX-FLD-NBR]; /* Addr ID*/
+    EP0KW02.DN-REC-PRGE-FL = EP0KW01.DN-REC-PRGE-FL[XXX-INX-FLD-NBR]; /* Purge flag*/
+    EP0KW02.OP-ALT-NM = EP0KW01.OP-ALT-NM[XXX-INX-FLD-NBR]; /* Alternate name*/
+    EP0KW02.XXX-ADDR1 = EP0KW01.XXX-ADDR1[XXX-INX-FLD-NBR]; /* Address line 1*/
+    EP0KW02.XXX-ADDR2 = EP0KW01.XXX-ADDR2[XXX-INX-FLD-NBR]; /* Address line 2*/
+    EP0KW02.XXX-ADDR3 = EP0KW01.XXX-ADDR3[XXX-INX-FLD-NBR]; /* Address line 3*/
+    EP0KW02.XXX-CITY = EP0KW01.XXX-CITY[XXX-INX-FLD-NBR]; /* City*/
+    EP0KW02.XST-ST-CD = EP0KW01.XST-ST-CD[XXX-INX-FLD-NBR]; /* State*/
+    EP0KW02.XCT-CTRY-CD = EP0KW01.XCT-CTRY-CD[XXX-INX-FLD-NBR]; /* Country*/
+    EP0KW02.XXX-ZIP = EP0KW01.XXX-ZIP[XXX-INX-FLD-NBR]; /* ZIP*/
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the request for data is complete.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+
+
+end // end EP0K-21000
+
+// Format and converse the map
+Function EP0K-22000()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, save the error message number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+
+    EP0KW00.XXX-MSG-NBR = converseVar.validationMsgNum; /* Message number*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If the map must be formatted, format the data in the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.XXX-MAP-FMAT-FL == "Y") /* Map must be formatted*/
+
+    EP0K-22100(); /* Format data in the map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether to protect any of the modifiable fields.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum == 0) /* No error found*/
+
+    EP0K-22200(); /* Check change authorization*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Format any descriptions for codes that are displayed.*/
+   /* ------------------------------------------------------------*/
+
+   /* State description*/
+  if (EP0KM002.XST-ST-CD in XSTTBL.XSTCD /* Code in table*/
+   && XSTTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* & active stat*/
+
+    EP0KM002.XST-ST-DESC = XSTTBL.XSTDESC[sysVar.arrayIndex]; /* Description*/
+  else
+    EP0KM002.XST-ST-DESC = " "; /* No desc*/
+
+  end
+
+
+   /* Country description*/
+  if (EP0KM002.XCT-CTRY-CD in XCTTBL.XCTCD /* Code in table*/
+   && XCTTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* & active stat*/
+
+    EP0KM002.XCT-CTRY-DESC = XCTTBL.XCTDESC[sysVar.arrayIndex]; /* Description*/
+  else
+    EP0KM002.XCT-CTRY-DESC = " "; /* No desc*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Format the current date and any FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KM002.XXX-CURR-DT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  EP0KM002.CAFROMAP = COMMAREA.CAFROMAP; /* 'Return to' application*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /*  */
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.XXX-MSG-NBR != 0 /* Display msg*/
+   || COMMAREA.CAMSG != " ")   /* or msg text*/
+
+    if (EP0KW00.XXX-MSG-NBR != 0) /* Display msg*/
+
+      if (EP0KW00.XXX-MSG-NBR == 9999)
+        converseLib.validationFailed();
+      else
+        converseLib.validationFailed(EP0KW00.XXX-MSG-NBR);
+      end /* Msg number*/
+    else
+      EP0KM002.VAGen_EZEMSG = COMMAREA.CAMSG; /* Msg text*/
+
+    end
+
+    EP0KM002.XXX-MSG-LOC-ID = EP0KW00.XXX-MSG-LOC-ID; /* Msg location*/
+
+    set EP0KM002 alarm; /* Sound alarm*/
+
+  else
+
+    if (EP0KW00.EP0KW-MODE-IND == "A") /* ADD mode*/
+      set EP0KM002.OP-ALT-NM cursor; /* Place csr*/
+    else /* INQ/CHG mode*/
+      set EP0KM002.DN-REC-PRGE-FL cursor; /* Place csr*/
+    end
+
+  end
+
+
+  converse EP0KM002 ;
+
+   /* ------------------------------------------------------------*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW00.XXX-MSG-LOC-ID = " "; /* Message location*/
+  EP0KW00.XXX-MSG-NBR = 0; /* Message number*/
+  COMMAREA.CAMSG = " "; /* Message text*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Reset modifiable field attributes to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0KM002.DN-REC-PRGE-FL normal; /* "keep" flag default*/
+  set EP0KM002.OP-ALT-NM normal; /* Alternate name*/
+  set EP0KM002.EP0KM-ADDR1 normal; /* Address line 1*/
+  set EP0KM002.EP0KM-ADDR2 normal; /* Address line 2*/
+  set EP0KM002.EP0KM-ADDR3 normal; /* Address line 3*/
+  set EP0KM002.XXX-CITY normal; /* City*/
+  set EP0KM002.XST-ST-CD normal; /* State*/
+  set EP0KM002.XCT-CTRY-CD normal; /* Country default*/
+  set EP0KM002.XXX-ZIP normal; /* ZIP*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Change the selection indicator to show the line was viewed.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.EP0KW-MODE-IND != "A") /* Not ADD mode*/
+
+    EP0KW01.XXX-LN-SEL-IND[XXX-INX-FLD-NBR] = "*"; /* SEL indicator*/
+
+  end
+
+
+end // end EP0K-22000
+
+// Format the data in the map
+Function EP0K-22100()
+   /* ------------------------------------------------------------*/
+   /* Clear the fields in the map storage area to be formatted.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0KM002 initial; /* M002 input/output area*/
+
+  EP0KW00.XXX-MAP-FMAT-FL = "N"; /* Format the map flag*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Format the map fields from the display storage area.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KM002.EP0KM-CUST-STORE = EP0KW02.EP0KM-CUST-STORE; /* Cust+Store*/
+  EP0KM002.CU-STOR-NM = EP0KW02.CU-STOR-NM; /* Store name*/
+  EP0KM002.CU-SHGRP-ADDR-ID = EP0KW02.CU-SHGRP-ADDR-ID; /* Customer addr id*/
+
+  EP0KM002.DN-REC-PRGE-FL = EP0KW02.DN-REC-PRGE-FL; /* "keep" flag default*/
+  EP0KM002.OP-ALT-NM = EP0KW02.OP-ALT-NM; /* Alternate name*/
+  EP0KM002.EP0KM-ADDR1 = EP0KW02.XXX-ADDR1; /* Address line 1*/
+  EP0KM002.EP0KM-ADDR2 = EP0KW02.XXX-ADDR2; /* Address line 2*/
+  EP0KM002.EP0KM-ADDR3 = EP0KW02.XXX-ADDR3; /* Address line 3*/
+  EP0KM002.XXX-CITY = EP0KW02.XXX-CITY; /* City*/
+  EP0KM002.XST-ST-CD = EP0KW02.XST-ST-CD; /* State*/
+  EP0KM002.XCT-CTRY-CD = EP0KW02.XCT-CTRY-CD; /* Country default*/
+  EP0KM002.XXX-ZIP = EP0KW02.XXX-ZIP; /* ZIP*/
+
+
+end // end EP0K-22100
+
+// Check change authorization
+Function EP0K-22200()
+   /* ------------------------------------------------------------*/
+   /* Set attributes of map fields based on mode*/
+   /* and user update authorization.*/
+   /* ------------------------------------------------------------*/
+
+  if (COMMAREA.CACHGFL == "Y") /* Authorized to update*/
+
+    if (EP0KW00.EP0KW-MODE-IND == "A") /* ADD new address requested*/
+
+      /* Set attributes to add new address*/
+      set EP0KM002.DN-REC-PRGE-FL normal; /* "keep" flag default*/
+      set EP0KM002.DN-REC-PRGE-FL underline;
+      set EP0KM002.OP-ALT-NM normal; /* Alternate name*/
+      set EP0KM002.OP-ALT-NM underline;
+      set EP0KM002.EP0KM-ADDR1 normal; /* Address line 1*/
+      set EP0KM002.EP0KM-ADDR1 underline;
+      set EP0KM002.EP0KM-ADDR2 normal; /* Address line 2*/
+      set EP0KM002.EP0KM-ADDR2 underline;
+      set EP0KM002.EP0KM-ADDR3 normal; /* Address line 3*/
+      set EP0KM002.EP0KM-ADDR3 underline;
+      set EP0KM002.XXX-CITY normal; /* City*/
+      set EP0KM002.XXX-CITY underline;
+      set EP0KM002.XST-ST-CD normal; /* State*/
+      set EP0KM002.XST-ST-CD underline;
+      set EP0KM002.XCT-CTRY-CD normal; /* Country default*/
+      set EP0KM002.XCT-CTRY-CD underline;
+      set EP0KM002.XXX-ZIP normal; /* ZIP*/
+      set EP0KM002.XXX-ZIP underline;
+
+    else /* Inquiry w/chg option*/
+      /* Set attributes for inquiry with option to change keep flag*/
+      set EP0KM002.DN-REC-PRGE-FL normal; /* "keep" flag default*/
+      set EP0KM002.DN-REC-PRGE-FL underline; /* "keep" flag default*/
+      set EP0KM002.OP-ALT-NM initialAttributes; /* Alternate name*/
+      set EP0KM002.EP0KM-ADDR1 initialAttributes; /* Address line 1*/
+      set EP0KM002.EP0KM-ADDR2 initialAttributes; /* Address line 2*/
+      set EP0KM002.EP0KM-ADDR3 initialAttributes; /* Address line 3*/
+      set EP0KM002.XXX-CITY initialAttributes; /* City*/
+      set EP0KM002.XST-ST-CD initialAttributes; /* State*/
+      set EP0KM002.XCT-CTRY-CD initialAttributes; /* Country default*/
+      set EP0KM002.XXX-ZIP initialAttributes; /* ZIP*/
+
+    end
+
+  else /* Not authorized to update*/
+    /* Set attributes for inquiry only*/
+    set EP0KM002.DN-REC-PRGE-FL normal; /* "keep" flag default*/
+    set EP0KM002.DN-REC-PRGE-FL underline;
+    set EP0KM002.OP-ALT-NM initialAttributes; /* Alternate name*/
+    set EP0KM002.EP0KM-ADDR1 initialAttributes; /* Address line 1*/
+    set EP0KM002.EP0KM-ADDR2 initialAttributes; /* Address line 2*/
+    set EP0KM002.EP0KM-ADDR3 initialAttributes; /* Address line 3*/
+    set EP0KM002.XXX-CITY initialAttributes; /* City*/
+    set EP0KM002.XST-ST-CD initialAttributes; /* State*/
+    set EP0KM002.XCT-CTRY-CD initialAttributes; /* Country default*/
+    set EP0KM002.XXX-ZIP initialAttributes; /* ZIP*/
+
+  end
+
+
+end // end EP0K-22200
+
+// Check attention identifier
+Function EP0K-23000()
+   /* ------------------------------------------------------------*/
+   /* Store the last displayed addr id for potential exit*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW00.CU-SHGRP-ADDR-ID = EP0KM002.CU-SHGRP-ADDR-ID;
+
+
+   /* ------------------------------------------------------------*/
+   /* If EXIT to map 1 requested.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+
+    EP0KW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+    EP0KW00.XXX-MAP-DSP-CD = "1"; /* Map to be displayed*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Transfer to "FROM" app.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf5) /* EXIT to 'from' app*/
+
+    /* Pass back the last selected addr id*/
+    OP1REC.OP1SHAID = EP0KW00.CU-SHGRP-ADDR-ID;
+
+    EP0KS-TA0050-P(); /* Purge temp storage*/
+
+    if (COMMAREA.CAFROMAP == "OM0K") /* Return back to OM0K*/
+
+      COMMAREA.CAFROMAP = COMMAREA.CACURRAP;
+      OMWREC.OP1GROUP = OP1REC.OP1GROUP;
+      COMMAREA.CA-USER-WORKAREA-4K = OMWREC.OMWSGRP;
+
+      COMMAREA.CACURRAP = "OM0K";
+      transfer to program "OM0K" passing COMMAREA;
+    else
+      if (COMMAREA.CAFROMAP == "OP0C") /* Return back to OP0C*/
+
+        COMMAREA.CAFROMAP = COMMAREA.CACURRAP;
+        OPWREC.OPWREVM = 3; /* Returns in Review mode*/
+        OPWREC.OP1GROUP = OP1REC.OP1GROUP;
+        COMMAREA.CA-USER-WORKAREA-4K = OPWREC.OPWSGRP;
+
+        COMMAREA.CACURRAP = "OP0C";
+        transfer to program "OP0C" passing COMMAREA;
+      end
+    end
+
+    XSEPS-EXIT(); /* Exit to another app*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+
+    EP0KW00.XXX-MSG-LOC-ID = "23000"; /* Message location*/
+    converseLib.validationFailed(04); /* Key pressed is not valid*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Pop-up window to obtain COUNTRY Code*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM002.XCT-CTRY-CD == "?") /* COUNTRY Code*/
+
+    EP0K-23100(); /* Pop-up for COUNTRY Code list*/
+    EP0KW00.XXX-MAP-DSP-CD = "2"; /* Map to be displayed*/
+    exit stack;
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Pop-up window to obtain STATE Code*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM002.XST-ST-CD == "?") /* STATE Code*/
+
+    EP0K-23200(); /* Pop-up for STATE Code list*/
+    EP0KW00.XXX-MAP-DSP-CD = "2"; /* Map to be displayed*/
+    exit stack;
+
+  end
+
+
+end // end EP0K-23000
+
+// Pop-up window - COUNTRY Code
+Function EP0K-23100()
+   /* ------------------------------------------------------------*/
+   /* If requested, display the list of COUNTRY Code.*/
+   /* ------------------------------------------------------------*/
+
+  XPXX001(); /* Window init*/
+  XX0XW02.XX0XWHDR = "   COUNTRY CD"; /* Heading*/
+
+  while (XX0XW02.XX0XWEND == "N") /* Until end*/
+
+    XPXCT01(); /* Display list*/
+  end
+
+  if (XX0XW02.XX0XWPIX == 0) /* No selection*/
+
+    EP0KM002.XCT-CTRY-CD = " "; /* Restore prior*/
+  else
+
+    EP0KM002.XCT-CTRY-CD = XCTTBL.XCTCD[XX0XWPIX]; /* Selected value*/
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the requested lists have been displayed and*/
+   /* that ENTER must be pressed to process any changes.*/
+   /* ------------------------------------------------------------*/
+
+  converseLib.clearScreen();
+   /* Clear screen before display*/
+
+
+end // end EP0K-23100
+
+// Pop-up window - STATE Code
+Function EP0K-23200()
+   /* ------------------------------------------------------------*/
+   /* If requested, display the list of STATE Code.*/
+   /* ------------------------------------------------------------*/
+
+  XPXX001(); /* Window init*/
+  XX0XW02.XX0XWHDR = "     STATE CD"; /* Heading*/
+
+  while (XX0XW02.XX0XWEND == "N") /* Until end*/
+
+    XPXST01(); /* Display list*/
+  end
+
+  if (XX0XW02.XX0XWPIX == 0) /* No selection*/
+
+    EP0KM002.XST-ST-CD = " "; /* Restore prior*/
+  else
+
+    EP0KM002.XST-ST-CD = XSTTBL.XSTCD[XX0XWPIX]; /* Selected value*/
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the requested lists have been displayed and*/
+   /* that ENTER must be pressed to process any changes.*/
+   /* ------------------------------------------------------------*/
+
+  converseLib.clearScreen();
+   /* Clear screen before display*/
+
+
+end // end EP0K-23200
+
+// Verify data that was entered
+Function EP0K-24000()
+   /* ------------------------------------------------------------*/
+   /* NOTE - Edits done in reverse order of appearance on map.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM002.XXX-ZIP == EP0KW02.XXX-ZIP               /* Zip same*/
+   && EP0KM002.XCT-CTRY-CD == EP0KW02.XCT-CTRY-CD       /* Country same*/
+   && EP0KM002.XST-ST-CD == EP0KW02.XST-ST-CD           /* State same*/
+   && EP0KM002.XXX-CITY == EP0KW02.XXX-CITY             /* City same*/
+   && EP0KM002.EP0KM-ADDR3 == EP0KW02.XXX-ADDR3         /* Addr3 same*/
+   && EP0KM002.EP0KM-ADDR2 == EP0KW02.XXX-ADDR2         /* Addr2 same*/
+   && EP0KM002.EP0KM-ADDR1 == EP0KW02.XXX-ADDR1         /* Addr1 same*/
+   && EP0KM002.OP-ALT-NM == EP0KW02.OP-ALT-NM           /* Alt name same*/
+   && EP0KM002.DN-REC-PRGE-FL == EP0KW02.DN-REC-PRGE-FL /* Purge flag same*/
+   && EP0KW00.EP0KW-MODE-IND != "A")                    /* Not add mode*/
+
+    EP0KW00.EP0KW-DATA-CHG-FL = "N";
+    return;
+
+  else /* Add mode or chg*/
+
+    EP0KW00.EP0KW-DATA-CHG-FL = "Y";
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Do not allow a blank ZIP code, for USA only*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM002.XCT-CTRY-CD == "USA")
+    if (EP0KM002.XXX-ZIP == " " /* ZIP code missing*/
+     || EP0KM002.XXX-ZIP <= "00000     "
+     || EP0KM002.XXX-ZIP <= "000000    "
+     || EP0KM002.XXX-ZIP <= "0000000   "
+     || EP0KM002.XXX-ZIP <= "00000000  "
+     || EP0KM002.XXX-ZIP <= "000000000 "
+     || EP0KM002.XXX-ZIP <= "0000000000")
+
+      EP0KW00.XXX-MSG-LOC-ID = "24000"; /* Message location*/
+      converseLib.validationFailed(54); /* Missing*/
+      set EP0KM002.XXX-ZIP cursor, bold; /* Highlight*/
+
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If COUNTRY code changed, verify the entered value*/
+   /* against the corporate table.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM002.XCT-CTRY-CD != EP0KW02.XCT-CTRY-CD) /* Country code chg'd*/
+
+    if (EP0KM002.XCT-CTRY-CD in XCTTBL.XCTCD /* Code in corp table*/
+     && XCTTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+
+       /* Next sentence*/
+
+    else
+
+      /* ------------------------------------------------------------*/
+      /* If not found or inactive, indicate missing or invalid.*/
+      /* ------------------------------------------------------------*/
+
+      EP0KW00.XXX-MSG-LOC-ID = "24000"; /* Message location*/
+      converseLib.validationFailed(57); /* Missing or invalid*/
+      set EP0KM002.XCT-CTRY-CD cursor, bold; /* Highlight*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If STATE code changed, verify the entered value*/
+   /* against the corporate table.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM002.XCT-CTRY-CD == "USA") /* USA?*/
+
+    if (EP0KM002.XST-ST-CD != EP0KW02.XST-ST-CD /* State code chg'd*/
+     || EP0KM002.XST-ST-CD == " ")              /* State code missing*/
+
+      if (EP0KM002.XST-ST-CD in XSTTBL.XSTCD /* Code in corp table*/
+       && XSTTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+
+        /* Next sentence*/
+
+      else
+
+        /* ------------------------------------------------------------*/
+        /* If not found or inactive, indicate missing or invalid.*/
+        /* ------------------------------------------------------------*/
+
+        EP0KW00.XXX-MSG-LOC-ID = "24000"; /* Message location*/
+        converseLib.validationFailed(58); /* Missing or invalid*/
+        set EP0KM002.XST-ST-CD cursor, bold; /* Highlight*/
+
+      end
+
+    end
+  else
+    if (EP0KM002.XCT-CTRY-CD != "CANA") /* not USA or Canada*/
+      if (EP0KM002.XST-ST-CD != " ") /* State code not required*/
+
+        EP0KW00.XXX-MSG-LOC-ID = "24000"; /* Message location*/
+        converseLib.validationFailed(58); /* Missing or invalid*/
+        set EP0KM002.XST-ST-CD cursor, bold; /* Highlight*/
+
+      end
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Do not allow a blank CITY.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM002.XXX-CITY == " ") /* CITY missing*/
+
+    EP0KW00.XXX-MSG-LOC-ID = "24000"; /* Message location*/
+    converseLib.validationFailed(55); /* Missing*/
+    set EP0KM002.XXX-CITY cursor, bold; /* Highlight*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Do not allow all address fields to be blank.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM002.EP0KM-ADDR1 == " " /* ADDR 1 blank*/
+   && EP0KM002.EP0KM-ADDR2 == " " /* and ADDR 2 blank*/
+   && EP0KM002.EP0KM-ADDR3 == " ") /* and ADDR 3 blank*/
+
+    EP0KW00.XXX-MSG-LOC-ID = "24000"; /* Message location*/
+    converseLib.validationFailed(60); /* Missing*/
+    set EP0KM002.EP0KM-ADDR1 cursor, bold; /* Highlight*/
+    set EP0KM002.EP0KM-ADDR2 bold; /* Highlight*/
+    set EP0KM002.EP0KM-ADDR3 bold; /* Highlight*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Do not allow a blank ALTERNATE NAME.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM002.OP-ALT-NM == " ") /* Alternate name*/
+
+    EP0KW00.XXX-MSG-LOC-ID = "24000"; /* Message location*/
+    converseLib.validationFailed(59); /* Missing or invalid*/
+    set EP0KM002.OP-ALT-NM cursor, bold; /* Highlight*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If purge flag changed, verify the entered value.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KM002.DN-REC-PRGE-FL
+   != EP0KW02.DN-REC-PRGE-FL) /* Purge flag chg'd*/
+
+    if (EP0KM002.DN-REC-PRGE-FL == "Y"
+     || EP0KM002.DN-REC-PRGE-FL == "N") /* Valid value*/
+
+      /* next sentence*/
+
+    else /* Invalid value*/
+
+      EP0KW00.XXX-MSG-LOC-ID = "24000"; /* Msg location*/
+      converseLib.validationFailed(310); /* Valid values Y/N*/
+
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If any error was found, exit to display the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+end // end EP0K-24000
+
+// Process valid input request
+Function EP0K-25000()
+   /* ------------------------------------------------------------*/
+   /* If no modifiable data changed, search for next selection.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW00.EP0KW-DATA-CHG-FL == "N"
+   && EP0KW00.EP0KW-MODE-IND != "A") /* Data not chg'd & not ADD*/
+
+    EP0K-25100(); /* Search for next selection*/
+
+    return; /* Return to prior process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Obtain the current date and time for DB2 updates.*/
+   /* ------------------------------------------------------------*/
+
+  XX0XS01(); /* Obtain date and time*/
+
+  VSTADR01.XXXUSER = COMMAREA.CAUSERID; /* User id*/
+  VSTADR01.ZZZCHGDT = XX0XW01.XX0XWDAT; /* Change date*/
+  VSTADR01.ZZZCHGTM = XX0XW01.XX0XWTIM; /* Change time*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Update the changed data in the table.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0KW-MODE-IND == "A") /* Add new address*/
+
+    EP0K-25200(); /* Insert new TSTADR00 row*/
+
+  else /* Change existing address*/
+
+    EP0K-25300(); /* Change existing TSTADR00 row*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Commit all changes and refresh the data to be displayed.*/
+   /* ------------------------------------------------------------*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.commit(); /* Commit all changes*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "25000"; /* Message location*/
+  EP0KW00.XXX-MSG-NBR = 459; /* Table update completed*/
+
+  EP0KW00.XXX-RQT-DATA-FL = "Y"; /* Refresh data flag*/
+  EP0KW00.XXX-MAP-DSP-CD = "1"; /* Map to display*/
+
+
+end // end EP0K-25000
+
+// Search for next selection
+Function EP0K-25100()
+   /* ------------------------------------------------------------*/
+   /* Determine if another line was selected for viewing.*/
+   /* ------------------------------------------------------------*/
+
+  if ("S" in EP0KW01.XXX-LN-SEL-IND from XXX-INX-FLD-NBR) /* Line was selected*/
+
+    EP0KW00.XXX-INX-FLD-NBR = sysVar.arrayIndex; /* Map line index*/
+
+    EP0KM002.EP0KM-CUST-STORE = EP0KW01.EP0KM-CUST-STORE; /* Cust+Store*/
+    EP0KM002.CU-STOR-NM = EP0KW01.CU-STOR-NM; /* Store name*/
+
+    EP0KM002.CU-SHGRP-ADDR-ID = EP0KW01.CU-SHGRP-ADDR-ID[XXX-INX-FLD-NBR]; /* Addr ID*/
+    EP0KM002.DN-REC-PRGE-FL = EP0KW01.DN-REC-PRGE-FL[XXX-INX-FLD-NBR]; /* Purge flag*/
+    EP0KM002.OP-ALT-NM = EP0KW01.OP-ALT-NM[XXX-INX-FLD-NBR]; /* Alternate name*/
+    EP0KM002.EP0KM-ADDR1 = EP0KW01.XXX-ADDR1[XXX-INX-FLD-NBR]; /* Address line 1*/
+    EP0KM002.EP0KM-ADDR2 = EP0KW01.XXX-ADDR2[XXX-INX-FLD-NBR]; /* Address line 2*/
+    EP0KM002.EP0KM-ADDR3 = EP0KW01.XXX-ADDR3[XXX-INX-FLD-NBR]; /* Address line 3*/
+    EP0KM002.XXX-CITY = EP0KW01.XXX-CITY[XXX-INX-FLD-NBR]; /* City*/
+    EP0KM002.XST-ST-CD = EP0KW01.XST-ST-CD[XXX-INX-FLD-NBR]; /* State*/
+    EP0KM002.XCT-CTRY-CD = EP0KW01.XCT-CTRY-CD[XXX-INX-FLD-NBR]; /* Country*/
+    EP0KM002.XXX-ZIP = EP0KW01.XXX-ZIP[XXX-INX-FLD-NBR]; /* ZIP*/
+
+    EP0KW00.XXX-RQT-DATA-FL = "Y"; /* Request for data*/
+
+  else
+
+    EP0KW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map*/
+    EP0KW00.XXX-MAP-DSP-CD = "1"; /* Display map*/
+
+  end
+
+
+end // end EP0K-25100
+
+// Insert TSTADR00 row
+Function EP0K-25200()
+   /* ------------------------------------------------------------*/
+   /* Format the DB2 dclgen record layout for the insert.*/
+   /* ------------------------------------------------------------*/
+
+  set VSTADR01 empty; /* Init DB2 record*/
+
+  VSTADR01.CU-CO-ID = EP0KW00.CU-CO-ID; /* Company*/
+  VSTADR01.CU-STOR-ID = EP0KW00.CU-STOR-ID; /* Store*/
+
+  EP0K-25210(); /* Get next addr id*/
+
+  VSTADR01.CU-SHGRP-ADDR-ID = EP0KW00.CU-SHGRP-ADDR-ID; /* Addr ID*/
+   /* Put the addr id in the common record to pass back to the 'from' app*/
+  OP1REC.OP1SHAID = EP0KW00.CU-SHGRP-ADDR-ID; /* Addr ID*/
+
+  VSTADR01.DN-REC-PRGE-FL = EP0KM002.DN-REC-PRGE-FL; /* Purge flag*/
+
+  VSTADR01.OP-ALT-NM = EP0KM002.OP-ALT-NM; /* Alternate name*/
+  VSTADR01.XXX-ADDR1 = EP0KM002.EP0KM-ADDR1; /* Address 1*/
+  VSTADR01.XXX-ADDR2 = EP0KM002.EP0KM-ADDR2; /* Address 2*/
+  VSTADR01.XXX-ADDR3 = EP0KM002.EP0KM-ADDR3; /* Address 3*/
+  VSTADR01.XXX-CITY = EP0KM002.XXX-CITY; /* City*/
+  VSTADR01.XST-ST-CD = EP0KM002.XST-ST-CD; /* State code*/
+  VSTADR01.XCT-CTRY-CD = EP0KM002.XCT-CTRY-CD; /* Country code*/
+  VSTADR01.XXX-ZIP = EP0KM002.XXX-ZIP; /* Zip code*/
+
+  VSTADR01.XXXUSER = COMMAREA.CAUSERID; /* User id*/
+  VSTADR01.DCMS-ADDR-SNT-FL = "N"; /* DCMS sent flag*/
+  VSTADR01.ZZZSDT = XX0XW01.XX0XWDAT; /* Setup date*/
+  VSTADR01.ZZZSTM = XX0XW01.XX0XWTIM; /* Setup time*/
+  VSTADR01.ZZZCHGDT = XX0XW01.XX0XWDAT; /* Change date*/
+  VSTADR01.ZZZCHGTM = XX0XW01.XX0XWTIM; /* Change time*/
+
+
+  EP0KS-VSTADR01-A(); /* Insert new addr*/
+
+
+end // end EP0K-25200
+
+// Obtain next addr id
+Function EP0K-25210()
+   /* ------------------------------------------------------------*/
+   /* Format the DB2 dclgen record layout for the select.*/
+   /* ------------------------------------------------------------*/
+
+  set PWHREC empty; /* Init DB2 record*/
+
+  PWHREC.XWHCD = "51"; /* Apparel facility*/
+  PWHREC.XXXPGMNO = "EP1050"; /* Program ID*/
+
+   /* Get next addr id from dpick.vpkctl01, i.e. xxxcmtct*/
+  EP0KS-IO4240-CC(); /* Get next addr id*/
+
+  EP0KW00.CU-SHGRP-ADDR-ID = PWHREC.XXXCMTCT; /* Store id*/
+
+
+end // end EP0K-25210
+
+// Update TSTADR00 row
+Function EP0K-25300()
+   /* ------------------------------------------------------------*/
+   /* Format the DB2 dclgen record layout for the UPDATE.*/
+   /* ------------------------------------------------------------*/
+
+  set VSTADR01 empty; /* Init DB2 record*/
+
+  VSTADR01.CU-CO-ID = EP0KW00.CU-CO-ID; /* Company*/
+  VSTADR01.CU-STOR-ID = EP0KW00.CU-STOR-ID; /* Store*/
+  VSTADR01.CU-SHGRP-ADDR-ID = EP0KW02.CU-SHGRP-ADDR-ID; /* Addr ID on MAP 2*/
+
+  EP0KS-VSTADR01-S(); /* Get update row*/
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* Not found*/
+
+    /* Row has been deleted by another user - cannot update*/
+    converseLib.validationFailed(99); /* Row deleted*/
+    exit stack; /* Exit to map*/
+
+  end
+
+   /* The only data field that can be changed is the purge flag*/
+  VSTADR01.DN-REC-PRGE-FL = EP0KM002.DN-REC-PRGE-FL; /* Purge flag*/
+
+  VSTADR01.XXXUSER = COMMAREA.CAUSERID; /* User id*/
+  VSTADR01.ZZZCHGDT = XX0XW01.XX0XWDAT; /* Change date*/
+  VSTADR01.ZZZCHGTM = XX0XW01.XX0XWTIM; /* Change time*/
+
+  EP0KS-VSTADR01-U(); /* Update row*/
+
+
+end // end EP0K-25300
+
+// Select the table row
+Function EP0KS-IO0340-S()
+   /* ------------------------------------------------------------*/
+   /* Select the requested row from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0340" ("S ", SQLCA, KUMREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "IO0340S"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(31); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(01); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DCUST   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSTORE01"; /* Table view name*/
+  TA1REC.TA1TBLKE = EP0KW00.EP0KW-CUST-STOR-GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-IO0340-S
+
+// Get the next addr id
+Function EP0KS-IO4240-CC()
+   /* ------------------------------------------------------------*/
+   /* Get the next addr id (use commit count) from the picking*/
+   /* program control table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4240" ("CC", SQLCA, PWHREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Get next id*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+      return;
+    else
+
+      if (SQLCA.VAGen_SQLCODE == 100) /* Not found*/
+
+        converseLib.validationFailed(100); /* Control row missing*/
+        EP0KW00.XXX-MSG-LOC-ID = "IO4240CC"; /* Message location*/
+
+        exit stack; /* Exit to display map*/
+      end
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "VSTADR-A"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* Contention*/
+
+    converseLib.validationFailed(31); /* Contention*/
+    TA1REC.TA1FUNC = "POST"; /* Function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back*/
+
+    converseLib.validationFailed(01); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Function*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "INSERT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSTADR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = EP0KW00.EP0KW-CUST-STOR-GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-IO4240-CC
+
+// Add page to temporary storage
+Function EP0KS-TA0050-A()
+   /* ------------------------------------------------------------*/
+   /* Add the next page to the temporary storage queue.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW01.XXX-TEMP-STG-LNTH = EP0KW00.XXX-TEMP-STG-LNTH; /* TS length*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Appl ID*/
+
+  TA5REC.TA5FNCCD = "A"; /* ADD funct*/
+
+  try
+    call "TA0050" (EP0KW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Add page*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, initialize the storage area and*/
+   /* indicators to be used and return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* & normal return cd*/
+
+    set EP0KW01 empty; /* M001 storage*/
+
+    EP0KW00.XXX-HI-PAGE-NBR = TA5REC.TA5TSQIX; /* Highest page number*/
+
+    TA5REC.TA5TSQIX = 0; /* Clear last page nbr*/
+
+    return; /* Go to prior process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return cd*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutn parms*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "TA0050A"; /* Msg location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back chgs*/
+
+  converseLib.validationFailed(01); /* Unexpected err*/
+  TA1REC.TA1FUNC = "RETN"; /* Term function*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Msg location*/
+  TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-TA0050-A
+
+// Purge any temporary storage
+Function EP0KS-TA0050-P()
+   /* ------------------------------------------------------------*/
+   /* Initialize the storage areas and indicators to be used.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0KW01 empty; /* M001 display storage*/
+
+  EP0KW00.XXX-PAGE-UPD-FL = "N"; /* Page update flag*/
+
+  TA5REC.TA5TSQIX = 0; /* Displayed page number*/
+  EP0KW00.XXX-HI-PAGE-NBR = 0; /* Highest page number*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Purge any temporary storage for this application.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application id*/
+
+  TA5REC.TA5FNCCD = "P"; /* Function code*/
+
+  try
+    call "TA0050" (EP0KW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Purge storage*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutine parms*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "TA0050P"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back*/
+
+  converseLib.validationFailed(01); /* Unexpected error*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-TA0050-P
+
+// Read temporary storage page
+Function EP0KS-TA0050-R()
+   /* ------------------------------------------------------------*/
+   /* Read the next page from the temporary storage queue.*/
+   /* ------------------------------------------------------------*/
+
+  EP0KW01.XXX-TEMP-STG-LNTH = EP0KW00.XXX-TEMP-STG-LNTH; /* TS length*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Appl id*/
+  TA5REC.TA5TSQIX = EP0KW00.XXX-CURR-PAGE-NBR; /* Pg nbr*/
+
+  TA5REC.TA5FNCCD = "R"; /* READ func*/
+
+  try
+    call "TA0050" (EP0KW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Read page*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutine parms*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "TA0050R"; /* Message*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back*/
+
+  converseLib.validationFailed(01); /* Unexpected error*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "READ TEMPORARY STORAGE PAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-TA0050-R
+
+// Update temporary storage page
+Function EP0KS-TA0050-U()
+   /* ------------------------------------------------------------*/
+   /* Update the page in the temporary storage queue.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5FNCCD = "U"; /* Function code*/
+
+  try
+    call "TA0050" (EP0KW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Update page*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return cd*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutn parms*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "TA0050U"; /* Message loc*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back*/
+
+  converseLib.validationFailed(01); /* Error*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Msg location*/
+  TA1REC.TA1LOC = "UPDATE TEMPORARY STORAGE PAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-TA0050-U
+
+// Insert the table row
+Function EP0KS-VSTADR01-A()
+   /* ------------------------------------------------------------*/
+   /* Insert the new row from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "VSTADR01" ("A ", SQLCA, VSTADR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Insert row*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "VSTADR-A"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* Contention*/
+
+    converseLib.validationFailed(31); /* Contention*/
+    TA1REC.TA1FUNC = "POST"; /* Function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back*/
+
+    converseLib.validationFailed(01); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Function*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "INSERT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSTADR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = EP0KW00.EP0KW-CUST-STOR-GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-VSTADR01-A
+
+// Close selected set cursor
+Function EP0KS-VSTADR01-C1()
+   /* ------------------------------------------------------------*/
+   /* Close the cursor for the selected set of table rows.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "VSTADR01" ("C1", SQLCA, VSTADR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Close cursor*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "VSTADRC1"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back*/
+
+  converseLib.validationFailed(01); /* Error occurred*/
+  TA1REC.TA1FUNC = "RETN"; /* Function*/
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "CLOSE SELECTED SET CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSTADR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = EP0KW00.EP0KW-CUST-STOR-GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Display map*/
+
+
+end // end EP0KS-VSTADR01-C1
+
+// Fetch next row in cursor
+Function EP0KS-VSTADR01-N1()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row that was selected from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "VSTADR01" ("N1", SQLCA, VSTADR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+    /* ------------------------------------------------------------*/
+    /* If end of the selected set, indicate end of cursor.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+      EP0KW00.EP0KW-VSTADR-EOF-FL = "Y"; /* End of cursor*/
+
+      return; /* Return to prior process*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "VSTADRN1"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(31); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(01); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "FETCH NEXT ROW IN CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSTADR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = EP0KW00.EP0KW-CUST-STOR-GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-VSTADR01-N1
+
+// Select the table row
+Function EP0KS-VSTADR01-S()
+   /* ------------------------------------------------------------*/
+   /* Select the unique row in the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "VSTADR01" ("S ", SQLCA, VSTADR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* Not found*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "VSTADR-S"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* Contention*/
+
+    converseLib.validationFailed(31); /* Contention*/
+    TA1REC.TA1FUNC = "POST"; /* Function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back*/
+
+    converseLib.validationFailed(01); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Function*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSTADR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = EP0KW00.EP0KW-CUST-STOR-GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-VSTADR01-S
+
+// Select set and open cursor
+Function EP0KS-VSTADR01-S1()
+   /* ------------------------------------------------------------*/
+   /* Select the requested set of rows from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "VSTADR01" ("S1", SQLCA, VSTADR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Select set*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "VSTADRS1"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(31); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(01); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT SET AND OPEN CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSTADR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = EP0KW00.EP0KW-CUST-STOR-GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-VSTADR01-S1
+
+// Change the table row
+Function EP0KS-VSTADR01-U()
+   /* ------------------------------------------------------------*/
+   /* Change the existing row in the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "VSTADR01" ("U ", SQLCA, VSTADR01) {isNoRefresh = yes, isExternal = yes};
+  end /* Update row*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  EP0KW00.XXX-MSG-LOC-ID = "VSTADR-U"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* Contention*/
+
+    converseLib.validationFailed(31); /* Contention*/
+    TA1REC.TA1FUNC = "POST"; /* Function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back*/
+
+    converseLib.validationFailed(01); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Function*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EP0KW00.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "UPDATE THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSTADR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = EP0KW00.EP0KW-CUST-STOR-GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to map*/
+
+
+end // end EP0KS-VSTADR01-U
+
+//*** RECORD=EP0KW00 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// ***********************
+Record EP0KW00 type basicRecord
+  10 XXX-RQT-DATA-FL XXX-RQT-DATA-FL ; 
+  10 XXX-MAP-FMAT-FL XXX-MAP-FMAT-FL ; 
+  10 XXX-MAP-DSP-CD XXX-MAP-DSP-CD ; 
+  10 XXX-TEMP-STG-LNTH XXX-TEMP-STG-LNTH ; 
+  10 XXX-INX-LMT-NBR XXX-INX-LMT-NBR ; 
+  10 XXX-INX-FLD-NBR XXX-INX-FLD-NBR ; 
+  10 XXX-CURR-PAGE-NBR XXX-CURR-PAGE-NBR ; 
+  10 XXX-HI-PAGE-NBR XXX-HI-PAGE-NBR ; 
+  10 XXX-PAGE-UPD-FL XXX-PAGE-UPD-FL ; 
+  10 XXX-MSG-LOC-ID XXX-MSG-LOC-ID ; 
+  10 XXX-MSG-NBR XXX-MSG-NBR ; 
+  10 CU-CO-ID CU-CO-ID ; 
+  10 CU-STOR-ID CU-STOR-ID ; 
+  10 CU-STOR-NM CU-STOR-NM ; 
+  10 CU-SHGRP-ADDR-ID CU-SHGRP-ADDR-ID ; 
+  10 EP0KW-CUST-STOR-GRP EP0KW-CUST-STOR-GRP ; 
+    15 EP0KW-CU-CO-ID EP0KW-CU-CO-ID ; 
+    15 EP0KW-LITERAL EP0KW-LITERAL ; 
+    15 EP0KW-CU-STOR-ID EP0KW-CU-STOR-ID ; 
+  10 EP0KW-VSTADR-EOF-FL EP0KW-VSTADR-EOF-FL ; 
+  10 EP0KW-MODE-IND EP0KW-MODE-IND ; 
+  10 EP0KW-DATA-CHG-FL EP0KW-DATA-CHG-FL ; 
+  10 EP0KW-FIRST-TIME-FL EP0KW-FIRST-TIME-FL ; 
+end // end EP0KW00
+
+//*** RECORD=EP0KW01 ****
+// ------------------------
+// Map 001 display storage.
+// ------------------------
+// ***********************
+Record EP0KW01 type basicRecord
+  5 XXX-TEMP-STG-LNTH XXX-TEMP-STG-LNTH ; 
+  5 * char(2909) ; 
+    10 EP0KM-CUST-STORE EP0KM-CUST-STORE ; 
+    10 CU-STOR-NM CU-STOR-NM ; 
+    10 XXX-LN-SEL-IND XXX-LN-SEL-IND [15] ; 
+    10 OP-ALT-NM OP-ALT-NM [15] ; 
+    10 CU-SHGRP-ADDR-ID CU-SHGRP-ADDR-ID [15] ; 
+    10 DN-REC-PRGE-FL DN-REC-PRGE-FL [15] ; 
+    10 XXX-ADDR1 XXX-ADDR1 [15] ; 
+    10 XXX-ADDR2 XXX-ADDR2 [15] ; 
+    10 XXX-ADDR3 XXX-ADDR3 [15] ; 
+    10 XXX-CITY XXX-CITY [15] ; 
+    10 XXX-ZIP XXX-ZIP [15] ; 
+    10 XST-ST-CD XST-ST-CD [15] ; 
+    10 XCT-CTRY-CD XCT-CTRY-CD [15] ; 
+end // end EP0KW01
+
+//*** RECORD=EP0KW02 ****
+// ------------------------
+// Map 002 display storage.
+// ------------------------
+// ***********************
+Record EP0KW02 type basicRecord
+  10 EP0KM-CUST-STORE EP0KM-CUST-STORE ; 
+  10 CU-STOR-NM CU-STOR-NM ; 
+  10 CU-SHGRP-ADDR-ID CU-SHGRP-ADDR-ID ; 
+  10 DN-REC-PRGE-FL DN-REC-PRGE-FL ; 
+  10 OP-ALT-NM OP-ALT-NM ; 
+  10 XXX-ADDR1 XXX-ADDR1 ; 
+  10 XXX-ADDR2 XXX-ADDR2 ; 
+  10 XXX-ADDR3 XXX-ADDR3 ; 
+  10 XXX-CITY XXX-CITY ; 
+  10 XST-ST-CD XST-ST-CD ; 
+  10 XCT-CTRY-CD XCT-CTRY-CD ; 
+  10 XXX-ZIP XXX-ZIP ; 
+end // end EP0KW02
+
+// Customer + Store
+DataItem EP0KM-CUST-STORE char(14)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Customer component
+DataItem EP0KW-CU-CO-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Store component
+DataItem EP0KW-CU-STOR-ID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Customer/Store Group level
+DataItem EP0KW-CUST-STOR-GRP char(14)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Data change flag
+DataItem EP0KW-DATA-CHG-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// First time in EP0K flag
+DataItem EP0KW-FIRST-TIME-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Literal component (period ".")
+DataItem EP0KW-LITERAL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Mode indicator ('a'dd; 'i'nq)
+DataItem EP0KW-MODE-IND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// VSTADR01 EOF flag
+DataItem EP0KW-VSTADR-EOF-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

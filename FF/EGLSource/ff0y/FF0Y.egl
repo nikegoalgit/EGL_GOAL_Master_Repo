@@ -1,0 +1,2563 @@
+package ff0y;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import ff.common.*;
+import fg.common.*;
+import sy.common.*;
+import ta.common.*;
+//*** PROGRAM=FF0Y ****
+// This application allows the user to set up parameters for a
+// production forecast model run.  The model can be set up to
+// show forecasts for up to ten lines to be included or to show
+// all the product lines except ten lines.  The model can also,
+// be set up to show forecasts for up to thirty categories.
+// 
+// There can be only three models set up on one night to run.
+// If there are already three models set up, the allication
+// will return a message indicating this.
+// 
+// A batch job will scan the production forecast model run D/B
+// at night.  If it finds any 'notrun' models, it will run
+// them.
+// 
+// The user must specify the 'range', 'type',  'division grp',
+// and 'safety stock'.  Also, either lines, all lines except,
+// or categories, may be specified for the model run.
+// 
+// The user may exit to any allowed application, via FAST PATH
+// or PF key, at any time.
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+//          11/01/89  RHETRI  New application.
+//  FIX     06/11/89  RHETRI  Limit edit for review flag
+//  FIX     07/31/90  RHETRI  Rtn message for sql 100 if line
+//                            not found in S05
+//  FIX     08/15/90  RHETRI  Clear FG1rec before insert
+// FF2033   09/04/90  RHETRI  Chg date edit to allow any date.
+//  FIX     09/27/90  RHETRI  Add default when no sft stk given
+//  FIX     04/19/91  MWALKE  Made this an online submitted prg
+//                            instead of run nightly in batch
+// FF2???   06/14/91  LDELUH  Add sales fcst threshold field.
+// FF       09/03/93  mdange  Add logic to submit either test
+//                            or prod JCL.
+// FF175    12/18/96  DSMITH  Changed the date range fill
+//                            character to '0'.
+// *********************
+Program FF0Y type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "FF00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  FF0YW00 FF0YW00; // record
+  FF0YW01 FF0YW01; // record
+  FF1REC FF1REC; // record
+  FF2REC FF2REC; // record
+  FF6REC FF6REC; // record
+  FFWREC FFWREC; // record
+  FFXREC FFXREC; // record
+  FFZREC FFZREC; // record
+  FG1REC FG1REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA3REC TA3REC; // record
+  TA6REC TA6REC; // record
+  TAEREC TAEREC; // record
+  XPCREC XPCREC; // record
+  XPLREC XPLREC; // record
+  XX0XW01 XX0XW01; // record
+  YSMREC YSMREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use FF0YT {deleteAfterUse = yes}; // table
+  use FF0YT5O {deleteAfterUse = yes}; // table
+  use XPCTBL; // table
+  use XPLTBL; // table
+  use YPGTBL; // table
+  use FF0YM.FF0YM001,  // forms
+      FF0YM.TA0PM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPFF001: XPFF001();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and display storage areas.*/
+     /* ------------------------------------------------------------*/
+
+    set FF0YM001 initial; /* M001 input/output*/
+    set FF0YW00 empty; /* Working storage*/
+    set SQLCA empty; /* SQL communication area*/
+    set TAEREC empty; /* Error diagnosis information*/
+    set TA1REC empty; /* Error diagnosis parameters*/
+    set XX0XW01 empty; /* Date/time subroutine parameters*/
+
+    FF0YW00.FF0YWSWF = "Y"; /* Format the map switch*/
+
+     /* ------------------------------------------------------------*/
+     /* If type code is missing, default it to '01'*/
+     /* ------------------------------------------------------------*/
+
+    if (FFWREC.YPGCD == " ") /* if type missing*/
+      FFWREC.YPGCD = "01"; /* default to '01'*/
+    end
+
+     /* ------------------------------------------------------------*/
+     /* Move range to working storage.*/
+     /* ------------------------------------------------------------*/
+
+    FF0YW00.FFABEGMO = FFWREC.FFABEGMO; /* begin month*/
+    FF0YW00.FFAENDMO = FFWREC.FFAENDMO; /* end month*/
+
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto FF0Y001; /* Converse the main process*/
+
+
+    FF0Y001: FF0Y001();
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto FF0Y001; /* Converse the main process*/
+
+
+  end // end main
+end // end FF0Y
+
+// Inquire/maintain a table row
+Function FF0Y001()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Reset highlighted fields to normal intensity.*/
+   /* 5) Verify the data that was entered.*/
+   /* 6) Process a valid input request.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+  FF0Y200(); /* Format and display the map*/
+
+  FF0Y300(); /* Check attention identifier*/
+
+  FF0Y400(); /* Reset fields to normal intensity*/
+
+  FF0Y500(); /* Verify the entered data*/
+
+  FF0Y600(); /* Process valid input request*/
+
+
+end // end FF0Y001
+
+// Format and converse the map
+Function FF0Y200()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, save the error message number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+
+    FFWREC.XXXMSGNO = converseVar.validationMsgNum; /* Message number*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If map to be displyed, format the data.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0YW00.FF0YWSWF == "Y") /* Map must be formatted*/
+
+    FF0Y210(); /* format data*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Format the current date and any FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YM001.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  FF0YM001.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  FF0YM001.CAITEM = COMMAREA.CAITEM; /* Application data*/
+
+   /* ------------------------------------------------------------*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /* ------------------------------------------------------------*/
+
+  if (FFWREC.XXXMSGNO != 0) /* Message to display*/
+
+    FF0YM001.XXXMODID = FFWREC.XXXMODID; /* Module identification*/
+    if (FFWREC.XXXMSGNO == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(FFWREC.XXXMSGNO);
+    end /* Message number*/
+
+    set FF0YM001 alarm; /* Indicate sound alarm*/
+
+  end
+
+  converse FF0YM001 ;
+
+   /* ------------------------------------------------------------*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  FFWREC.XXXMODID = "    "; /* Module identification*/
+  FFWREC.XXXMSGNO = 0; /* Message number*/
+
+  COMMAREA.CATOAP = FF0YM001.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = FF0YM001.CAITEM; /* Application data*/
+
+
+end // end FF0Y200
+
+// Load the header info
+Function FF0Y210()
+   /* ------------------------------------------------------------*/
+   /* Clear the map and inialize switch.*/
+   /* ------------------------------------------------------------*/
+
+  set FF0YM001 initial; /* Clear map*/
+  FF0YW00.FF0YWSWF = "N"; /* Format map switch*/
+
+   /* ------------------------------------------------------------*/
+   /* Load header information and place cursor.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YM001.FFABEGMO = FFWREC.FFABEGMO; /* begin month*/
+  FF0YM001.FFAENDMO = FFWREC.FFAENDMO; /* end month*/
+
+  set FF0YM001.FFABEGMO cursor; /* place cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* Load defaults.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YM001.YPGCD = FFWREC.YPGCD; /* type code*/
+  FF0YM001.YSMXDV = FFWREC.YSMXDV; /* div group*/
+  FF0YM001.FF0YMSFT = "20.0"; /* Sales fcst threshold qty*/
+
+
+end // end FF0Y210
+
+// Check attention identifier
+Function FF0Y300()
+   /* ------------------------------------------------------------*/
+   /* If CANCEL was requested, clear the map fields and exit.*/
+   /* If a request for data is pending, reset that request.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+
+    FF0YW00.FF0YWSWF = "Y"; /* Format the map switch*/
+
+    COMMAREA.CATOAP = " "; /* TO application*/
+    COMMAREA.CAITEM = " "; /* Application data*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If FAST PATH was requested, transfer to the application.*/
+   /* ------------------------------------------------------------*/
+
+  if (COMMAREA.CATOAP > " ") /* FAST PATH was requested*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      XSFFS01(); /* Exit to another application*/
+
+      set FF0YM001.CATOAP cursor, bold; /* Highlight*/
+
+    else
+
+      FFWREC.XXXMODID = "300"; /* Module identification*/
+      converseLib.validationFailed(36); /* Indicate PF key not valid*/
+
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If HELP, exit to the previous level or exit to the Master*/
+   /* Menu was requested, exit to another application.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf1 /* PF1 was pressed*/
+   || converseVar.eventKey is pf3 /* or PF3 was pressed*/
+   || converseVar.eventKey is pf5) /* or PF5 was pressed*/
+
+    if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+      COMMAREA.CAITEM = "FF0YM001"; /* Application find code*/
+    end
+
+    if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+      COMMAREA.CATOAP = "FF03"; /* TO application*/
+    end
+
+    XSFFS01(); /* Exit to another application*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf14) /* and PF14 was not pressed*/
+
+    FFWREC.XXXMODID = "300"; /* Module identification*/
+    converseLib.validationFailed(3); /* Indicate invalid attention key*/
+
+    if (converseVar.eventKey is pakey) /* PA was pressed*/
+
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+end // end FF0Y300
+
+// Reset highlighted fields
+Function FF0Y400()
+   /* ------------------------------------------------------------*/
+   /* Reset field attributes to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  set FF0YM001.FFABEGMO initialAttributes; /* beginning month*/
+  set FF0YM001.FFAENDMO initialAttributes; /* ending month*/
+  set FF0YM001.YSMXDV initialAttributes; /* div grp*/
+  set FF0YM001.YPGCD initialAttributes; /* type code*/
+
+  FF0YWCNT = 1; /* set counter to zero*/
+  while (FF0YW00.FF0YWCNT <= 30) /* if counter LE 30*/
+
+    set FF0YM001.FF0YMCAT[FF0YWCNT] normal; /* category*/
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to sub*/
+
+  end
+
+  FF0YWCNT = 1; /* set counter to zero*/
+  while (FF0YW00.FF0YWCNT <= 10) /* if counter LE 10*/
+
+    set FF0YM001.FF0YMLEX[FF0YWCNT] normal; /* line excpt*/
+    set FF0YM001.FF0YMLIN[FF0YWCNT] normal; /* line*/
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to sub*/
+
+  end
+
+  FF0YWCNT = 1; /* set counter to zero*/
+  while (FF0YW00.FF0YWCNT <= 4) /* if counter LE 4*/
+
+    set FF0YM001.FF0YMSST[FF0YWCNT] normal; /* safety stock*/
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to sub*/
+
+  end
+
+  set FF0YM001.FF0YMSFT normal; /* Sales fcst threshold qty*/
+  set FF0YM001.CATOAP initialAttributes; /* Commarea TO application*/
+  set FF0YM001.CAITEM initialAttributes; /* Commarea application data*/
+
+
+end // end FF0Y400
+
+// Verify the entered data
+Function FF0Y500()
+   /* ------------------------------------------------------------*/
+   /* If fast path item data was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (COMMAREA.CAITEM > " ") /* Application data was entered*/
+
+    FFWREC.XXXMODID = "500"; /* Module identification*/
+    set FF0YM001.CAITEM cursor, bold; /* Highlight*/
+    converseLib.validationFailed(40); /* Enter only with FAST PATH*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Verify fields.*/
+   /* ------------------------------------------------------------*/
+
+  FF0Y510(); /* Verify keys*/
+  FF0Y520(); /* Verify range*/
+  FF0Y530(); /* Verify only one level set*/
+
+  if (converseVar.validationMsgNum == 0) /* if no message to display*/
+    FF0Y540(); /* Verify number of models*/
+    FF0Y550(); /* Check for targets*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Translate sales forecast threshold qty.*/
+   /* ------------------------------------------------------------*/
+
+  FFXREC.FFXCHAR = FF0YM001.FF0YMSFT; /* Map qty*/
+  XSFFS11(); /* Translate thous to units*/
+  if (FFXREC.FFXRTNCD != "0")
+    FFWREC.XXXMODID = "500"; /* Module identification*/
+    set FF0YM001.FF0YMSFT cursor, bold; /* Highlight*/
+    converseLib.validationFailed(10); /* Indicate invalid*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If an error was found in this process, exit to display map.*/
+   /* If PF14 was pressed, continue processing, however.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf14) /* PF14 was pressed*/
+      /* next sentence*/
+  else
+
+    if (converseVar.validationMsgNum != 0) /* Message to display*/
+      exit stack;
+    end
+  end
+
+
+end // end FF0Y500
+
+// Verify keys
+Function FF0Y510()
+   /* ------------------------------------------------------------*/
+   /* Verify safety stock class codes.*/
+   /* ------------------------------------------------------------*/
+
+  FF0Y511(); /* Verify safety stock class*/
+
+   /* ------------------------------------------------------------*/
+   /* Verify category codes.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWLSW = "N"; /* set level switch off*/
+  FF0YW00.FF0YWCNT = 1; /* set counter*/
+
+  while (FF0YW00.FF0YWCNT <= 30 /* while count less or equal 30*/
+   && FF0YMCAT[FF0YWCNT] > " ") /* and cat code exists*/
+
+    FF0YW00.FF0YWLSW = "Y"; /* indicate level used*/
+    XPCREC.XPCCD = FF0YM001.FF0YMCAT[FF0YWCNT]; /* Format key*/
+    XPCREC.XGPCD = COMMAREA.XGPCD; /* Format key*/
+
+    if (XPCREC.XPCKEY in XPCTBL.XPCKEY /* Code in table*/
+     && XPCTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+       /* next sentence*/
+    else
+      /* ------------------------------------------------------------*/
+       /* If not found or inactive, indicate invalid.*/
+      /* ------------------------------------------------------------*/
+
+      FFWREC.XXXMODID = "510"; /* Module identification*/
+      set FF0YM001.FF0YMCAT[FF0YWCNT] cursor, bold; /* Highlight*/
+      converseLib.validationFailed(10); /* Indicate invalid*/
+
+    end
+    /* ------------------------------------------------------------*/
+     /* Check for duplicate codes.*/
+    /* ------------------------------------------------------------*/
+
+    FF0YW00.FF0YWSUB = FF0YW00.FF0YWCNT - 1; /* Set counter*/
+
+    while (FF0YW00.FF0YWSUB > 0) /* While counter greater than 0*/
+      if (FF0YM001.FF0YMCAT[FF0YWSUB] == FF0YM001.FF0YMCAT[FF0YWCNT])
+
+        FFWREC.XXXMODID = "510"; /* Module identification*/
+        set FF0YM001.FF0YMCAT[FF0YWCNT] cursor, bold; /* Highlight*/
+        converseLib.validationFailed(232); /* Indicate duplicate code*/
+
+      end
+
+      FF0YW00.FF0YWSUB = FF0YW00.FF0YWSUB - 1; /* Decrement counter*/
+
+    end
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to count*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Verify line exceptions codes.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWCNT = 1; /* set counter*/
+
+  while (FF0YW00.FF0YWCNT <= 10 /* while count less or equal 10*/
+   && FF0YMLEX[FF0YWCNT] > " ") /* and line except code exists*/
+
+    FF0YW00.FF0YWLSW = "Y"; /* indicate level used*/
+    XPLREC.XPLCD = FF0YM001.FF0YMLEX[FF0YWCNT]; /* Format key*/
+    XPLREC.XGPCD = COMMAREA.XGPCD; /* Format key*/
+
+    if (XPLREC.XPLKEY in XPLTBL.XPLKEY /* Code in table*/
+     && XPLTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+       /* next sentence*/
+    else
+      /* ------------------------------------------------------------*/
+       /* If not found or inactive, indicate invalid.*/
+      /* ------------------------------------------------------------*/
+
+      FFWREC.XXXMODID = "510"; /* Module identification*/
+      set FF0YM001.FF0YMLEX[FF0YWCNT] cursor, bold; /* Highlight*/
+      converseLib.validationFailed(10); /* Indicate invalid*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* Check for duplicate codes.*/
+    /* ------------------------------------------------------------*/
+
+    FF0YW00.FF0YWSUB = FF0YW00.FF0YWCNT - 1; /* Set counter*/
+
+    while (FF0YW00.FF0YWSUB > 0) /* While counter greater than 0*/
+      if (FF0YM001.FF0YMLEX[FF0YWSUB] == FF0YM001.FF0YMLEX[FF0YWCNT])
+
+        FFWREC.XXXMODID = "510"; /* Module identification*/
+        set FF0YM001.FF0YMLEX[FF0YWCNT] cursor, bold; /* Highlight*/
+        converseLib.validationFailed(232); /* Indicate duplicate code*/
+
+      end
+
+      FF0YW00.FF0YWSUB = FF0YW00.FF0YWSUB - 1; /* Decrement counter*/
+
+    end
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to count*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Verify line  codes.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0YM001.FF0YMLIN[1] == " *") /* If all lines requested*/
+    FF0YW00.FF0YWLSW = "Y"; /* indicate level used*/
+  else
+
+    FF0YW00.FF0YWCNT = 1; /* set counter*/
+
+    while (FF0YW00.FF0YWCNT <= 10 /* while count less or equal 10*/
+     && FF0YM001.FF0YMLIN[FF0YWCNT] > " ") /* and line code exists*/
+
+      FF0YW00.FF0YWLSW = "Y"; /* indicate level used*/
+      XPLREC.XPLCD = FF0YM001.FF0YMLIN[FF0YWCNT]; /* Format key*/
+      XPLREC.XGPCD = COMMAREA.XGPCD; /* Format key*/
+
+      if (XPLREC.XPLKEY in XPLTBL.XPLKEY /* Code in table*/
+       && XPLTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+         /* next sentence*/
+      else
+        /* ------------------------------------------------------------*/
+         /* If not found or inactive, indicate invalid.*/
+        /* ------------------------------------------------------------*/
+
+        FFWREC.XXXMODID = "510"; /* Module identification*/
+        set FF0YM001.FF0YMLIN[FF0YWCNT] cursor, bold; /* Highlight*/
+        converseLib.validationFailed(10); /* Indicate invalid*/
+
+      end
+
+      /* ------------------------------------------------------------*/
+       /* Check for duplicate codes.*/
+      /* ------------------------------------------------------------*/
+
+      FF0YW00.FF0YWSUB = FF0YW00.FF0YWCNT - 1; /* Set counter*/
+
+      while (FF0YW00.FF0YWSUB > 0) /* While counter greater than 0*/
+        if (FF0YM001.FF0YMLIN[FF0YWSUB] == FF0YM001.FF0YMLIN[FF0YWCNT])
+
+          FFWREC.XXXMODID = "510"; /* Module identification*/
+          set FF0YM001.FF0YMLIN[FF0YWCNT] cursor, bold; /* Highlight*/
+          converseLib.validationFailed(232); /* Indicate duplicate code*/
+
+        end
+
+        FF0YW00.FF0YWSUB = FF0YW00.FF0YWSUB - 1; /* Decrement counter*/
+
+      end
+
+      FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to count*/
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If no level was indicated, indicate that one is required.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0YW00.FF0YWLSW == "N") /* no level was used*/
+
+    FFWREC.XXXMODID = "510"; /* Module identification*/
+    set FF0YM001.FF0YMLIN[1] cursor, bold; /* Highlight*/
+    converseLib.validationFailed(118); /* Indicate missing or invalid*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Verify type code.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0YM001.YPGCD == "*") /* Type code equal '*'*/
+     /* next sentence*/
+
+  else
+
+    if (FF0YM001.YPGCD in YPGTBL.YPGCD /* Code in table*/
+     && YPGTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+       /* next sentence*/
+    else
+
+      /* ------------------------------------------------------------*/
+       /* If not found or inactive, indicate missing or invalid.*/
+      /* ------------------------------------------------------------*/
+
+      FFWREC.XXXMODID = "510"; /* Module identification*/
+      set FF0YM001.YPGCD cursor, bold; /* Highlight*/
+      converseLib.validationFailed(118); /* Indicate missing or invalid*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Verify division group code.*/
+   /* ------------------------------------------------------------*/
+
+  set YSMREC empty; /* Row storage area*/
+
+  YSMREC.YSMSUMCD = FF0YM001.YSMXDV; /* Division group code*/
+  TA1REC.TA1PGMNM = "FF0Y550 "; /* Calling program*/
+
+  XSFFS20(); /* Verify division group*/
+
+   /* ------------------------------------------------------------*/
+   /* If not found, indicate missing or invalid.*/
+   /* ------------------------------------------------------------*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Table row not found*/
+
+    FFWREC.XXXMODID = "510"; /* Module identification*/
+    set FF0YM001.YSMXDV cursor, bold; /* Highlight*/
+    converseLib.validationFailed(118); /* Indicate missing or invalid*/
+
+  end
+
+
+end // end FF0Y510
+
+// Verify safety stock class
+Function FF0Y511()
+   /* ------------------------------------------------------------*/
+   /* Verify safety stock class codes.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWCNT = 1; /* set counter*/
+
+  while (FF0YW00.FF0YWCNT <= 4 /* while count less or equal 4*/
+   && FF0YMSST[FF0YWCNT] > " ") /* and code exists*/
+
+    if (FF0YMSST[FF0YWCNT] == "A" /* code equals "A"*/
+     || FF0YMSST[FF0YWCNT] == "B" /* code equals "B"*/
+     || FF0YMSST[FF0YWCNT] == "C" /* code equals "C"*/
+     || FF0YMSST[FF0YWCNT] == "D") /* code equals "D"*/
+
+       /* next sentence*/
+    else
+      /* ------------------------------------------------------------*/
+       /* If not found or inactive, indicate invalid.*/
+      /* ------------------------------------------------------------*/
+
+      FFWREC.XXXMODID = "510"; /* Module identification*/
+      set FF0YM001.FF0YMSST[FF0YWCNT] cursor, bold; /* Highlight*/
+      converseLib.validationFailed(10); /* Indicate invalid*/
+
+    end
+    /* ------------------------------------------------------------*/
+     /* Check for duplicate codes.*/
+    /* ------------------------------------------------------------*/
+
+    FF0YW00.FF0YWSUB = FF0YW00.FF0YWCNT - 1; /* Set counter*/
+
+    while (FF0YW00.FF0YWSUB > 0) /* While counter greater than 0*/
+      if (FF0YM001.FF0YMSST[FF0YWSUB] == FF0YM001.FF0YMSST[FF0YWCNT])
+
+        FFWREC.XXXMODID = "510"; /* Module identification*/
+        set FF0YM001.FF0YMSST[FF0YWCNT] cursor, bold; /* Highlight*/
+        set FF0YM001.FF0YMSST[FF0YWSUB] bold; /* Highlight*/
+        converseLib.validationFailed(291); /* Indicate duplicate code*/
+
+      end
+
+      FF0YW00.FF0YWSUB = FF0YW00.FF0YWSUB - 1; /* Decrement counter*/
+
+    end
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to count*/
+
+  end
+
+
+end // end FF0Y511
+
+// Verify range
+Function FF0Y520()
+   /* ------------------------------------------------------------*/
+   /* Initialize record for calls to date routine.*/
+   /* ------------------------------------------------------------*/
+
+  set FFZREC empty; /* clear date edit record*/
+
+  FFZREC.FFZBYYMM = FF0YM001.FFABEGMO; /* Beg date*/
+  FFZREC.FFZEYYMM = FF0YM001.FFAENDMO; /* end date*/
+  FFZREC.FFZSRANG = "Y";
+
+   /* ------------------------------------------------------------*/
+   /* Edit range.  Send YYMM - receive back CCYYMM.*/
+   /* ------------------------------------------------------------*/
+
+  XSFFS30();
+
+  if (FFZREC.FFZENDRC == 0) /* end date was valid*/
+     /* next sentence*/
+  else
+    if (FFZREC.FFZENDRC == 1) /* end date was missing*/
+      FFWREC.XXXMODID = "520"; /* Module identification*/
+      set FF0YM001.FFAENDMO cursor, bold; /* Highlight*/
+      converseLib.validationFailed(8); /* Indicate missing*/
+    else
+      if (FFZREC.FFZENDRC == 2) /* end date was invalid*/
+        FFWREC.XXXMODID = "520"; /* Module identification*/
+        set FF0YM001.FFAENDMO cursor, bold; /* Highlight*/
+        converseLib.validationFailed(17); /* Indicate invalid*/
+      else
+        FFWREC.XXXMODID = "520"; /* Module identification*/
+        set FF0YM001.FFAENDMO cursor, bold; /* Highlight*/
+        converseLib.validationFailed(151); /* Indicate out of range*/
+      end
+    end
+  end
+
+  if (FFZREC.FFZBEGRC == 0) /* beg date was valid*/
+     /* next sentence*/
+  else
+    if (FFZREC.FFZBEGRC == 1) /* beg date was missing*/
+      FFWREC.XXXMODID = "520"; /* Module identification*/
+      set FF0YM001.FFABEGMO cursor, bold; /* Highlight*/
+      converseLib.validationFailed(8); /* Indicate missing*/
+    else
+      if (FFZREC.FFZBEGRC == 2) /* beg date was invalid*/
+        FFWREC.XXXMODID = "520"; /* Module identification*/
+        set FF0YM001.FFABEGMO cursor, bold; /* Highlight*/
+        converseLib.validationFailed(17); /* Indicate invalid*/
+      else
+        FFWREC.XXXMODID = "520"; /* Module identification*/
+        set FF0YM001.FFABEGMO cursor, bold; /* Highlight*/
+        converseLib.validationFailed(151); /* Indicate out of range*/
+      end
+    end
+  end
+
+end // end FF0Y520
+
+// Verify only one level set
+Function FF0Y530()
+   /* ------------------------------------------------------------*/
+   /* Verify that only one level is being submitted.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0YMLIN[1] != " " /* line code exists*/
+   && FF0YMLEX[1] != " ") /* line except code exists*/
+
+    FFWREC.XXXMODID = "530"; /* Module identification*/
+    converseLib.validationFailed(251); /* Indicate only one level can be set*/
+
+    set FF0YM001.FF0YMLEX[1] cursor, bold; /* Highlight*/
+    set FF0YM001.FF0YMLIN[1] cursor, bold; /* Highlight*/
+
+  end
+
+
+end // end FF0Y530
+
+// Verify number of models
+Function FF0Y540()
+   /* ------------------------------------------------------------*/
+   /* Verify number of existing models.*/
+   /* ------------------------------------------------------------*/
+
+  set FG1REC empty;
+
+   /* ------------------------------------------------------------*/
+   /* Format FF0yW01.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW01.FF0YWFCD = "SC"; /* Function code*/
+  FF0YW01.FF0YWNBR = 0; /* Number of models*/
+
+   /* ------------------------------------------------------------*/
+   /* Format keys.*/
+   /* ------------------------------------------------------------*/
+
+  FG1REC.FG1MDIND = "M"; /* Model type indicator*/
+  FG1REC.XMSCD = "01"; /* Model run status*/
+
+   /* ------------------------------------------------------------*/
+   /* Select PMHDR.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4010" (FF0YW01, SQLCA, FG1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or row not found, return to previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      if (SQLCA.VAGen_SQLCODE == 0) /* If any models were found*/
+
+        if (FF0YW01.FF0YWNBR >= 3) /* If three or more  models exist*/
+
+          FFWREC.XXXMODID = "540"; /* Module identification*/
+          set FF0YM001.FFABEGMO cursor; /* place cursor*/
+          converseLib.validationFailed(228); /* Indicate too many models*/
+
+        end
+
+      end
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "540"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPMHDR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FG1REC.FG1KEY2; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0Y540
+
+// Verify trgts exist for range
+Function FF0Y550()
+   /* ------------------------------------------------------------*/
+   /* Verify that any entered key has line targets set, and if*/
+   /* any categories set for line that all categories are set.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWRTN = "N"; /* clear switch*/
+  FF0YW00.FF0YWLSW = "N"; /* clear switch*/
+
+  FF0Y551(); /* Verify categories*/
+
+  if (FF0YW00.FF0YWRTN != "Y") /* if return isn't requested*/
+    FF0Y552(); /* Verify line exceptions*/
+  end
+
+  if (FF0YW00.FF0YWRTN != "Y" /* if return isn't requested*/
+   && FF0YM001.FF0YMLIN[1] != " *") /* and lines not equal all*/
+    FF0Y553(); /* Verify lines*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If no other level was entered, check division group level.*/
+   /* Verify that any line that has ff2lrvfl equal to 'y', does*/
+   /* not have some category targets set, and others not set.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0YW00.FF0YWLSW == "N") /* if no other level used*/
+
+    FF0YS06(); /* Open FFXRF*/
+
+    while (FF0YW00.FF0YWSWC == "N") /* while not at end of cursor*/
+
+      FF0YS07(); /* Fetch FFXRF*/
+
+      if (FF0YW00.FF0YWSWC == "N") /* if row found*/
+
+        FF2REC.YPGCD = FF0YM001.YPGCD;
+        FF2REC.YSMXDV = FF0YM001.YSMXDV;
+        FF0YS08(); /* select FFXRF for review flag*/
+
+        if (FF2REC.FF2LRVFL == "Y") /* If review flag equal 'y'*/
+
+          FF0YS05(); /* Check category review flags*/
+
+          if (SQLCA.VAGen_SQLCODE == -811) /* If some cats reviewed & others not*/
+            FFWREC.XXXMODID = "550"; /* Module identification*/
+            set FF0YM001.FFABEGMO cursor; /* Place cursor*/
+            converseLib.validationFailed(299); /* Indicate check cat trgts*/
+          else
+            if (SQLCA.VAGen_SQLCODE == 100) /* If row not found*/
+              FFWREC.XXXMODID = "550"; /* Module identification*/
+              set FF0YM001.FFABEGMO cursor; /* Place cursor*/
+              converseLib.validationFailed(10); /* Indicate invalid value entered*/
+            end
+          end
+
+        else
+
+          FFWREC.XXXMODID = "550"; /* Module identification*/
+          set FF0YM001.FFABEGMO cursor; /* Place cursor*/
+          converseLib.validationFailed(255); /* Indicate targets must be set*/
+
+        end
+      end
+    end
+
+    FF0YS09(); /* Close FFXRF*/
+
+  end
+
+
+end // end FF0Y550
+
+// Verify cats have line trgts
+Function FF0Y551()
+   /* ------------------------------------------------------------*/
+   /* Verify that any entered cat has a line target set.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWSWC = "N"; /* clear switch*/
+  FF0YW00.FF0YWCNT = 1; /* set counter*/
+
+  while (FF0YW00.FF0YWSWC == "N" /* while we have categories*/
+   && FF0YW00.FF0YWCNT <= 30) /* and have not passed 30*/
+
+    if (FF0YM001.FF0YMCAT[FF0YWCNT] != " ") /* if we have a category*/
+
+      FF0YW00.FF0YWLSW = "Y"; /* Indicate level used*/
+
+      /* ------------------------------------------------------------*/
+       /* Call FFXRF to get the line review code.*/
+      /* ------------------------------------------------------------*/
+
+      FF2REC.YPGCD = FF0YM001.YPGCD;
+      FF2REC.YSMXDV = FF0YM001.YSMXDV;
+      FF2REC.XPCCD = FF0YM001.FF0YMCAT[FF0YWCNT];
+      FF0YS04(); /* select FFXRF to find line flag*/
+
+      if (FF2REC.FF2LRVFL != "Y") /* If review flag not equal 'y'*/
+
+        FF0YW00.FF0YWRTN = "Y"; /* set return switch on*/
+
+        FFWREC.XXXMODID = "551"; /* Module identification*/
+        set FF0YM001.FFABEGMO cursor; /* Place cursor*/
+        converseLib.validationFailed(255); /* Indicate check cat trgts*/
+
+      end
+
+      if (FF2REC.FF2CRVFL != "Y") /* If review flag not equal 'y'*/
+
+        FF0YW00.FF0YWRTN = "Y"; /* set return switch on*/
+
+        FFWREC.XXXMODID = "551"; /* Module identification*/
+        converseLib.validationFailed(299); /* Indicate targets must be set*/
+        set FF0YM001.FF0YMCAT[FF0YWCNT] cursor, bold; /* Highlight*/
+
+        FF0YW00.FF0YWSWC = "Y"; /* set end switch on*/
+
+      end
+    end
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add 1 to counter*/
+
+  end
+
+
+end // end FF0Y551
+
+// Verify non-entered line trgts
+Function FF0Y552()
+   /* ------------------------------------------------------------*/
+   /* If any line exception entered, the user wants to be able to*/
+   /* model all --other-- lines not entered.  If no data was*/
+   /* entered here, then return.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWXSW = "N"; /* set switch off*/
+  FF0YW00.FF0YWCNT = 1; /* set counter*/
+
+  while (FF0YW00.FF0YWCNT <= 10 /* while counter less or equal 10*/
+   && FF0YW00.FF0YWXSW != "Y") /* and except switch not 'y'*/
+
+    if (FF0YM001.FF0YMLEX[FF0YWCNT] != " ") /* if we have a line excpt*/
+      FF0YW00.FF0YWLSW = "Y"; /* indicate level used*/
+      FF0YW00.FF0YWXSW = "Y"; /* indicate exception line*/
+    end
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to counter*/
+
+  end
+
+  if (FF0YW00.FF0YWXSW == "N") /* if no data was entered*/
+    return; /* return to previous process*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* This edit does the following:*/
+        /* - read each line on FFXRF*/
+        /* - if the line is --not-- one of the entered lines*/
+          /* check the line reviewed flag.*/
+        /* - if the line reviewed flag is not 'y', there is*/
+          /* an error condition.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWSWC = "N"; /* clear switch*/
+
+  FF0YS06(); /* Open FFXRF*/
+
+  while (FF0YW00.FF0YWSWC == "N") /* while not at end of cursor*/
+
+    FF0YS07(); /* Fetch FFXRF*/
+
+    if (FF0YW00.FF0YWSWC == "N") /* if row found*/
+      if (FF2REC.XPLCD in FF0YM001.FF0YMLEX) /* If this line entered*/
+        /* next sentence*/
+      else
+        FF2REC.YPGCD = FF0YM001.YPGCD;
+        FF0YS08();
+
+        if (SQLCA.VAGen_SQLCODE == -811 /* more than one kind of line rev fl*/
+         || FF2REC.FF2LRVFL != "Y")    
+          FF0YW00.FF0YWRTN = "Y"; /* set return switch*/
+          FFWREC.XXXMODID = "552"; /* Module identification*/
+          converseLib.validationFailed(255); /* Indicate targets must be set*/
+        end
+
+        FF0YS05(); /* select FFXRF for review flag*/
+
+        if (SQLCA.VAGen_SQLCODE == -811) /* more than one kind of cat rev fl*/
+          FF0YW00.FF0YWRTN = "Y"; /* set return switch*/
+          FFWREC.XXXMODID = "552"; /* Module identification*/
+          converseLib.validationFailed(299); /* Indicate targets must be set*/
+        else
+          if (SQLCA.VAGen_SQLCODE == 100) /* row not found*/
+            FF0YW00.FF0YWRTN = "Y"; /* set return switch*/
+            FFWREC.XXXMODID = "552"; /* Module identification*/
+            converseLib.validationFailed(10); /* Indicate invalid value entered*/
+          end
+        end
+
+      end
+    end
+  end
+
+  FF0YS09(); /* Close FFXRF*/
+
+
+end // end FF0Y552
+
+// Verify line has targets
+Function FF0Y553()
+   /* ------------------------------------------------------------*/
+   /* If any 'line' entered, check reviewed flag.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWSWC = "N"; /* clear switch*/
+  FF0YW00.FF0YWCNT = 1; /* set counter*/
+
+  while (FF0YW00.FF0YWSWC == "N" /* while we have lines*/
+   && FF0YW00.FF0YWCNT <= 10) /* and have not passed 10*/
+
+    if (FF0YM001.FF0YMLIN[FF0YWCNT] != " ") /* if we have a line*/
+
+      FF0YW00.FF0YWLSW = "Y"; /* indicate level used*/
+      FF2REC.XPLCD = FF0YM001.FF0YMLIN[FF0YWCNT]; /* format key*/
+      FF2REC.YPGCD = FF0YM001.YPGCD; /* format key*/
+      FF2REC.YSMXDV = FFWREC.YSMXDV; /* format key*/
+      FF0YS05(); /* select FFXRF to ck categ revw fl*/
+
+      if (SQLCA.VAGen_SQLCODE == -811)
+                                   /* more than one value for cat review fl*/
+        FF0YW00.FF0YWRTN = "Y"; /* set return switch on*/
+        FFWREC.XXXMODID = "553"; /* Module identification*/
+        converseLib.validationFailed(299); /* Indicate targets must be set*/
+        set FF0YM001.FF0YMLIN[FF0YWCNT] cursor, bold; /* Highlight*/
+      else
+        if (SQLCA.VAGen_SQLCODE == 100) /* row not found*/
+          FF0YW00.FF0YWRTN = "Y"; /* set return switch on*/
+          FFWREC.XXXMODID = "553"; /* Module identification*/
+          converseLib.validationFailed(10); /* Indicate invalid value entered*/
+          set FF0YM001.FF0YMLIN[FF0YWCNT] cursor, bold; /* Highlight*/
+          return; /* Return to previous process*/
+        end
+      end
+
+      FF0YS08();
+
+      if (SQLCA.VAGen_SQLCODE == -811 /* more than one value for ln review fl*/
+       || FF2REC.FF2LRVFL != "Y")    
+        FF0YW00.FF0YWRTN = "Y"; /* set return switch on*/
+        FFWREC.XXXMODID = "553"; /* Module identification*/
+        converseLib.validationFailed(255); /* Indicate targets must be set*/
+        set FF0YM001.FF0YMLIN[FF0YWCNT] cursor, bold; /* Highlight*/
+      end
+
+    else
+      FF0YW00.FF0YWSWC = "N"; /* set switch on*/
+    end
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add 1 to counter*/
+
+  end
+
+
+end // end FF0Y553
+
+// Process valid input request
+Function FF0Y600()
+   /* ------------------------------------------------------------*/
+   /* indicate that the map must be formated.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWSWF = "Y"; /* Format the map switch*/
+
+   /* ------------------------------------------------------------*/
+   /* Update key in FFWREC.*/
+   /* ------------------------------------------------------------*/
+
+  FFWREC.FFABEGMO = FFZREC.FFZBEGMO; /* begin month*/
+  FFWREC.FFAENDMO = FFZREC.FFZENDMO; /* end month*/
+  FFWREC.YSMXDV = FF0YM001.YSMXDV; /* div grp*/
+  FFWREC.YPGCD = FF0YM001.YPGCD; /* type*/
+
+   /* ------------------------------------------------------------*/
+   /* Obtain date and time.*/
+   /* ------------------------------------------------------------*/
+
+  XX0XS01(); /* Format obtain date and time*/
+
+   /* ------------------------------------------------------------*/
+   /* If PF14 pressed, transfer to FF0W.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf14) /* PF14 was pressed*/
+
+    COMMAREA.CATOAP = "FF0W"; /* Application find code*/
+
+    XSFFS01(); /* Exit to another application*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Check for original sug prdctn fcst on PMHDR.*/
+   /* ------------------------------------------------------------*/
+
+  FF0Y610(); /* Check for 's' on PMHDR*/
+
+   /* ------------------------------------------------------------*/
+   /* Obtain model number and update control nbr.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YS10(); /* Select FFCTL*/
+  FF0YS11(); /* Update FFCTL*/
+
+   /* ------------------------------------------------------------*/
+   /* Format row.*/
+   /* ------------------------------------------------------------*/
+
+  FF0Y620(); /* Format data*/
+
+   /* ------------------------------------------------------------*/
+   /* Insert model header.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YS12(); /* ADD PMHDR*/
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the transaction was completed.*/
+   /* ------------------------------------------------------------*/
+
+  FFWREC.XXXMODID = "600"; /* Module identification*/
+  FFWREC.XXXMSGNO = 16; /* Indicate trans completed*/
+
+   /* ------------------------------------------------------------*/
+   /* Commit all updates.*/
+   /* ------------------------------------------------------------*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.commit(); /* Commit all updates*/
+
+   /* ------------------------------------------------------------*/
+   /* Submit the job*/
+   /* ------------------------------------------------------------*/
+
+  FF0Y630();
+
+end // end FF0Y600
+
+// Check for 's' on PMHDR
+Function FF0Y610()
+   /* ------------------------------------------------------------*/
+   /* Check for original suggested prdctn fcst for range.*/
+   /* ------------------------------------------------------------*/
+
+  FF0Y611(); /* Open  PMHDR*/
+  FF0Y612(); /* Fetch PMHDR*/
+
+   /* ------------------------------------------------------------*/
+   /* If model is missing, insert it.*/
+   /* ------------------------------------------------------------*/
+
+  if (SQLCA.VAGen_SQLCODE == 100 /* If row not found*/
+   || FG1REC.FG1MDIND != "S")    /* or row not 's' type*/
+
+    /* ------------------------------------------------------------*/
+     /* Format data.*/
+    /* ------------------------------------------------------------*/
+
+    FF0YS10(); /* Select FFCTL*/
+    FF0YS11(); /* Update FFCTL*/
+
+    FG1REC.FG1MODNB = FF0YW00.FF1MRNBR; /* model number*/
+    FG1REC.FG1BEGMO = FFWREC.FFABEGMO; /* begin month*/
+    FG1REC.FG1ENDMO = FFWREC.FFAENDMO; /* end month*/
+    FG1REC.FG1MDIND = "S"; /* model indicator*/
+    FG1REC.XMSCD = "02"; /* model run status 'notrun'*/
+    FG1REC.FG1PRTFL = "N"; /* print flag*/
+    FG1REC.YSMXDV = FF0YM001.YSMXDV; /* div grp*/
+    FG1REC.YPGCD = FF0YM001.YPGCD; /* type*/
+    FG1REC.FG1SLLMT = FFXREC.FFXNUMB; /* Sls threshold qty*/
+    FG1REC.XXXUSRID = COMMAREA.CAUSERID; /* user id*/
+    FG1REC.ZZZSDT = XX0XW01.XX0XWDAT; /* setup date*/
+    FG1REC.ZZZSTM = XX0XW01.XX0XWTIM; /* setup time*/
+    FG1REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* change date*/
+
+    FF0YS12(); /* insert PMHDR*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Close PMHDR.*/
+   /* ------------------------------------------------------------*/
+
+  FF0Y613(); /* Close PMHDR*/
+
+
+
+end // end FF0Y610
+
+// Open PMHDR
+Function FF0Y611()
+   /* ------------------------------------------------------------*/
+   /* Clear copybook.*/
+   /* ------------------------------------------------------------*/
+
+  set FG1REC empty; /* Clear row storage area*/
+
+   /* ------------------------------------------------------------*/
+   /* Format key.*/
+   /* ------------------------------------------------------------*/
+
+  FG1REC.FG1BEGMO = FFWREC.FFABEGMO; /* Begin month*/
+  FG1REC.FG1ENDMO = FFWREC.FFAENDMO; /* End month*/
+  FG1REC.XMSCD = "*"; /* Model status*/
+  FG1REC.FG1MDIND = "*"; /* Model type indicator*/
+
+   /* ------------------------------------------------------------*/
+   /* Open cursor for PMHDR.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4010" ("S1", SQLCA, FG1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table set*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, initialize fields, and return.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "631"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OPEN CURSOR";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPMHDR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FG1REC.FG1KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0Y611
+
+// Fetch PMHDR
+Function FF0Y612()
+   /* ------------------------------------------------------------*/
+   /* Fetch PMHDR.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4010" ("N1", SQLCA, FG1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, check for select, and return.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "632"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH NEXT TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPMHDR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FG1REC.FG1KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0Y612
+
+// Close PMHDR
+Function FF0Y613()
+   /* ------------------------------------------------------------*/
+   /* Close PMHDR.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4010" ("C1", SQLCA, FG1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "633"; /* Module identification*/
+  converseLib.validationFailed(01); /* Indicate system error*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE CURSOR";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPMHDR01"; /* Table view name*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0Y613
+
+// Format data
+Function FF0Y620()
+   /* ------------------------------------------------------------*/
+   /* Clear copybook.*/
+   /* ------------------------------------------------------------*/
+
+  set FG1REC empty; /* clear copybook*/
+
+   /* ------------------------------------------------------------*/
+   /* Format data.*/
+   /* ------------------------------------------------------------*/
+
+  FG1REC.FG1MODNB = FF0YW00.FF1MRNBR; /* model number*/
+  FG1REC.FG1BEGMO = FFWREC.FFABEGMO; /* begin month*/
+  FG1REC.FG1ENDMO = FFWREC.FFAENDMO; /* end month*/
+  FG1REC.FG1MDIND = "M"; /* model indicator*/
+  FG1REC.XMSCD = "01"; /* model run status 'notrun'*/
+  FG1REC.FG1PRTFL = "N"; /* print flag*/
+  FG1REC.YSMXDV = FF0YM001.YSMXDV; /* div grp*/
+  FG1REC.YPGCD = FF0YM001.YPGCD; /* type*/
+  FG1REC.FG1SLLMT = FFXREC.FFXNUMB; /* Sls threshold qty*/
+  FG1REC.XXXUSRID = COMMAREA.CAUSERID; /* user id*/
+  FG1REC.ZZZSDT = XX0XW01.XX0XWDAT; /* setup date*/
+  FG1REC.ZZZSTM = XX0XW01.XX0XWTIM; /* setup time*/
+  FG1REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* change date*/
+  FG1REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* setup time*/
+
+   /* ------------------------------------------------------------*/
+   /* Load lines.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0YM001.FF0YMLIN[1] == " *") /* If all lines requested*/
+
+    FF0Y621(); /* Load list of all line codes*/
+
+  else
+
+    FF0YW00.FF0YWCNT = 1; /* set counter*/
+    while (FF0YW00.FF0YWCNT <= 10 /* while count less or equal 10*/
+     && FF0YM001.FF0YMLIN[FF0YWCNT] > " ") /* and line code exists*/
+
+      FG1REC.FG1LINCD[FF0YWCNT] = FF0YM001.FF0YMLIN[FF0YWCNT];
+
+      FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to count*/
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Load line exceptions.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWCNT = 1; /* set counter*/
+  while (FF0YW00.FF0YWCNT <= 10 /* while count less or equal 10*/
+   && FF0YMLEX[FF0YWCNT] > " ") /* and line excpt exists*/
+
+    FG1REC.FG1EXLIN[FF0YWCNT] = FF0YM001.FF0YMLEX[FF0YWCNT];
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to count*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Load categories.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YW00.FF0YWCNT = 1; /* set counter*/
+  while (FF0YW00.FF0YWCNT <= 30 /* while count less or equal 30*/
+   && FF0YMCAT[FF0YWCNT] > " ") /* and cat code exists*/
+
+    FG1REC.FG1CATCD[FF0YWCNT] = FF0YM001.FF0YMCAT[FF0YWCNT];
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to count*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Load safety stock. If none listed, defaul to 'A,B,C,D'.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0YMSST[1] == " ") /* If no sfty stk cd exists*/
+
+    FG1REC.FG1SSCLS[1] = "A";
+    FG1REC.FG1SSCLS[2] = "B";
+    FG1REC.FG1SSCLS[3] = "C";
+    FG1REC.FG1SSCLS[4] = "D";
+
+  else
+
+    FF0YW00.FF0YWCNT = 1; /* set counter*/
+
+    while (FF0YW00.FF0YWCNT <= 4 /* while count less or equal 4*/
+     && FF0YMSST[FF0YWCNT] > " ") /* and sfty stk exists*/
+
+      FG1REC.FG1SSCLS[FF0YWCNT] = FF0YM001.FF0YMSST[FF0YWCNT];
+
+      FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to count*/
+
+    end
+  end
+
+
+end // end FF0Y620
+
+// Obtain list of lines
+Function FF0Y621()
+   /* ------------------------------------------------------------*/
+   /* Obtain list of all lines.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YS06(); /* Open FFXRF*/
+
+  FF0YW00.FF0YWCNT = 1; /* Set counter*/
+  while (FF0YW00.FF0YWSWC == "N" /* Until end of cursor*/
+   && FF0YW00.FF0YWCNT <= 20) /* and count less or equal 20*/
+
+    FF0YS07(); /* Fetch FFXRF*/
+
+    if (FF0YW00.FF0YWSWC == "N") /* if not end of cursor*/
+      FG1REC.FG1LINCD[FF0YWCNT] = FF2REC.XPLCD; /* line codes*/
+    end
+
+    FF0YW00.FF0YWCNT = FF0YW00.FF0YWCNT + 1; /* add one to count*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Close the cursor for DFCAST.VFFXRF01.*/
+   /* ------------------------------------------------------------*/
+
+  FF0YS09(); /* Close FFXRF*/
+
+
+end // end FF0Y621
+
+// Submit online job
+Function FF0Y630()
+
+   /* ------------------------------------------------------------*/
+   /* Call sub-routine to find which environment*/
+   /* the program is executing in, development*/
+   /* or production.*/
+   /* ------------------------------------------------------------*/
+  set TA3REC empty;
+  TA3REC.TA3OPTN = "ASSIGN ";
+  try
+    call "TA0230" (TA3REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA3REC.TA3RTNCD == 0)          /* Good return code*/
+    if (TA3REC.TA3RGNID == "03") /* if on production system*/
+      FF0Y631(); /* format production jcl*/
+    else
+      FF0Y632(); /* format development jcl*/
+    end
+  else
+
+    FFWREC.XXXMODID = "630"; /* module identification*/
+    FFWREC.XXXMSGNO = 87; /* Error encountered with print request*/
+    exit stack;
+  end
+
+end // end FF0Y630
+
+// Submit prod JCL
+Function FF0Y631()
+
+   /* ------------------------------------------------------------*/
+   /* Initialize the work area and index to be used.*/
+   /* ------------------------------------------------------------*/
+
+  set TA6REC empty; /* Subroutine work area*/
+
+  TA6REC.TA6INDEX = 1; /* Initialize index*/
+
+   /* ------------------------------------------------------------*/
+   /* Format JCL and parameters into the subroutine work area.*/
+   /* ------------------------------------------------------------*/
+
+  while (TA6REC.TA6INDEX > 0) /* Until end of table*/
+
+    /* ------------------------------------------------------------*/
+     /* Format the Job Control Language statement from the table.*/
+    /* ------------------------------------------------------------*/
+
+    TA6REC.TARJCL[TA6INDEX] = FF0YT.TARJCL[TA6INDEX]; /* JCL*/
+    TA6REC.TARTYPE[TA6INDEX] = FF0YT.TARTYPE[TA6INDEX]; /* Type*/
+
+    /* ------------------------------------------------------------*/
+     /* If not end of table, increment the table index.*/
+    /* ------------------------------------------------------------*/
+
+    if (FF0YT.TARJCL[TA6INDEX] == "/*EOF") /* End of table*/
+      TA6REC.TA6INDEX = 0; /* Indicate end of table*/
+    else
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for batch execution.*/
+   /* ------------------------------------------------------------*/
+
+  TA6REC.TA6SUBSW = "S"; /* Tailor and submit JCL*/
+  TA6REC.TA6MSGSW = "Y"; /* EOJ online msg*/
+
+  XPTA0P(); /* Print Request Subroutine*/
+
+   /* ------------------------------------------------------------*/
+   /* If a successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  FFWREC.XXXMODID = "630"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "0")        /* and normal return*/
+
+    converseLib.validationFailed(76); /* Indicate job was submitted*/
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If user cancelled request, indicate user cancelled.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "1")        /* and user cancelled request*/
+
+    converseLib.validationFailed(86); /* Indicate user cancelled*/
+  else
+    converseLib.validationFailed(01); /* Indicate system error*/
+
+  end
+
+
+  exit stack; /* Exit to display map*/
+
+end // end FF0Y631
+
+// Submit test JCL
+Function FF0Y632()
+   /* submit test JCL*/
+
+   /* ------------------------------------------------------------*/
+   /* Initialize the work area and index to be used.*/
+   /* ------------------------------------------------------------*/
+
+  set TA6REC empty; /* Subroutine work area*/
+
+  TA6REC.TA6INDEX = 1; /* Initialize index*/
+
+   /* ------------------------------------------------------------*/
+   /* Format JCL and parameters into the subroutine work area.*/
+   /* ------------------------------------------------------------*/
+
+  while (TA6REC.TA6INDEX > 0) /* Until end of table*/
+
+    /* ------------------------------------------------------------*/
+     /* Format the Job Control Language statement from the table.*/
+    /* ------------------------------------------------------------*/
+
+    TA6REC.TARJCL[TA6INDEX] = FF0YT5O.TARJCL[TA6INDEX]; /* JCL*/
+    TA6REC.TARTYPE[TA6INDEX] = FF0YT5O.TARTYPE[TA6INDEX]; /* Type*/
+
+    /* ------------------------------------------------------------*/
+     /* If not end of table, increment the table index.*/
+    /* ------------------------------------------------------------*/
+
+    if (FF0YT5O.TARJCL[TA6INDEX] == "/*EOF") /* End of table*/
+      TA6REC.TA6INDEX = 0; /* Indicate end of table*/
+    else
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for batch execution.*/
+   /* ------------------------------------------------------------*/
+
+  TA6REC.TA6SUBSW = "S"; /* Tailor and submit JCL*/
+  TA6REC.TA6MSGSW = "Y"; /* EOJ online msg*/
+
+  XPTA0P(); /* Print Request Subroutine*/
+
+   /* ------------------------------------------------------------*/
+   /* If a successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  FFWREC.XXXMODID = "630"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "0")        /* and normal return*/
+
+    converseLib.validationFailed(76); /* Indicate job was submitted*/
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If user cancelled request, indicate user cancelled.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "1")        /* and user cancelled request*/
+
+    converseLib.validationFailed(86); /* Indicate user cancelled*/
+  else
+    converseLib.validationFailed(01); /* Indicate system error*/
+
+  end
+
+
+  exit stack; /* Exit to display map*/
+
+end // end FF0Y632
+
+// Select FFXRF for lines
+Function FF0YS04()
+   /* ------------------------------------------------------------*/
+   /* Format call.*/
+   /* ------------------------------------------------------------*/
+
+  FF2REC.XPCCD = FF0YM001.FF0YMCAT[FF0YWCNT]; /* wildcard category*/
+
+   /* ------------------------------------------------------------*/
+   /* Select the row to display from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4000" ("S ", SQLCA, FF2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to previous process*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "S04"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFXRF01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF2REC.FF2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0YS04
+
+// Select FFXRF for cat revw fl
+Function FF0YS05()
+   /* ------------------------------------------------------------*/
+   /* Format call.*/
+   /* ------------------------------------------------------------*/
+
+  FF2REC.XPCCD = "*"; /* wildcard category*/
+
+   /* ------------------------------------------------------------*/
+   /* Select the row to display from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4000" ("SC", SQLCA, FF2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or too many found, return to previous process*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0    /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == -811 /* or too many rows found*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "S05"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFXRF01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF2REC.FF2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0YS05
+
+// Open FFXRF for list of lines
+Function FF0YS06()
+   /* ------------------------------------------------------------*/
+   /* Clear copybook.*/
+   /* ------------------------------------------------------------*/
+
+  set FF2REC empty; /* Clear row storage area*/
+
+   /* ------------------------------------------------------------*/
+   /* Format keys.*/
+   /* ------------------------------------------------------------*/
+
+  FF2REC.YSMXDV = FF0YM001.YSMXDV; /* Division group*/
+  FF2REC.YPGCD = FF0YM001.YPGCD; /* Type*/
+
+   /* ------------------------------------------------------------*/
+   /* Open cursor for FFXRF.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4000" ("S3", SQLCA, FF2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table set*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, set cursor switch, and return.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    FF0YW00.FF0YWSWC = "N"; /* End of cursor switch*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "S06"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT SET OF TABLE ROWS";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFXRF01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF2REC.FF2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+
+end // end FF0YS06
+
+// Fetch FFXRF
+Function FF0YS07()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row to display from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4000" ("N3", SQLCA, FF2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+      return; /* Return to previous process*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* If end of selected set, indicate end of cursor.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+      FF0YW00.FF0YWSWC = "Y"; /* Indicate end of cursor*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "S07"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH NEXT TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFXRF01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF2REC.FF2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+
+end // end FF0YS07
+
+// Select FFXRF for line revw fl
+Function FF0YS08()
+   /* ------------------------------------------------------------*/
+   /* Select the row to display from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4000" ("SL", SQLCA, FF2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == -811) /* more than 1 distinct*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "S08"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFXRF01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF2REC.FF2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0YS08
+
+// Close FFXRF
+Function FF0YS09()
+   /* ------------------------------------------------------------*/
+   /* Close FFXRF.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4000" ("C3", SQLCA, FF2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "S09"; /* Module identification*/
+  converseLib.validationFailed(01); /* Indicate system error*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE CURSOR";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFXRF01"; /* Table view name*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+
+end // end FF0YS09
+
+// Select FFXRF for lines
+Function FF0YS10()
+   /* ------------------------------------------------------------*/
+   /* Clear row storage for DFCAST.VFFCTL01.*/
+   /* ------------------------------------------------------------*/
+
+  set FF1REC empty; /* Clear copybook*/
+
+   /* ------------------------------------------------------------*/
+   /* Select the row to display from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO3660" ("S ", SQLCA, FF1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+      FF0YW00.FF1MRNBR = FF1REC.FF1MRNBR; /* Hold model number*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "S10"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFCTL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF1REC.FF1GROUP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0YS10
+
+// Select FFXRF for lines
+Function FF0YS11()
+   /* ------------------------------------------------------------*/
+   /* Update field.*/
+   /* ------------------------------------------------------------*/
+
+  FF1REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* Change date*/
+  FF1REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* Change time*/
+
+   /* ------------------------------------------------------------*/
+   /* Update FFCTL.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO3660" ("U1", SQLCA, FF1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+      return; /* Return to previous process*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* If row not found, indicate the data was updated by another.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      FFWREC.XXXMODID = "S11"; /* Module identification*/
+      FFWREC.XXXMSGNO = 46; /* Indicate updated by another*/
+
+      exit stack; /* Exit to display map*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "S11"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UPDATE THE TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFCTL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF1REC.FF1GROUP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0YS11
+
+// Insert PMHDR
+Function FF0YS12()
+   /* ------------------------------------------------------------*/
+   /* Insert DFCAST.VPMHDR01.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4010" ("A ", SQLCA, FG1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Update row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "S12"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(1); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "ADD TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPMHDR01"; /* Table view name*/
+  TA1REC.TA1TBLVU = FG1REC.FG1KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0YS12
+
+//*** RECORD=FF0YW00 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// ***********************
+Record FF0YW00 type basicRecord
+  10 FF0YWSWF FF0YWSWF ; 
+  10 FF0YWSWC FF0YWSWC ; 
+  10 FF0YWRTN FF0YWRTN ; 
+  10 FF0YWLSW FF0YWLSW ; 
+  10 FF0YWXSW FF0YWXSW ; 
+  10 FF0YWCNT FF0YWCNT ; 
+  10 FF0YWSUB FF0YWSUB ; 
+  10 FFABEGMO FFABEGMO ; 
+  10 FFAENDMO FFAENDMO ; 
+  10 FF1MRNBR FF1MRNBR ; 
+end // end FF0YW00
+
+//*** RECORD=FF0YW01 ****
+// Copybook for function code and count - PMHDR
+// ***********************
+Record FF0YW01 type basicRecord
+  10 FF0YWFCD FF0YWFCD ; 
+  10 FF0YWNBR FF0YWNBR ; 
+end // end FF0YW01
+
+// Counter for loops
+DataItem FF0YWCNT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// Function code
+DataItem FF0YWFCD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Level switch
+DataItem FF0YWLSW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Number of models
+DataItem FF0YWNBR int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Return switch
+DataItem FF0YWRTN char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Counter for loops
+DataItem FF0YWSUB num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// End of cursor switch
+DataItem FF0YWSWC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Format the map switch
+DataItem FF0YWSWF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Exception switch
+DataItem FF0YWXSW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

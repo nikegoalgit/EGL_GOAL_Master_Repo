@@ -1,0 +1,2802 @@
+package ep0n;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import ep.common.*;
+import fk.common.*;
+import fy.common.*;
+import ku.common.*;
+import op.common.*;
+import pc.common.*;
+import pg.common.*;
+import sy.common.*;
+import ta.common.*;
+import ts.common.*;
+//*** PROGRAM=EP0N ****
+//          ======================================
+//          EP0N - STYLE/SKU MASTER RECORD REQUEST
+//          ======================================
+// 
+// This application enables users to send down specific Style
+// and SKU master records to the Apparel WMS package (DCMS).
+// 
+// A user may enter a Style and up to five Sizes for the
+// Style. The user can validate this data by pressing either
+// the <ENTER> or PF12 keys.
+// 
+// Once the data is validated (valid product, valid sizes for
+// the product, an existing UPC), the user may request the
+// transmission to the DCMS system on the AS400 by pressing
+// the PF6 TRANSMIT key.
+// 
+// JCL is formatted and submitted.  A background job then
+// builds the Style and SKU master records and routes them
+// to DCMS via MQ.
+// 
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE    USERID  DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// NEW      01/22/98  ESMIT2  New application.
+// retrofit 10/26/98  ESMIT2  Remove check for whse '51' in
+//                            user common record on entry.
+// multgpc  07/15/99  OENFIE  EP0N-21000: Remove the loading
+//                            of '03' on the GPC field when
+//                            the Warehouse code of the logon
+//                            ID is '51' and the GPC field is
+//                            blank.
+//                            EP0N-42000: Commented out the
+//                            hard coded logic that will not
+//                            allow GPC code '02' to be entered
+//                            on the screen.
+//                            EP0NM001: remove the '03' loaded
+//                            for GPC.
+// multgpc  08/06/99  OENFIE  regenerate to pick up changes to
+//                            XPEP-00000
+// TT#6800  07/10/00  SRAMA1  UOM validation for the GPC/Style
+//                            color combination by calling
+//                            IO0560 module.
+// dlvrusa  04/16/01  rsebas  include validation of active/
+//                            inactive status for ISEG
+//                            validation.
+// DLVRUSA  07/02/01  RSEBAS  inactivate user access to owner
+//                            group on the map and default it
+//                            owner group value to '00'.
+// DLVRUSA  07/23/01  RSEBAS  Add new field to the screen for
+//                            the user to enter the pack factor
+//                            and default pack factor value to
+//                            '001'
+// DLVRUSA  08/01/01  RSEBAS  Inactivate user access to the
+//                            fields 'EDIF' and 'PKG'.
+// *********************
+Program EP0N type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "EP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  EP0NW00 EP0NW00; // record
+  EP0NW01 EP0NW01; // record
+  EP0NW02 EP0NW02; // record
+  EP0NW03 EP0NW03; // record
+  EPWREC EPWREC; // record
+  ERRSQLCA ERRSQLCA; // record
+  PC2REC PC2REC; // record
+  SQLCA SQLCA; // record
+  SY1REC SY1REC; // record
+  SY2REC SY2REC; // record
+  SYCREC SYCREC; // record
+  SYPREC SYPREC; // record
+  TA1REC TA1REC; // record
+  TA3REC TA3REC; // record
+  TA6REC TA6REC; // record
+  TAEREC TAEREC; // record
+  XPCREC XPCREC; // record
+  XX0XW01 XX0XW01; // record
+  XX0XW02 XX0XW02; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use EP0NT01 {deleteAfterUse = yes}; // table
+  use EP0NT02 {deleteAfterUse = yes}; // table
+  use XDMTBL; // table
+  use XEGTBL {deleteAfterUse = yes}; // table
+  use XGPTBL; // table
+  use XOWTBL {deleteAfterUse = yes}; // table
+  use XPGTBL {deleteAfterUse = yes}; // table
+  use XQATBL {deleteAfterUse = yes}; // table
+  use XUMTBL {deleteAfterUse = yes}; // table
+  use EP0NM.EP0NM001,  // forms
+      EP0NM.TA0PM001, 
+      EP0NM.XX0XM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPEP-00000: XPEP-00000();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and display storage areas.*/
+     /* ------------------------------------------------------------*/
+
+    set EP0NM001 initial; /* M001 input/output*/
+    set EP0NW00 empty; /* Working storage*/
+    set EP0NW01 empty; /* M001 display storage*/
+    set SQLCA empty; /* SQL communication area*/
+    set TAEREC empty; /* Error diagnosis information*/
+    set TA1REC empty; /* Error diagnosis parameters*/
+    set XX0XW01 empty; /* Date/time subroutine parameters*/
+
+    EP0NW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+    EP0NW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+    EPWREC.EPW-FIRST-TM-SW = "Y"; /* First time in switch*/
+
+    EPWREC.EPW-MSG-NO = 0; /* Initialize on 1st entry*/
+
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto EP0N-00000; /* Converse the main process*/
+
+
+    EP0N-00000: EP0N-00000();
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto EP0N-00000; /* Converse the main process*/
+
+
+  end // end main
+end // end EP0N
+
+// Main process to display a map
+Function EP0N-00000()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) Obtain the data to display.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Verify the data that was entered.*/
+   /* 5) Process a valid input request.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+
+  EP0N-10000(); /* Obtain the data to display*/
+
+  EP0N-20000(); /* Format and display the map*/
+
+  EP0N-30000(); /* Check attention identifier*/
+
+  EP0N-40000(); /* Verify the entered data*/
+
+  EP0N-50000(); /* Process valid input request*/
+
+
+end // end EP0N-00000
+
+// Obtain the data to display
+Function EP0N-10000()
+   /* ------------------------------------------------------------*/
+   /* Check for first time into the application and reset to no.*/
+   /* ------------------------------------------------------------*/
+
+  if (EPWREC.EPW-FIRST-TM-SW == "Y") /* First time in*/
+    EPWREC.EPW-FIRST-TM-SW = "N"; /* Set 1st time to NO*/
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data was not requested or an error was found, return to*/
+   /* the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NW00.XXX-RQT-DATA-FL != "Y" /* Data was not requested*/
+   || converseVar.validationMsgNum != 0) /* or an error was found*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Clear the map display storage area and save the key fields.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0NW01 empty; /* M001 display storage*/
+
+  EP0NW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+  EP0NW01.XGP-GPC-CD = EP0NM001.XGP-GPC-CD; /* GPC*/
+  EP0NW01.SY-STY-NBR = EP0NM001.SY-STY-NBR; /* Style*/
+  EP0NW01.SY-COLR-CD-ID = EP0NM001.SY-COLR-CD-ID; /* Color*/
+  EP0NW01.XDM-DIM-CD = EP0NM001.XDM-DIM-CD; /* Dim*/
+  EP0NW01.XQA-QUAL-CD = EP0NM001.XQA-QUAL-CD; /* Qual*/
+  /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+  /* MOVE EP0NM001.XOW-OWN-GRP-CD TO EP0NW01.XOW-OWN-GRP-CD;     /* Own*/
+  EP0NW01.XOW-OWN-GRP-CD = "00"; /* Own*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+  EP0NW01.PC-CU-IN-SEG-CD = EP0NM001.PC-CU-IN-SEG-CD; /* ISEG*/
+  /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+  /* MOVE EP0NM001.XEG-ENGR-DIFF-CD TO EP0NW01.XEG-ENGR-DIFF-CD; /* EDIF*/
+  /* MOVE EP0NM001.XPG-PKG-TYP-CD TO EP0NW01.XPG-PKG-TYP-CD;     /* Pkg*/
+  EP0NW01.XEG-ENGR-DIFF-CD = "000"; /* EDIF*/
+  EP0NW01.XPG-PKG-TYP-CD = "00"; /* Pkg*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+  EP0NW01.XUM-UOM-CD = EP0NM001.XUM-UOM-CD; /* UOM*/
+  /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+  EP0NW01.PACK-FACTOR = EP0NM001.PACK-FACTOR; /* packfactor*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+
+   /* * * Up to five sizes * * **/
+  EP0NW01.SY-SZ-ID-DESC1 = EP0NM001.SY-SZ-ID-DESC1;
+  EP0NW01.SY-SZ-ID-DESC2 = EP0NM001.SY-SZ-ID-DESC2;
+  EP0NW01.SY-SZ-ID-DESC3 = EP0NM001.SY-SZ-ID-DESC3;
+  EP0NW01.SY-SZ-ID-DESC4 = EP0NM001.SY-SZ-ID-DESC4;
+  EP0NW01.SY-SZ-ID-DESC5 = EP0NM001.SY-SZ-ID-DESC5;
+
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the request for data is complete.*/
+   /* ------------------------------------------------------------*/
+
+  EP0NW00.XXX-RQT-DATA-FL = "N"; /* Request for data*/
+
+
+end // end EP0N-10000
+
+// Format and converse the map
+Function EP0N-20000()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, save the error message number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    EPWREC.EPW-MSG-NO = converseVar.validationMsgNum; /* Message number*/
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If the map must be formatted, format the data in the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NW00.XXX-MAP-FMAT-FL == "Y") /* Map must be formatted*/
+    EP0N-21000(); /* Format the data in the map*/
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether to protect any of the modifiable fields.*/
+   /* ------------------------------------------------------------*/
+
+  EP0N-22000(); /* Check change authorization*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Format the current date and any FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  EP0NM001.XXX-CURR-DT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  EP0NM001.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  EP0NM001.CAITEM = COMMAREA.CAITEM; /* Application data*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /* ------------------------------------------------------------*/
+
+  if (EPWREC.EPW-MSG-NO != 0) /* Msg*/
+
+    if (EPWREC.EPW-MSG-NO == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(EPWREC.EPW-MSG-NO);
+    end /* Msg nbr*/
+
+    EP0NM001.XXX-MSG-LOC-ID = EPWREC.XXXLOCID; /* Msg loc*/
+
+    set EP0NM001 alarm; /* Sound alarm*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Establish product key defaults for certain blank fields.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XDM-DIM-CD == " ")
+    EP0NM001.XDM-DIM-CD = "00"; /* Dimension*/
+  end
+
+  if (EP0NM001.XUM-UOM-CD == " ")
+    EP0NM001.XUM-UOM-CD = "01"; /* Unit of Measure*/
+  end
+
+  if (EP0NM001.XQA-QUAL-CD == " ")
+    EP0NM001.XQA-QUAL-CD = "01"; /* Quality*/
+  end
+
+  if (EP0NM001.PC-CU-IN-SEG-CD == " ")
+    EP0NM001.PC-CU-IN-SEG-CD = "000"; /* Inventory Segment*/
+  end
+
+  if (EP0NM001.XEG-ENGR-DIFF-CD == " ")
+    EP0NM001.XEG-ENGR-DIFF-CD = "000"; /* Engineer Difference*/
+  end
+
+  if (EP0NM001.XOW-OWN-GRP-CD == " ")
+    EP0NM001.XOW-OWN-GRP-CD = "00"; /* Owner Group*/
+  end
+
+  if (EP0NM001.XPG-PKG-TYP-CD == " ")
+    EP0NM001.XPG-PKG-TYP-CD = "00"; /* Package Type*/
+  end
+  /* DLVRUSA CHANGES BEGINS - RSEBAS*/
+
+  if (EP0NM001.PACK-FACTOR == "  ")
+    EP0NM001.PACK-FACTOR = "001"; /* Pack Factor*/
+  end
+  /* DLVRUSA CHANGES ENDS   - RSEBAS*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If no error, set cursor at first empty field.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum == 0 /* No errors*/
+   || converseVar.validationMsgNum == 19) /* Requested lists displayed*/
+
+    EP0N-23000(); /* Put cursor on 1st blank field*/
+
+  end
+
+
+  converse EP0NM001 ;
+
+   /* ------------------------------------------------------------*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  EPWREC.XXXLOCID = " "; /* Message location*/
+  EPWREC.EPW-MSG-NO = 0; /* Message number*/
+  COMMAREA.CAMSG = " "; /* Message text*/
+
+  COMMAREA.CATOAP = EP0NM001.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = EP0NM001.CAITEM; /* Application data*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Reset modifiable field attributes to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0NM001.XGP-GPC-CD normal; /* GPC*/
+  set EP0NM001.SY-STY-NBR normal; /* Style*/
+  set EP0NM001.SY-COLR-CD-ID normal; /* Color*/
+  set EP0NM001.XDM-DIM-CD normal; /* Dim*/
+  set EP0NM001.XQA-QUAL-CD normal; /* Qual*/
+  /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+  /* SET EP0NM001.XOW-OWN-GRP-CD NORMAL;        /* Own*/
+  set EP0NM001.XOW-OWN-GRP-CD skip; /* Own*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS*/
+  set EP0NM001.PC-CU-IN-SEG-CD normal; /* ISEG*/
+  /* DLVRUSA CHANGES BEGINS - RSEBAS*/
+  /* SET EP0NM001.XEG-ENGR-DIFF-CD NORMAL;      /* DIFF*/
+  /* SET EP0NM001.XPG-PKG-TYP-CD NORMAL;        /* Pkg*/
+  set EP0NM001.XEG-ENGR-DIFF-CD skip; /* DIFF*/
+  set EP0NM001.XPG-PKG-TYP-CD skip; /* Pkg*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS*/
+  set EP0NM001.XUM-UOM-CD normal; /* UOM*/
+  /* DLVRUSA CHANGES BEGINS - RSEBAS*/
+  set EP0NM001.PACK-FACTOR normal; /* Pack Factor*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS*/
+
+  set EP0NM001.SY-SZ-ID-DESC1 normal; /* 1st Size*/
+  set EP0NM001.SY-SZ-ID-DESC2 normal; /* 2nd Size*/
+  set EP0NM001.SY-SZ-ID-DESC3 normal; /* 3rd Size*/
+  set EP0NM001.SY-SZ-ID-DESC4 normal; /* 4th Size*/
+  set EP0NM001.SY-SZ-ID-DESC5 normal; /* 5th Size*/
+
+  set EP0NM001.CATOAP normal; /* TO application*/
+  set EP0NM001.CAITEM normal; /* Application data*/
+
+
+end // end EP0N-20000
+
+// Format the data in the map
+Function EP0N-21000()
+   /* ------------------------------------------------------------*/
+   /* Clear the fields in the map storage area to be formatted.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0NM001 initial; /* M001 input/output area*/
+
+  EP0NW00.XXX-MAP-FMAT-FL = "N"; /* Format the map flag*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Place cursor on first empty field.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NW01.SY-SZ-ID-DESC5 == " ") /* Size Desc 5*/
+    set EP0NM001.SY-SZ-ID-DESC5 cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.SY-SZ-ID-DESC4 == " ") /* Size Desc 4*/
+    set EP0NM001.SY-SZ-ID-DESC4 cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.SY-SZ-ID-DESC3 == " ") /* Size Desc 3*/
+    set EP0NM001.SY-SZ-ID-DESC3 cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.SY-SZ-ID-DESC2 == " ") /* Size Desc 2*/
+    set EP0NM001.SY-SZ-ID-DESC2 cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.SY-SZ-ID-DESC1 == " ") /* Size Desc 1*/
+    set EP0NM001.SY-SZ-ID-DESC1 cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.XUM-UOM-CD == " ") /* Unit Type missing*/
+    set EP0NM001.XUM-UOM-CD cursor; /* Position cursor*/
+  end
+
+  /* DLVUSA CHANGES BEGINS - RSEBAS **/
+  /* IF EP0NW01.XPG-PKG-TYP-CD EQ ' ';        /* Package Type missing*/
+  /* SET EP0NM001.XPG-PKG-TYP-CD CURSOR;    /* Position cursor*/
+  /* END;*/
+  /* ;*/
+  /* IF EP0NW01.XEG-ENGR-DIFF-CD EQ ' ';      /* Engr Diff missing*/
+  /* SET EP0NM001.XEG-ENGR-DIFF-CD CURSOR;  /* Position cursor*/
+  /* END;*/
+  /* DLVUSA CHANGES ENDS   - RSEBAS **/
+
+  if (EP0NW01.PC-CU-IN-SEG-CD == " ") /* Inv segment missing*/
+    set EP0NM001.PC-CU-IN-SEG-CD cursor; /* Position cursor*/
+  end
+
+  /* DLVUSA CHANGES BEGINS - RSEBAS **/
+  /* IF EP0NW01.XOW-OWN-GRP-CD EQ ' ';        /* Quality missing*/
+  /* SET EP0NM001.XOW-OWN-GRP-CD CURSOR;    /* Position cursor*/
+  /* END;*/
+  /* DLVUSA CHANGES ENDS   - RSEBAS **/
+
+  if (EP0NW01.XQA-QUAL-CD == " ") /* Quality missing*/
+    set EP0NM001.XQA-QUAL-CD cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.XDM-DIM-CD == " ") /* Color missing*/
+    set EP0NM001.XDM-DIM-CD cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.SY-COLR-CD-ID == " ") /* Color missing*/
+    set EP0NM001.SY-COLR-CD-ID cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.SY-STY-NBR == " ") /* Style missing*/
+    set EP0NM001.SY-STY-NBR cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.XGP-GPC-CD == " ") /* GPC code missing*/
+    set EP0NM001.XGP-GPC-CD cursor; /* Position cursor*/
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Format the map fields from the display storage area.*/
+   /* ------------------------------------------------------------*/
+
+  EP0NM001.XGP-GPC-CD = EP0NW01.XGP-GPC-CD; /* GPC*/
+  EP0NM001.SY-STY-NBR = EP0NW01.SY-STY-NBR; /* Style*/
+  EP0NM001.SY-COLR-CD-ID = EP0NW01.SY-COLR-CD-ID; /* Color*/
+  EP0NM001.XDM-DIM-CD = EP0NW01.XDM-DIM-CD; /* Dim*/
+  EP0NM001.XQA-QUAL-CD = EP0NW01.XQA-QUAL-CD; /* Qual*/
+  EP0NM001.XOW-OWN-GRP-CD = EP0NW01.XOW-OWN-GRP-CD; /* Own*/
+  EP0NM001.PC-CU-IN-SEG-CD = EP0NW01.PC-CU-IN-SEG-CD; /* ISEG*/
+  EP0NM001.XEG-ENGR-DIFF-CD = EP0NW01.XEG-ENGR-DIFF-CD; /* DIFF*/
+  EP0NM001.XPG-PKG-TYP-CD = EP0NW01.XPG-PKG-TYP-CD; /* Pkg*/
+  EP0NM001.XUM-UOM-CD = EP0NW01.XUM-UOM-CD; /* UOM*/
+  /* DLVRUSA CHANGES BEGINS - RSEBAS*/
+  EP0NM001.PACK-FACTOR = EP0NW01.PACK-FACTOR; /* Packfactor*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS*/
+
+
+   /* * * Up to five sizes * * **/
+  EP0NM001.SY-SZ-ID-DESC1 = EP0NW01.SY-SZ-ID-DESC1;
+  EP0NM001.SY-SZ-ID-DESC2 = EP0NW01.SY-SZ-ID-DESC2;
+  EP0NM001.SY-SZ-ID-DESC3 = EP0NW01.SY-SZ-ID-DESC3;
+  EP0NM001.SY-SZ-ID-DESC4 = EP0NW01.SY-SZ-ID-DESC4;
+  EP0NM001.SY-SZ-ID-DESC5 = EP0NW01.SY-SZ-ID-DESC5;
+
+
+   /* 07/15/99 Multiple GPC Project:  If warehouse = '51'*/
+   /* and GPC code on the map is blank, do not*/
+   /* default to '03' since WHSE 51 would now store*/
+   /* Equipment products with GPC '02'.*/
+
+   /* This will leave cursor on GPC in case user rejects default*/
+
+  if (EP0NM001.XGP-GPC-CD == " ") /* No GPC entered*/
+    if (COMMAREA.XWHCD != "51") /* User warehouse NE '51'*/
+      EP0NM001.XGP-GPC-CD = "02"; /* Default to footwear*/
+    /* ELSE;*/
+      /* MOVE '03' TO EP0NM001.XGP-GPC-CD;      /* Default to apparel*/
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the request for data is complete.*/
+   /* ------------------------------------------------------------*/
+
+  EP0NW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+
+
+end // end EP0N-21000
+
+// Check change authorization
+Function EP0N-22000()
+   /* ------------------------------------------------------------*/
+   /* If requested data was found and the user is authorized to*/
+   /* change data on the screen, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NW00.XXX-RQT-DATA-FL == "N" /* Requested data was found*/
+   && COMMAREA.CACHGFL == "Y")       /* and user authorized to change*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, protect the modifiable fields on the screen.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0NM001.XGP-GPC-CD skip; /* GPC*/
+  set EP0NM001.SY-STY-NBR skip; /* Style*/
+  set EP0NM001.SY-COLR-CD-ID skip; /* Color*/
+  set EP0NM001.XDM-DIM-CD skip; /* Dim*/
+  set EP0NM001.XQA-QUAL-CD skip; /* Qual*/
+  set EP0NM001.XOW-OWN-GRP-CD skip; /* Own*/
+  set EP0NM001.PC-CU-IN-SEG-CD skip; /* ISEG*/
+  set EP0NM001.XEG-ENGR-DIFF-CD skip; /* DIFF*/
+  set EP0NM001.XPG-PKG-TYP-CD skip; /* Pkg*/
+  set EP0NM001.XUM-UOM-CD skip; /* UOM*/
+  /* DLVRUSA CHANGES BEGINS - RSEBAS*/
+  set EP0NM001.PACK-FACTOR skip; /* Pack factor*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS*/
+
+  set EP0NM001.SY-SZ-ID-DESC1 skip; /* 1st Size*/
+  set EP0NM001.SY-SZ-ID-DESC2 skip; /* 2nd Size*/
+  set EP0NM001.SY-SZ-ID-DESC3 skip; /* 3rd Size*/
+  set EP0NM001.SY-SZ-ID-DESC4 skip; /* 4th Size*/
+  set EP0NM001.SY-SZ-ID-DESC5 skip; /* 5th Size*/
+
+
+end // end EP0N-22000
+
+// Position cursor on 1st blank
+Function EP0N-23000()
+   /* ------------------------------------------------------------*/
+   /* Position cursor on first blank field.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NW01.SY-SZ-ID-DESC5 == " ") /* Size Desc 5*/
+    set EP0NM001.SY-SZ-ID-DESC5 cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.SY-SZ-ID-DESC4 == " ") /* Size Desc 4*/
+    set EP0NM001.SY-SZ-ID-DESC4 cursor; /* Position cursor*/
+  end
+
+  if (EP0NW01.SY-SZ-ID-DESC3 == " ") /* Size Desc 3*/
+    set EP0NM001.SY-SZ-ID-DESC3 cursor; /* Position cursor*/
+  end
+
+  if (EP0NM001.SY-SZ-ID-DESC2 == " ") /* Size Desc 2*/
+    set EP0NM001.SY-SZ-ID-DESC2 cursor; /* Position cursor*/
+  end
+
+  if (EP0NM001.SY-SZ-ID-DESC1 == " ") /* Size Desc 1*/
+    set EP0NM001.SY-SZ-ID-DESC1 cursor; /* Position cursor*/
+  end
+
+  if (EP0NM001.XUM-UOM-CD == " ") /* Unit Type missing*/
+    set EP0NM001.XUM-UOM-CD cursor; /* Position cursor*/
+  end
+
+  /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+  /* IF EP0NM001.XPG-PKG-TYP-CD EQ ' ';       /* Package Type missing*/
+  /* SET EP0NM001.XPG-PKG-TYP-CD CURSOR;    /* Position cursor*/
+  /* END;*/
+  /* ;*/
+  /* IF EP0NM001.XEG-ENGR-DIFF-CD EQ ' ';     /* Engr Diff missing*/
+  /* SET EP0NM001.XEG-ENGR-DIFF-CD CURSOR;  /* Position cursor*/
+  /* END;*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+
+  if (EP0NM001.PC-CU-IN-SEG-CD == " ") /* Inv segment missing*/
+    set EP0NM001.PC-CU-IN-SEG-CD cursor; /* Position cursor*/
+  end
+
+  /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+  /* IF EP0NM001.XOW-OWN-GRP-CD EQ ' ';       /* Quality missing*/
+  /* SET EP0NM001.XOW-OWN-GRP-CD CURSOR;    /* Position cursor*/
+  /* END;*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+
+  if (EP0NM001.XQA-QUAL-CD == " ") /* Quality missing*/
+    set EP0NM001.XQA-QUAL-CD cursor; /* Position cursor*/
+  end
+
+  if (EP0NM001.XDM-DIM-CD == " ") /* Color missing*/
+    set EP0NM001.XDM-DIM-CD cursor; /* Position cursor*/
+  end
+
+  if (EP0NM001.SY-COLR-CD-ID == " ") /* Color missing*/
+    set EP0NM001.SY-COLR-CD-ID cursor; /* Position cursor*/
+  end
+
+  if (EP0NM001.SY-STY-NBR == " ") /* Style missing*/
+    set EP0NM001.SY-STY-NBR cursor; /* Position cursor*/
+  end
+
+  if (EP0NM001.XGP-GPC-CD == " ") /* GPC code missing*/
+    set EP0NM001.XGP-GPC-CD cursor; /* Position cursor*/
+  end
+
+
+end // end EP0N-23000
+
+// Check attention identifier
+Function EP0N-30000()
+   /* ------------------------------------------------------------*/
+   /* If CANCEL was requested, clear the map fields and exit.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+
+    if (EP0NW00.XXX-RQT-DATA-FL == "Y") /* Request for data pending*/
+      set EP0NW01 empty; /* M001 display storage*/
+    end
+
+    EP0NW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+    EP0NW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    COMMAREA.CATOAP = " "; /* TO application*/
+    COMMAREA.CAITEM = " "; /* Application data*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If FAST PATH was requested, transfer to the application.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.CATOAP > " ") /* FAST PATH was requested*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      XSEPS-EXIT(); /* Exit to another application*/
+      set EP0NM001.CATOAP cursor, bold; /* Highlight*/
+
+    else
+
+      EPWREC.XXXLOCID = "30000"; /* Message location*/
+      converseLib.validationFailed(5); /* PA/PF key may not be used*/
+
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If a PF key transfer requested, exit to another application.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf3 /* or PF3 was pressed*/
+   || converseVar.eventKey is pf4) /* or PF4 was pressed*/
+
+    if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+      COMMAREA.CATOAP = "EP0M"; /* System Menu*/
+    end
+
+    if (converseVar.eventKey is pf4) /* PF3 was pressed*/
+      COMMAREA.CATOAP = "MN0M"; /* GOAL Master Menu*/
+    end
+
+    XSEPS-EXIT(); /* Exit to another application*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf6   /* and PF6 was not pressed*/
+   && converseVar.eventKey not pf12) /* and PF12 was not pressed*/
+
+    EPWREC.XXXLOCID = "30000"; /* Message location*/
+    converseLib.validationFailed(4); /* PA/PF key pressed is not valid*/
+
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+end // end EP0N-30000
+
+// Verify data that was entered
+Function EP0N-40000()
+   /* ------------------------------------------------------------*/
+   /* If any lists were requested, display the popup window.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XGP-GPC-CD == "?"  /* GPC       list requested*/
+   || EP0NM001.XDM-DIM-CD == "?"  /* or DIM       list requested*/
+   || EP0NM001.XQA-QUAL-CD == "?" /* or QUAL      list requested*/
+   /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+   /* OR EP0NM001.XOW-OWN-GRP-CD EQ '?'      /* or OWN GRP   list requested*/
+   /* OR EP0NM001.XEG-ENGR-DIFF-CD EQ '?'    /* or ENGR DIFF list requested*/
+   /* OR EP0NM001.XPG-PKG-TYP-CD EQ '?'      /* or PKG TYP   list requested*/
+   /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+   || EP0NM001.XUM-UOM-CD == "?") /* or UOM       list requested*/
+
+    EP0N-41000(); /* Display corporate table lists*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Highlight any application data that was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (COMMAREA.CAITEM > " ") /* Application data was entered*/
+
+    EPWREC.XXXLOCID = "40000"; /* Message location*/
+    converseLib.validationFailed(7); /* Enter only with FAST PATH*/
+    set EP0NM001.CAITEM cursor, bold; /* Highlight*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Check for changes and perform necessary edits.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XGP-GPC-CD != EP0NW01.XGP-GPC-CD
+   || EP0NM001.SY-STY-NBR != EP0NW01.SY-STY-NBR
+   || EP0NM001.SY-COLR-CD-ID != EP0NW01.SY-COLR-CD-ID
+   || EP0NM001.XDM-DIM-CD != EP0NW01.XDM-DIM-CD
+   || EP0NM001.XQA-QUAL-CD != EP0NW01.XQA-QUAL-CD
+   /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+   /* OR EP0NM001.XOW-OWN-GRP-CD NE EP0NW01.XOW-OWN-GRP-CD*/
+   /* OR EP0NM001.XEG-ENGR-DIFF-CD NE EP0NW01.XEG-ENGR-DIFF-CD*/
+   /* OR EP0NM001.XPG-PKG-TYP-CD NE EP0NW01.XPG-PKG-TYP-CD*/
+   /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+   || EP0NM001.XUM-UOM-CD != EP0NW01.XUM-UOM-CD
+   /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+   || EP0NM001.PACK-FACTOR != EP0NW01.PACK-FACTOR
+   /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+   || EP0NM001.SY-SZ-ID-DESC1 != EP0NW01.SY-SZ-ID-DESC1
+   || EP0NM001.SY-SZ-ID-DESC2 != EP0NW01.SY-SZ-ID-DESC2
+   || EP0NM001.SY-SZ-ID-DESC3 != EP0NW01.SY-SZ-ID-DESC3
+   || EP0NM001.SY-SZ-ID-DESC4 != EP0NW01.SY-SZ-ID-DESC4
+   || EP0NM001.SY-SZ-ID-DESC5 != EP0NW01.SY-SZ-ID-DESC5)
+
+    EP0N-42000(); /* Edit changes*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If any error was found, exit to display the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If EDIT requested, indicate edit completed and no errors.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf12 /* EDIT was requested by PF12*/
+   || converseVar.eventKey is enter) /* EDIT defaulted with <ENTER>*/
+
+    EPWREC.XXXLOCID = "40000"; /* Message location*/
+    converseLib.validationFailed(17); /* Edit completed and no errors*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If PF6 to transmit continue to process otherwise display map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not pf6) /* Transmit not specifically requested*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+end // end EP0N-40000
+
+// Display corporate table lists
+Function EP0N-41000()
+   /* ------------------------------------------------------------*/
+   /* Determine whether ENTER was pressed to request the lists.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+
+    EPWREC.XXXLOCID = "41000"; /* Message location*/
+    converseLib.validationFailed(19); /* PA/PF key may not be used*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If requested, display the list of GPC codes.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XGP-GPC-CD == "?") /* GPC list rqst*/
+
+    XPXX001(); /* Window init*/
+
+    XX0XW02.XX0XWHDR = "GENERAL PRODUCT CLASS CODES"; /* Heading*/
+
+    while (XX0XW02.XX0XWEND == "N")
+      XPXGP01(); /* Display list*/
+    end
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection*/
+
+      EP0NM001.XGP-GPC-CD = EP0NW01.XGP-GPC-CD; /* Restore prior*/
+    else
+      EP0NM001.XGP-GPC-CD = XGPTBL.XGPCD[XX0XWPIX]; /* Selected code*/
+
+    end
+
+    set EP0NM001.XGP-GPC-CD cursor; /* Position csr*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If requested, display the list of DIMENSION codes.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XDM-DIM-CD == "?") /* Dimensn rqst*/
+
+    XPXX001(); /* Window init*/
+
+    XX0XW02.XX0XWHDR = "DIMENSION CODES"; /* Heading*/
+
+    while (XX0XW02.XX0XWEND == "N") /* Until end*/
+      XPXDM01(); /* Display list*/
+    end
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection*/
+
+      EP0NM001.XDM-DIM-CD = EP0NW01.XDM-DIM-CD; /* Restore prior*/
+    else
+      EP0NM001.XDM-DIM-CD = XDMTBL.XDMCD[XX0XWPIX]; /* Selected code*/
+
+    end
+
+    set EP0NM001.XDM-DIM-CD cursor; /* Position csr*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If requested, display the list of QUALITY codes.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XQA-QUAL-CD == "?") /* Quality rqst*/
+
+    XPXX001(); /* Window init*/
+
+    XX0XW02.XX0XWHDR = "QUALITY CODES"; /* Heading*/
+
+    while (XX0XW02.XX0XWEND == "N") /* Until end*/
+      XPXQA01(); /* Display list*/
+    end
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection*/
+
+      EP0NM001.XQA-QUAL-CD = EP0NW01.XQA-QUAL-CD; /* Restore prior*/
+    else
+      EP0NM001.XQA-QUAL-CD = XQATBL.XQACD[XX0XWPIX]; /* Selected code*/
+
+    end
+
+    set EP0NM001.XQA-QUAL-CD cursor; /* Position csr*/
+
+  end
+
+
+  /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+   /* ------------------------------------------------------------*/
+   /* If requested, display the list of owner group codes.*/
+   /* ------------------------------------------------------------*/
+
+  /* IF EP0NM001.XOW-OWN-GRP-CD EQ '?';                     /* Quality rqst*/
+  /* ;*/
+  /* PERFORM XPXX001;                                     /* Window init*/
+  /* ;*/
+  /* MOVE 'OWNER GROUP CODES' TO XX0XW02.XX0XWHDR;        /* Heading*/
+  /* MOVE COMMAREA.XWHCD TO XX0XW02.XWHCD;*/
+  /* ;*/
+  /* WHILE XX0XW02.XX0XWEND EQ 'N';                       /* Until end*/
+  /* PERFORM XPXOW01;                                   /* Display list*/
+  /* END;*/
+  /* ;*/
+  /* IF XX0XW02.XX0XWPIX EQ 0;                            /* No selection*/
+  /* ;*/
+  /* MOVE EP0NW01.XOW-OWN-GRP-CD*/
+  /* TO EP0NM001.XOW-OWN-GRP-CD; /* Restore prior*/
+  /* ELSE;*/
+  /* MOVE XOWTBL.XOWCD(XX0XWPIX)*/
+  /* TO EP0NM001.XOW-OWN-GRP-CD; /* Selected code*/
+  /* ;*/
+  /* END;*/
+  /* ;*/
+  /* SET EP0NM001.XOW-OWN-GRP-CD CURSOR;                    /* Position csr*/
+  /* ;*/
+  /* END;*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If requested, display the list of ENGINEER DIFFERENCE codes.*/
+   /* ------------------------------------------------------------*/
+  /* ;*/
+  /* IF EP0NM001.XEG-ENGR-DIFF-CD EQ '?';                   /* Eng diff rqst*/
+  /* ;*/
+  /* PERFORM XPXX001;                                     /* Window init*/
+  /* ;*/
+  /* MOVE 'ENGINEERING DIFFERENCE CODES'*/
+  /* TO XX0XW02.XX0XWHDR;        /* Heading*/
+  /* ;*/
+  /* WHILE XX0XW02.XX0XWEND EQ 'N';                       /* Until end*/
+  /* PERFORM XPXEG01;                                   /* Display list*/
+  /* END;*/
+  /* ;*/
+  /* IF XX0XW02.XX0XWPIX EQ 0;                            /* No selection*/
+  /* ;*/
+  /* MOVE EP0NW01.XEG-ENGR-DIFF-CD*/
+  /* TO EP0NM001.XEG-ENGR-DIFF-CD; /* Restore prior*/
+  /* ELSE;*/
+  /* MOVE XEGTBL.XEGCD(XX0XWPIX)*/
+  /* TO EP0NM001.XEG-ENGR-DIFF-CD; /* Selected code*/
+  /* ;*/
+  /* END;*/
+  /* ;*/
+  /* SET EP0NM001.XEG-ENGR-DIFF-CD CURSOR;                  /* Position csr*/
+  /* ;*/
+  /* END;*/
+  /* ;*/
+  /* ;*/
+  /* ;/* ------------------------------------------------------------*/
+  /* ;/* If requested, display the list of PACKAGE TYPE codes.*/
+  /* ;/* ------------------------------------------------------------*/
+  /*  */
+  /* IF EP0NM001.XPG-PKG-TYP-CD EQ '?';                    /* Pk type rqst*/
+  /* ;*/
+  /* PERFORM XPXX001;                                     /* Window init*/
+  /* ;*/
+  /* MOVE 'PACKAGE TYPE CODES' TO XX0XW02.XX0XWHDR;       /* Heading*/
+  /* ;*/
+  /* WHILE XX0XW02.XX0XWEND EQ 'N';                       /* Until end*/
+  /* PERFORM XPXPG01;                                   /* Display list*/
+  /* END;*/
+  /* ;*/
+  /* IF XX0XW02.XX0XWPIX EQ 0;                            /* No selection*/
+  /* ;*/
+  /* MOVE EP0NW01.XPG-PKG-TYP-CD*/
+  /* TO EP0NM001.XPG-PKG-TYP-CD; /* Restore prior*/
+  /* ELSE;*/
+  /* MOVE XPGTBL.XPGCD(XX0XWPIX)*/
+  /* TO EP0NM001.XPG-PKG-TYP-CD;   /* Selected code*/
+  /* ;*/
+  /* END;*/
+  /* ;*/
+  /* SET EP0NM001.XPG-PKG-TYP-CD CURSOR;                    /* Position csr*/
+  /* ;*/
+  /* END;*/
+  /* ;*/
+  /* ;*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+   /* ------------------------------------------------------------*/
+   /* If requested, display the list of UNIT OF MEASURE codes.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XUM-UOM-CD == "?") /* Unt Meas rqst*/
+
+    XPXX001(); /* Window init*/
+
+    XX0XW02.XX0XWHDR = "UNIT OF MEASURE CODES"; /* Heading*/
+
+    while (XX0XW02.XX0XWEND == "N") /* Until end*/
+      XPXUM01(); /* Display list*/
+    end
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection*/
+
+      EP0NM001.XUM-UOM-CD = EP0NW01.XUM-UOM-CD; /* Restore prior*/
+    else
+      EP0NM001.XUM-UOM-CD = XUMTBL.XUMCD[XX0XWPIX]; /* Selected code*/
+
+    end
+
+    set EP0NM001.XUM-UOM-CD cursor; /* Position csr*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Reset screen from pop-up window activity.*/
+   /* ------------------------------------------------------------*/
+
+  converseLib.clearScreen();
+   /* Clear screen before display*/
+
+
+end // end EP0N-41000
+
+// Check for required key fields
+Function EP0N-42000()
+   /* ------------------------------------------------------------*/
+   /* Verify the UNIT OF MEASURE CODE.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XUM-UOM-CD in XUMTBL.XUMCD /* Code in table*/
+   && XUMTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+
+     /* NEXT SENTENCE*/
+
+  else
+
+    /* ------------------------------------------------------------*/
+    /* If not found or inactive, indicate missing or invalid.*/
+    /* ------------------------------------------------------------*/
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(372); /* Field missing/invalid*/
+    set EP0NM001.XUM-UOM-CD cursor, bold; /* Highlight*/
+
+  end
+
+
+  /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+   /* ------------------------------------------------------------*/
+   /* Verify the PACKAGE TYPE CODE.*/
+   /* ------------------------------------------------------------*/
+
+  /* IF EP0NM001.XPG-PKG-TYP-CD IN XPGTBL.XPGCD/* Code in table*/
+  /* AND XPGTBL.XXXSTAT(EZETST) EQ 'A';/* and active status*/
+  /* ;*/
+  /* ; /* NEXT SENTENCE*/
+  /* ;*/
+  /* ELSE;*/
+  /* ;*/
+  /* ;/* ------------------------------------------------------------*/
+  /* ;/* If not found or inactive, indicate missing or invalid.*/
+  /* ;/* ------------------------------------------------------------*/
+  /* ;*/
+  /* MOVE '4200' TO EPWREC.XXXLOCID;/* Message location*/
+  /* MOVE 373 TO EZEMNO;            /* Field missing/invalid*/
+  /* SET EP0NM001.XPG-PKG-TYP-CD CURSOR,BRIGHT;/* Highlight*/
+  /* ;*/
+  /* END;*/
+  /* ;*/
+  /* ;*/
+  /* ;/* ------------------------------------------------------------*/
+  /* ;/* Verify the ENGINEERING DIFFERENCE CODE.*/
+  /* ;/* ------------------------------------------------------------*/
+  /* ;*/
+  /* IF EP0NM001.XEG-ENGR-DIFF-CD IN XEGTBL.XEGCD/* Code in table*/
+  /* AND XEGTBL.XXXSTAT(EZETST) EQ 'A';/* and active status*/
+  /* ;*/
+  /* ; /* NEXT SENTENCE*/
+  /* ;*/
+  /* ELSE;*/
+  /* ;*/
+  /* ;/* ------------------------------------------------------------*/
+  /* ;/* If not found or inactive, indicate missing or invalid.*/
+  /* ;/* ------------------------------------------------------------*/
+  /* ;*/
+  /* MOVE '4200' TO EPWREC.XXXLOCID;/* Message location*/
+  /* MOVE 374 TO EZEMNO;            /* Field missing/invalid*/
+  /* SET EP0NM001.XEG-ENGR-DIFF-CD CURSOR,BRIGHT;/* Highlight*/
+  /* ;*/
+  /* END;*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+
+
+   /* ------------------------------------------------------------*/
+   /* Verify INVENTORY SEGMENT CODE.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.PC-CU-IN-SEG-CD <= " ") /* ISEG not entered*/
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(381); /* Field missing/invalid*/
+    set EP0NM001.PC-CU-IN-SEG-CD cursor, bold; /* Highlight*/
+
+  else
+
+    set PC2REC empty;
+    PC2REC.XGPCD = EP0NM001.XGP-GPC-CD;
+    PC2REC.PC2INSEG = EP0NM001.PC-CU-IN-SEG-CD;
+
+    EP0NS-IO3340-SG();
+
+    if (SQLCA.VAGen_SQLCODE == 0
+     || SQLCA.VAGen_SQLCODE == -811)
+  /* changes by rsebas begins*/
+      if (PC2REC.XXXSTAT == "A")
+  /* changes by rsebas ends*/
+
+        /* next sentence*/
+  /* changes by rsebas begins*/
+      else
+        EPWREC.XXXLOCID = "4200"; /* Message location*/
+        converseLib.validationFailed(495); /* Inactive field*/
+        set EP0NM001.PC-CU-IN-SEG-CD cursor, bold; /* Highlight*/
+      end
+  /* changes by rsebas ends*/
+
+    else
+
+      EPWREC.XXXLOCID = "4200"; /* Message location*/
+      converseLib.validationFailed(371); /* Field missing/invalid*/
+      set EP0NM001.PC-CU-IN-SEG-CD cursor, bold; /* Highlight*/
+
+    end
+  end
+
+
+  /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+   /* ------------------------------------------------------------*/
+   /* Verify the OWNER GROUP CODE.*/
+   /* ------------------------------------------------------------*/
+
+  /* IF EP0NM001.XOW-OWN-GRP-CD IN XOWTBL.XOWCD/* Code in table*/
+  /* AND XOWTBL.XXXSTAT(EZETST) EQ 'A';/* and active status*/
+  /* ;*/
+  /* ; /* NEXT SENTENCE*/
+  /* ;*/
+  /* ELSE;*/
+  /* ;*/
+  /* ;/* ------------------------------------------------------------*/
+  /* ;/* If not found or inactive, indicate missing or invalid.*/
+  /* ;/* ------------------------------------------------------------*/
+  /* ;*/
+  /* MOVE '4200' TO EPWREC.XXXLOCID;/* Message location*/
+  /* MOVE 375 TO EZEMNO;            /* Field missing/invalid*/
+  /* SET EP0NM001.XOW-OWN-GRP-CD CURSOR,BRIGHT;/* Highlight*/
+  /* ;*/
+  /* END;*/
+  /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+
+
+   /* ------------------------------------------------------------*/
+   /* Verify the QUALITY CODE.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XQA-QUAL-CD in XQATBL.XQACD /* Code in table*/
+   && XQATBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+
+     /* NEXT SENTENCE*/
+
+  else
+
+    /* ------------------------------------------------------------*/
+    /* If not found or inactive, indicate missing or invalid.*/
+    /* ------------------------------------------------------------*/
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(376); /* Field missing/invalid*/
+    set EP0NM001.XQA-QUAL-CD cursor, bold; /* Highlight*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Verify the DIMENSION CODE.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XDM-DIM-CD in XDMTBL.XDMCD /* Code in table*/
+   && XDMTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+
+     /* NEXT SENTENCE*/
+
+  else
+
+    /* ------------------------------------------------------------*/
+    /* If not found or inactive, indicate missing or invalid.*/
+    /* ------------------------------------------------------------*/
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(377); /* Field missing/invalid*/
+    set EP0NM001.XDM-DIM-CD cursor, bold; /* Highlight*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Verify that the COLOR CODE was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.SY-COLR-CD-ID <= " ") /* Color not entered*/
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(378); /* Field missing/invalid*/
+    set EP0NM001.SY-COLR-CD-ID cursor, bold; /* Highlight*/
+
+    exit stack;
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Verify that a STYLE NUMBER was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.SY-STY-NBR <= " ") /* Style not entered*/
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(382); /* Field missing/invalid*/
+    set EP0NM001.SY-STY-NBR cursor, bold; /* Highlight*/
+
+    exit stack;
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Verify the GENERAL PRODUCT CLASS CODE (GPC).*/
+   /* ------------------------------------------------------------*/
+
+   /* 07/15/99:  Multiple GPC project change:  Commented the*/
+   /* subsequent lines to allow GPC code '02'*/
+
+   /* Disallow footwear GPC being sent to DCMS*/
+   /* IF EP0NM001.XGP-GPC-CD EQ '02';               /* Footwear*/
+    /* ;*/
+    /* MOVE '4200' TO EPWREC.XXXLOCID;     /* Message location*/
+    /* MOVE 84 TO EZEMNO;                  /* Field missing or invalid*/
+    /* SET EP0NM001.XGP-GPC-CD CURSOR,BRIGHT;      /* Highlight*/
+    /* ;*/
+    /* EZEFLO;*/
+
+   /* END;*/
+
+
+  if (EP0NM001.XGP-GPC-CD in XGPTBL.XGPCD /* Code in table*/
+   && XGPTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+
+    /* next sentence*/
+
+  else
+
+    /* ------------------------------------------------------------*/
+    /* If not found or inactive, indicate missing or invalid.*/
+    /* ------------------------------------------------------------*/
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(379); /* Field missing or invalid*/
+    set EP0NM001.XGP-GPC-CD cursor, bold; /* Highlight*/
+
+    exit stack;
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Verify GPC/STYLE combination is valid (DPROD.VSTYLE01)*/
+   /* ------------------------------------------------------------*/
+
+  set SY1REC empty; /* Clear record*/
+
+  SY1REC.XGPCD = EP0NM001.XGP-GPC-CD; /* Format selection keys*/
+  SY1REC.SY1STNBR = EP0NM001.SY-STY-NBR;
+
+  EP0NS-IO0120-S(); /* Select unique row*/
+
+  if (SQLCA.VAGen_SQLCODE == 100)
+
+    /* ------------------------------------------------------------*/
+    /* If not found, then this is invalid.*/
+    /* ------------------------------------------------------------*/
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(386); /* Invalid GPC/STYLE*/
+    set EP0NM001.XGP-GPC-CD cursor, bold; /* Highlight*/
+    set EP0NM001.SY-STY-NBR cursor, bold; /* Highlight*/
+
+    exit stack;
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Verify GPC/STYLE/CLR/DIM combination is valid (DPROD.VCOLOR)*/
+   /* ------------------------------------------------------------*/
+
+  set SY2REC empty; /* Clear record*/
+
+  SY2REC.XGPCD = EP0NM001.XGP-GPC-CD; /* Format selection keys*/
+  SY2REC.SY1STNBR = EP0NM001.SY-STY-NBR;
+  SY2REC.SY2CLRID = EP0NM001.SY-COLR-CD-ID;
+  SY2REC.XDMCD = EP0NM001.XDM-DIM-CD;
+
+  EP0NS-IO0130-S(); /* Select unique row*/
+
+  if (SQLCA.VAGen_SQLCODE == 100)
+
+    /* ------------------------------------------------------------*/
+    /* If not found, then this is invalid.*/
+    /* ------------------------------------------------------------*/
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(384); /* Invalid COLOR*/
+
+    set EP0NM001.XGP-GPC-CD cursor, bold; /* Highlight*/
+    set EP0NM001.SY-STY-NBR cursor, bold; /* Highlight*/
+    set EP0NM001.SY-COLR-CD-ID cursor, bold; /* Highlight*/
+    set EP0NM001.XDM-DIM-CD cursor, bold; /* Highlight*/
+
+    exit stack;
+
+  end
+
+
+   /* TT#6800 STARTS - SRAMA1*/
+   /* ------------------------------------------------------------*/
+   /* Verify UOM for given GPC/STYLE/CLR/DIM in DPROD.VCOLOR02*/
+   /* ------------------------------------------------------------*/
+
+  set SYCREC empty; /* Clear record*/
+
+  SYCREC.XGPCD = EP0NM001.XGP-GPC-CD; /* Format selection keys*/
+  SYCREC.SY1STNBR = EP0NM001.SY-STY-NBR;
+  SYCREC.SY2CLRID = EP0NM001.SY-COLR-CD-ID;
+  SYCREC.XDMCD = EP0NM001.XDM-DIM-CD;
+
+  EP0NS-IO0560-S(); /* Select unique row*/
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+
+    /* ------------------------------------------------------------*/
+    /* If found, then check if the UOM entered on the screen and*/
+    /* the UOM present in the DPROD.VCOLOR02 table or same (Valid)*/
+    /* for the combination of GPC/Style/Color and Dim.*/
+    /* If not same than this UOM is invalid.*/
+    /* ------------------------------------------------------------*/
+
+    if (SYCREC.XUMCD != EP0NM001.XUM-UOM-CD)
+
+      EPWREC.XXXLOCID = "4200"; /* Message location*/
+      converseLib.validationFailed(475); /* Invalid UOM*/
+
+      set EP0NM001.XGP-GPC-CD cursor, bold; /* Highlight*/
+      set EP0NM001.SY-STY-NBR cursor, bold; /* Highlight*/
+      set EP0NM001.SY-COLR-CD-ID cursor, bold; /* Highlight*/
+      set EP0NM001.XDM-DIM-CD cursor, bold; /* Highlight*/
+      set EP0NM001.XUM-UOM-CD cursor, bold; /* Highlight*/
+
+      exit stack;
+
+    end
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 100)
+
+    /* ------------------------------------------------------------*/
+    /* If not found, then this is invalid.*/
+    /* ------------------------------------------------------------*/
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(384); /* Invalid COLOR*/
+
+    set EP0NM001.XGP-GPC-CD cursor, bold; /* Highlight*/
+    set EP0NM001.SY-STY-NBR cursor, bold; /* Highlight*/
+    set EP0NM001.SY-COLR-CD-ID cursor, bold; /* Highlight*/
+    set EP0NM001.XDM-DIM-CD cursor, bold; /* Highlight*/
+
+    exit stack;
+
+  end
+
+
+   /* TT#6800 ENDS - SRAMA1*/
+   /* ------------------------------------------------------------*/
+   /* Verify that at least one SIZE DESCRIPTION has been entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.SY-SZ-ID-DESC1 <= " " /* No DESC entered*/
+   && EP0NM001.SY-SZ-ID-DESC2 <= " " 
+   && EP0NM001.SY-SZ-ID-DESC3 <= " " 
+   && EP0NM001.SY-SZ-ID-DESC4 <= " " 
+   && EP0NM001.SY-SZ-ID-DESC5 <= " ")
+
+    EPWREC.XXXLOCID = "4200"; /* Message location*/
+    converseLib.validationFailed(380); /* Field missing/invalid*/
+    set EP0NM001.SY-SZ-ID-DESC1 cursor, bold; /* Highlight*/
+
+    exit stack;
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Verify SIZE DESCRIPTION(S) are valid for this NIKE product.*/
+   /* ------------------------------------------------------------*/
+
+  EP0N-42100(); /* Validate product sizes*/
+
+  if (converseVar.validationMsgNum != 0)
+    exit stack;
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Verify there is a UPC for this product (required by DCMS).*/
+   /* ------------------------------------------------------------*/
+
+  EP0N-42200(); /* Check for existing UPC*/
+
+  if (converseVar.validationMsgNum != 0)
+    exit stack;
+  end
+
+
+end // end EP0N-42000
+
+// Check for required key fields
+Function EP0N-42100()
+   /* ------------------------------------------------------------*/
+   /* Verify SIZE DESCRIPTION(S).*/
+   /* ------------------------------------------------------------*/
+
+   /* -----------------------------------------------------------*/
+   /* obtain valid size data for the product*/
+   /* -----------------------------------------------------------*/
+
+  set SYPREC empty;
+
+  SYPREC.SYPFC = "PC"; /* All valid sizes*/
+  SYPREC.SYPCMPSW = "N"; /* Not compressed*/
+
+  SYPREC.XGPCD = EP0NM001.XGP-GPC-CD; /* GPC*/
+  SYPREC.SY1STNBR = EP0NM001.SY-STY-NBR; /* Style*/
+  SYPREC.SY2CLRID = EP0NM001.SY-COLR-CD-ID; /* Color*/
+  SYPREC.XDMCD = EP0NM001.XDM-DIM-CD; /* Dimension*/
+  SYPREC.XQACD = "**"; /* All qualities*/
+
+  TA1REC.TA1LOCAT[2] = "421000  ";
+  TA1REC.TA1MAP = "EP0NM001";
+
+
+  EP0N-42110(); /* get size xlations*/
+
+
+  if (SYPREC.SYPRC == 0)
+     /* ** next sentence ***/
+  else
+    if (SYPREC.SYPRC == +10)
+
+      EPWREC.XXXLOCID = "42100";
+      converseLib.validationFailed(0012); /* not on db msg*/
+
+      set EP0NM001.XGP-GPC-CD bold;
+      set EP0NM001.SY-STY-NBR bold;
+      set EP0NM001.SY-COLR-CD-ID bold;
+      set EP0NM001.XDM-DIM-CD bold;
+      set EP0NM001.XQA-QUAL-CD bold;
+
+      return;
+
+    end
+
+    if (SYPREC.SYPRC == +9) /* contention, -911*/
+
+      EPWREC.XXXLOCID = "42100";
+      converseLib.validationFailed(0031); /* try again msg*/
+
+      set EP0NM001.XGP-GPC-CD bold;
+      set EP0NM001.SY-STY-NBR bold;
+      set EP0NM001.SY-COLR-CD-ID bold;
+      set EP0NM001.XDM-DIM-CD bold;
+      set EP0NM001.XQA-QUAL-CD bold;
+
+      return;
+    end
+
+    /* * * Any Other SQL Codes * * **/
+    EPWREC.XXXLOCID = "42100";
+    converseLib.validationFailed(0001); /* SEVERE ERROR*/
+
+    set EP0NM001.XGP-GPC-CD bold;
+    set EP0NM001.SY-STY-NBR bold;
+    set EP0NM001.SY-COLR-CD-ID bold;
+    set EP0NM001.XDM-DIM-CD bold;
+    set EP0NM001.XQA-QUAL-CD bold;
+
+    return;
+
+  end
+
+
+   /* -----------------------------------------------------------*/
+   /* Validate SIZE DESCRIPTION #5*/
+   /* -----------------------------------------------------------*/
+
+  EP0NW01.SY-SZ-ID[5] = 0;
+
+  if (EP0NM001.SY-SZ-ID-DESC5 > " ")
+
+    EPW-IDX = 1;
+
+    while (EPW-IDX <= 40)
+
+      if (EP0NM001.SY-SZ-ID-DESC5 == SYPREC.SY4IDDSC[EPW-IDX])
+        EP0NW01.SY-SZ-ID[5] = EPW-IDX;
+        EPW-IDX = 50;
+      else
+        EPW-IDX = EPW-IDX + 1;
+      end
+
+    end
+
+    if (EPW-IDX == 50)
+      /* next sentence...valid description or no entry*/
+    else
+
+      EPWREC.XXXLOCID = "42100"; /* Message location*/
+      converseLib.validationFailed(383); /* Invalid SIZE DESC*/
+      set EP0NM001.SY-SZ-ID-DESC5 cursor, bold; /* Highlight*/
+
+    end
+  end
+
+
+   /* -----------------------------------------------------------*/
+   /* Validate SIZE DESCRIPTION #4*/
+   /* -----------------------------------------------------------*/
+
+  EP0NW01.SY-SZ-ID[4] = 0;
+
+  if (EP0NM001.SY-SZ-ID-DESC4 > " ")
+
+    EPW-IDX = 1;
+
+    while (EPW-IDX <= 40)
+
+      if (EP0NM001.SY-SZ-ID-DESC4 == SYPREC.SY4IDDSC[EPW-IDX])
+        EP0NW01.SY-SZ-ID[4] = EPW-IDX;
+        EPW-IDX = 50;
+      else
+        EPW-IDX = EPW-IDX + 1;
+      end
+
+    end
+
+    if (EPW-IDX == 50)
+      /* next sentence...valid description or no entry*/
+    else
+
+      EPWREC.XXXLOCID = "42100"; /* Message location*/
+      converseLib.validationFailed(383); /* Invalid SIZE DESC*/
+      set EP0NM001.SY-SZ-ID-DESC4 cursor, bold; /* Highlight*/
+
+    end
+  end
+
+
+   /* -----------------------------------------------------------*/
+   /* Validate SIZE DESCRIPTION #3*/
+   /* -----------------------------------------------------------*/
+
+  EP0NW01.SY-SZ-ID[3] = 0;
+
+  if (EP0NM001.SY-SZ-ID-DESC3 > " ")
+
+    EPW-IDX = 1;
+
+    while (EPW-IDX <= 40)
+
+      if (EP0NM001.SY-SZ-ID-DESC3 == SYPREC.SY4IDDSC[EPW-IDX])
+        EP0NW01.SY-SZ-ID[3] = EPW-IDX;
+        EPW-IDX = 50;
+      else
+        EPW-IDX = EPW-IDX + 1;
+      end
+
+    end
+
+    if (EPW-IDX == 50)
+      /* next sentence...valid description or no entry*/
+    else
+
+      EPWREC.XXXLOCID = "42100"; /* Message location*/
+      converseLib.validationFailed(383); /* Invalid SIZE DESC*/
+      set EP0NM001.SY-SZ-ID-DESC3 cursor, bold; /* Highlight*/
+
+    end
+  end
+
+
+   /* -----------------------------------------------------------*/
+   /* Validate SIZE DESCRIPTION #2*/
+   /* -----------------------------------------------------------*/
+
+  EP0NW01.SY-SZ-ID[2] = 0;
+
+  if (EP0NM001.SY-SZ-ID-DESC2 > " ")
+
+    EPW-IDX = 1;
+
+    while (EPW-IDX <= 40)
+
+      if (EP0NM001.SY-SZ-ID-DESC2 == SYPREC.SY4IDDSC[EPW-IDX])
+        EP0NW01.SY-SZ-ID[2] = EPW-IDX;
+        EPW-IDX = 50;
+      else
+        EPW-IDX = EPW-IDX + 1;
+      end
+
+    end
+
+    if (EPW-IDX == 50)
+      /* next sentence...valid description or no entry*/
+    else
+
+      EPWREC.XXXLOCID = "42100"; /* Message location*/
+      converseLib.validationFailed(383); /* Invalid SIZE DESC*/
+      set EP0NM001.SY-SZ-ID-DESC2 cursor, bold; /* Highlight*/
+
+    end
+  end
+
+
+   /* -----------------------------------------------------------*/
+   /* Validate SIZE DESCRIPTION #1*/
+   /* -----------------------------------------------------------*/
+
+  EP0NW01.SY-SZ-ID[1] = 0;
+
+  if (EP0NM001.SY-SZ-ID-DESC1 > " ")
+
+    EPW-IDX = 1;
+
+    while (EPW-IDX <= 40)
+
+      if (EP0NM001.SY-SZ-ID-DESC1 == SYPREC.SY4IDDSC[EPW-IDX])
+        EP0NW01.SY-SZ-ID[1] = EPW-IDX;
+        EPW-IDX = 50;
+      else
+        EPW-IDX = EPW-IDX + 1;
+      end
+
+    end
+
+    if (EPW-IDX == 50)
+      /* next sentence...valid description or no entry*/
+    else
+
+      EPWREC.XXXLOCID = "42100"; /* Message location*/
+      converseLib.validationFailed(383); /* Invalid SIZE DESC*/
+      set EP0NM001.SY-SZ-ID-DESC1 cursor, bold; /* Highlight*/
+
+    end
+  end
+
+
+end // end EP0N-42100
+
+// Obtain size description
+Function EP0N-42110()
+   /* -----------------------------------------------------------*/
+   /* -   obtain the desired size description/size id (no.)     -*/
+   /* -   using the std module:  SY1190                         -*/
+   /* -   code the following before this is executed:           -*/
+   /* -     TA1REC.TA1LOCAT(2) = what executes this sgrp        -*/
+   /* -     TA1REC.TA1MAP      = what map this data is from     -*/
+   /* -     note: or setup during init. & use a comment         -*/
+   /* -     SYPREC.SYPFC:   PC = all valid sizes                -*/
+   /* -                     IE = int. sz id to desc.            -*/
+   /* -                     EI = desc. to int. sz id            -*/
+   /* -     SYPREC.SYPCMPSW: Y = compressed (first blank or     -*/
+   /* -                          zero is end of data)           -*/
+   /* -                      N = not compressed (positional)    -*/
+   /* -   code the action for the following return codes:       -*/
+   /* -   note: check the SYPREC.SYPRC (NOT sqlcode)            -*/
+   /* -        0 = successful                                   -*/
+   /* -        9 = deadlock                                     -*/
+   /* -       10 = not found                                    -*/
+   /* -    other = db/severe error                              -*/
+   /* -            note: TA0020 will be executed                -*/
+   /* -----------------------------------------------------------*/
+
+   /* -----------------------------------------------------------*/
+   /* -   call sy1120                                           -*/
+   /* -   note: func & compress sw setup prior to this sgrp     -*/
+   /* -----------------------------------------------------------*/
+
+  call "SY1190" (SQLCA, SYPREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SYPREC.SYPRC == 0 /* Successful*/
+   || SYPREC.SYPRC == 9 /* Contention for resource*/
+   || SYPREC.SYPRC == 10) /* Not found*/
+
+    return;
+  end
+
+
+  TA1REC.TA1TYPE = "DB2 ";
+  TA1REC.TA1FUNC = "RETN";
+  TA1REC.TA1PGMNM = "XSSYPI0 ";
+  TA1REC.TA1LOCAT[1] = "SY1190  ";
+  TA1REC.TA1LOCAT[3] = SYPREC.SYPRCX;
+  TA1REC.TA1LOCAT[4] = "SZ XLATE";
+  TA1REC.TA1DBASE = "MULTIPLE";
+  TA1REC.TA1TBLVU = "DB VIEWS";
+  TA1REC.TA1TBLKE = SYPREC.SYPKEY;
+  move SQLCA to ERRSQLCA withV60Compat;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback();
+  call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+
+
+end // end EP0N-42110
+
+// Prepare each size for UPC call
+Function EP0N-42200()
+   /* ------------------------------------------------------------*/
+   /* Format the product portion of the pass record for the io call.*/
+   /* ------------------------------------------------------------*/
+
+  set EP0NW03 empty; /* Pass record*/
+
+  EP0NW03.XGP-GPC-CD = EP0NM001.XGP-GPC-CD; /* GPC*/
+  EP0NW03.SY-STY-NBR = EP0NM001.SY-STY-NBR; /* Style*/
+  EP0NW03.SY-COLR-CD-ID = EP0NM001.SY-COLR-CD-ID; /* Color*/
+  EP0NW03.XDM-DIM-CD = EP0NM001.XDM-DIM-CD; /* Dimension*/
+  EP0NW03.XQA-QUAL-CD = "01"; /* Quality*/
+
+
+   /* ------------------------------------------------------------*/
+   /* For each size entered, call the UPC iomod to determine*/
+   /* if there is an existing UPC, a DCMS required field.*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.SY-SZ-ID-DESC5 > " ") /* Size 5*/
+
+    EP0NW00.SY-SZ-ID-DESC = EP0NM001.SY-SZ-ID-DESC5;
+    EP0NW00.SY-SZ-ID = EP0NW01.SY-SZ-ID[5];
+
+    EP0N-42210();
+
+    if (EP0NW03.EP0NW-EP9310-RETURN-CD != 0) /* Not normal*/
+
+      if (EP0NW03.EP0NW-EP9310-RETURN-CD == 9) /* Contention*/
+        converseLib.validationFailed(31);
+      else
+        if (EP0NW03.EP0NW-EP9310-RETURN-CD == 10) /* Not found*/
+          converseLib.validationFailed(94);
+        end
+      end
+
+      EPWREC.XXXLOCID = "4220"; /* Msg loc*/
+      set EP0NM001.SY-SZ-ID-DESC5 bold, cursor; /* Pos csr*/
+
+    end
+
+  end
+
+
+  if (EP0NM001.SY-SZ-ID-DESC4 > " ") /* Size 4*/
+
+    EP0NW00.SY-SZ-ID-DESC = EP0NM001.SY-SZ-ID-DESC4;
+    EP0NW00.SY-SZ-ID = EP0NW01.SY-SZ-ID[4];
+
+    EP0N-42210();
+
+    if (EP0NW03.EP0NW-EP9310-RETURN-CD != 0) /* Not normal*/
+
+      if (EP0NW03.EP0NW-EP9310-RETURN-CD == 9) /* Contention*/
+        converseLib.validationFailed(31);
+      else
+        if (EP0NW03.EP0NW-EP9310-RETURN-CD == 10) /* Not found*/
+          converseLib.validationFailed(94);
+        end
+      end
+
+      EPWREC.XXXLOCID = "4220"; /* Msg loc*/
+      set EP0NM001.SY-SZ-ID-DESC4 bold, cursor; /* Pos csr*/
+
+    end
+
+  end
+
+
+  if (EP0NM001.SY-SZ-ID-DESC3 > " ") /* Size 3*/
+
+    EP0NW00.SY-SZ-ID-DESC = EP0NM001.SY-SZ-ID-DESC3;
+    EP0NW00.SY-SZ-ID = EP0NW01.SY-SZ-ID[3];
+
+    EP0N-42210();
+
+    if (EP0NW03.EP0NW-EP9310-RETURN-CD != 0) /* Not normal*/
+
+      if (EP0NW03.EP0NW-EP9310-RETURN-CD == 9) /* Contention*/
+        converseLib.validationFailed(31);
+      else
+        if (EP0NW03.EP0NW-EP9310-RETURN-CD == 10) /* Not found*/
+          converseLib.validationFailed(94);
+        end
+      end
+
+      EPWREC.XXXLOCID = "4220"; /* Msg loc*/
+      set EP0NM001.SY-SZ-ID-DESC3 bold, cursor; /* Pos csr*/
+
+    end
+
+  end
+
+
+  if (EP0NM001.SY-SZ-ID-DESC2 > " ") /* Size 2*/
+
+    EP0NW00.SY-SZ-ID-DESC = EP0NM001.SY-SZ-ID-DESC2;
+    EP0NW00.SY-SZ-ID = EP0NW01.SY-SZ-ID[2];
+
+    EP0N-42210();
+
+    if (EP0NW03.EP0NW-EP9310-RETURN-CD != 0) /* Not normal*/
+
+      if (EP0NW03.EP0NW-EP9310-RETURN-CD == 9) /* Contention*/
+        converseLib.validationFailed(31);
+      else
+        if (EP0NW03.EP0NW-EP9310-RETURN-CD == 10) /* Not found*/
+          converseLib.validationFailed(94);
+        end
+      end
+
+      EPWREC.XXXLOCID = "4220"; /* Msg loc*/
+      set EP0NM001.SY-SZ-ID-DESC2 bold, cursor; /* Pos csr*/
+
+    end
+
+  end
+
+
+  if (EP0NM001.SY-SZ-ID-DESC1 > " ") /* Size 1*/
+
+    EP0NW00.SY-SZ-ID-DESC = EP0NM001.SY-SZ-ID-DESC1;
+    EP0NW00.SY-SZ-ID = EP0NW01.SY-SZ-ID[1];
+
+    EP0N-42210();
+
+    if (EP0NW03.EP0NW-EP9310-RETURN-CD != 0) /* Not normal*/
+
+      if (EP0NW03.EP0NW-EP9310-RETURN-CD == 9) /* Contention*/
+        converseLib.validationFailed(31);
+      else
+        if (EP0NW03.EP0NW-EP9310-RETURN-CD == 10) /* Not found*/
+          converseLib.validationFailed(94);
+        end
+      end
+
+      EPWREC.XXXLOCID = "4220"; /* Msg loc*/
+      set EP0NM001.SY-SZ-ID-DESC1 bold, cursor; /* Pos csr*/
+
+    end
+
+  end
+
+
+end // end EP0N-42200
+
+// Call UPC iomod - EP9310
+Function EP0N-42210()
+   /* ------------------------------------------------------------*/
+   /* Call the UPC iomod.*/
+   /* ------------------------------------------------------------*/
+
+  EP0NW03.SY-SZ-ID-DESC = EP0NW00.SY-SZ-ID-DESC;
+  EP0NW03.SY-SZ-ID = EP0NW00.SY-SZ-ID;
+
+  try
+    call "EP9310" (SQLCA, EP0NW03) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (EP0NW03.EP0NW-EP9310-RETURN-CD == 0 /* UPC found*/
+     || EP0NW03.EP0NW-EP9310-RETURN-CD == 9 /* and contention*/
+     || EP0NW03.EP0NW-EP9310-RETURN-CD == 10) /* Size/UPC not found*/
+
+      return; /* Return*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  EPWREC.XXXLOCID = "4221"; /* Message location*/
+
+  converseLib.validationFailed(10); /* Unexpected error*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+  converseLib.clearScreen();
+   /* Clear screen*/
+
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EPWREC.XXXLOCID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT UPC - EP9310 "; /* Description*/
+  TA1REC.TA1DBASE = "DPROD   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSYUPC01"; /* Table view name*/
+  TA1REC.TA1TBLKE = EP0NW03.EP0NW03-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end EP0N-42210
+
+// Process valid input request
+Function EP0N-50000()
+   /* ------------------------------------------------------------*/
+   /* BUILD the JCL and SUBMIT the background batch job to*/
+   /* create and send the new STYLE/SKU master records*/
+   /* to the APPAREL WMS package (DCMS).*/
+   /* ------------------------------------------------------------*/
+
+  if (EP0NM001.XGP-GPC-CD != EP0NW01.XGP-GPC-CD
+   || EP0NM001.SY-STY-NBR != EP0NW01.SY-STY-NBR
+   || EP0NM001.SY-COLR-CD-ID != EP0NW01.SY-COLR-CD-ID
+   || EP0NM001.XDM-DIM-CD != EP0NW01.XDM-DIM-CD
+   || EP0NM001.XQA-QUAL-CD != EP0NW01.XQA-QUAL-CD
+   /* DLVRUSA CHANGES BEGINS - RSEBAS **/
+   /* OR EP0NM001.XOW-OWN-GRP-CD NE EP0NW01.XOW-OWN-GRP-CD*/
+   /* OR EP0NM001.XEG-ENGR-DIFF-CD NE EP0NW01.XEG-ENGR-DIFF-CD*/
+   /* OR EP0NM001.XPG-PKG-TYP-CD NE EP0NW01.XPG-PKG-TYP-CD*/
+   /* DLVRUSA CHANGES ENDS   - RSEBAS **/
+   || EP0NM001.XUM-UOM-CD != EP0NW01.XUM-UOM-CD
+   /* DLVRUSA CHANGES BEGINS - RSEBAS*/
+   || EP0NM001.PACK-FACTOR != EP0NW01.PACK-FACTOR
+   /* DLVRUSA CHANGES ENDS   - RSEBAS*/
+   || EP0NM001.SY-SZ-ID-DESC1 != EP0NW01.SY-SZ-ID-DESC1
+   || EP0NM001.SY-SZ-ID-DESC2 != EP0NW01.SY-SZ-ID-DESC2
+   || EP0NM001.SY-SZ-ID-DESC3 != EP0NW01.SY-SZ-ID-DESC3
+   || EP0NM001.SY-SZ-ID-DESC4 != EP0NW01.SY-SZ-ID-DESC4
+   || EP0NM001.SY-SZ-ID-DESC5 != EP0NW01.SY-SZ-ID-DESC5)
+
+
+  /* PERFORM EP0N-51000;                      /* Build JCL & submit job*/
+    EP0N-50500(); /* Build JCL & submit job*/
+
+
+  end
+
+  EP0NW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+  EP0NW00.XXX-RQT-DATA-FL = "Y"; /* Request for data flag*/
+
+
+end // end EP0N-50000
+
+// Decide which JCL to submit
+Function EP0N-50500()
+  set TA3REC empty;
+  TA3REC.TA3OPTN = "ASSIGN ";
+
+  try
+    call "TA0230" (TA3REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA3REC.TA3RTNCD == 0)          /* Good return code*/
+
+    TA6REC.TA6ROW = " "; /* Initialize output jcl area*/
+    if (TA3REC.TA3RGNID == "03" /* If MVSPROD*/
+     || TA3REC.TA3RGNID == "33") /* If MVSNSCI*/
+      EP0N-51000();
+    else
+      EP0N-52000();
+    end
+
+  else
+    converseLib.validationFailed(124);
+    exit stack;
+  end
+
+end // end EP0N-50500
+
+// Format jcl
+Function EP0N-51000()
+   /* -------------------------------------------------------------*/
+   /* Build JCL for background job to create new STYLE/SKU master*/
+   /* records for DCMS and submit the job.*/
+   /* -------------------------------------------------------------*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Initialize the work area and index to be used.*/
+   /* ------------------------------------------------------------*/
+
+  move " " to TA6REC.TA6ROW[1] for all; /* Clear JCL array rows*/
+
+  TA6REC.TA6INDEX = 1; /* Initialize index*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Format JCL and parameters into the subroutine work area.*/
+   /* ------------------------------------------------------------*/
+
+  while (TA6REC.TA6INDEX > 0) /* Til end of table*/
+
+    if (EP0NT01.TARTYPE[TA6INDEX] == "P") /* Parm statement*/
+
+      /* ------------------------------------------------------------*/
+      /* Format the variable parameters entered by the user.*/
+      /* ------------------------------------------------------------*/
+
+      set EP0NW02 empty; /* Initialize parameters*/
+
+      /* * * * Format the STYLE parameters * * * **/
+      EP0NW02.XGP-GPC-CD = EP0NM001.XGP-GPC-CD;
+      EP0NW02.SY-STY-NBR = EP0NM001.SY-STY-NBR;
+      EP0NW02.SY-COLR-CD-ID = EP0NM001.SY-COLR-CD-ID;
+      EP0NW02.XDM-DIM-CD = EP0NM001.XDM-DIM-CD;
+      EP0NW02.XQA-QUAL-CD = EP0NM001.XQA-QUAL-CD;
+      EP0NW02.PC-CU-IN-SEG-CD = EP0NM001.PC-CU-IN-SEG-CD;
+      EP0NW02.XEG-ENGR-DIFF-CD = EP0NM001.XEG-ENGR-DIFF-CD;
+      EP0NW02.XPG-PKG-TYP-CD = EP0NM001.XPG-PKG-TYP-CD;
+      EP0NW02.XUM-UOM-CD = EP0NM001.XUM-UOM-CD;
+      EP0NW02.XOW-OWN-GRP-CD = EP0NM001.XOW-OWN-GRP-CD;
+  /* DLVRUSA CHANGES BEGINS -RSEBAS*/
+      EP0NW02.PACK-FACTOR = EP0NM001.PACK-FACTOR;
+  /* DLVRUSA CHANGES ENDS   -RSEBAS*/
+
+      /* * * * Format the SKU parameters * * * **/
+      EP0NW02.SY-SZ-ID-DESC1 = EP0NM001.SY-SZ-ID-DESC1;
+      EP0NW02.SY-SZ-ID-DESC2 = EP0NM001.SY-SZ-ID-DESC2;
+      EP0NW02.SY-SZ-ID-DESC3 = EP0NM001.SY-SZ-ID-DESC3;
+      EP0NW02.SY-SZ-ID-DESC4 = EP0NM001.SY-SZ-ID-DESC4;
+      EP0NW02.SY-SZ-ID-DESC5 = EP0NM001.SY-SZ-ID-DESC5;
+
+      TA6REC.TARJCL[TA6INDEX] = EP0NW02.EP0NW-EP9431-PARM-GRP;
+
+    else
+
+      /* ------------------------------------------------------------*/
+      /* Format the Job Control Language statement from the table.*/
+      /* ------------------------------------------------------------*/
+
+      TA6REC.TARJCL[TA6INDEX] = EP0NT01.TARJCL[TA6INDEX]; /* JCL*/
+      TA6REC.TARTYPE[TA6INDEX] = EP0NT01.TARTYPE[TA6INDEX]; /* Type*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+    /* If not end of table, increment the table index.*/
+    /* ------------------------------------------------------------*/
+
+    if (EP0NT01.TARJCL[TA6INDEX] == "/*EOF") /* End of table*/
+
+      TA6REC.TA6INDEX = 0; /* Indicate end of table*/
+    else
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for background execution.*/
+   /* ------------------------------------------------------------*/
+
+  TA6REC.TA6SUBSW = "S"; /* Tailor and submit the JCL*/
+  TA6REC.TA6MSGSW = "Y"; /* EOJ online message switch*/
+
+  XPTA0P(); /* Submit JCL for background job*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If submit was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  EPWREC.XXXLOCID = "51000"; /* Msg loc*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "0")        /* and normal return*/
+
+    converseLib.validationFailed(401); /* Batch job was submitted*/
+    set EP0NM001 initial; /* Clear map output area*/
+
+    return; /* Return*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If not successful, indicate unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode != "00000000" /* Call not successful*/
+   || TA6REC.TA6RTNCD > "1")         /* or unexpected error*/
+
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+
+  end
+
+  exit stack; /* Exit to display map*/
+
+
+end // end EP0N-51000
+
+// Format jcl
+Function EP0N-52000()
+   /* -------------------------------------------------------------*/
+   /* Build JCL for background job to create new STYLE/SKU master*/
+   /* records for DCMS and submit the job.*/
+   /* -------------------------------------------------------------*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Initialize the work area and index to be used.*/
+   /* ------------------------------------------------------------*/
+
+  move " " to TA6REC.TA6ROW[1] for all; /* Clear JCL array rows*/
+
+  TA6REC.TA6INDEX = 1; /* Initialize index*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Format JCL and parameters into the subroutine work area.*/
+   /* ------------------------------------------------------------*/
+
+  while (TA6REC.TA6INDEX > 0) /* Til end of table*/
+
+    if (EP0NT02.TARTYPE[TA6INDEX] == "P") /* Parm statement*/
+
+      /* ------------------------------------------------------------*/
+      /* Format the variable parameters entered by the user.*/
+      /* ------------------------------------------------------------*/
+
+      set EP0NW02 empty; /* Initialize parameters*/
+
+      /* * * * Format the STYLE parameters * * * **/
+      EP0NW02.XGP-GPC-CD = EP0NM001.XGP-GPC-CD;
+      EP0NW02.SY-STY-NBR = EP0NM001.SY-STY-NBR;
+      EP0NW02.SY-COLR-CD-ID = EP0NM001.SY-COLR-CD-ID;
+      EP0NW02.XDM-DIM-CD = EP0NM001.XDM-DIM-CD;
+      EP0NW02.XQA-QUAL-CD = EP0NM001.XQA-QUAL-CD;
+      EP0NW02.PC-CU-IN-SEG-CD = EP0NM001.PC-CU-IN-SEG-CD;
+      EP0NW02.XEG-ENGR-DIFF-CD = EP0NM001.XEG-ENGR-DIFF-CD;
+      EP0NW02.XPG-PKG-TYP-CD = EP0NM001.XPG-PKG-TYP-CD;
+      EP0NW02.XUM-UOM-CD = EP0NM001.XUM-UOM-CD;
+      EP0NW02.XOW-OWN-GRP-CD = EP0NM001.XOW-OWN-GRP-CD;
+  /* DLVRUSA CHANGES BEGINS - RSEBAS*/
+      EP0NW02.PACK-FACTOR = EP0NM001.PACK-FACTOR;
+  /* DLVRUSA CHANGES ENDS   - RSEBAS*/
+
+      /* * * * Format the SKU parameters * * * **/
+      EP0NW02.SY-SZ-ID-DESC1 = EP0NM001.SY-SZ-ID-DESC1;
+      EP0NW02.SY-SZ-ID-DESC2 = EP0NM001.SY-SZ-ID-DESC2;
+      EP0NW02.SY-SZ-ID-DESC3 = EP0NM001.SY-SZ-ID-DESC3;
+      EP0NW02.SY-SZ-ID-DESC4 = EP0NM001.SY-SZ-ID-DESC4;
+      EP0NW02.SY-SZ-ID-DESC5 = EP0NM001.SY-SZ-ID-DESC5;
+
+      TA6REC.TARJCL[TA6INDEX] = EP0NW02.EP0NW-EP9431-PARM-GRP;
+
+    else
+
+      /* ------------------------------------------------------------*/
+      /* Format the Job Control Language statement from the table.*/
+      /* ------------------------------------------------------------*/
+
+      TA6REC.TARJCL[TA6INDEX] = EP0NT02.TARJCL[TA6INDEX]; /* JCL*/
+      TA6REC.TARTYPE[TA6INDEX] = EP0NT02.TARTYPE[TA6INDEX]; /* Type*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+    /* If not end of table, increment the table index.*/
+    /* ------------------------------------------------------------*/
+
+    if (EP0NT02.TARJCL[TA6INDEX] == "/*EOF") /* End of table*/
+
+      TA6REC.TA6INDEX = 0; /* Indicate end of table*/
+    else
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for background execution.*/
+   /* ------------------------------------------------------------*/
+
+  TA6REC.TA6SUBSW = "S"; /* Tailor and submit the JCL*/
+  TA6REC.TA6MSGSW = "Y"; /* EOJ online message switch*/
+
+  XPTA0P(); /* Submit JCL for background job*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If submit was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  EPWREC.XXXLOCID = "51000"; /* Msg loc*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "0")        /* and normal return*/
+
+    converseLib.validationFailed(401); /* Batch job was submitted*/
+    set EP0NM001 initial; /* Clear map output area*/
+
+    return; /* Return*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If not successful, indicate unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode != "00000000" /* Call not successful*/
+   || TA6REC.TA6RTNCD > "1")         /* or unexpected error*/
+
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+
+  end
+
+  exit stack; /* Exit to display map*/
+
+
+end // end EP0N-52000
+
+// Select the table row
+Function EP0NS-IO0120-S()
+   /* ------------------------------------------------------------*/
+   /* Select the requested product from the PRODUCT table.*/
+   /* Verify GPC/STYLE combination.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0120" ("S ", SQLCA, SY1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  EPWREC.XXXLOCID = "120S"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and contention*/
+
+    converseLib.validationFailed(11); /* Contention for data*/
+    TA1REC.TA1FUNC = "POST"; /* Termination*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EPWREC.XXXLOCID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DPROD   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSTYLE01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SY1REC.SY1KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end EP0NS-IO0120-S
+
+// Select the table row
+Function EP0NS-IO0130-S()
+   /* ------------------------------------------------------------*/
+   /* Select the requested product from the COLOR table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0130" ("S ", SQLCA, SY2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  EPWREC.XXXLOCID = "130S"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and contention*/
+
+    converseLib.validationFailed(11); /* Contention for data*/
+    TA1REC.TA1FUNC = "POST"; /* Termination*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EPWREC.XXXLOCID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DPROD   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VCOLOR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SY2REC.SY2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end EP0NS-IO0130-S
+
+// Select the table row
+Function EP0NS-IO0560-S()
+   /* ------------------------------------------------------------*/
+   /* Select the requested product from the VCOLOR02 table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0560" ("S ", SQLCA, SYCREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  EPWREC.XXXLOCID = "130S"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and contention*/
+
+    converseLib.validationFailed(11); /* Contention for data*/
+    TA1REC.TA1FUNC = "POST"; /* Termination*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EPWREC.XXXLOCID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DPROD   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VCOLOR02"; /* Table view name*/
+  TA1REC.TA1TBLKE = SYCREC.SYCKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end EP0NS-IO0560-S
+
+// Select the table row
+Function EP0NS-IO3340-SG()
+   /* ------------------------------------------------------------*/
+   /* Select the inventory segment code from DPRODC.VPRDCU01*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO3340" ("SG", SQLCA, PC2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0    /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == -811 /* more than one row returned*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  EPWREC.XXXLOCID = "340S"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and contention*/
+
+    converseLib.validationFailed(11); /* Contention for data*/
+    TA1REC.TA1FUNC = "POST"; /* Termination*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination*/
+
+    converseLib.clearScreen();
+     /* Clear screen*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = EPWREC.XXXLOCID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DPRODC  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPRDCU01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PC2REC.PC2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end EP0NS-IO3340-SG
+
+//*** RECORD=EP0NW00 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// ***********************
+Record EP0NW00 type basicRecord
+  10 XXX-RQT-DATA-FL XXX-RQT-DATA-FL ; 
+  10 XXX-MAP-FMAT-FL XXX-MAP-FMAT-FL ; 
+  10 EP0NW-JCL-SUB-SW EP0NW-JCL-SUB-SW ; 
+  10 EP0NW-IX EP0NW-IX ; 
+  10 EP0NW-JCL-LINE-TYPE EP0NW-JCL-LINE-TYPE ; 
+  10 SY-SZ-ID-DESC SY-SZ-ID-DESC ; 
+  10 SY-SZ-ID SY-SZ-ID ; 
+end // end EP0NW00
+
+//*** RECORD=EP0NW01 ****
+// ------------------------
+// Map 001 display storage.
+// ------------------------
+// ***********************
+Record EP0NW01 type basicRecord
+  10 XGP-GPC-CD XGP-GPC-CD ; 
+  10 SY-STY-NBR SY-STY-NBR ; 
+  10 SY-COLR-CD-ID SY-COLR-CD-ID ; 
+  10 XDM-DIM-CD XDM-DIM-CD ; 
+  10 XQA-QUAL-CD XQA-QUAL-CD ; 
+  10 PC-CU-IN-SEG-CD PC-CU-IN-SEG-CD ; 
+  10 XEG-ENGR-DIFF-CD XEG-ENGR-DIFF-CD ; 
+  10 XPG-PKG-TYP-CD XPG-PKG-TYP-CD ; 
+  10 XUM-UOM-CD XUM-UOM-CD ; 
+  10 XOW-OWN-GRP-CD XOW-OWN-GRP-CD ; 
+  10 PACK-FACTOR PACK-FACTOR ; 
+  10 SY-SZ-ID-DESC1 SY-SZ-ID-DESC1 ; 
+  10 SY-SZ-ID-DESC2 SY-SZ-ID-DESC2 ; 
+  10 SY-SZ-ID-DESC3 SY-SZ-ID-DESC3 ; 
+  10 SY-SZ-ID-DESC4 SY-SZ-ID-DESC4 ; 
+  10 SY-SZ-ID-DESC5 SY-SZ-ID-DESC5 ; 
+  10 SY-SZ-ID SY-SZ-ID [5] ; 
+end // end EP0NW01
+
+//*** RECORD=EP0NW02 ****
+// Parameters for EP9431 - New style/sku records request.
+// ***********************
+Record EP0NW02 type basicRecord
+  10 EP0NW-EP9431-PARM-GRP EP0NW-EP9431-PARM-GRP ; 
+    15 XGP-GPC-CD XGP-GPC-CD ; 
+    15 SY-STY-NBR SY-STY-NBR ; 
+    15 SY-COLR-CD-ID SY-COLR-CD-ID ; 
+    15 XDM-DIM-CD XDM-DIM-CD ; 
+    15 XQA-QUAL-CD XQA-QUAL-CD ; 
+    15 PC-CU-IN-SEG-CD PC-CU-IN-SEG-CD ; 
+    15 XEG-ENGR-DIFF-CD XEG-ENGR-DIFF-CD ; 
+    15 XPG-PKG-TYP-CD XPG-PKG-TYP-CD ; 
+    15 XUM-UOM-CD XUM-UOM-CD ; 
+    15 XOW-OWN-GRP-CD XOW-OWN-GRP-CD ; 
+    15 PACK-FACTOR PACK-FACTOR ; 
+    15 SY-SZ-ID-DESC1 SY-SZ-ID-DESC1 ; 
+    15 SY-SZ-ID-DESC2 SY-SZ-ID-DESC2 ; 
+    15 SY-SZ-ID-DESC3 SY-SZ-ID-DESC3 ; 
+    15 SY-SZ-ID-DESC4 SY-SZ-ID-DESC4 ; 
+    15 SY-SZ-ID-DESC5 SY-SZ-ID-DESC5 ; 
+    15 * char(25) ; 
+end // end EP0NW02
+
+//*** RECORD=EP0NW03 ****
+// ********************* EP9310 Record ************************
+// 
+// DB2 TABLE VIEWS:     DPROD.VSYUPC01, DPROD.VSCALE01
+// 
+// INCLUDE MEMBER:      WEP9311
+// 
+// I/O MODULE:          EP9310
+// 
+// PARMS PASSED:        XGP-GPC-CD
+//                      SY-STY-NBR
+//                      SY-COLR-CD-ID
+//                      XDM-DIM-CD
+//                      XQA-QUAL-CD
+//                      SY-SZ-ID-DESC
+// 
+//   DATE      NAME    DESCRIPTION
+// --------   ------   ----------------------------------------
+// 03/24/98   esmit2   New record used in call for EP9310
+//                     which is a special iomod for EP0N only.
+// 
+// ***********************
+Record EP0NW03 type basicRecord
+  5 EP0NW03-GROUP EP0NW03-GROUP ; 
+    10 EP0NW03-KEY EP0NW03-KEY ; 
+      15 XGP-GPC-CD XGP-GPC-CD ; 
+      15 SY-STY-NBR SY-STY-NBR ; 
+      15 SY-COLR-CD-ID SY-COLR-CD-ID ; 
+      15 XDM-DIM-CD XDM-DIM-CD ; 
+      15 XQA-QUAL-CD XQA-QUAL-CD ; 
+      15 SY-SZ-ID-DESC SY-SZ-ID-DESC ; 
+    10 SY-SZ-ID SY-SZ-ID ; 
+    10 SY-UPC-SYS-NBR SY-UPC-SYS-NBR ; 
+    10 SY-UPC-MFG-ID-NBR SY-UPC-MFG-ID-NBR ; 
+    10 SY-UPC-ITM-NBR SY-UPC-ITM-NBR ; 
+    10 SY-UPC-CK-DGIT SY-UPC-CK-DGIT ; 
+    10 EP0NW-EP9310-RETURN-CD EP0NW-EP9310-RETURN-CD ; 
+end // end EP0NW03
+
+// EP9310 return code
+DataItem EP0NW-EP9310-RETURN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// EP9431 style/sku parm group
+DataItem EP0NW-EP9431-PARM-GRP char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Work Index
+DataItem EP0NW-IX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// JCL Line Type indicator
+DataItem EP0NW-JCL-LINE-TYPE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Job submitted switch
+DataItem EP0NW-JCL-SUB-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Record Group Level
+DataItem EP0NW03-GROUP char(36)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Record Key Level
+DataItem EP0NW03-KEY char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// PACK-FACTOR
+DataItem PACK-FACTOR char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SY_SZ_ID_DESC1
+DataItem SY-SZ-ID-DESC1 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SY_SZ_ID_DESC2
+DataItem SY-SZ-ID-DESC2 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SY_SZ_ID_DESC3
+DataItem SY-SZ-ID-DESC3 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SY_SZ_ID_DESC4
+DataItem SY-SZ-ID-DESC4 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SY_SZ_ID_DESC5
+DataItem SY-SZ-ID-DESC5 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

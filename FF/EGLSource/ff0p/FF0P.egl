@@ -1,0 +1,5645 @@
+package ff0p;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import ff.common.*;
+import fg.common.*;
+import fh.common.*;
+import pg.common.*;
+import sy.common.*;
+import ta.common.*;
+//*** PROGRAM=FF0P ****
+// This application is part of the Footwear Forcast System  -
+// Short Range.
+// 
+// The user may enter this application via the Short Range Menu
+// (FF0A), the Work Sheet Select Screen (FF0B), the Set Hist
+// Future Ind screen (FF0D), the Set Hist Prop Ind screen
+// (FF0R), or Fast Path.
+// 
+// This application displays Historical seasonal demand infor-
+// mation for 1, 2, and combined years ago and any previously
+// set hist seasonal indicator for a given category/type group.
+// an alternate category code may also be displayed if it
+// exists for the given category.
+// 
+// The user may press PF16 to have the alternate categories
+// demand data if an alternate category has been set for the
+// given category. By pressing PF17 the user returns to the
+// original categories data on display.
+// 
+// The user may change the hist indicatory for the original
+// category by selecting one of the three displayed regardless
+// of whether the original category or alternate category data
+// is displayed.
+// 
+// The user may scroll left and right to see each month in the
+// short range seasons for the category.
+// 
+// The user may PF14 to application FF0D, PF15 to application
+// FF0r, or exit to any allowed application via Fast Path.
+// 
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+//          07/14/89  CNEWMA  New application.
+// FF#003   05/30/90  LDELUH  Change fut & natl fut dmd to
+//                            exclude cancels.
+// FF#FIX   08/27/90  SFORD   Fixed calc. of buy month
+// FF#175   08/31/90  LDELUH  Add cancels to calc of mstr dmd
+//                            fcst in actual months.
+//                            When calc it for current month
+//                            need to first take caov qtys out
+//                            of sales.
+// FF#176   09/10/90  LDELUH  Fix FF0P640 & 650 to save rev
+//                            seas indices into W02 area in
+//                            addition to W04 area.
+// FF#FIX   10/03/90  SFORD   calc. of curr mo from invoice dt
+// FF#175   01/14/91  LDELUH  Make it calc mstr dmd fcst like
+//                            FF0F does.
+// FF1111   05/15/92  MDANGE  Fix for varying season.  Remove
+//                            3 month sub, allow one season up
+//                            to 12 months.
+// FH140   02/09/94   JJUCH   Change to use authorized future.
+//         12/17/96   CWHIT   0 FILL YR 2000 FIX
+// *********************
+Program FF0P type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "FF00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  FF0PW00 FF0PW00; // record
+  FF0PW01 FF0PW01; // record
+  FF0PW02 FF0PW02; // record
+  FF0PW03 FF0PW03; // record
+  FF0PW04 FF0PW04; // record
+  FF1REC FF1REC; // record
+  FF2REC FF2REC; // record
+  FF7REC FF7REC; // record
+  FFFREC FFFREC; // record
+  FFQREC FFQREC; // record
+  FFRREC FFRREC; // record
+  FFWREC FFWREC; // record
+  FFXREC FFXREC; // record
+  FH3REC FH3REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TAEREC TAEREC; // record
+  XPCREC XPCREC; // record
+  XX0XW01 XX0XW01; // record
+  XX0XW02 XX0XW02; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XPCTBL; // table
+  use YPGTBL; // table
+  use FF0PM.FF0PM001,  // forms
+      FF0PM.XX0XM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPFF001: XPFF001();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and display storage areas.*/
+     /* ------------------------------------------------------------*/
+
+    set FFFREC empty; /* Special function parameters*/
+    set FF0PM001 initial; /* M001 input/output*/
+    set FF0PW00 empty; /* working storage*/
+    set FF0PW01 empty; /* working storage*/
+    set FF0PW02 empty; /* working storage*/
+    set FF0PW03 empty; /* temp working storage*/
+    set FF0PW04 empty; /* temp working storage*/
+    set SQLCA empty; /* SQL communication area*/
+    set TAEREC empty; /* Error diagnosis information*/
+    set TA1REC empty; /* Error diagnosis parameters*/
+    set XX0XW01 empty; /* Date/time subroutine parameters*/
+
+     /* ------------------------------------------------------------*/
+     /* If category and type group known set up to obtain data.*/
+     /* ------------------------------------------------------------*/
+
+    if (FFWREC.YPGCD == " ") /* type group not passed*/
+      FFWREC.YPGCD = "01";
+      if (FFWREC.YPGCD in YPGTBL.YPGCD)
+        FFWREC.YPGABRV = YPGTBL.YPGABRV[sysVar.arrayIndex];
+      end
+    end
+
+    if (FFWREC.XPCCD != " " /* category found*/
+     && FFWREC.YPGCD != " ") /* type group code found*/
+      FF0PW00.FF0PWDRF = "Y"; /* data requested*/
+    end
+
+    FF0PW00.FF0PWFMF = "Y"; /* Format the Map*/
+    FF0PW01.FF0PMHST = "1"; /* Hist Option default value*/
+
+     /* ------------------------------------------------------------*/
+     /* Clear other FFWREC levels not used in FF0P.*/
+     /* ------------------------------------------------------------*/
+
+    FFWREC.XPLCD = "  ";
+    FFWREC.XPLABRV = "  ";
+    FFWREC.SYBSTGNB = "  ";
+    FFWREC.SYBSTGNM = "  ";
+    FFWREC.SY1STNBR = "  ";
+    FFWREC.SY1SSTNM = "  ";
+    FFWREC.SY2CLRID = "  ";
+    FFWREC.SY2CLRAB = "  ";
+    FFWREC.XDMCD = "  ";
+    FFWREC.XDMABRV = "  ";
+
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto FF0P001; /* Converse the main process*/
+
+
+    FF0P001: FF0P001();
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto FF0P001; /* Converse the main process*/
+
+
+  end // end main
+end // end FF0P
+
+// Inquire/maintain a table row
+Function FF0P001()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) Obtain the data to display.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Reset highlighted fields to normal intensity.*/
+   /* 5) Verify the data that was entered.*/
+   /* 6) Process a valid input request.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+  FF0P100(); /* Obtain the data to display*/
+
+  FF0P200(); /* Format and display the map*/
+
+  FF0P300(); /* Check attention identifier*/
+
+  FF0P400(); /* Reset fields to normal intensity*/
+
+  FF0P500(); /* Verify the entered data*/
+
+  FF0P600(); /* Process valid input request*/
+
+
+end // end FF0P001
+
+// Obtain Data to Display
+Function FF0P100()
+   /* ------------------------------------------------------------*/
+   /* if data not requested or an error occured, return to*/
+   /* previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWDRF != "Y" /* data not requested*/
+   || converseVar.validationMsgNum != 0) /* error occured*/
+    return;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* clear working storage fields*/
+   /* ------------------------------------------------------------*/
+
+  set FF0PW02 empty; /* clear numerical storage*/
+  set FF0PW03 empty; /* clear numerical storage*/
+  set FF0PW04 empty; /* clear display storage*/
+
+   /* ------------------------------------------------------------*/
+   /* Obtain original category current demand data*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWCAT = "O"; /* Original category request*/
+
+  FF0P110(); /* Obtain Season Data*/
+
+  if (SQLCA.VAGen_SQLCODE == 100 /* Cross-reference not found*/
+   || FF2REC.FF2NSEAS == 0)      /* or no seasons available*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Cross-reference found*/
+     && FF2REC.FF2NSEAS == 0)    /* and no seasons available*/
+
+      FFWREC.XXXMSGNO = 174; /* 'seasons not set up'*/
+      FFWREC.XXXMODID = "100"; /* module identification*/
+
+    end
+
+    return; /* Return to previous process*/
+
+  end
+
+  FF0P120(); /* Calculate Months*/
+  FF0P130(); /* Obtain Detail Data*/
+  FF0P140(); /* Obtain Category Month Data*/
+  FF0P145(); /* Obtain cat wrksht fill rate*/
+  FF0P150(); /* calculate current demand fcst*/
+
+   /* ------------------------------------------------------------*/
+   /* If Alternate category code exists, Obtain alt cat history*/
+   /* data. Otherwise, obtain orig cat history data.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW01.FF2ALCAT != " ") /* alternate category exists*/
+
+    FF0PW00.FF0PWCAT = "A"; /* Alternate category request*/
+  else
+    FF0PW00.FF0PWCAT = "H"; /* Original historical request*/
+
+  end
+
+  FF0P130(); /* Obtain Detail Data*/
+  FF0P170(); /* calculate hist demand fcst*/
+
+   /* ------------------------------------------------------------*/
+   /* Save Map fields in Working Storage*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWCMM = 1; /* Starting month*/
+  if (FF0PW01.FF0PWMNS > 8) /* months in season exceed 1 page display*/
+    FF0PW00.FF0PWPMX = 2; /* max pages*/
+  else
+    FF0PW00.FF0PWPMX = 1; /* max pages*/
+  end
+  FF0PW00.FF0PWDRF = "N"; /* Data request switch*/
+  FF0PW00.CACHGFL = "Y"; /* Data was obtained*/
+
+
+end // end FF0P100
+
+// Obtain Season Data
+Function FF0P110()
+   /* ------------------------------------------------------------*/
+   /* Clear the row storage area*/
+   /* Set up key - Footwear Forecast XREF Table*/
+   /* ------------------------------------------------------------*/
+
+  set FF2REC empty; /* initialize record*/
+
+  if (FF0PW00.FF0PWCAT == "O" /* orig cat requested*/
+   || FF0PW00.FF0PWCAT == "H") /* orig cat requested*/
+
+    FF2REC.XPCCD = FFWREC.XPCCD; /* category code*/
+  else
+    FF2REC.XPCCD = FF0PW01.FF2ALCAT; /* category code*/
+
+  end
+
+  FF2REC.YPGCD = FFWREC.YPGCD; /* type group*/
+  FF2REC.YSMXDV = "10"; /* division group code*/
+  FF2REC.XPLCD = "*"; /* product line code*/
+
+   /* ------------------------------------------------------------*/
+   /* select requested row from table*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4000" ("S ", SQLCA, FF2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or not found, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+      return; /* Return to previous process*/
+
+    end
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* Cross-reference not found*/
+
+      FFWREC.XXXMODID = "110"; /* Module identification*/
+      FFWREC.XXXMSGNO = 187; /* Category does not exist*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "110"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT TABLE ROW ";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFXRF01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF2REC.FF2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0P110
+
+// Calculate Months
+Function FF0P120()
+
+   /* ------------------------------------------------------------*/
+   /* Save begin months from cross reference table*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW01.FF2GROUP = FF2REC.FF2GROUP; /* save record group*/
+  FF0PW01.FF2NSEAS = FF2REC.FF2NSEAS; /* number of seasons*/
+  FF0PW01.FF2ALCAT = FF2REC.FF2ALCAT; /* alternate category*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+
+  while (FF0PW00.FF0PWIX1 <= 4) /* move season begin months*/
+    FF0PW01.FF2SEASN[FF0PWIX1] = FF2REC.FF2SEASN[FF0PWIX1];
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Obtain current month & calculate buy month*/
+   /* ------------------------------------------------------------*/
+
+  XX0XS01(); /* obtain current date*/
+
+  FF0P121(); /* obtain futures cutoff date*/
+
+  FF0P122(); /* calculate buy month & curr month*/
+
+  FF0PW00.FF0PWDYM = FF0PW00.FF0PWBUY; /* move ccyymm buy month*/
+
+   /* ------------------------------------------------------------*/
+   /* If season begin month not entered, determine default value.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW01.FF0PWMBM == 0) /* season begin month blank*/
+
+    /* ------------------------------------------------------------*/
+     /* Determine default season begin month*/
+    /* ------------------------------------------------------------*/
+
+     /* Determine which season contains the buy month and*/
+     /* use that season's begin month as a default.*/
+
+    FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+    FF0PW00.FF0PWIX2 = 2; /* initialize index*/
+
+    while (FF0PW00.FF0PWIX1 <= FF0PW01.FF2NSEAS) /* number of seasons*/
+      if (FF0PW01.FF2NSEAS == 1)
+        FF0PW00.FF0PWDT = FF0PW01.FF2SEASN[1];
+        FF0PW00.FF0PWXDT = FF0PW01.FF2SEASN[1];
+      else
+        if (FF0PW00.FF0PWIX2 > FF0PW01.FF2NSEAS)
+          FF0PW00.FF0PWDT = FF0PW01.FF2SEASN[FF0PWIX1];
+          FF0PW00.FF0PWXDT = FF0PW01.FF2SEASN[1];
+        else
+          if (FF0PW00.FF0PWDYM >= FF0PW01.FF2SEASN[FF0PWIX1]
+           && FF0PW00.FF0PWDYM < FF0PW01.FF2SEASN[FF0PWIX2])
+            FF0PW00.FF0PWDT = FF0PW01.FF2SEASN[FF0PWIX1];
+            FF0PW00.FF0PWXDT = FF0PW01.FF2SEASN[FF0PWIX2];
+            FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 9; /* force out of loop*/
+          end
+        end
+      end
+      FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1;
+      FF0PW00.FF0PWIX2 = FF0PW00.FF0PWIX2 + 1;
+    end
+    FF0PW01.FF0PWSMN = FF0PW00.FF0PWDT;
+                                                      /* Season begin month*/
+    FF0PW01.FF0PWMBM = FF0PW00.FF0PWDT; /* Default map Bmo*/
+
+  end
+   /* ------------------------------------------------------------*/
+   /* Calculate number of months in the season*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWDT = FF0PW01.FF0PWMBM; /* * Default map Bmo*/
+  if (FF0PW00.FF0PWXMM < FF0PW00.FF0PWMM /* end month less than begin*/
+   || FF0PW00.FF0PWXMM == FF0PW00.FF0PWMM) /* beg and end month equal*/
+    FF0PW00.FF0PWXMM = FF0PW00.FF0PWXMM + 12;
+  end
+
+  FF0PW01.FF0PWMNS = FF0PW00.FF0PWXMM - FF0PW00.FF0PWMM; /* Months in seas*/
+
+   /* ------------------------------------------------------------*/
+   /* Calculate max pages,current page,grand tot positon*/
+   /* and max months on first page*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWCMM = 1; /* starting month on screen*/
+
+  if (FF0PW01.FF0PWMNS > 8) /* more than 8 months in the season*/
+    FF0PW00.FF0PWPMX = 2; /* max pages to scroll*/
+    FF0PW00.FF0PWGTW = FF0PW01.FF0PWMNS + 1; /* grand total position WS*/
+    FF0PW00.FF0PWGTM = 0; /* grand total postion map*/
+    FF0PW00.FF0PWMMX = 9; /* months on screen*/
+    FF0PW00.FF0PWMCL = 9; /* columns on screen*/
+  else
+    FF0PW00.FF0PWPMX = 1; /* max pages to scroll*/
+    FF0PW00.FF0PWGTW = FF0PW01.FF0PWMNS + 1; /* grand total position WS*/
+    FF0PW00.FF0PWGTM = FF0PW01.FF0PWMNS + 1; /* grand total position map*/
+    FF0PW00.FF0PWMCL = FF0PW01.FF0PWMNS + 1; /* columns on screen*/
+    FF0PW00.FF0PWMMX = FF0PW01.FF0PWMNS; /* months on screen*/
+  end
+   /* ------------------------------------------------------------*/
+   /* Calculate each month in a season*/
+   /* ------------------------------------------------------------*/
+
+     /* Current months*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* months in season*/
+
+    if (FF0PW00.FF0PWIX1 == 1) /* first month in season*/
+      FF0PW00.FF0PWDT = FF0PW01.FF0PWSMN; /* Season begin month*/
+      FF0PW01.FF0PWMNC[1] = FF0PW00.FF0PWDT;
+    else
+
+      FF0PW00.FF0PWMM = FF0PW00.FF0PWMM + 1; /* increment month by 1*/
+
+      if (FF0PW00.FF0PWMM > 12)
+        FF0PW00.FF0PWYY = FF0PW00.FF0PWYY + 1;
+        FF0PW00.FF0PWMM = FF0PW00.FF0PWMM - 12;
+      end
+
+      FF0PW01.FF0PWMNC[FF0PWIX1] = FF0PW00.FF0PWDT;
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+
+  end
+
+     /* One yr ago*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* months in season*/
+
+    if (FF0PW00.FF0PWIX1 == 1) /* first month in season*/
+      FF0PW00.FF0PWDT = FF0PW01.FF0PWSMN; /* Season begin month*/
+      FF0PW00.FF0PWYY = FF0PW00.FF0PWYY - 1; /* calculate one yr ago*/
+      FF0PW01.FF0PWMN1[1] = FF0PW00.FF0PWDT;
+    else
+
+      FF0PW00.FF0PWMM = FF0PW00.FF0PWMM + 1; /* increment month by 1*/
+
+      if (FF0PW00.FF0PWMM > 12)
+        FF0PW00.FF0PWYY = FF0PW00.FF0PWYY + 1;
+        FF0PW00.FF0PWMM = FF0PW00.FF0PWMM - 12;
+      end
+
+      FF0PW01.FF0PWMN1[FF0PWIX1] = FF0PW00.FF0PWDT;
+
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+
+  end
+
+     /* Two yrs ago*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* months in season*/
+
+    if (FF0PW00.FF0PWIX1 == 1) /* first month in season*/
+      FF0PW00.FF0PWDT = FF0PW01.FF0PWSMN; /* Season begin month*/
+      FF0PW00.FF0PWYY = FF0PW00.FF0PWYY - 2; /* calculate one yr ago*/
+      FF0PW01.FF0PWMN2[1] = FF0PW00.FF0PWDT;
+    else
+
+      FF0PW00.FF0PWMM = FF0PW00.FF0PWMM + 1; /* increment month by 1*/
+
+      if (FF0PW00.FF0PWMM > 12)
+        FF0PW00.FF0PWYY = FF0PW00.FF0PWYY + 1;
+        FF0PW00.FF0PWMM = FF0PW00.FF0PWMM - 12;
+      end
+
+      FF0PW01.FF0PWMN2[FF0PWIX1] = FF0PW00.FF0PWDT;
+
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+
+  end
+
+
+end // end FF0P120
+
+// Retrv futr cutoff dt VFFCTL01
+Function FF0P121()
+
+  set FF1REC empty; /* Clear up the storage row*/
+
+  try
+    call "IO3660" ("S ", SQLCA, FF1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or not found, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+      return; /* Return to previous process*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "121"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+  else
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFCTL01"; /* Table view name*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0P121
+
+// Calculate buy month & curr mo
+Function FF0P122()
+   /* ------------------------------------------------------------*/
+     /* Curr month calculation , stored in FF0PW00.FF0PWCMO*/
+     /* Note: The Buy Mo   W.S. area is used for this calc.*/
+           /* and is used to calc Buy Mo next.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF1REC.FF1IVCDT != 0) /* ===> Invoice cutoff date*/
+    FF0PW00.FF0PWWBD = FF1REC.FF1IVCDT;
+
+    if (XX0XW01.XX0XWDAT > FF1REC.FF1IVCDT) /* ===>Curr > IVC Cut Off Date*/
+      FF0PW00.FF0PWCMO = FF0PW00.FF0PWBUY;
+    else
+
+      if (FF0PW00.FF0PWBYM == 1)
+        FF0PW00.FF0PWBYM = 12;
+
+        if (FF0PW00.FF0PWBYY == 0)
+          FF0PW00.FF0PWBYY = 99;
+          FF0PW00.FF0PWBYC = FF0PW00.FF0PWBYC - 1;
+          FF0PW00.FF0PWCMO = FF0PW00.FF0PWBUY;
+        else
+          FF0PW00.FF0PWBYY = FF0PW00.FF0PWBYY - 1;
+          FF0PW00.FF0PWCMO = FF0PW00.FF0PWBUY;
+        end
+
+      else
+        FF0PW00.FF0PWBYM = FF0PW00.FF0PWBYM - 1;
+        FF0PW00.FF0PWCMO = FF0PW00.FF0PWBUY;
+      end
+
+    end
+  else
+    FF0PW00.FF0PWCMO = 0;
+  end
+
+
+   /* ------------------------------------------------------------*/
+     /* Buy month calculation , stored in FF0PW00.FF0PWBUY*/
+   /* ------------------------------------------------------------*/
+
+  if (FF1REC.FF1FUTDT != 0)
+    FF0PW00.FF0PWWBD = FF1REC.FF1FUTDT;
+    FF0PW00.FF0PWBYM = FF0PW00.FF0PWBYM + 5;
+    if (FF0PW00.FF0PWBYM > 12)
+      FF0PW00.FF0PWBYM = FF0PW00.FF0PWBYM - 12;
+      if (FF0PW00.FF0PWBYY == 99)
+        FF0PW00.FF0PWBYY = 00;
+        FF0PW00.FF0PWBYC = FF0PW00.FF0PWBYC + 1;
+      else
+        FF0PW00.FF0PWBYY = FF0PW00.FF0PWBYY + 1;
+      end
+    end
+  else
+    FF0PW00.FF0PWBUY = 0;
+  end
+
+
+end // end FF0P122
+
+// Obtain Detail Data
+Function FF0P130()
+   /* ------------------------------------------------------------*/
+   /* Clear the row storage area*/
+   /* ------------------------------------------------------------*/
+
+  set FH3REC empty; /* initialize record*/
+
+   /* set up key for future monthly qtys*/
+
+  FH3REC.XPRCD = FFWREC.YPGCD; /* type group code*/
+  FH3REC.XDVCD = "10"; /* division group code*/
+  FH3REC.XLCCD = "10"; /* life cycle code*/
+  FH3REC.XQACD = "01"; /* quality code*/
+  FH3REC.XCTCD = "USA "; /* country code*/
+  FH3REC.XDSCD = "*"; /* direct ship code*/
+
+  if (FF0PW00.FF0PWCAT == "O" /* orig cat requested*/
+   || FF0PW00.FF0PWCAT == "H") /* orig cat requested*/
+
+    FH3REC.XPCCD = FFWREC.XPCCD; /* category code*/
+  else
+    FH3REC.XPCCD = FF0PW01.FF2ALCAT; /* category code*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Set up key data - Call subroutine (ff5500)*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* months in season*/
+
+    if (FF0PW00.FF0PWCAT == "O") /* original cat current data requested*/
+
+      FFFREC.FFFBEGMO = FF0PW01.FF0PWMNC[FF0PWIX1]; /* beg month*/
+      FFFREC.FFFENDMO = FF0PW01.FF0PWMNC[FF0PWIX1]; /* end month*/
+
+      FH3REC.YSMXOT = "FT"; /* order type group code*/
+      FH3REC.FH1PNAC = "N"; /* nat'l acct flag*/
+
+      FF0P132(); /* Obtain Historical Qtys*/
+
+      FH3REC.YSMXOT = "FT"; /* order type group code*/
+      FH3REC.FH1PNAC = "Y"; /* nat'l acct flag*/
+
+      FF0P132(); /* Obtain Historical Qtys*/
+
+      FH3REC.YSMXOT = "PR"; /* order type group code*/
+      FH3REC.FH1PNAC = "N"; /* nat'l acct flag*/
+
+      FF0P132(); /* Obtain Historical Qtys*/
+
+      FH3REC.YSMXOT = "PR"; /* order type group code*/
+      FH3REC.FH1PNAC = "Y"; /* nat'l acct flag*/
+
+      FF0P132(); /* Obtain Historical Qtys*/
+
+    end
+
+    if (FF0PW00.FF0PWCAT == "A" /* alt cat hist data requested*/
+     || FF0PW00.FF0PWCAT == "H") /* original cat hist data requested*/
+
+      if (FF0PW01.FF0PMHST == "1" /* One year ago*/
+       || FF0PW01.FF0PMHST == "C") /* or combined*/
+
+        FF0PW00.FF0PWSWO = "1"; /* Historical option switch*/
+
+        FFFREC.FFFBEGMO = FF0PW01.FF0PWMN1[FF0PWIX1]; /* beg month*/
+        FFFREC.FFFENDMO = FF0PW01.FF0PWMN1[FF0PWIX1]; /* end month*/
+
+        FH3REC.YSMXOT = "FT"; /* order type group code*/
+        FH3REC.FH1PNAC = "N"; /* nat'l acct flag*/
+
+        FF0P132(); /* Obtain Historical Qtys*/
+
+        FH3REC.YSMXOT = "FT"; /* order type group code*/
+        FH3REC.FH1PNAC = "Y"; /* nat'l acct flag*/
+
+        FF0P132(); /* Obtain Historical Qtys*/
+
+        FH3REC.YSMXOT = "PR"; /* order type group code*/
+        FH3REC.FH1PNAC = "N"; /* nat'l acct flag*/
+
+        FF0P132(); /* Obtain Historical Qtys*/
+
+        FH3REC.YSMXOT = "PR"; /* order type group code*/
+        FH3REC.FH1PNAC = "Y"; /* nat'l acct flag*/
+
+        FF0P132(); /* Obtain Historical Qtys*/
+
+      end
+
+      if (FF0PW01.FF0PMHST == "2" /* two years ago*/
+       || FF0PW01.FF0PMHST == "C") /* or combined*/
+
+        FF0PW00.FF0PWSWO = "2"; /* Historical option switch*/
+
+        FFFREC.FFFBEGMO = FF0PW01.FF0PWMN2[FF0PWIX1]; /* beg month*/
+        FFFREC.FFFENDMO = FF0PW01.FF0PWMN2[FF0PWIX1]; /* end month*/
+
+        FH3REC.YSMXOT = "FT"; /* order type group code*/
+        FH3REC.FH1PNAC = "N"; /* nat'l acct flag*/
+
+        FF0P132(); /* Obtain Historical Qtys*/
+
+        FH3REC.YSMXOT = "FT"; /* order type group code*/
+        FH3REC.FH1PNAC = "Y"; /* nat'l acct flag*/
+
+        FF0P132(); /* Obtain Historical Qtys*/
+
+        FH3REC.YSMXOT = "PR"; /* order type group code*/
+        FH3REC.FH1PNAC = "N"; /* nat'l acct flag*/
+
+        FF0P132(); /* Obtain Historical Qtys*/
+
+        FH3REC.YSMXOT = "PR"; /* order type group code*/
+        FH3REC.FH1PNAC = "Y"; /* nat'l acct flag*/
+
+        FF0P132(); /* Obtain Historical Qtys*/
+
+      end
+
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+
+  end
+
+
+end // end FF0P130
+
+// Obtain Historical Qtys
+Function FF0P132()
+   /* ------------------------------------------------------------*/
+   /* Obtain Historical Data record*/
+   /* ------------------------------------------------------------*/
+
+  XSFFS50(); /* Summarize VFHCAT01 quantities*/
+
+  if (FF0PW00.FF0PWCAT == "O") /* original category current data*/
+
+    FF0P134(); /* store original cat qtys*/
+  else
+    FF0P136(); /* store alt cat hist data*/
+
+  end
+
+
+end // end FF0P132
+
+// Store Current Dmd Qtys
+Function FF0P134()
+   /* ------------------------------------------------------------*/
+   /* Save Original Category Current Qtys in Working Storage*/
+   /* ------------------------------------------------------------*/
+
+  if (FH3REC.YSMXOT == "FT") /* future data*/
+
+    if (FH3REC.FH1PNAC != "Y") /* non-nat'l data*/
+
+      FF0PW02.FF0PWAX1[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+      FF0PW02.FF0PWBX1[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+      FF0PW02.FF0PWCX1[FF0PWIX1] = FH3REC.FH2SHP;
+
+      FF0PW02.FF0PWDX1[FF0PWIX1] = FH3REC.FH3CNCL;
+
+    else
+
+      FF0PW02.FF0PWAN1[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+      FF0PW02.FF0PWBN1[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+      FF0PW02.FF0PWCN1[FF0PWIX1] = FH3REC.FH2SHP;
+
+      FF0PW02.FF0PWDN1[FF0PWIX1] = FH3REC.FH3CNCL;
+
+    end
+
+  end
+
+  if (FH3REC.YSMXOT == "PR") /* prop data*/
+
+    if (FH3REC.FH1PNAC != "Y") /* non-nat'l data*/
+
+      FF0PW02.FF0PWEX1[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+      FF0PW02.FF0PWFX1[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+      FF0PW02.FF0PWGX1[FF0PWIX1] = FH3REC.FH2SHP;
+
+      FF0PW02.FF0PWHX1[FF0PWIX1] = FH3REC.FH3CNCL;
+
+    else
+
+      FF0PW02.FF0PWEN1[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+      FF0PW02.FF0PWFN1[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+      FF0PW02.FF0PWGN1[FF0PWIX1] = FH3REC.FH2SHP;
+
+      FF0PW02.FF0PWHN1[FF0PWIX1] = FH3REC.FH3CNCL;
+
+    end
+
+  end
+
+
+end // end FF0P134
+
+// Store Historical Qtys
+Function FF0P136()
+   /* ------------------------------------------------------------*/
+   /* Save Alternate Category Historical Qtys in Working Storage*/
+   /* ------------------------------------------------------------*/
+
+  if (FH3REC.YSMXOT == "FT") /* future data*/
+
+    if (FFFREC.FFFBEGMO >= 199206) /* Before 199206 use actual future*/
+      FH3REC.FH1PAQTY = FH3REC.FH-FRZ-PRAL-QTY; /* Frozen future*/
+      FH3REC.FH1ALQTY = FH3REC.FH-FRZ-ALOC-QTY;
+      FH3REC.FH2SHP = FH3REC.FH-FRZ-SHP-QTY;
+      FH3REC.FH3CNCL = FH3REC.FH-FRZ-CNCL-QTY;
+    end
+
+    if (FH3REC.FH1PNAC != "Y") /* non-nat'l data*/
+
+      if (FF0PW00.FF0PWSWO == "1") /* Historical option switch*/
+
+        FF0PW03.FF0PWAX1[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+        FF0PW03.FF0PWBX1[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+        FF0PW03.FF0PWCX1[FF0PWIX1] = FH3REC.FH2SHP;
+
+        FF0PW03.FF0PWDX1[FF0PWIX1] = FH3REC.FH3CNCL;
+
+      else
+
+        FF0PW03.FF0PWAX2[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+        FF0PW03.FF0PWBX2[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+        FF0PW03.FF0PWCX2[FF0PWIX1] = FH3REC.FH2SHP;
+
+        FF0PW03.FF0PWDX2[FF0PWIX1] = FH3REC.FH3CNCL;
+
+      end
+
+    else
+
+      if (FF0PW00.FF0PWSWO == "1") /* Historical option switch*/
+
+        FF0PW03.FF0PWAN1[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+        FF0PW03.FF0PWBN1[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+        FF0PW03.FF0PWCN1[FF0PWIX1] = FH3REC.FH2SHP;
+
+        FF0PW03.FF0PWDN1[FF0PWIX1] = FH3REC.FH3CNCL;
+
+      else
+
+        FF0PW03.FF0PWAN2[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+        FF0PW03.FF0PWBN2[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+        FF0PW03.FF0PWCN2[FF0PWIX1] = FH3REC.FH2SHP;
+
+        FF0PW03.FF0PWDN2[FF0PWIX1] = FH3REC.FH3CNCL;
+
+      end
+
+    end
+
+  end
+
+  if (FH3REC.YSMXOT == "PR") /* prop data*/
+
+    if (FH3REC.FH1PNAC != "Y") /* non-nat'l data*/
+
+      if (FF0PW00.FF0PWSWO == "1") /* Historical option switch*/
+
+        FF0PW03.FF0PWEX1[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+        FF0PW03.FF0PWFX1[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+        FF0PW03.FF0PWGX1[FF0PWIX1] = FH3REC.FH2SHP;
+
+        FF0PW03.FF0PWHX1[FF0PWIX1] = FH3REC.FH3CNCL;
+
+      else
+
+        FF0PW03.FF0PWEX2[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+        FF0PW03.FF0PWFX2[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+        FF0PW03.FF0PWGX2[FF0PWIX1] = FH3REC.FH2SHP;
+
+        FF0PW03.FF0PWHX2[FF0PWIX1] = FH3REC.FH3CNCL;
+
+      end
+
+    else
+
+      if (FF0PW00.FF0PWSWO == "1") /* Historical option switch*/
+
+        FF0PW03.FF0PWEN1[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+        FF0PW03.FF0PWFN1[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+        FF0PW03.FF0PWGN1[FF0PWIX1] = FH3REC.FH2SHP;
+
+        FF0PW03.FF0PWHN1[FF0PWIX1] = FH3REC.FH3CNCL;
+
+      else
+
+        FF0PW03.FF0PWEN2[FF0PWIX1] = FH3REC.FH1PAQTY;
+
+        FF0PW03.FF0PWFN2[FF0PWIX1] = FH3REC.FH1ALQTY;
+
+        FF0PW03.FF0PWGN2[FF0PWIX1] = FH3REC.FH2SHP;
+
+        FF0PW03.FF0PWHN2[FF0PWIX1] = FH3REC.FH3CNCL;
+
+      end
+
+    end
+
+  end
+
+
+end // end FF0P136
+
+// Obtain Month Master data
+Function FF0P140()
+   /* ------------------------------------------------------------*/
+   /* Get data from Month Master Table for each month in season*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+  FF0PW00.FF0PWIX2 = 1; /* initialize index*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* months in season*/
+
+     /* Clear the row storage area*/
+     /* Set up key*/
+
+    set FF7REC empty; /* initialize record*/
+
+    FF7REC.XPCCD = FFWREC.XPCCD; /* category code*/
+    FF7REC.YPGCD = FFWREC.YPGCD; /* type group*/
+    FF7REC.YSMXDV = "10"; /* division group code*/
+    FF7REC.XCTCD = "USA "; /* country code*/
+    FF7REC.FF4FCTMO = FF0PW01.FF0PWMNC[FF0PWIX1]; /* fcst month*/
+
+    FF0P142(); /* Get Table row*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+    FF0PW00.FF0PWIX2 = FF0PW00.FF0PWIX2 + 1; /* increment index*/
+
+  end
+
+
+end // end FF0P140
+
+// get next row - Month Master
+Function FF0P142()
+   /* ------------------------------------------------------------*/
+   /* select requested row from table*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO3700" ("S ", SQLCA, FF7REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or not found, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      FF0PW01.FF7GROUP[FF0PWIX2] = FF7REC.FF7GROUP;
+      FF0PW01.FF6SLFCT[FF0PWIX2] = FF7REC.FF6SLFCT;
+      FF0PW01.FF7RVFCT[FF0PWIX2] = FF7REC.FF7RVFCT;
+      FF0PW01.FF0PWFRP[FF0PWIX2] = FF7REC.FF7FLLRT;
+      FF0PW01.FF0PWFRP[FF0PWIX2] = mathLib.round(FF0PW01.FF0PWFRP[FF0PWIX2] / 100, -mathLib.decimals(FF0PW01.FF0PWFRP[FF0PWIX2]));
+      FF0PW01.FF0PWFTR[FF0PWIX2] = FF7REC.FF7FURAT;
+      FF0PW01.FF0PWFTR[FF0PWIX2] = mathLib.round(FF0PW01.FF0PWFTR[FF0PWIX2] / 100, -mathLib.decimals(FF0PW01.FF0PWFTR[FF0PWIX2]));
+      FF0PW01.FF7FRZFL[FF0PWIX2] = FF7REC.FF7FRZFL;
+
+      return; /* Return to previous process*/
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "142"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT TABLE ROW ";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VMCAT001"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF7REC.FF7GROUP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0P142
+
+// Obtain carryover qty
+Function FF0P143()
+   /* ------------------------------------------------------------*/
+   /* Get data from Month Master Table for month prior to current*/
+   /* ------------------------------------------------------------*/
+  set FF7REC empty; /* initialize record*/
+
+  FF7REC.XPCCD = FFWREC.XPCCD; /* category code*/
+  FF7REC.YPGCD = FFWREC.YPGCD; /* type group*/
+  FF7REC.YSMXDV = "10"; /* division group code*/
+  FF7REC.XCTCD = "USA "; /* country code*/
+  FF7REC.FF4FCTMO = FF0PW00.FF0PWDT; /* fcst month*/
+
+  try
+    call "IO3700" ("S ", SQLCA, FF7REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or not found, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "143"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT TABLE ROW ";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VMCAT001"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF7REC.FF7GROUP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0P143
+
+// Obtain cat wrksht fill rate
+Function FF0P145()
+   /* ------------------------------------------------------------*/
+   /* Get cat summarized data from worksheet tables.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWESC = "N"; /* Set end of sum wrkshts*/
+
+  FF0PS05(); /* Summarize worksheet*/
+
+   /* ------------------------------------------------------------*/
+   /* Save cat summarized fill rates by month.*/
+   /* ------------------------------------------------------------*/
+
+  while (FF0PW00.FF0PWESC == "N") /* Until end of sum wrkshts*/
+
+    FF0PS07(); /* Fetch next sum wrksht*/
+
+    if (FFRREC.FF4FCTMO in FF0PW01.FF0PWMNC) /* find month*/
+      FF0PW01.FF0PWFRP[sysVar.arrayIndex] = FFRREC.FF7FLLRT;
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Close summary worksheet cursor.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PS10(); /* close sum'd worksheet*/
+
+
+end // end FF0P145
+
+// Monthly calcs - Current Dmd
+Function FF0P150()
+   /* ------------------------------------------------------------*/
+   /* Calculate Monthly data*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+  FF0PW00.FF0PWIX2 = 1; /* initialize display fields index*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* months in season*/
+
+     /* calculate future qtys*/
+
+    FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+    if (FF0PW01.FF0PWMNC[FF0PWIX1] <= FF0PW00.FF0PWBUY)
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWAX1[FF0PWIX1];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWBX1[FF0PWIX1];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWCX1[FF0PWIX1];
+    end
+
+    FFXREC.FFXNUMB = FF0PW00.FF0PWCWK;
+    XSFFS10(); /* translate units to thousands*/
+    FF0PW02.FF0PWIC[FF0PWIX2] = FFXREC.FFXNUMB;
+    FF0PW04.FF0PW1C[FF0PWIX2] = FFXREC.FFXCHAR;
+
+     /* accumulate future qtys*/
+
+    FF0PW02.FF0PWICA = FF0PW02.FF0PWICA + FF0PW02.FF0PWIC[FF0PWIX2];
+
+     /* calculate nat'l future qtys*/
+
+    FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+    if (FF0PW01.FF0PWMNC[FF0PWIX1] <= FF0PW00.FF0PWBUY)
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWAN1[FF0PWIX1];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWBN1[FF0PWIX1];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWCN1[FF0PWIX1];
+    end
+
+    FFXREC.FFXNUMB = FF0PW00.FF0PWCWK;
+    XSFFS10(); /* translate units to thousands*/
+    FF0PW02.FF0PWJC[FF0PWIX2] = FFXREC.FFXNUMB;
+    FF0PW04.FF0PW2C[FF0PWIX2] = FFXREC.FFXCHAR;
+
+     /* accumulate nat'l future qtys*/
+
+    FF0PW02.FF0PWJCA = FF0PW02.FF0PWJCA + FF0PW02.FF0PWJC[FF0PWIX2];
+
+     /* calculate prop qtys*/
+
+    FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+    FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWEX1[FF0PWIX1];
+    FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWFX1[FF0PWIX1];
+    FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWGX1[FF0PWIX1];
+
+    FF0PW02.FF0PWPX[FF0PWIX2] = FF0PW00.FF0PWCWK;
+
+     /* accumulate prop qtys*/
+
+    FF0PW02.FF0PWPXA = FF0PW02.FF0PWPXA + FF0PW02.FF0PWPX[FF0PWIX2];
+
+     /* calculate nat'l prop qtys*/
+
+    FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+    FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWEN1[FF0PWIX1];
+    FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWFN1[FF0PWIX1];
+    FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWGN1[FF0PWIX1];
+
+    FF0PW02.FF0PWPN[FF0PWIX2] = FF0PW00.FF0PWCWK;
+
+     /* accumulate nat'l prop qtys*/
+
+    FF0PW02.FF0PWPNA = FF0PW02.FF0PWPNA + FF0PW02.FF0PWPN[FF0PWIX2];
+
+     /* calculate master demand forecast*/
+
+    FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+    if (FF0PW01.FF0PWMNC[FF0PWIX1] < FF0PW00.FF0PWCMO)
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWIC[FF0PWIX2];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWDX1[FF0PWIX1];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWJC[FF0PWIX2];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWDN1[FF0PWIX1];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWPX[FF0PWIX2];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWHX1[FF0PWIX1];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWPN[FF0PWIX2];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWHN1[FF0PWIX1];
+    else
+      if (FF0PW01.FF0PWMNC[FF0PWIX1] == FF0PW00.FF0PWCMO)
+        FF0PW00.FF0PWDT = FF0PW01.FF0PWMNC[FF0PWIX1];
+        FF0PW00.FF0PWMM = FF0PW00.FF0PWMM - 1;
+        if (FF0PW00.FF0PWMM == 0)
+          FF0PW00.FF0PWMM = 12;
+          if (FF0PW00.FF0PWYY == 0)
+            FF0PW00.FF0PWYY = 99;
+            FF0PW00.FF0PWYY = FF0PW00.FF0PWYY - 100;
+          else
+            FF0PW00.FF0PWYY = FF0PW00.FF0PWYY - 1;
+          end
+        end
+        FF0P143(); /* Obtain carryover qty*/
+        if (FF0PW01.FF0PWFRP[FF0PWIX2] > 0) /* greater than zero*/
+          FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW01.FF6SLFCT[FF0PWIX2];
+          FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK - FF7REC.FF6SLFCT;
+          FF0PW00.FF0PWCWK = mathLib.round(FF0PW00.FF0PWCWK / FF0PW01.FF0PWFRP[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCWK));
+        end
+      else
+        if (FF0PW01.FF0PWFRP[FF0PWIX2] > 0) /* greater than zero*/
+          FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW01.FF6SLFCT[FF0PWIX2];
+          FF0PW00.FF0PWCWK = mathLib.round(FF0PW00.FF0PWCWK / FF0PW01.FF0PWFRP[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCWK));
+        end
+      end
+    end
+    FFXREC.FFXNUMB = FF0PW00.FF0PWCWK;
+    XSFFS10(); /* translate units to thousands*/
+    FF0PW02.FF0PWLC[FF0PWIX2] = FFXREC.FFXNUMB;
+    FF0PW04.FF0PW4C[FF0PWIX2] = FFXREC.FFXCHAR;
+
+     /* accumulate mstr dmd fcst qtys*/
+
+    FF0PW02.FF0PWLCA = FF0PW02.FF0PWLCA + FF0PW02.FF0PWLC[FF0PWIX2];
+
+     /* calculate total future qtys*/
+
+    FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+    if (FF0PW01.FF0PWMNC[FF0PWIX1] <= FF0PW00.FF0PWBUY)
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWIC[FF0PWIX2];
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWJC[FF0PWIX2];
+    else
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWLC[FF0PWIX2];
+      FF0PW00.FF0PWCWK = mathLib.round(FF0PW00.FF0PWCWK * FF0PW01.FF0PWFTR[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCWK));
+    end
+
+    FFXREC.FFXNUMB = FF0PW00.FF0PWCWK;
+    XSFFS10(); /* translate units to thousands*/
+    FF0PW02.FF0PWKC[FF0PWIX2] = FFXREC.FFXNUMB;
+    FF0PW04.FF0PW3C[FF0PWIX2] = FFXREC.FFXCHAR;
+
+     /* accumulate total future qtys*/
+
+    FF0PW02.FF0PWKCA = FF0PW02.FF0PWKCA + FF0PW02.FF0PWKC[FF0PWIX2];
+     /* calculate future ratio*/
+
+    FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+    FF0PW00.FF0PWCW6 = 0; /* initialize work field*/
+    if (FF0PW02.FF0PWKC[FF0PWIX2] > 0
+     && FF0PW02.FF0PWLC[FF0PWIX2] > 0)
+      FF0PW00.FF0PWCW5 = FF0PW02.FF0PWKC[FF0PWIX2] * 100;
+      FF0PW00.FF0PWCW6 = FF0PW00.FF0PWCW6 + FF0PW02.FF0PWLC[FF0PWIX2];
+      FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW00.FF0PWCW6, -mathLib.decimals(FF0PW00.FF0PWCW5));
+    end
+    FF0PW04.FF0PW5C[FF0PWIX2] = FF0PW00.FF0PWCW5;
+
+     /* calculate rev fcst*/
+
+    if (FF0PW01.FF0PWMNC[FF0PWIX1] < FF0PW00.FF0PWCMO)
+      FF0PW02.FF0PWOC[FF0PWIX2] = FF0PW02.FF0PWLC[FF0PWIX2];
+      FF0PW04.FF0PW7C[FF0PWIX2] = FF0PW04.FF0PW4C[FF0PWIX2];
+    else
+      if (FF0PW01.FF7RVFCT[FF0PWIX2] != 0) /* revised forecast present*/
+        FFXREC.FFXNUMB = FF0PW01.FF7RVFCT[FF0PWIX2];
+        XSFFS10(); /* translate units to thousands*/
+        FF0PW02.FF0PWOC[FF0PWIX2] = FFXREC.FFXNUMB;
+        FF0PW04.FF0PW7C[FF0PWIX2] = FFXREC.FFXCHAR;
+      else
+        FF0PW02.FF0PWOC[FF0PWIX2] = FF0PW02.FF0PWLC[FF0PWIX2];
+        FF0PW04.FF0PW7C[FF0PWIX2] = FF0PW04.FF0PW4C[FF0PWIX2];
+      end
+    end
+
+     /* accumulate Rev fcst qtys*/
+
+    FF0PW02.FF0PWOCA = FF0PW02.FF0PWOCA + FF0PW02.FF0PWOC[FF0PWIX2];
+
+     /* calculate rev future ratio*/
+
+    FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWKC[FF0PWIX2];
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+    if (FF0PW02.FF0PWOC[FF0PWIX2] > 0) /* greater than 0*/
+      FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+      FF0PW04.FF0PW8C[FF0PWIX2] = FF0PW00.FF0PWCW5;
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+    FF0PW00.FF0PWIX2 = FF0PW00.FF0PWIX2 + 1; /* increment index*/
+
+  end
+
+  FF0P155(); /* calculate grand and season totals*/
+
+
+end // end FF0P150
+
+// Total Calcs - Current Dmd
+Function FF0P155()
+   /* ------------------------------------------------------------*/
+   /* Calculate grand and season totals*/
+   /* ------------------------------------------------------------*/
+
+   /* Calculate future grand totals*/
+
+  FF0PW02.FF0PWIC[FF0PWIX2] = FF0PW02.FF0PWICA;
+  FF0PW02.FF0PWJC[FF0PWIX2] = FF0PW02.FF0PWJCA;
+  FF0PW02.FF0PWKC[FF0PWIX2] = FF0PW02.FF0PWKCA;
+  FF0PW02.FF0PWLC[FF0PWIX2] = FF0PW02.FF0PWLCA;
+  FF0PW02.FF0PWOC[FF0PWIX2] = FF0PW02.FF0PWOCA;
+
+    /* Future Qtys*/
+
+  set FFXREC empty;
+  FFXREC.FFXNUMB = FF0PW02.FF0PWIC[FF0PWIX2]; /* grand total*/
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PW1C[FF0PWIX2] = FFXREC.FFXCHAR; /* grand total*/
+
+    /* Nat'l Future Qtys*/
+
+  set FFXREC empty;
+  FFXREC.FFXNUMB = FF0PW02.FF0PWJC[FF0PWIX2]; /* Grand total*/
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PW2C[FF0PWIX2] = FFXREC.FFXCHAR; /* grand total*/
+
+    /* Total Future Qtys*/
+
+  set FFXREC empty;
+  FFXREC.FFXNUMB = FF0PW02.FF0PWKC[FF0PWIX2]; /* grand total*/
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PW3C[FF0PWIX2] = FFXREC.FFXCHAR; /* grand total*/
+
+    /* Master Dmd Fcst*/
+
+  set FFXREC empty;
+  FFXREC.FFXNUMB = FF0PW02.FF0PWLC[FF0PWIX2]; /* grand total*/
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PW4C[FF0PWIX2] = FFXREC.FFXCHAR; /* grand total*/
+
+    /* Rev Fcst Qtys*/
+
+  set FFXREC empty;
+  FFXREC.FFXNUMB = FF0PW02.FF0PWOC[FF0PWIX2]; /* grand total*/
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PW7C[FF0PWIX2] = FFXREC.FFXCHAR; /* grand total*/
+
+    /* Prop and Nat'l Prop Qtys*/
+
+  FF0PW02.FF0PWPX[FF0PWIX2] = FF0PW02.FF0PWPXA; /* grand total*/
+  FF0PW02.FF0PWPN[FF0PWIX2] = FF0PW02.FF0PWPNA; /* grand total*/
+
+   /* ------------------------------------------------------------*/
+   /* Calculate Future Ratio grand total*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+  FF0PW00.FF0PWCW6 = 0; /* initialize work field*/
+  if (FF0PW02.FF0PWKC[FF0PWIX2] > 0
+   && FF0PW02.FF0PWLC[FF0PWIX2] > 0)
+    FF0PW00.FF0PWCW5 = FF0PW02.FF0PWKC[FF0PWIX2] * 100;
+    FF0PW00.FF0PWCW6 = FF0PW00.FF0PWCW6 + FF0PW02.FF0PWLC[FF0PWIX2];
+    FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW00.FF0PWCW6, -mathLib.decimals(FF0PW00.FF0PWCW5));
+  end
+  FF0PW04.FF0PW5C[FF0PWIX2] = FF0PW00.FF0PWCW5;
+
+   /* ------------------------------------------------------------*/
+   /* Calculate season totals*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+  FF0PW00.FF0PWIX3 = 1; /* initialize index*/
+  FF0PW02.FF0PWQCA = 0; /* initialize field*/
+
+   /* perform while months in season*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* months in season*/
+
+     /* calculate fcst seas idx*/
+
+    FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWLC[FF0PWIX3];
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+    if (FF0PW02.FF0PWLC[FF0PWIX2] > 0) /* greater than 0*/
+      FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWLC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+      FF0PW04.FF0PW6C[FF0PWIX3] = FF0PW00.FF0PWCW5;
+    end
+
+     /* calculate rev seas idx and freeze flags*/
+
+    FF0PW02.FF0PWRC[FF0PWIX3] = FF0PW01.FF7FRZFL[FF0PWIX3];
+    FF0PW04.FF0PWVC[FF0PWIX3] = FF0PW01.FF7FRZFL[FF0PWIX3];
+
+    FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWOC[FF0PWIX3];
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+    if (FF0PW02.FF0PWOC[FF0PWIX2] > 0) /* greater than zero*/
+      FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+      FF0PW04.FF0PW9C[FF0PWIX3] = FF0PW00.FF0PWCW5;
+      FF0PW02.FF0PWQC[FF0PWIX3] = FF0PW00.FF0PWCW5; /* rev seas idx*/
+      FF0PW02.FF0PWQCA = FF0PW02.FF0PWQCA + FF0PW02.FF0PWQC[FF0PWIX3];
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Calculate Fcst Seas Idx  grand totals*/
+   /* ------------------------------------------------------------*/
+
+   /* grand total*/
+
+  FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+  FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWLC[FF0PWIX2];
+  FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+  if (FF0PW02.FF0PWLC[FF0PWIX2] > 0) /* greater than zero*/
+    FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWLC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+    FF0PW04.FF0PW6C[FF0PWIX2] = FF0PW00.FF0PWCW5;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Calculate Rev future ratio grand total*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+  FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWKC[FF0PWIX2];
+  FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+  if (FF0PW02.FF0PWOC[FF0PWIX2] > 0) /* greater than zero*/
+    FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+    FF0PW04.FF0PW8C[FF0PWIX2] = FF0PW00.FF0PWCW5;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Calculate Rev Seas Idx grand totals*/
+   /* ------------------------------------------------------------*/
+
+
+   /* grand total*/
+
+  FF0PW02.FF0PWQC[FF0PWIX2] = 0; /* initialize field*/
+
+  FF0PW02.FF0PWQC[FF0PWIX2] = FF0PW02.FF0PWQCA;
+  FF0PW04.FF0PW9C[FF0PWIX2] = FF0PW02.FF0PWQCA;
+
+
+end // end FF0P155
+
+// Monthly calcs - History
+Function FF0P170()
+   /* ------------------------------------------------------------*/
+   /* Calculate Monthly data*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+  FF0PW00.FF0PWIX2 = 1; /* initialize display fields index*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* months in season*/
+
+    if (FF0PW01.FF0PMHST == "1")
+
+       /* calculate hist future qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWAX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWBX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWCX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWDX1[FF0PWIX1];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWIH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PW1H[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist future qtys*/
+
+      FF0PW03.FF0PWIHA = FF0PW03.FF0PWIHA + FF0PW03.FF0PWIH[FF0PWIX2];
+
+       /* calculate hist nat'l future qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWAN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWBN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWCN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWDN1[FF0PWIX1];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWJH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PW2H[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist nat'l future qtys*/
+
+      FF0PW03.FF0PWJHA = FF0PW03.FF0PWJHA + FF0PW03.FF0PWJH[FF0PWIX2];
+
+       /* calculate hist prop qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWEX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWFX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWGX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWHX1[FF0PWIX1];
+      FF0PW03.FF0PWPX[FF0PWIX2] = FFXREC.FFXNUMB; /* prop qty*/
+
+       /* accumulate hist prop qtys*/
+
+      FF0PW03.FF0PWPXA = FF0PW03.FF0PWPXA + FF0PW03.FF0PWPX[FF0PWIX2];
+
+       /* calculate hist nat'l prop qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWEN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWFN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWGN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWHN1[FF0PWIX1];
+      FF0PW03.FF0PWPN[FF0PWIX2] = FFXREC.FFXNUMB; /* nat'l prop qty*/
+
+       /* accumulate hist nat'l prop qtys*/
+
+      FF0PW03.FF0PWPNA = FF0PW03.FF0PWPNA + FF0PW03.FF0PWPN[FF0PWIX2];
+
+       /* calculate hist prop total qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWPX[FF0PWIX2];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWPN[FF0PWIX2];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWSH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PWWH[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist prop total qtys*/
+
+      FF0PW03.FF0PWSHA = FF0PW03.FF0PWSHA + FF0PW03.FF0PWSH[FF0PWIX2];
+
+       /* calculate hist total future qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWIH[FF0PWIX2];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWJH[FF0PWIX2];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWKH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PW3H[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist prop total qtys*/
+
+      FF0PW03.FF0PWKHA = FF0PW03.FF0PWKHA + FF0PW03.FF0PWKH[FF0PWIX2];
+
+       /* calculate history demand*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWKH[FF0PWIX2];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWSH[FF0PWIX2];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWTH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PWXH[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist prop total qtys*/
+
+      FF0PW03.FF0PWTHA = FF0PW03.FF0PWTHA + FF0PW03.FF0PWTH[FF0PWIX2];
+
+       /* calculate history future ratio*/
+
+      if (FF0PW03.FF0PWTH[FF0PWIX2] > 0) /* greater than 0*/
+
+        FF0PW00.FF0PWCW5 = FF0PW03.FF0PWKH[FF0PWIX2] * 100;
+        FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW03.FF0PWTH[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+        FF0PW04.FF0PW5H[FF0PWIX2] = FF0PW00.FF0PWCW5;
+
+      else
+
+        FF0PW04.FF0PW5H[FF0PWIX2] = 0;
+
+      end
+
+    end
+
+    if (FF0PW01.FF0PMHST == "2")
+
+       /* calculate hist future qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWAX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWBX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWCX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWDX2[FF0PWIX1];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWIH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PW1H[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist future qtys*/
+
+      FF0PW03.FF0PWIHA = FF0PW03.FF0PWIHA + FF0PW03.FF0PWIH[FF0PWIX2];
+
+       /* calculate hist nat'l future qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWAN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWBN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWCN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWDN2[FF0PWIX1];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWJH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PW2H[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist nat'l future qtys*/
+
+      FF0PW03.FF0PWJHA = FF0PW03.FF0PWJHA + FF0PW03.FF0PWJH[FF0PWIX2];
+
+       /* calculate hist prop qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWEX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWFX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWGX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWHX2[FF0PWIX1];
+      FF0PW03.FF0PWPX[FF0PWIX2] = FFXREC.FFXNUMB;
+
+       /* accumulate hist prop qtys*/
+
+      FF0PW03.FF0PWPXA = FF0PW03.FF0PWPXA + FF0PW03.FF0PWPX[FF0PWIX2];
+
+       /* calculate hist nat'l prop qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWEN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWFN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWGN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWHN2[FF0PWIX1];
+      FF0PW03.FF0PWPN[FF0PWIX2] = FFXREC.FFXNUMB;
+
+       /* accumulate hist nat'l prop qtys*/
+
+      FF0PW03.FF0PWPNA = FF0PW03.FF0PWPNA + FF0PW03.FF0PWPN[FF0PWIX2];
+
+       /* calculate hist prop total qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWPX[FF0PWIX2];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWPN[FF0PWIX2];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWSH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PWWH[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist prop total qtys*/
+
+      FF0PW03.FF0PWSHA = FF0PW03.FF0PWSHA + FF0PW03.FF0PWSH[FF0PWIX2];
+
+       /* calculate hist total future qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWIH[FF0PWIX2];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWJH[FF0PWIX2];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWKH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PW3H[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist total future qtys*/
+
+      FF0PW03.FF0PWKHA = FF0PW03.FF0PWKHA + FF0PW03.FF0PWKH[FF0PWIX2];
+
+       /* calculate history demand*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWKH[FF0PWIX2];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWSH[FF0PWIX2];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWTH[FF0PWIX2] = FFXREC.FFXNUMB; /* hist dmd*/
+      FF0PW04.FF0PWXH[FF0PWIX2] = FFXREC.FFXCHAR; /* hist dmd*/
+
+       /* accumulate hist dmd qtys*/
+
+      FF0PW03.FF0PWTHA = FF0PW03.FF0PWTHA + FF0PW03.FF0PWTH[FF0PWIX2];
+
+       /* calculate history future ratio*/
+
+      if (FF0PW03.FF0PWTH[FF0PWIX2] > 0) /* greater than zero*/
+
+        FF0PW00.FF0PWCW5 = FF0PW03.FF0PWKH[FF0PWIX2] * 100;
+        FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW03.FF0PWTH[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+        FF0PW04.FF0PW5H[FF0PWIX2] = FF0PW00.FF0PWCW5;
+
+      else
+
+        FF0PW04.FF0PW5H[FF0PWIX2] = 0;
+
+      end
+
+    end
+
+    if (FF0PW01.FF0PMHST == "C")
+
+       /* calculate hist future qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWAX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWBX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWCX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWDX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWAX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWBX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWCX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWDX2[FF0PWIX1];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWIH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PW1H[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist future qtys*/
+
+      FF0PW03.FF0PWIHA = FF0PW03.FF0PWIHA + FF0PW03.FF0PWIH[FF0PWIX2];
+
+       /* calculate hist nat'l future qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWAN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWBN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWCN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWDN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWAN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWBN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWCN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWDN2[FF0PWIX1];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWJH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PW2H[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist nat'l future qtys*/
+
+      FF0PW03.FF0PWJHA = FF0PW03.FF0PWJHA + FF0PW03.FF0PWJH[FF0PWIX2];
+
+       /* calculate hist prop qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWEX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWFX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWGX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWHX1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWEX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWFX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWGX2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWHX2[FF0PWIX1];
+      FF0PW03.FF0PWPX[FF0PWIX2] = FFXREC.FFXNUMB;
+
+       /* accumulate hist prop qtys*/
+
+      FF0PW03.FF0PWPXA = FF0PW03.FF0PWPXA + FF0PW03.FF0PWPX[FF0PWIX2];
+
+       /* calculate hist nat'l prop qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWEN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWFN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWGN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWHN1[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWEN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWFN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWGN2[FF0PWIX1];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWHN2[FF0PWIX1];
+      FF0PW03.FF0PWPN[FF0PWIX2] = FFXREC.FFXNUMB;
+
+       /* accumulate hist nat'l prop qtys*/
+
+      FF0PW03.FF0PWPNA = FF0PW03.FF0PWPNA + FF0PW03.FF0PWPN[FF0PWIX2];
+
+       /* calculate hist prop qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWPX[FF0PWIX2];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWPN[FF0PWIX2];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWSH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PWWH[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist prop total qtys*/
+
+      FF0PW03.FF0PWSHA = FF0PW03.FF0PWSHA + FF0PW03.FF0PWSH[FF0PWIX2];
+
+       /* calculate hist total future qtys*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWIH[FF0PWIX2];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWJH[FF0PWIX2];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWKH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PW3H[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist total future qtys*/
+
+      FF0PW03.FF0PWKHA = FF0PW03.FF0PWKHA + FF0PW03.FF0PWKH[FF0PWIX2];
+
+       /* calculate history demand*/
+
+      FFXREC.FFXNUMB = FF0PW03.FF0PWKH[FF0PWIX2];
+      FFXREC.FFXNUMB = FFXREC.FFXNUMB + FF0PW03.FF0PWSH[FF0PWIX2];
+      XSFFS10(); /* translate units to thousands*/
+      FF0PW03.FF0PWTH[FF0PWIX2] = FFXREC.FFXNUMB;
+      FF0PW04.FF0PWXH[FF0PWIX2] = FFXREC.FFXCHAR;
+
+       /* accumulate hist dmd qtys*/
+
+      FF0PW03.FF0PWTHA = FF0PW03.FF0PWTHA + FF0PW03.FF0PWTH[FF0PWIX2];
+
+       /* calculate history future ratio*/
+
+      if (FF0PW03.FF0PWTH[FF0PWIX2] > 0) /* greater than zero*/
+
+        FF0PW00.FF0PWCW5 = FF0PW03.FF0PWKH[FF0PWIX2] * 100;
+        FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW03.FF0PWTH[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+        FF0PW04.FF0PW5H[FF0PWIX2] = FF0PW00.FF0PWCW5;
+
+      else
+
+        FF0PW04.FF0PW5H[FF0PWIX2] = 0;
+
+      end
+
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+    FF0PW00.FF0PWIX2 = FF0PW00.FF0PWIX2 + 1; /* increment index*/
+
+  end
+
+  FF0P175(); /* calculate grand and season totals*/
+
+
+end // end FF0P170
+
+// Total Calcs - History
+Function FF0P175()
+   /* ------------------------------------------------------------*/
+   /* Calculate grand and season totals*/
+   /* ------------------------------------------------------------*/
+
+   /* Calculate future grand totals*/
+
+  FF0PW03.FF0PWIH[FF0PWIX2] = FF0PW03.FF0PWIHA;
+  FF0PW03.FF0PWJH[FF0PWIX2] = FF0PW03.FF0PWJHA;
+  FF0PW03.FF0PWKH[FF0PWIX2] = FF0PW03.FF0PWKHA;
+  FF0PW03.FF0PWSH[FF0PWIX2] = FF0PW03.FF0PWSHA;
+  FF0PW03.FF0PWTH[FF0PWIX2] = FF0PW03.FF0PWTHA;
+
+    /* Future Qtys*/
+
+  FFXREC.FFXNUMB = FF0PW03.FF0PWIH[FF0PWIX2];
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PW1H[FF0PWIX2] = FFXREC.FFXCHAR; /* grand total*/
+
+    /* Nat'l Future Qtys*/
+
+  FFXREC.FFXNUMB = FF0PW03.FF0PWJH[FF0PWIX2];
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PW2H[FF0PWIX2] = FFXREC.FFXCHAR; /* grand total*/
+
+    /* Total Future Qtys*/
+
+  FFXREC.FFXNUMB = FF0PW03.FF0PWKH[FF0PWIX2];
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PW3H[FF0PWIX2] = FFXREC.FFXCHAR; /* grand total*/
+
+    /* Prop Qtys*/
+
+  FFXREC.FFXNUMB = FF0PW03.FF0PWSH[FF0PWIX2];
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PWWH[FF0PWIX2] = FFXREC.FFXCHAR; /* grand total*/
+
+    /* Dmd Qtys*/
+
+  FFXREC.FFXNUMB = FF0PW03.FF0PWTH[FF0PWIX2];
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PWXH[FF0PWIX2] = FFXREC.FFXCHAR; /* grand total*/
+
+   /* ------------------------------------------------------------*/
+   /* Calculate Hist Future Ratio*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW03.FF0PWTH[FF0PWIX2] > 0) /* greater than zero*/
+
+    FF0PW00.FF0PWCW5 = FF0PW03.FF0PWKH[FF0PWIX2] * 100;
+    FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW03.FF0PWTH[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+    FF0PW04.FF0PW5H[FF0PWIX2] = FF0PW00.FF0PWCW5;
+
+  else
+
+    FF0PW04.FF0PW5H[FF0PWIX2] = 0;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Calculate season totals*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+  FF0PW00.FF0PWIX3 = 1; /* initialize index*/
+
+   /* Perform while months in season*/
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* months in season*/
+
+     /* calculate hist dmd ind*/
+
+    if (FF0PW03.FF0PWTH[FF0PWIX2] > 0) /* greater than zero*/
+
+      FF0PW00.FF0PWCW5 = FF0PW03.FF0PWTH[FF0PWIX3] * 100;
+      FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW03.FF0PWTH[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+      FF0PW04.FF0PWYH[FF0PWIX3] = FF0PW00.FF0PWCW5;
+
+    else
+
+      FF0PW04.FF0PWYH[FF0PWIX3] = 0;
+
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Calculate Hist Dmd Ind Sub and Grand totals*/
+   /* ------------------------------------------------------------*/
+
+
+    /* grand total*/
+
+  if (FF0PW03.FF0PWTH[FF0PWIX2] > 0) /* greater than zero*/
+
+    FF0PW00.FF0PWCW5 = FF0PW03.FF0PWTH[FF0PWIX2] * 100;
+    FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW03.FF0PWTH[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+    FF0PW04.FF0PWYH[FF0PWIX2] = FF0PW00.FF0PWCW5;
+
+  else
+
+    FF0PW04.FF0PWYH[FF0PWIX2] = 0;
+
+  end
+
+
+end // end FF0P175
+
+// Format and Converse Map
+Function FF0P200()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, save the error message number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    FFWREC.XXXMSGNO = converseVar.validationMsgNum; /* Message number*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data requested or no error, format the data to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWDRF == "Y" /* If data was requested*/
+   || converseVar.validationMsgNum == 0) /* or no error found*/
+
+    if (FF0PW00.FF0PWFMF == "Y") /* Map must be formatted*/
+      FF0P210(); /* Format the data on the map*/
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Format the current date and any FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PM001.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  FF0PM001.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  FF0PM001.CAITEM = COMMAREA.CAITEM; /* Application data*/
+
+   /* ------------------------------------------------------------*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /* ------------------------------------------------------------*/
+
+  if (FFWREC.XXXMSGNO != 0) /* Message to display*/
+
+    FF0PM001.XXXMODID = FFWREC.XXXMODID; /* Module identification*/
+    if (FFWREC.XXXMSGNO == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(FFWREC.XXXMSGNO);
+    end /* Message number*/
+
+    set FF0PM001 alarm; /* Sound audible alarm*/
+
+  end
+
+  converse FF0PM001 ;
+
+   /* ------------------------------------------------------------*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  FFWREC.XXXMSGNO = 0; /* Message number*/
+  FFWREC.XXXMODID = " "; /* Module identification*/
+
+  COMMAREA.CATOAP = FF0PM001.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = FF0PM001.CAITEM; /* Application data*/
+
+
+end // end FF0P200
+
+// Format Data to Display
+Function FF0P210()
+   /* ------------------------------------------------------------*/
+   /* Clear map*/
+   /* ------------------------------------------------------------*/
+
+  set FF0PM001 initial; /* clear screen*/
+  FF0PW00.FF0PWFMF = "N"; /* reset flag*/
+
+   /* ------------------------------------------------------------*/
+   /* Move category code and abrv to map*/
+   /* ------------------------------------------------------------*/
+
+  FF0PM001.XPCCD = FFWREC.XPCCD; /* category code*/
+  FF0PM001.XPCABRV = FFWREC.XPCABRV; /* category abrv*/
+
+   /* ------------------------------------------------------------*/
+   /* Move type group code and abrv to map*/
+   /* ------------------------------------------------------------*/
+
+  FF0PM001.YPGCD = FFWREC.YPGCD; /* type group code*/
+  FF0PM001.YPGABRV = FFWREC.YPGABRV; /* type group abrv*/
+
+   /* ------------------------------------------------------------*/
+   /* Move Season Begin Month to map*/
+   /* ------------------------------------------------------------*/
+
+  FF0PM001.FF2SEASN = FF0PW01.FF0PWMBM; /* season begin month*/
+
+   /* ------------------------------------------------------------*/
+   /* Move Historical Option  code to map*/
+   /* ------------------------------------------------------------*/
+
+  FF0PM001.FF0PMHST = FF0PW01.FF0PMHST; /* season begin month*/
+
+   /* ------------------------------------------------------------*/
+   /* If data was not obtained return to previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.CACHGFL != "Y")
+    return; /* Return to previous process*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Put Historical Option description on map*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW01.FF0PMHST == "C") /* Combined history*/
+    FF0PM001.FF0PMHSD = "1-2 YEARS COMBINED";
+  else
+    if (FF0PW01.FF0PMHST == "2") /* Two years ago*/
+      FF0PM001.FF0PMHSD = "   2 YEARS AGO    ";
+    else
+      FF0PM001.FF0PMHSD = "    1 YEAR AGO    ";
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Set modifiable fields to normal & move months in season*/
+   /* to map.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWGTM > 0) /* if grand total on page*/
+    set FF0PM001.FF0PMOC[FF0PWGTM] normal; /* rev fcst grand total*/
+    FF0PM001.FF0PMMON[FF0PWGTM] = "GRAND";
+    set FF0PM001.FF0PMMON[FF0PWGTM] skip; /* set map field*/
+    set FF0PM001.FF0PMOC[FF0PWGTM] normal; /* rev fcst*/
+    set FF0PM001.FF0PMQC[FF0PWGTM] skip; /* rev seas idx*/
+    set FF0PM001.FF0PMRC[FF0PWGTM] invisible, skip; /* freeze flag*/
+  end
+
+  FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* initialize index ws*/
+  FF0PW00.FF0PWIX2 = 1; /* initialize index map*/
+
+  while (FF0PW00.FF0PWIX2 <= FF0PW00.FF0PWMMX) /* max months on screen*/
+
+    if (FF0PW01.FF0PWMNC[FF0PWIX1] < FF0PW00.FF0PWCMO)
+      set FF0PM001.FF0PMOC[FF0PWIX2] skip; /* rev fcst*/
+      set FF0PM001.FF0PMQC[FF0PWIX2] skip; /* rev seas idx*/
+    else
+      set FF0PM001.FF0PMOC[FF0PWIX2] normal; /* rev fcst*/
+      set FF0PM001.FF0PMQC[FF0PWIX2] normal; /* rev seas idx*/
+    end
+    set FF0PM001.FF0PMRC[FF0PWIX2] normal; /* freeze flag*/
+    FF0PW00.FF0PWDT = FF0PW01.FF0PWMNC[FF0PWIX1]; /* date work*/
+    FF0PW01.FF0PWDMM = FF0PW00.FF0PWMM; /* display month*/
+    FF0PW01.FF0PWDYY = FF0PW00.FF0PWYY; /* display year*/
+    FF0PM001.FF0PMMON[FF0PWIX2] = FF0PW01.FF0PWDDT;
+                                  /* map month*/
+    set FF0PM001.FF0PMMON[FF0PWIX2] skip; /* set map field*/
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1;
+    FF0PW00.FF0PWIX2 = FF0PW00.FF0PWIX2 + 1;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Indicate an error if the total index is not within limits.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW04.FF0PW9C[FF0PWGTW] == 0) /* Total index is zero*/
+
+     /* NEXT SENTENCE*/
+
+  else
+
+    if (FF0PW04.FF0PW9C[FF0PWGTW] < 98 /* Total index LT minimum*/
+     || FF0PW04.FF0PW9C[FF0PWGTW] > 102) /* or GT maximum*/
+
+      set FF0PM001.FF0PMQC[1] cursor; /* Establish cursor position*/
+      FFWREC.XXXMSGNO = 159; /* Total index must be 100*/
+      FFWREC.XXXMODID = "210"; /* Module identification*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Determine number of display fields*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* initialize index WS*/
+  FF0PW00.FF0PWIX2 = 1; /* initialize index map*/
+
+  while (FF0PW00.FF0PWIX2 <= FF0PW00.FF0PWMCL)
+                                   /* max number of display fields*/
+
+     /* future qty - current dmd*/
+    FF0PM001.FF0PMIC[FF0PWIX2] = FF0PW04.FF0PW1C[FF0PWIX1];
+
+     /* nat'l future qty - current dmd*/
+    FF0PM001.FF0PMJC[FF0PWIX2] = FF0PW04.FF0PW2C[FF0PWIX1];
+
+     /* total future qty - current dmd*/
+    FF0PM001.FF0PMKC[FF0PWIX2] = FF0PW04.FF0PW3C[FF0PWIX1];
+
+     /* mstr dmd fcst - current dmd*/
+    FF0PM001.FF0PMLC[FF0PWIX2] = FF0PW04.FF0PW4C[FF0PWIX1];
+
+     /* future ratio - current dmd*/
+    FF0PM001.FF0PMMC[FF0PWIX2] = FF0PW04.FF0PW5C[FF0PWIX1];
+
+     /* fcst seas ind - current dmd*/
+    FF0PM001.FF0PMNC[FF0PWIX2] = FF0PW04.FF0PW6C[FF0PWIX1];
+
+     /* revised fcst - current dmd*/
+    FF0PM001.FF0PMOC[FF0PWIX2] = FF0PW04.FF0PW7C[FF0PWIX1];
+
+     /* revised future ratio - current dmd*/
+    FF0PM001.FF0PMPC[FF0PWIX2] = FF0PW04.FF0PW8C[FF0PWIX1];
+
+     /* revised seas ind - current dmd*/
+    if (FF0PW00.FF0PWIX1 == FF0PW00.FF0PWGTW) /* grand total position*/
+      if (FF0PW04.FF0PW9C[FF0PWGTW] > 98 /* Total index gT minimum*/
+       && FF0PW04.FF0PW9C[FF0PWGTW] < 102) /* or lT maximum*/
+        FF0PM001.FF0PMQC[FF0PWIX2] = 100;
+      else
+        FF0PM001.FF0PMQC[FF0PWIX2] = FF0PW04.FF0PW9C[FF0PWIX1];
+      end
+    else
+      FF0PM001.FF0PMQC[FF0PWIX2] = FF0PW04.FF0PW9C[FF0PWIX1];
+    end
+
+     /* freeze flags - current dmd*/
+
+
+    if (FF0PW00.FF0PWIX1 == FF0PW00.FF0PWGTW) /* grand total position*/
+      FF0PM001.FF0PMRC[FF0PWIX2] = " ";
+    else
+      FF0PM001.FF0PMRC[FF0PWIX2] = FF0PW04.FF0PWVC[FF0PWIX1];
+    end
+
+     /* future qtys - hist*/
+    FF0PM001.FF0PMIH[FF0PWIX2] = FF0PW04.FF0PW1H[FF0PWIX1];
+
+     /* nat'l future qtys - hist*/
+    FF0PM001.FF0PMJH[FF0PWIX2] = FF0PW04.FF0PW2H[FF0PWIX1];
+
+     /* total future qtys - hist*/
+    FF0PM001.FF0PMKH[FF0PWIX2] = FF0PW04.FF0PW3H[FF0PWIX1];
+
+     /* prop qtys - hist*/
+    FF0PM001.FF0PMSH[FF0PWIX2] = FF0PW04.FF0PWWH[FF0PWIX1];
+
+     /* dmd qtys - hist*/
+    FF0PM001.FF0PMTH[FF0PWIX2] = FF0PW04.FF0PWXH[FF0PWIX1];
+
+     /* future ratio - hist*/
+    FF0PM001.FF0PMMH[FF0PWIX2] = FF0PW04.FF0PW5H[FF0PWIX1];
+
+     /* dmd ind - hist*/
+    FF0PM001.FF0PMUH[FF0PWIX2] = FF0PW04.FF0PWYH[FF0PWIX1];
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+    FF0PW00.FF0PWIX2 = FF0PW00.FF0PWIX2 + 1; /* increment index*/
+
+  end
+
+
+end // end FF0P210
+
+// Check Attention Identifier
+Function FF0P300()
+   /* ------------------------------------------------------------*/
+   /* If CANCEL was requested, clear the map fields and exit.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+
+    FF0PW00.FF0PWFMF = "Y"; /* format the map*/
+
+    COMMAREA.CATOAP = " "; /* Clear TO application*/
+    COMMAREA.CAITEM = " "; /* Clear item*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If FAST PATH was requested, transfer to the application.*/
+   /* ------------------------------------------------------------*/
+
+  if (COMMAREA.CATOAP > " ") /* FAST PATH was requested*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      XSFFS01(); /* Exit to another application*/
+
+      set FF0PM001.CATOAP cursor, bold; /* Highlight*/
+
+    else
+
+      converseLib.validationFailed(36); /* 'PF Keys not valid with Fast Path'*/
+      FFWREC.XXXMODID = "300"; /* module identification*/
+
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If PF1 is pressed, go to HELP screen*/
+   /* If PF5 is pressed, go to Production Menu*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf1 /* PF1 was pressed*/
+   || converseVar.eventKey is pf3 /* pf3 was pressed*/
+   || converseVar.eventKey is pf5) /* pf5 was pressed*/
+
+    if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+      COMMAREA.CAITEM = "FF0PM001"; /* APPLICATION FIND CODE*/
+    end
+
+    if (converseVar.eventKey is pf3) /* pf3 was pressed*/
+      COMMAREA.CATOAP = "FF0A";
+    end
+
+    XSFFS01(); /* Exit to another application*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf10  /* and pf10 was not pressed*/
+   && converseVar.eventKey not pf11  /* and pf11 was not pressed*/
+   && converseVar.eventKey not pf13  /* and pf13 was not pressed*/
+   && converseVar.eventKey not pf14) /* and pf14 was not pressed*/
+
+    converseLib.validationFailed(3); /* Indicate PF key not valid*/
+    FFWREC.XXXMODID = "300"; /* Process name*/
+
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+      
+    end
+
+    exit stack;
+
+  end
+
+
+end // end FF0P300
+
+// Reset Highlighted Fields
+Function FF0P400()
+   /* ------------------------------------------------------------*/
+   /* Reset field attributes to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  set FF0PM001.XPCCD initialAttributes; /* category code*/
+  set FF0PM001.YPGCD initialAttributes; /* type grp code*/
+  set FF0PM001.FF2SEASN initialAttributes; /* season beg month*/
+  set FF0PM001.FF0PMHST initialAttributes; /* Historical Option code*/
+
+  if (FF0PW00.CACHGFL == "Y") /* Data was formatted*/
+
+    FF0PW00.FF0PWIXM = 1; /* Initialize map index*/
+
+    while (FF0PW00.FF0PWIXM <= FF0PW00.FF0PWMCL) /* Until end of columns*/
+
+      set FF0PM001.FF0PMOC[FF0PWIXM] normal; /* Revised forecast*/
+
+      set FF0PM001.FF0PMQC[FF0PWIXM] normal; /* Seasonal index*/
+
+      if (FF0PW00.FF0PWIXM == FF0PW00.FF0PWGTM) /* skip grant tot position*/
+          /* next sentence*/
+      else
+        set FF0PM001.FF0PMRC[FF0PWIXM] normal; /* Freeze flag*/
+      end
+
+      FF0PW00.FF0PWIXM = FF0PW00.FF0PWIXM + 1; /* increment index*/
+
+    end
+
+  end
+
+  set FF0PM001.CATOAP initialAttributes; /* Commarea TO application*/
+  set FF0PM001.CAITEM initialAttributes; /* Commarea application data*/
+
+   /* ------------------------------------------------------------*/
+   /* If no lists were requested, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PM001.XPCCD == "?" /* category code list requested*/
+   || FF0PM001.YPGCD == "?") /* type group code list requested*/
+
+    if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+
+      FFWREC.XXXMODID = "400"; /* Module identification*/
+      FFWREC.XXXMSGNO = 116; /* Indicate PF key not valid*/
+
+      exit stack; /* Exit to display map*/
+
+    end
+
+  else
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If requested, display the list of category codes.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PM001.XPCCD == "?") /* Category list requested*/
+
+    XPXX001(); /* Window initialization*/
+    XX0XW02.XX0XWHDR = "         CATEGORY"; /* Heading*/
+    XX0XW02.XGPCD = COMMAREA.XGPCD; /* GPC code*/
+
+    while (XX0XW02.XX0XWEND == "N") /* Until end of request*/
+      XPXPC01(); /* Display the list*/
+    end
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection made*/
+
+      FF0PM001.XPCCD = FFWREC.XPCCD; /* Restore prior code*/
+      FF0PM001.XPCABRV = FFWREC.XPCABRV; /* Description*/
+    else
+      FF0PM001.XPCCD = XPCTBL.XPCCD[XX0XWPIX]; /* Selected code*/
+      FF0PM001.XPCABRV = XPCTBL.XPCABRV[XX0XWPIX]; /* Description*/
+
+    end
+
+    set FF0PM001.XPCCD cursor; /* Establish cursor position*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If requested, display the list of Type Group codes.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PM001.YPGCD == "?") /* Type Group list requested*/
+
+    XPXX001(); /* Window initialization*/
+    XX0XW02.XX0XWHDR = "         TYPE"; /* Heading*/
+    XX0XW02.YPGFFFL = "Y"; /* Footwear forecasting only*/
+
+    while (XX0XW02.XX0XWEND == "N") /* Until end of request*/
+      XPYPG01(); /* Display the list*/
+    end
+
+    if (XX0XW02.XX0XWPIX == 0) /* No selection made*/
+
+      FF0PM001.YPGCD = FFWREC.YPGCD; /* Restore prior code*/
+      FF0PM001.YPGABRV = FFWREC.YPGABRV; /* Description*/
+    else
+      FF0PM001.YPGCD = YPGTBL.YPGCD[XX0XWPIX]; /* Selected code*/
+      FF0PM001.YPGABRV = YPGTBL.YPGABRV[XX0XWPIX]; /* Description*/
+
+    end
+
+    set FF0PM001.YPGCD cursor; /* Establish cursor position*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the requested list has been displayed and*/
+   /* that ENTER must be pressed to process any changes.*/
+   /* ------------------------------------------------------------*/
+
+  converseLib.clearScreen();
+   /* Clear screen before display*/
+
+  FFWREC.XXXMODID = "400"; /* Module identification*/
+  converseLib.validationFailed(97); /* Indicate press ENTER*/
+
+  exit stack;
+
+
+end // end FF0P400
+
+// Verify the entered data
+Function FF0P500()
+   /* ------------------------------------------------------------*/
+   /* Edit Item (if entered)*/
+   /* ------------------------------------------------------------*/
+
+  if (COMMAREA.CAITEM > " ") /* item entered*/
+    FFWREC.XXXMODID = "500"; /* module identification*/
+    set FF0PM001.CAITEM cursor, bold; /* set cursor*/
+    converseLib.validationFailed(40); /* 'Enter only with Option'*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Set index to final month position depending on number*/
+   /* of months in season. If first time through, set to max*/
+   /* months possible.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWCMM == 0)
+    FF0PW00.FF0PWIX2 = 9; /* max months on page*/
+    FF0PW00.FF0PWCMM = 1; /* current start*/
+  else
+    FF0PW00.FF0PWIX2 = FF0PW00.FF0PWMMX; /* max months on page*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Reset modified fields flags*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWDMF = "N"; /* reset data modified flag*/
+  FF0PW00.FF0PWFGM = "N"; /* reset data modified flag*/
+  FF0PW00.FF0PWRSF = "N"; /* reset data modified flag*/
+  FF0PW00.FF0PWRSU = "N"; /* reset data modified flag*/
+  FF0PW00.FF0PWFFM = "N"; /* reset data m dified flag*/
+  FF0PW00.FF0PWRFM = "N"; /* reset data modified flag*/
+
+   /* ------------------------------------------------------------*/
+   /* If Data fields were modified, set flag.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PM001.XPCCD != FFWREC.XPCCD        /* category code changed*/
+   || FF0PM001.YPGCD != FFWREC.YPGCD        /* type group code changed*/
+   || FF0PM001.FF2SEASN != FF0PW01.FF0PWMBM /* beg month changed*/
+   || FF0PM001.FF0PMHST != FF0PW01.FF0PMHST) /* hist option changed*/
+    FF0PW00.FF0PWDMF = "Y"; /* data modified*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If PF14 was pressed and key changed, display error message.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf14 /* PF14 was pressed*/
+   || converseVar.eventKey is pf10 /* PF10 was pressed*/
+   || converseVar.eventKey is pf11) /* PF11 was pressed*/
+
+    if (FF0PW00.FF0PWDMF == "Y") /* data was modified*/
+
+      converseLib.validationFailed(111);
+                                   /* 'function not allowed - data changed'*/
+      FFWREC.XXXMODID = "500"; /* module identification*/
+
+      exit stack; /* Exit to display map*/
+
+    end
+
+    return; /* Return to previous process*/
+
+  end
+
+  FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* initialize index WS*/
+  FF0PW00.FF0PWIX3 = 1; /* initialize index map*/
+
+  while (FF0PW00.FF0PWIX3 <= FF0PW00.FF0PWIX2) /* display fields*/
+    if (FF0PM001.FF0PMOC[FF0PWIX3] != FF0PW04.FF0PW7C[FF0PWIX1])
+      FF0PW00.FF0PWRFM = "Y"; /* rev fcst qtys modified*/
+    end
+
+    if (FF0PM001.FF0PMQC[FF0PWIX3] != FF0PW04.FF0PW9C[FF0PWIX1])
+      if (FF0PM001.FF0PMRC[FF0PWIX3] == "Y")
+        FF0PW00.FF0PWRSF = "Y"; /* rev seas ind mod (frozen)*/
+      else
+        if (FF0PM001.FF0PMRC[FF0PWIX3] == "N")
+          FF0PW00.FF0PWRSU = "Y"; /* rev seas ind mod (unfrozen)*/
+        end
+      end
+    end
+
+    if (FF0PM001.FF0PMRC[FF0PWIX3] != FF0PW04.FF0PWVC[FF0PWIX1])
+      FF0PW00.FF0PWFFM = "Y"; /* freeze flag modified*/
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+
+  end
+
+   /* set index to reflect grand total field*/
+
+  if (FF0PW00.FF0PWGTM == 0) /* first time grand tot not on page*/
+    FF0PW00.FF0PWFGM = "N"; /* rev fcst grand tot modified*/
+  else
+     /* check rev fcst grand tot field*/
+
+    if (FF0PM001.FF0PMOC[FF0PWGTM] != FF0PW04.FF0PW7C[FF0PWGTW])
+      FF0PW00.FF0PWFGM = "Y"; /* rev fcst grand tot modified*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If PF13 was pressed check for changes and index total.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf13) /* PF13 was pressed*/
+
+    if (FF0PW00.FF0PWDMF == "Y" /* data was modified*/
+     || FF0PW00.FF0PWFGM == "Y" /* data was modified*/
+     || FF0PW00.FF0PWRSF == "Y" /* data was modified*/
+     || FF0PW00.FF0PWRSU == "Y" /* data was modified*/
+     || FF0PW00.FF0PWFFM == "Y" /* data was modified*/
+     || FF0PW00.FF0PWRFM == "Y") /* data was modified*/
+
+      converseLib.validationFailed(111);
+                                   /* 'function not allowed - data changed'*/
+      FFWREC.XXXMODID = "500"; /* module identification*/
+
+      exit stack; /* Exit to display map*/
+
+    end
+
+    if (FF0PW04.FF0PW9C[FF0PWGTW] == 0) /* Total index is zero*/
+
+       /* NEXT SENTENCE*/
+
+    else
+
+      if (FF0PW04.FF0PW9C[FF0PWGTW] < 98 /* Total index LT minimum*/
+       || FF0PW04.FF0PW9C[FF0PWGTW] > 102) /* or GT maximum*/
+
+        set FF0PM001.FF0PMQC[1] cursor; /* Establish cursor position*/
+        converseLib.validationFailed(159); /* Total index must be 100*/
+        FFWREC.XXXMODID = "500"; /* module identification*/
+
+        exit stack; /* Exit to display map*/
+
+      end
+
+    end
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If rev fcst grand tot and rev seas ind for frozen months*/
+   /* changed, indicate error.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWFGM == "Y" /* rev fcst grand tot modified*/
+   && FF0PW00.FF0PWRSF == "Y") /* rev seas ind (frozen) mod*/
+    converseLib.validationFailed(190); /* 'cannot change both fields'*/
+    FFWREC.XXXMODID = "500"; /* module identification*/
+    set FF0PM001.FF0PMOC[FF0PWGTM] cursor, bold; /* set cursor*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* initialize ws index*/
+    FF0PW00.FF0PWIX3 = 1; /* initialize mp index*/
+
+    while (FF0PW00.FF0PWIX3 <= FF0PW00.FF0PWMMX) /* max mos on page*/
+
+      if (FF0PM001.FF0PMQC[FF0PWIX3] != FF0PW04.FF0PW9C[FF0PWIX1])
+        if (FF0PM001.FF0PMRC[FF0PWIX3] == "Y")
+          set FF0PM001.FF0PMQC[FF0PWIX3] cursor, bold;
+        end
+      end
+      FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+      FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If rev fcst grand tot and rev seas ind for unfrozen months*/
+   /* changed, indicate error.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWFGM == "Y" /* rev fcst grand tot modified*/
+   && FF0PW00.FF0PWRSU == "Y") /* rev seas ind (frozen) mod*/
+    converseLib.validationFailed(190); /* 'cannot change both fields'*/
+    FFWREC.XXXMODID = "500"; /* module identification*/
+    set FF0PM001.FF0PMOC[FF0PWGTM] cursor, bold; /* set cursor*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* initialize ws index*/
+    FF0PW00.FF0PWIX3 = 1; /* initialize mp index*/
+
+    while (FF0PW00.FF0PWIX3 <= FF0PW00.FF0PWMMX) /* max mos on page*/
+
+      if (FF0PM001.FF0PMQC[FF0PWIX3] != FF0PW04.FF0PW9C[FF0PWIX1])
+        if (FF0PM001.FF0PMRC[FF0PWIX3] == "N")
+          set FF0PM001.FF0PMQC[FF0PWIX3] cursor, bold;
+        end
+      end
+      FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+      FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If rev fcst grand tot and rev fcst qtys changed, indicate*/
+   /* error.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWFGM == "Y" /* rev fcst grand tot modified*/
+   && FF0PW00.FF0PWRFM == "Y") /* rev fcst qtys modified*/
+    converseLib.validationFailed(191); /* 'cannot change both fields'*/
+    FFWREC.XXXMODID = "500"; /* module identification*/
+    set FF0PM001.FF0PMOC[FF0PWGTM] cursor, bold; /* set cursor*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* initialize ws index*/
+    FF0PW00.FF0PWIX3 = 1; /* initialize mp index*/
+
+    while (FF0PW00.FF0PWIX3 <= FF0PW00.FF0PWMMX) /* max mos on page*/
+
+      if (FF0PM001.FF0PMOC[FF0PWIX3] != FF0PW04.FF0PW7C[FF0PWIX1])
+        set FF0PM001.FF0PMOC[FF0PWIX3] cursor, bold;
+      end
+      FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+      FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If rev seas ind was changed for both frozen and unfrozen*/
+   /* months, indicate an error.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWRSF == "Y" /* rev seas ind (frozen) mod*/
+   && FF0PW00.FF0PWRSU == "Y") /* rev seas ind (unfrozen) mod*/
+    converseLib.validationFailed(192); /* 'cannot change both fields'*/
+    FFWREC.XXXMODID = "500"; /* module identification*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* initialize ws index*/
+    FF0PW00.FF0PWIX3 = 1; /* initialize mp index*/
+
+    while (FF0PW00.FF0PWIX3 <= FF0PW00.FF0PWMMX) /* max mos on page*/
+
+
+      if (FF0PM001.FF0PMQC[FF0PWIX3] != FF0PW04.FF0PW9C[FF0PWIX1])
+        set FF0PM001.FF0PMQC[FF0PWIX3] cursor, bold;
+      end
+      FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+      FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If rev seas ind for frozen months and rev fcst qtys were*/
+   /* changed, indicate an error.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWRSF == "Y" /* rev seas ind (frozen) mod*/
+   && FF0PW00.FF0PWRFM == "Y") /* rev fcst qtys modified*/
+    converseLib.validationFailed(193); /* 'cannot change both fields'*/
+    FFWREC.XXXMODID = "500"; /* module identification*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* initialize ws index*/
+    FF0PW00.FF0PWIX3 = 1; /* initialize mp index*/
+
+    while (FF0PW00.FF0PWIX3 <= FF0PW00.FF0PWMMX) /* max mos on page*/
+
+      if (FF0PM001.FF0PMQC[FF0PWIX3] != FF0PW04.FF0PW9C[FF0PWIX1])
+        if (FF0PM001.FF0PMRC[FF0PWIX3] == "Y") /* frozen month*/
+          set FF0PM001.FF0PMQC[FF0PWIX3] cursor, bold;
+        end
+      end
+      if (FF0PM001.FF0PMOC[FF0PWIX3] != FF0PW04.FF0PW7C[FF0PWIX1])
+        set FF0PM001.FF0PMOC[FF0PWIX3] cursor, bold;
+      end
+      FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+      FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If rev seas ind for unfrozen months and rev fcst qtys were*/
+   /* changed, indicate an error.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWRSU == "Y" /* rev seas ind (unfrozen) mod*/
+   && FF0PW00.FF0PWRFM == "Y") /* rev fcst qtys modified*/
+    converseLib.validationFailed(193); /* 'cannot change both fields'*/
+    FFWREC.XXXMODID = "500"; /* module identification*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* initialize ws index*/
+    FF0PW00.FF0PWIX3 = 1; /* initialize mp index*/
+
+    while (FF0PW00.FF0PWIX3 <= FF0PW00.FF0PWMMX) /* max mos on page*/
+
+
+      if (FF0PM001.FF0PMQC[FF0PWIX3] != FF0PW04.FF0PW9C[FF0PWIX1])
+        if (FF0PM001.FF0PMRC[FF0PWIX3] == "N") /* unfrozen month*/
+          set FF0PM001.FF0PMQC[FF0PWIX3] cursor, bold;
+        end
+      end
+      if (FF0PM001.FF0PMOC[FF0PWIX3] != FF0PW04.FF0PW7C[FF0PWIX1])
+        set FF0PM001.FF0PMOC[FF0PWIX3] cursor, bold;
+      end
+      FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+      FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If freeze flags were modified, verify their validity.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWFFM == "Y") /* freeze flags modified*/
+    FF0PW00.FF0PWIX3 = 1; /* initialize mp index*/
+
+    while (FF0PW00.FF0PWIX3 <= FF0PW00.FF0PWMMX) /* max mos on page*/
+
+      if (FF0PM001.FF0PMRC[FF0PWIX3] != "N"
+       && FF0PM001.FF0PMRC[FF0PWIX3] != "Y")
+        converseLib.validationFailed(10); /* 'invalid value entered'*/
+        FFWREC.XXXMODID = "500"; /* module identification*/
+        set FF0PM001.FF0PMRC[FF0PWIX3] cursor, bold;
+      end
+      FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If History Option has been changed, verify its validity.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PM001.FF0PMHST != FF0PW01.FF0PMHST) /* hist opt changed*/
+    if (FF0PM001.FF0PMHST != "1"
+     && FF0PM001.FF0PMHST != "2"
+     && FF0PM001.FF0PMHST != "C")
+      converseLib.validationFailed(10); /* invalid value entered*/
+      FFWREC.XXXMODID = "500"; /* module identification*/
+      set FF0PM001.FF0PMHST cursor, bold; /* set cursor*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If Beginning Month has been changed, verify its validity.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PM001.XPCCD != FFWREC.XPCCD        /* Category code changed*/
+   || FF0PM001.YPGCD != FFWREC.YPGCD        /* or type group code changed*/
+   || FF0PM001.FF2SEASN != FF0PW01.FF0PWMBM /* or beg month changed*/
+   || FF0PM001.FF0PMHST != FF0PW01.FF0PMHST) /* or hist option changed*/
+
+    if (FF0PM001.FF2SEASN != 0) /* Beg month entered*/
+
+      set TA2REC empty; /* initialize record*/
+      FF0PW00.FF0PWYMC = FF0PM001.FF2SEASN; /* beg yymm work area*/
+      FF0PW00.FF0PWDAY = 01; /* beg day*/
+      TA2REC.TA2DTOPT = "GREGGREG"; /* date option*/
+      TA2REC.TA2GRTYP = "E"; /* date format*/
+      TA2REC.TA2GRGEN = FF0PW00.FF0PWCDT; /* converted beg date*/
+
+      FF0P510(); /* validate date*/
+
+      if (TA2REC.TA2RTNCD != 0)
+
+        converseLib.validationFailed(17); /* Date is missing or invalid*/
+        FFWREC.XXXMODID = "500"; /* module identification*/
+        set FF0PM001.FF2SEASN cursor, bold; /* set cursor*/
+
+      else
+
+        move 0 to FF0PW01.FF2SEASN[1] for all; /* Clear seasons array*/
+        FF0PW00.FF0PWBMA = "N"; /* initialize flag*/
+
+        FF0P520(); /* validate date*/
+
+        if (SQLCA.VAGen_SQLCODE == 0) /* Normal return*/
+
+          FF0PW00.FF0PWBMF = "N"; /* initialize flag*/
+          FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+          while (FF0PW00.FF0PWIX1 <= FF2REC.FF2NSEAS) /* max seasons*/
+            if (TA2REC.TA2GRCYM == FF0PW01.FF2SEASN[FF0PWIX1])
+              FF0PW00.FF0PWBMF = "Y"; /* season begin month found*/
+              FF0PW00.FF0PWDT = TA2REC.TA2GRCYM; /* begin date*/
+              if (FF0PW00.FF0PWIX1 == FF2REC.FF2NSEAS) /* max seasons*/
+                FF0PW00.FF0PWXDT = FF0PW01.FF2SEASN[1]; /* end mo*/
+              else
+                FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* incr index*/
+                FF0PW00.FF0PWXDT = FF0PW01.FF2SEASN[FF0PWIX1];
+                                                                  /* end mo*/
+              end
+            end
+            FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+          end
+
+          if (FF0PW00.FF0PWBMA == "Y" /* Begin month available*/
+           && FF0PW00.FF0PWBMF == "N") /* and begin month not found*/
+
+            converseLib.validationFailed(160); /* 'season begin month not valid'*/
+            FFWREC.XXXMODID = "500"; /* module identification*/
+            set FF0PM001.FF2SEASN cursor, bold; /* set cursor*/
+
+          end
+
+        else
+          converseLib.validationFailed(187); /* 'category not found*/
+          FFWREC.XXXMODID = "500"; /* module identification*/
+          set FF0PM001.XPCCD cursor, bold; /* set cursor*/
+        end
+
+      end
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If Type Group code has been changed, verify its validity.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PM001.YPGCD != FFWREC.YPGCD) /* Type Group code changed*/
+    if (FF0PM001.YPGCD in YPGTBL.YPGCD           /* if code in table*/
+     && YPGTBL.XXXSTAT[sysVar.arrayIndex] == "A" /* status is active*/
+     && YPGTBL.YPGFFFL[sysVar.arrayIndex] == "Y") /* valid for forecasting*/
+      FF0PM001.YPGABRV = YPGTBL.YPGABRV[sysVar.arrayIndex]; /* move abrv to map*/
+    else
+      FF0PM001.YPGABRV = " "; /* clear description*/
+      converseLib.validationFailed(10); /* 'invalid value entered'*/
+      FFWREC.XXXMODID = "500"; /* module identification*/
+      set FF0PM001.YPGCD cursor, bold; /* set cursor*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If Category code has changed, verify its validity.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PM001.XPCCD != FFWREC.XPCCD) /* Category code changed*/
+    XPCREC.XPCCD = FF0PM001.XPCCD; /* category*/
+    XPCREC.XGPCD = COMMAREA.XGPCD; /* gpc code*/
+    if (XPCREC.XPCKEY in XPCTBL.XPCKEY /* if code in table*/
+     && XPCTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* status is active*/
+      FF0PM001.XPCABRV = XPCTBL.XPCABRV[sysVar.arrayIndex]; /* move abrv to map*/
+    else
+      FF0PM001.XPCABRV = " "; /* clear description*/
+      converseLib.validationFailed(10); /* 'invalid value entered'*/
+      FFWREC.XXXMODID = "500"; /* module identification*/
+      set FF0PM001.XPCCD cursor, bold; /* set cursor*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* if Category code or type group were not entered on screen,*/
+   /* highlight appropriate field and display error message.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is enter) /* Enter was pressed*/
+
+    if (FF0PM001.YPGCD == " ") /* Type Group code not entered*/
+      converseLib.validationFailed(8); /* 'Required field, please enter'*/
+      FFWREC.XXXMODID = "500"; /* module identification*/
+      set FF0PM001.YPGCD cursor, bold; /* set cursor*/
+    end
+
+    if (FF0PM001.XPCCD == " ") /* Category code not entered*/
+      converseLib.validationFailed(8); /* 'Required field, please enter'*/
+      FFWREC.XXXMODID = "500"; /* module identification*/
+      set FF0PM001.XPCCD cursor, bold; /* set cursor*/
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If any error was found, exit to display the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    exit stack; /* Exit to display map*/
+  end
+
+
+end // end FF0P500
+
+// Validate Dates
+Function FF0P510()
+   /* ------------------------------------------------------------*/
+   /* Validate date using subroutine TA0040*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Date validation routine*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA2REC.TA2RTNCD < 888)         /* and expected return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "510"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "    "; /* Type of error*/
+  TA1REC.TA1LOC = "CALL TA0040      ";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1TBLKE = TA2REC.TA2GROUP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0P510
+
+// Verify season begin date
+Function FF0P520()
+   /* ------------------------------------------------------------*/
+   /* Clear the row storage area*/
+   /* Set up key - Footwear Forecast XREF Table*/
+   /* ------------------------------------------------------------*/
+
+  set FF2REC empty; /* initialize record*/
+
+  FF2REC.XPCCD = FF0PM001.XPCCD; /* Product category*/
+  FF2REC.YPGCD = FF0PM001.YPGCD; /* type group*/
+  FF2REC.YSMXDV = "10"; /* division group code*/
+  FF2REC.XPLCD = "*"; /* product line code*/
+
+   /* ------------------------------------------------------------*/
+   /* select requested row from table*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4000" ("S ", SQLCA, FF2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or not found, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+
+      if (FF2REC.FF2NSEAS > 0) /* nbr of seasons exists*/
+
+        FF0PW00.FF0PWBMA = "Y"; /* Indicate months available*/
+
+        FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+
+        while (FF0PW00.FF0PWIX1 <= 4)
+
+          FF0PW01.FF2SEASN[FF0PWIX1] = FF2REC.FF2SEASN[FF0PWIX1];
+
+          FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1;
+
+        end
+
+      end
+
+      return; /* Return to previous process*/
+
+    end
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* Cross-reference not found*/
+      return; /* Return to previous process*/
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  FFWREC.XXXMODID = "520"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(01); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT TABLE ROW ";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFXRF01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF2REC.FF2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0P520
+
+// Process Valid Input Request
+Function FF0P600()
+   /* ------------------------------------------------------------*/
+   /* Indicate map must be formatted*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWFMF = "Y"; /* Format map*/
+
+   /* ------------------------------------------------------------*/
+   /* verify scroll left request*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf10) /* display next season*/
+    FFWREC.XXXMODID = "600"; /* module id*/
+    if (FF0PW00.FF0PWCMM > 1)
+      FF0PW00.FF0PWCMM = 1; /* start column position*/
+      FF0PW00.FF0PWGTM = 0; /* grand total not on screen*/
+      FF0PW00.FF0PWMMX = 9; /* months on screen*/
+      FF0PW00.FF0PWMCL = 9; /* columns on screen*/
+      FFWREC.XXXMSGNO = 15; /* display message left scroll*/
+    else
+      FFWREC.XXXMSGNO = 23; /* unable to scroll left*/
+    end
+
+    exit stack;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* verify scroll right request*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf11) /* display next season*/
+    FFWREC.XXXMODID = "600"; /* module id*/
+    if (FF0PW00.FF0PWCMM == 1 /* on first column*/
+     && FF0PW00.FF0PWPMX > 1) /* more than one page*/
+      FF0PW00.FF0PWCMM = 10; /* start column position*/
+      FF0PW00.FF0PWMMX = FF0PW01.FF0PWMNS - 9; /* months on screen*/
+      FF0PW00.FF0PWGTM = FF0PW00.FF0PWMMX + 1; /* grand tot position on map*/
+      FF0PW00.FF0PWMCL = FF0PW00.FF0PWMMX + 1; /* columns on screen*/
+      FFWREC.XXXMSGNO = 14; /* display message right scroll*/
+    else
+      FFWREC.XXXMSGNO = 24; /* unable to scroll right*/
+    end
+
+    exit stack;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If PF13, update monthly revised fcsts and freeze flags*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf13) /* PF13 was pressed*/
+
+     /* Obtain current date and time*/
+
+    XX0XS01();
+
+    FF0PW00.FF0PWIX1 = 1; /* initialize index*/
+
+    while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* months in season*/
+
+      FF7REC.FF7GROUP = FF0PW01.FF7GROUP[FF0PWIX1];
+
+      FF7REC.FF7RVFCT = FF0PW02.FF0PWOC[FF0PWIX1]; /* rev fcst*/
+      FF7REC.FF7FRZFL = FF0PW04.FF0PWVC[FF0PWIX1]; /* freeze flag*/
+      FF7REC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+      FF7REC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+
+      FF0P610(); /* update table row*/
+
+      FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+
+    end
+
+    FF2REC.FF2GROUP = FF0PW01.FF2GROUP;
+
+    FF2REC.FF2REVDT = XX0XW01.XX0XWDAT; /* rev fcst date last updated*/
+    FF2REC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+    FF2REC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+
+    FF0P620(); /* update table row*/
+
+    /* ------------------------------------------------------------*/
+     /* commit all changes to protected resources*/
+    /* ------------------------------------------------------------*/
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.commit(); /* commit all changes*/
+
+    FFWREC.XXXMODID = "600"; /* Module identification*/
+    FFWREC.XXXMSGNO = 032; /* 'update successful'*/
+
+    FF0PW00.FF0PWDRF = "Y"; /* data requested*/
+
+    return;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If PF14, refresh screen data*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf14) /* PF14 was pressed*/
+
+    FF0PW00.FF0PWDRF = "Y"; /* data requested*/
+
+    return;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If Category code, Type Group code, Beginning Month, or hist*/
+   /* opt have been changed, exit to display map.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PM001.XPCCD != FFWREC.XPCCD        /* category code changed*/
+   || FF0PM001.YPGCD != FFWREC.YPGCD        /* type group code changed*/
+   || FF0PM001.FF2SEASN != FF0PW01.FF0PWMBM /* beg month changed*/
+   || FF0PM001.FF0PMHST != FF0PW01.FF0PMHST) /* hist option changed*/
+
+    FFWREC.XPCCD = FF0PM001.XPCCD; /* category code*/
+    FFWREC.XPCABRV = FF0PM001.XPCABRV; /* Abbreviation*/
+    FFWREC.YPGCD = FF0PM001.YPGCD; /* type group code*/
+    FFWREC.YPGABRV = FF0PM001.YPGABRV; /* Abbreviation*/
+
+    FF0PW01.FF0PWMBM = FF0PM001.FF2SEASN; /* Begin month*/
+    FF0PW01.FF0PMHST = FF0PM001.FF0PMHST; /* History option*/
+
+    if (FF0PM001.FF2SEASN != 0) /* Begin month entered*/
+      FF0PW01.FF0PWSMN = TA2REC.TA2GRCYM; /* Season begin month*/
+    end
+
+    FF0PW00.FF0PWDRF = "Y"; /* Data request switch*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If freeze flags were modified, move map values to map*/
+   /* display storage.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWFFM == "Y") /* freeze flags modified*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* initialize index WS*/
+    FF0PW00.FF0PWIX2 = 1; /* initialize index map*/
+
+    while (FF0PW00.FF0PWIX2 <= FF0PW00.FF0PWMMX) /* months on screen*/
+
+      FF0PW04.FF0PWVC[FF0PWIX1] = FF0PM001.FF0PMRC[FF0PWIX2];
+
+      FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+      FF0PW00.FF0PWIX2 = FF0PW00.FF0PWIX2 + 1; /* increment index*/
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If Rev fcst changed in frozen or unfrozen months,*/
+   /* do re-calculations.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWRFM == "Y") /* rev fcsts modified*/
+    FF0P630(); /* rev fcst re-calculations*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If Rev seas ind changed in unfrozen months, do*/
+   /* re-calculations.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWRSU == "Y") /* rev seas ind (unfrozen) modified*/
+    FF0P640();
+                                   /* unfrozen rev seas ind re-calculations*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If Rev seas ind changed in frozen months, do*/
+   /* re-calculations.*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWRSF == "Y") /* rev seas ind (frozen) modified*/
+    FF0P650(); /* frozen rev seas ind re-calculations*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If Grand tot Rev fcst changed, do re-calculations*/
+   /* ------------------------------------------------------------*/
+
+  if (FF0PW00.FF0PWFGM == "Y") /* rev fcst grand total modified*/
+    FF0P660(); /* rev fcst grand tot re-calculations*/
+  end
+
+
+end // end FF0P600
+
+// Update table row - Month Mstr
+Function FF0P610()
+   /* ------------------------------------------------------------*/
+   /* Update Month Master Table Row*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO3700" ("U ", SQLCA, FF7REC) {isNoRefresh = yes, isExternal = yes};
+  end /* update row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to calling process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    else
+      if (SQLCA.VAGen_SQLCODE == +100) /* database updated by another user*/
+        VGVar.handleSysLibraryErrors = 0;
+        sysLib.rollback(); /* rollback changes made by user*/
+        FFWREC.XXXMODID = "610"; /* Module identification*/
+        FFWREC.XXXMSGNO = 46; /* 'database updated by another user'*/
+        FF0PW00.FF0PWDRF = "Y"; /* data requested*/
+        exit stack; /* Exit to display map*/
+      end
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* database currently in use*/
+    converseLib.validationFailed(47); /* 'database currently in use'*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* rollback changes made by user*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    converseLib.validationFailed(01); /* error, notify progamming staff*/
+    converseLib.clearScreen();
+    
+  end
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  FFWREC.XXXMODID = "610"; /* Module identification*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UPDATE TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VMCAT001"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF7REC.FF7KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0P610
+
+// update table row - Xref
+Function FF0P620()
+   /* ------------------------------------------------------------*/
+   /* Update Cross Reference Table Row*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4000" ("U ", SQLCA, FF2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* update row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to calling process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    else
+      if (SQLCA.VAGen_SQLCODE == +100) /* database updated by another user*/
+        VGVar.handleSysLibraryErrors = 0;
+        sysLib.rollback(); /* rollback changes made by user*/
+        FFWREC.XXXMODID = "620"; /* Module identification*/
+        FFWREC.XXXMSGNO = 46; /* 'database updated by another user'*/
+        FF0PW00.FF0PWDRF = "Y"; /* data requested*/
+        exit stack; /* Exit to display map*/
+      end
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* database currently in use*/
+    converseLib.validationFailed(47); /* 'database currently in use'*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* rollback changes made by user*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    converseLib.validationFailed(01); /* error, notify progamming staff*/
+    converseLib.clearScreen();
+    
+  end
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  FFWREC.XXXMODID = "620"; /* Module identification*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UPDATE TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFFXRF01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FF2REC.FF2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0P620
+
+// Recalculations - Rev Fcsts
+Function FF0P630()
+   /* -----------------------------------------------------------*/
+   /* Position grand total index.*/
+   /* -----------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX2 = FF0PW00.FF0PWGTW; /* Set grand total position*/
+
+   /* -----------------------------------------------------------*/
+   /* Re-calculate revised fcst quantities.*/
+   /* -----------------------------------------------------------*/
+
+  FF0PW02.FF0PWOC[FF0PWIX2] = 0; /* Init rev fcst grand total*/
+
+  FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* Init display index ws*/
+  FF0PW00.FF0PWIX3 = 1; /* Init display index map*/
+
+  while (FF0PW00.FF0PWIX3 <= FF0PW00.FF0PWMMX) /* Months on screen*/
+      /* Translate, save, & move monthly rev fcst qtys to map*/
+    FFXREC.FFXCHAR = FF0PM001.FF0PMOC[FF0PWIX3];
+                                /* map mo qty*/
+    XSFFS11(); /* translate thousands to units*/
+    FF0PW02.FF0PWOC[FF0PWIX1] = FFXREC.FFXNUMB; /* month qty*/
+    FF0PW04.FF0PW7C[FF0PWIX1] = FFXREC.FFXCHAR; /* month qty*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment disp ix*/
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment disp ix*/
+  end
+
+   /* -----------------------------------------------------------*/
+   /* Re-calculate revised fcst grand total*/
+   /* -----------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* Init display index ws*/
+  FF0PW02.FF0PWOC[FF0PWIX2] = 0;
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* All months in season*/
+      /* Add monthly to grand total*/
+    FF0PW02.FF0PWOC[FF0PWIX2] = FF0PW02.FF0PWOC[FF0PWIX2] +     FF0PW02.FF0PWOC[FF0PWIX1];
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment disp ix*/
+  end
+   /* -----------------------------------------------------------*/
+   /* Translate, save, & move rev fcst grand total to map.*/
+   /* -----------------------------------------------------------*/
+
+  FFXREC.FFXNUMB = FF0PW02.FF0PWOC[FF0PWIX2];
+  XSFFS10(); /* translate units to thousands*/
+  FF0PW04.FF0PW7C[FF0PWIX2] = FFXREC.FFXCHAR;
+
+   /* ------------------------------------------------------------*/
+   /* Re-calculate monthly rev seas ind & rev fut ratios.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize display ix*/
+  FF0PW00.FF0PWIX3 = 1; /* initialize month ix*/
+  FF0PW00.FF0PWCW2 = 0; /* clear pct work field*/
+  FF0PW00.FF0PWCW6 = 0; /* clear qty work field*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all months in sesn*/
+
+     /* Save freeze flags*/
+    FF0PW02.FF0PWRC[FF0PWIX3] = FF0PW01.FF7FRZFL[FF0PWIX3];
+    FF0PW04.FF0PWVC[FF0PWIX3] = FF0PW01.FF7FRZFL[FF0PWIX3];
+
+     /* Calculate, save, & move rev seas ind to map.*/
+     /* Monthly rev seas ind = Monthly rev fcst qty * 100*/
+                          /* / Grand rev fcst qty.*/
+    FF0PW00.FF0PWCW5 = 0; /* initialize qty work field*/
+    if (FF0PW02.FF0PWOC[FF0PWIX2] > 0) /* greater than zero*/
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWOC[FF0PWIX3];
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+      FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+    end
+    FF0PW02.FF0PWQC[FF0PWIX3] = FF0PW00.FF0PWCW5; /* Save rev seas ix*/
+    FF0PW04.FF0PW9C[FF0PWIX3] = FF0PW00.FF0PWCW5; /* Disp rev seas ix*/
+
+     /* Add monthly rev seas ind to grand total work area.*/
+    FF0PW00.FF0PWCW6 = FF0PW00.FF0PWCW6 + FF0PW02.FF0PWQC[FF0PWIX3];
+
+     /* Calculate, save, & move rev fut ratio to map.*/
+     /* Monthly rev fut ratio = Monthly tot fut qty * 100*/
+                          /* / monthly rev fcst qty.*/
+    FF0PW00.FF0PWCW5 = 0; /* initialize qty work field*/
+    if (FF0PW02.FF0PWOC[FF0PWIX3] > 0) /* greater than zero*/
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWKC[FF0PWIX3];
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+      FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX3], -mathLib.decimals(FF0PW00.FF0PWCW5));
+    end
+    FF0PW04.FF0PW8C[FF0PWIX3] = FF0PW00.FF0PWCW5; /* Disp rev fut rt*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment disp ix*/
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment month ix*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Calculate, save, & move grand totals to map for Rev seas*/
+   /* ind & rev fut ratio.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+
+  FF0PW00.FF0PWCWK = FF0PW00.FF0PWCW6; /* accum work grand*/
+
+  FF0PW04.FF0PW9C[FF0PWIX2] = FF0PW00.FF0PWCWK; /* Disp rev ses grand*/
+  FF0PW02.FF0PWQC[FF0PWIX2] = FF0PW00.FF0PWCWK; /* Save rev sesn grand*/
+
+   /* Calculate rev fut ratio grand total.*/
+  FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+  if (FF0PW02.FF0PWOC[FF0PWIX2] > 0) /* greater than zero*/
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWKC[FF0PWIX2];
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+    FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+  end
+  FF0PW04.FF0PW8C[FF0PWIX2] = FF0PW00.FF0PWCW5; /* Disp rev fut grand*/
+
+
+end // end FF0P630
+
+// Recalcs - Rev Seas Ind-Unfrozn
+Function FF0P640()
+   /* ------------------------------------------------------------*/
+   /* Position grand total index.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX2 = FF0PW00.FF0PWGTW; /* Set grand total position*/
+
+   /* ------------------------------------------------------------*/
+   /* Re-calc, translate, & save monthly revised fcst qtys for*/
+   /* unfrozen months whose rev seas ind have been changed.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = FF0PW00.FF0PWCMM; /* Init display index WS*/
+  FF0PW00.FF0PWIX3 = 1; /* Init index map*/
+
+  while (FF0PW00.FF0PWIX3 <= FF0PW00.FF0PWMMX) /* For all mos on screen*/
+
+    if (FF0PM001.FF0PMRC[FF0PWIX3] == "N") /* If unfrozen month*/
+      if (FF0PM001.FF0PMQC[FF0PWIX3] != FF0PW04.FF0PW9C[FF0PWIX1])
+        FF0PW02.FF0PWQC[FF0PWIX1] = FF0PM001.FF0PMQC[FF0PWIX3];
+        FF0PW04.FF0PW9C[FF0PWIX1] = FF0PM001.FF0PMQC[FF0PWIX3];
+           /* Re-calc new rev fcst qty = grand rev fcst qty*/
+                                  /* * new month rev seas ind.*/
+        FF0PW00.FF0PWCW5 = 0; /* clear work field*/
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWOC[FF0PWIX2];
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * FF0PM001.FF0PMQC[FF0PWIX3];
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 / 100;
+        FF0PW02.FF0PWOC[FF0PWIX1] = FF0PW00.FF0PWCW5; /* Save qty*/
+        FFXREC.FFXNUMB = FF0PW02.FF0PWOC[FF0PWIX1];
+        XSFFS10(); /* translate units to thousands*/
+        FF0PW04.FF0PW7C[FF0PWIX1] = FFXREC.FFXCHAR; /* Disp mo qty*/
+      end
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* Increment disp ix*/
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* Increment month ix*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Re-calculate monthly rev fut ratios.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize display ix*/
+  FF0PW00.FF0PWIX3 = 1; /* initialize month ix*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all months in sesn*/
+
+     /* Calculate, save, & move rev fut ratio to map.*/
+     /* Monthly rev fut ratio = Monthly tot fut qty * 100*/
+                          /* / monthly rev fcst qty.*/
+    FF0PW00.FF0PWCW5 = 0; /* initialize qty work field*/
+    if (FF0PW02.FF0PWOC[FF0PWIX3] > 0) /* greater than zero*/
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWKC[FF0PWIX3];
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+      FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX3], -mathLib.decimals(FF0PW00.FF0PWCW5));
+    end
+    FF0PW04.FF0PW8C[FF0PWIX3] = FF0PW00.FF0PWCW5; /* Disp rev fut rt*/
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment disp ix*/
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment month ix*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Re-calc, save, & move grand totals to map for rev seas*/
+   /* ind & rev fut ratio.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWCWK = 0; /* initialize field*/
+  FF0PW00.FF0PWCW2 = 0; /* Init work field*/
+
+  FF0PW00.FF0PWIX3 = 1; /* initialize month index*/
+  while (FF0PW00.FF0PWIX3 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+    FF0PW00.FF0PWCW2 = FF0PW00.FF0PWCW2 + FF0PW02.FF0PWQC[FF0PWIX3];
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+  end
+  FF0PW00.FF0PWCWK = FF0PW00.FF0PWCW2; /* accum work grand*/
+
+  FF0PW04.FF0PW9C[FF0PWIX2] = FF0PW00.FF0PWCWK; /* Disp rev ind grand*/
+  FF0PW02.FF0PWQC[FF0PWIX2] = FF0PW00.FF0PWCWK; /* save rev ind grand*/
+
+   /* Calculate rev fut ratio grand total.*/
+  FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+  if (FF0PW02.FF0PWOC[FF0PWIX2] > 0) /* greater than zero*/
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWKC[FF0PWIX2];
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+    FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+  end
+  FF0PW04.FF0PW8C[FF0PWIX2] = FF0PW00.FF0PWCW5; /* Disp rev fut grand*/
+
+
+end // end FF0P640
+
+// Recalcs - Rev Seas Ind-Frozen
+Function FF0P650()
+   /* ------------------------------------------------------------*/
+   /* Position grand total index.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX2 = FF0PW00.FF0PWGTW; /* grand total position*/
+
+   /* ------------------------------------------------------------*/
+   /* Move all Rev Seas Ind for frozen months to map display*/
+   /* storage from map.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize disp ix*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+
+    if (FF0PW04.FF0PWVC[FF0PWIX1] == "Y") /* Frozen month*/
+      FF0PW02.FF0PWQC[FF0PWIX1] = FF0PM001.FF0PMQC[FF0PWIX1];
+      FF0PW04.FF0PW9C[FF0PWIX1] = FF0PM001.FF0PMQC[FF0PWIX1];
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Re-calc, translate, save & move to map grand rev fcst qty.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize disp index*/
+  FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+  FF0PW00.FF0PWCW2 = 0; /* initialize work field*/
+  FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+  FF0PW00.FF0PWCW6 = 0; /* initialize work field*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+       /* Accumulate a total of monthly rev fcst qtys & rev seas*/
+       /* indices for frozen months.*/
+    if (FF0PW04.FF0PWVC[FF0PWIX1] == "Y") /* If frozen month*/
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWOC[FF0PWIX1];
+      FF0PW00.FF0PWCW6 = FF0PW00.FF0PWCW6 + FF0PW02.FF0PWQC[FF0PWIX1];
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+
+  end
+   /* New grand rev fcst = (total of mo rev fcsts for frozen mos*/
+   /* * 100) / total of mo rev seas indices for frozen months.*/
+  FF0PW02.FF0PWOC[FF0PWIX2] = 0; /* clear field*/
+  FF0PW00.FF0PWCW7 = 0; /* clear field*/
+
+  FF0PW00.FF0PWCW7 = FF0PW00.FF0PWCW7 + FF0PW00.FF0PWCW5;
+  FF0PW00.FF0PWCW7 = FF0PW00.FF0PWCW7 * 100;
+  if (FF0PW00.FF0PWCW6 > 0) /* greater than zero*/
+    FF0PW00.FF0PWCW7 = FF0PW00.FF0PWCW7 / FF0PW00.FF0PWCW6;
+    FFXREC.FFXNUMB = FF0PW00.FF0PWCW7;
+    FF0PW02.FF0PWOC[FF0PWIX2] = FF0PW00.FF0PWCW7;
+    XSFFS10(); /* translate units to thousands*/
+    FF0PW04.FF0PW7C[FF0PWIX2] = FFXREC.FFXCHAR;
+
+  end
+
+   /* Save rev fcst frozen month total.*/
+  FF0PW01.FF0PWFMR = FF0PW00.FF0PWCW5;
+
+   /* ------------------------------------------------------------*/
+   /* Re-calc monthly revised fcsts for unfrozen months.*/
+   /* ------------------------------------------------------------*/
+
+   /* Calculate portion of grand rev fcst that is unfrozen =*/
+   /* grand rev fcst - total of monthly frozen rev fcsts.*/
+  FF0PW00.FF0PWCWK = 0; /* initialize field*/
+
+  FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWOC[FF0PWIX2];
+  FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK - FF0PW01.FF0PWFMR;
+  FF0PW01.FF0PWUTR = FF0PW00.FF0PWCWK;
+
+   /* Calculate Total of all unfrozen rev seas indices*/
+  FF0PW00.FF0PWIX1 = 1; /* initialize display index*/
+  FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+    if (FF0PW04.FF0PWVC[FF0PWIX1] == "N") /* If unfrozen month*/
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWQC[FF0PWIX1];
+    end
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment disp ix*/
+  end
+
+   /* Save rev seas indices unfrozen total.*/
+  FF0PW01.FF0PWURS = FF0PW00.FF0PWCWK;
+
+   /* Calculate new monthly unfrozen rev fcsts =*/
+      /* (monthly unfrozen rev seas ind*/
+     /* * unfrozen amount of grand rev fcst qty)*/
+     /* / total of monthly unfrozen rev seas indices.*/
+  FF0PW00.FF0PWIX1 = 1; /* initialize disp ix*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+
+    if (FF0PW04.FF0PWVC[FF0PWIX1] == "N") /* If unfrozen month*/
+      FF0PW00.FF0PWCW5 = 0; /* initialize field*/
+      if (FF0PW01.FF0PWURS > 0) /* greater than zero*/
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWQC[FF0PWIX1];
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * FF0PW01.FF0PWUTR;
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 / FF0PW01.FF0PWURS;
+        FF0PW02.FF0PWOC[FF0PWIX1] = FF0PW00.FF0PWCW5;
+        FFXREC.FFXNUMB = FF0PW00.FF0PWCW5;
+        XSFFS10(); /* translate units to thousands*/
+        FF0PW04.FF0PW7C[FF0PWIX1] = FFXREC.FFXCHAR;
+      end
+    end
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment disp ix*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Re-calculate monthly rev seas ind & rev fut ratios for*/
+   /* unfrozen months.*/
+   /* Monthly rev seas ind = (monthly rev fcst * 100)*/
+                        /* / grand rev fcst qty.*/
+   /* Monthly rev fut ratio = (monthly tot fut * 100)*/
+                         /* / monthly rev fcst qty.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize disp ix*/
+  FF0PW00.FF0PWIX3 = 1; /* initialize month ix*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+
+    if (FF0PW04.FF0PWVC[FF0PWIX1] == "N") /* If unfrozen month*/
+         /* Rev seas ind*/
+      FF0PW00.FF0PWCW5 = 0;
+      if (FF0PW02.FF0PWOC[FF0PWIX2] > 0) /* greater than zero*/
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWOC[FF0PWIX3];
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+        FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+        FF0PW02.FF0PWQC[FF0PWIX3] = FF0PW00.FF0PWCW5;
+        FF0PW04.FF0PW9C[FF0PWIX3] = FF0PW00.FF0PWCW5;
+      end
+         /* Rev fut ratio*/
+      FF0PW00.FF0PWCW5 = 0;
+      if (FF0PW02.FF0PWOC[FF0PWIX3] > 0) /* greater than zero*/
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWKC[FF0PWIX3];
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+        FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX3], -mathLib.decimals(FF0PW00.FF0PWCW5));
+        FF0PW04.FF0PW8C[FF0PWIX3] = FF0PW00.FF0PWCW5;
+      end
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* increment index*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Re-calculate subtotals for rev fcst.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize disp ix*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW00.FF0PWIX2) /* For all mos in sesn*/
+
+    if (FF0PW00.FF0PWIX1 == FF0PW00.FF0PWIX2) /* grand total position*/
+      FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+    else
+      FFXREC.FFXCHAR = FF0PW04.FF0PW7C[FF0PWIX1];
+      XSFFS11(); /* translate thousands to units*/
+      FF0PW02.FF0PWOC[FF0PWIX1] = FFXREC.FFXNUMB;
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWOC[FF0PWIX1];
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Calculate, save, & move grand totals to map for Rev seas*/
+   /* ind & rev fut ratio.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+
+  FF0PW00.FF0PWIX3 = 1; /* Init month ix*/
+  while (FF0PW00.FF0PWIX3 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+    FF0PW00.FF0PWCW2 = FF0PW00.FF0PWCW2 + FF0PW02.FF0PWQC[FF0PWIX3];
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* Increment month ix*/
+  end
+
+  FF0PW00.FF0PWCWK = FF0PW00.FF0PWCW2; /* accum work grand*/
+  FF0PW04.FF0PW9C[FF0PWIX2] = FF0PW00.FF0PWCWK; /* Disp rev ses grand*/
+  FF0PW02.FF0PWQC[FF0PWIX2] = FF0PW00.FF0PWCWK; /* Save rev sesn grand*/
+
+   /* Calculate rev fut ratio grand total.*/
+  FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+  if (FF0PW02.FF0PWOC[FF0PWIX2] > 0) /* greater than zero*/
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWKC[FF0PWIX2];
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+    FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+  end
+  FF0PW04.FF0PW8C[FF0PWIX2] = FF0PW00.FF0PWCW5; /* Disp rev fut grand*/
+
+
+end // end FF0P650
+
+// Recalculations - Rev Fcst Grnd
+Function FF0P660()
+   /* ------------------------------------------------------------*/
+   /* Position grand total index.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX2 = FF0PW00.FF0PWGTW; /* Set grand total position*/
+
+   /* ------------------------------------------------------------*/
+   /* Re-calc monthly rev fcsts for unfrozen months.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize display index*/
+  FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+
+   /* Calculate amount of grand rev fcst that is frozen.*/
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+
+    if (FF0PW04.FF0PWVC[FF0PWIX1] == "Y") /* If frozen month*/
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWOC[FF0PWIX1];
+    end
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+  end
+
+  FF0PW01.FF0PWFMR = FF0PW00.FF0PWCWK; /* rev fcst tot (frozen mon)*/
+
+   /* Calculate amount of grand rev fcst that is unfrozen =*/
+        /* Grand rev fcst qty - Total frozen rev fcst qty.*/
+  if (FF0PW00.FF0PWGTM > 0) /* grand total on map*/
+    FFXREC.FFXCHAR = FF0PM001.FF0PMOC[FF0PWGTM];
+    XSFFS11(); /* translate thousands to units*/
+    FF0PW02.FF0PWOC[FF0PWIX2] = FFXREC.FFXNUMB;
+    FF0PW04.FF0PW7C[FF0PWIX2] = FFXREC.FFXCHAR;
+  end
+
+  FF0PW00.FF0PWCWK = 0; /* initialize field*/
+  FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWOC[FF0PWIX2];
+  FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK - FF0PW01.FF0PWFMR;
+  FF0PW01.FF0PWUTR = FF0PW00.FF0PWCWK; /* tot rev fcst (unfrozen)*/
+
+   /* Calculate Total of all rev seas ind for unfrozen months*/
+  FF0PW00.FF0PWIX1 = 1; /* initialize disp ix*/
+  FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+
+    if (FF0PW04.FF0PWVC[FF0PWIX1] == "N") /* if unfrozen month*/
+      FF0PW00.FF0PWCWK = FF0PW00.FF0PWCWK + FF0PW02.FF0PWQC[FF0PWIX1];
+    end
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment disp ix*/
+  end
+
+  FF0PW01.FF0PWURS = FF0PW00.FF0PWCWK; /* tot rev seas ind (unfrozen)*/
+
+   /* ------------------------------------------------------------*/
+   /* Re-calc, translate, save, & move to map monthly rev fcsts*/
+   /* for unfrozen months =*/
+       /* (Monthly unfrozen rev seas ind*/
+      /* * total unfrozen grand rev fcst qty)*/
+      /* / total unfrozen rev seas indices.*/
+   /* ------------------------------------------------------------*/
+  FF0PW00.FF0PWIX1 = 1; /* initialize disp ix*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+    if (FF0PW04.FF0PWVC[FF0PWIX1] == "N") /* If unfrozen month*/
+      FF0PW00.FF0PWCW5 = 0; /* initialize field*/
+      if (FF0PW01.FF0PWURS > 0) /* greater than zero*/
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWQC[FF0PWIX1];
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * FF0PW01.FF0PWUTR;
+        FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 / FF0PW01.FF0PWURS;
+        FF0PW02.FF0PWOC[FF0PWIX1] = FF0PW00.FF0PWCW5;
+        FFXREC.FFXNUMB = FF0PW00.FF0PWCW5;
+        XSFFS10(); /* translate units to thousands*/
+        FF0PW04.FF0PW7C[FF0PWIX1] = FFXREC.FFXCHAR;
+      end
+    end
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Re-calculate monthly rev seas ind & rev fut ratios*/
+   /* Monthly rev seas ind = (monthly rev fcst * 100)*/
+                        /* / grand rev fcst qty.*/
+   /* Monthly rev fut ratio = (monthly tot fut * 100)*/
+                         /* / monthly rev fcst qty.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWIX1 = 1; /* initialize disp ix*/
+
+  while (FF0PW00.FF0PWIX1 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+       /* Rev seas ind*/
+    FF0PW00.FF0PWCW5 = 0;
+    if (FF0PW02.FF0PWOC[FF0PWIX2] > 0) /* greater than zero*/
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWOC[FF0PWIX1];
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+      FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+      FF0PW02.FF0PWQC[FF0PWIX1] = FF0PW00.FF0PWCW5;
+      FF0PW04.FF0PW9C[FF0PWIX1] = FF0PW00.FF0PWCW5;
+    end
+       /* Rev fut ratio*/
+    FF0PW00.FF0PWCW5 = 0;
+    if (FF0PW02.FF0PWOC[FF0PWIX1] > 0) /* greater than zero*/
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWKC[FF0PWIX1];
+      FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+      FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX1], -mathLib.decimals(FF0PW00.FF0PWCW5));
+      FF0PW04.FF0PW8C[FF0PWIX1] = FF0PW00.FF0PWCW5;
+    end
+
+    FF0PW00.FF0PWIX1 = FF0PW00.FF0PWIX1 + 1; /* increment index*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Calculate, save, & move grand totals to map for Rev seas*/
+   /* ind & rev fut ratio.*/
+   /* ------------------------------------------------------------*/
+
+  FF0PW00.FF0PWCWK = 0; /* initialize work field*/
+  FF0PW00.FF0PWCW2 = 0; /* initialize work field*/
+
+  FF0PW00.FF0PWIX3 = 1; /* Init month ix*/
+  while (FF0PW00.FF0PWIX3 <= FF0PW01.FF0PWMNS) /* For all mos in sesn*/
+    FF0PW00.FF0PWCW2 = FF0PW00.FF0PWCW2 + FF0PW02.FF0PWQC[FF0PWIX3];
+    FF0PW00.FF0PWIX3 = FF0PW00.FF0PWIX3 + 1; /* Increment month ix*/
+  end
+  FF0PW00.FF0PWCWK = FF0PW00.FF0PWCW2; /* accum work grand*/
+  FF0PW04.FF0PW9C[FF0PWIX2] = FF0PW00.FF0PWCWK; /* Disp rev ses grand*/
+  FF0PW02.FF0PWQC[FF0PWIX2] = FF0PW00.FF0PWCWK; /* Save rev sesn grand*/
+
+   /* Calculate rev fut ratio grand total.*/
+  FF0PW00.FF0PWCW5 = 0; /* initialize work field*/
+  if (FF0PW02.FF0PWOC[FF0PWIX2] > 0) /* greater than zero*/
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 + FF0PW02.FF0PWKC[FF0PWIX2];
+    FF0PW00.FF0PWCW5 = FF0PW00.FF0PWCW5 * 100;
+    FF0PW00.FF0PWCW5 = mathLib.round(FF0PW00.FF0PWCW5 / FF0PW02.FF0PWOC[FF0PWIX2], -mathLib.decimals(FF0PW00.FF0PWCW5));
+  end
+  FF0PW04.FF0PW8C[FF0PWIX2] = FF0PW00.FF0PWCW5; /* Disp rev fut grand*/
+
+
+end // end FF0P660
+
+// Summarize work sheets
+Function FF0PS05()
+   /* ------------------------------------------------------------*/
+   /* Select the requested set of rows from the table.*/
+   /* ------------------------------------------------------------*/
+
+  set FFQREC empty; /* Worksheet header*/
+  set FFRREC empty; /* Worksheet item*/
+
+  FFQREC.XWSCD = "01"; /* Worksheet type code*/
+  FFQREC.XPLCD = FFWREC.XPLCD; /* Product line code*/
+  FFQREC.YPGCD = FFWREC.YPGCD; /* Product type group code*/
+  FFQREC.SYBSTGNB = "*"; /* Any style group*/
+  FFQREC.XPCCD = FFWREC.XPCCD; /* Product category code*/
+
+  FF0PW00.FF0PWMTH = FF0PW01.FF0PWSMN; /* Begin mo*/
+  FF0PW00.FF0PWMMM = FF0PW00.FF0PWMMM - 1; /* Decrement month*/
+  if (FF0PW00.FF0PWMMM < 1)
+    FF0PW00.FF0PWMMM = 12;
+    FF0PW00.FF0PWMYY = FF0PW00.FF0PWMYY - 1;
+  end
+  FFRREC.FF4FCTMO = FF0PW00.FF0PWMTH; /* Fcst mo*/
+
+  FFQREC.FFQMBYMO = -1; /* Main buy mo*/
+  FFQREC.FFQABYMO = -1; /* Actl buy mo*/
+  FFQREC.ZZZCHGDT = -1; /* Change date*/
+  FFQREC.ZZZCHGTM = -1; /* Change time*/
+
+  try
+    call "FF2930" ("S1", SQLCA, FFQREC, FFRREC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "S05"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Data was not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(1); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OPEN SUMMARY WORKSHEET CURSOR";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSWHDR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FFQREC.FFQKEY2; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0PS05
+
+// Close sum wrksht csr
+Function FF0PS07()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row to display from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "FF2930" ("N1", SQLCA, FFQREC, FFRREC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+    /* ------------------------------------------------------------*/
+     /* If end of selected set, indicate end of cursor.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+      FF0PW00.FF0PWESC = "Y"; /* Cursor EOF switch*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "S07"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(47); /* Data was not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(1); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH NEXT SUMMARY WORKSHEET";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSWHDR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FFQREC.FFQKEY2; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0PS07
+
+// Close summary wrksht cursor
+Function FF0PS10()
+   /* ------------------------------------------------------------*/
+   /* Close the selected set of table rows.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "FF2930" ("C1", SQLCA, FFQREC, FFRREC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  FFWREC.XXXMODID = "S10"; /* Module identification*/
+  converseLib.validationFailed(1); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE SUMMARY WORKSHEET CURSOR";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = FFWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DFCAST  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSWHDR01"; /* Table view name*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end FF0PS10
+
+//*** RECORD=FF0PW00 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// ***********************
+Record FF0PW00 type basicRecord
+  10 FF0PWFMF FF0PWFMF ; 
+  10 FF0PWDRF FF0PWDRF ; 
+  10 FF0PWSWO FF0PWSWO ; 
+  10 FF0PWDMF FF0PWDMF ; 
+  10 FF0PWFGM FF0PWFGM ; 
+  10 FF0PWRSF FF0PWRSF ; 
+  10 FF0PWRSU FF0PWRSU ; 
+  10 FF0PWFFM FF0PWFFM ; 
+  10 FF0PWRFM FF0PWRFM ; 
+  10 FF0PWBMF FF0PWBMF ; 
+  10 FF0PWBMA FF0PWBMA ; 
+  10 FF0PWCTS FF0PWCTS ; 
+  10 FF0PWCMS FF0PWCMS ; 
+  10 FF0PWCAT FF0PWCAT ; 
+  10 FF0PWCWK FF0PWCWK ; 
+  10 FF0PWCW2 FF0PWCW2 ; 
+  10 FF0PWCW5 FF0PWCW5 ; 
+  10 FF0PWCW6 FF0PWCW6 ; 
+  10 FF0PWCW7 FF0PWCW7 ; 
+  10 FF0PWCW8 FF0PWCW8 ; 
+  10 FF0PWCDT FF0PWCDT ; 
+    15 FF0PWYMC FF0PWYMC ; 
+    15 FF0PWDAY FF0PWDAY ; 
+  10 FF0PWDT FF0PWDT ; 
+    15 FF0PWYY FF0PWYY ; 
+    15 FF0PWMM FF0PWMM ; 
+  10 FF0PWXDT FF0PWXDT ; 
+    15 FF0PWXYY FF0PWXYY ; 
+    15 FF0PWXMM FF0PWXMM ; 
+  10 FF0PWWYM FF0PWWYM ; 
+  10 FF0PWDT2 FF0PWDT2 ; 
+    15 FF0PWYY2 FF0PWYY2 ; 
+    15 FF0PWMM2 FF0PWMM2 ; 
+  10 FF0PWDYM FF0PWDYM ; 
+  10 FF0PWIX1 FF0PWIX1 ; 
+  10 FF0PWIX2 FF0PWIX2 ; 
+  10 FF0PWIX3 FF0PWIX3 ; 
+  10 FF0PWIX4 FF0PWIX4 ; 
+  10 FF0PWIXM FF0PWIXM ; 
+  10 CACHGFL CACHGFL ; 
+  10 FF0PWCMO FF0PWCMO ; 
+  10 FF0PWWBD FF0PWWBD ; 
+    15 * num(1) ; 
+    15 FF0PWBUY FF0PWBUY ; 
+      20 FF0PWBYC FF0PWBYC ; 
+      20 FF0PWBYY FF0PWBYY ; 
+      20 FF0PWBYM FF0PWBYM ; 
+    15 FF0PWBYD FF0PWBYD ; 
+  10 FF0PWESC FF0PWESC ; 
+  10 FF0PWMTH FF0PWMTH ; 
+    15 FF0PWMYY FF0PWMYY ; 
+    15 FF0PWMMM FF0PWMMM ; 
+  10 FF0PWCMM FF0PWCMM ; 
+  10 FF0PWPMX FF0PWPMX ; 
+  10 FF0PWGTM FF0PWGTM ; 
+  10 FF0PWGTW FF0PWGTW ; 
+  10 FF0PWMMX FF0PWMMX ; 
+  10 FF0PWMCL FF0PWMCL ; 
+end // end FF0PW00
+
+//*** RECORD=FF0PW01 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// 
+// Some of the fields in this record follow this format:
+// FF0PWXYZ
+// 
+// X being one of the following codes:
+//             M = FUTURE TOTAL PCT
+//             N = FUTURE TOTAL QTY
+//             O = NAT'L TOTAL PCT
+//             P = NAT'L TOTAL QTY
+//             Q = PROP TOTAL PCT
+//             R = PROP TOTAL QTY
+//             S = TOTAL PCT
+//             T = TOTAL QTY
+// 
+// YZ being one of the following codes:
+//             Y1 = One Year Ago
+//             Y2 = Two Years Ago
+//             CB = Combined Years
+// ***********************
+Record FF0PW01 type basicRecord
+  10 FF2GROUP FF2GROUP ; 
+  10 FF7GROUP FF7GROUP [13] ; 
+  10 FF2ALCAT FF2ALCAT ; 
+  10 FF0PWMNS FF0PWMNS ; 
+  10 FF2SEASN FF2SEASN [4] ; 
+  10 FF0PWSMN FF0PWSMN ; 
+  10 FF0PWMBM FF0PWMBM ; 
+  10 FF0PWMNC FF0PWMNC [12] ; 
+  10 FF0PWMN1 FF0PWMN1 [12] ; 
+  10 FF0PWMN2 FF0PWMN2 [12] ; 
+  10 * char(17) [13] ; 
+    15 FF6SLFCT FF6SLFCT ; 
+    15 FF7RVFCT FF7RVFCT ; 
+    15 FF0PWFRP FF0PWFRP ; 
+    15 FF7FRZFL FF7FRZFL ; 
+    15 FF0PWFTR FF0PWFTR ; 
+  10 FF0PWDDT FF0PWDDT ; 
+    15 FF0PWDYY FF0PWDYY ; 
+    15 FF0PWDMM FF0PWDMM ; 
+  10 FF2NSEAS FF2NSEAS ; 
+  10 FF0PMHST FF0PMHST ; 
+  10 FF0PWFMR FF0PWFMR ; 
+  10 FF0PWUTR FF0PWUTR ; 
+  10 FF0PWURS FF0PWURS ; 
+end // end FF0PW01
+
+//*** RECORD=FF0PW02 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// 
+// Some of the fields in this record follow this format:
+// FF0PWXYZ.
+// 
+// X being one of the following codes:
+//          A = PRE-ALLOCATED FUTURE QTY
+//          B = ALLOCATED FUTURE QTY
+//          C = SHIP FUTURE QTY
+//          D = CANCEL FUTURE QTY
+//          E = PRE-ALLOCATED PROP QTY
+//          F = ALLOCATED PROP QTY
+//          G = SHIP PROP QTY
+//          H = CANCEL PROP QTY
+// 
+// Y being one of the following codes:
+//          N = NATIONAL
+//          X = Non-National
+// 
+// Z being one of the following codes:
+//          1 = One Year Ago
+//          2 = Two Years Ago
+// 
+// Other fields in this record follow this format:
+// FF0PWXYZ.
+// 
+// X being one of the following codes:
+//          I = FUTURE QTYS
+//          J = NAT'L FUTURE QTYS
+//          K = TOT FUTURE QTYS
+//          L = MSTR DMD FCST
+//          M = FUTURE RATIO
+//          N = FCST SEAS IND
+//          O = REV FCST
+//          P = REV FUTURE RATIO
+//          Q = REV SEAS IND
+//          R = FREEZE FLAGS
+//          S = PROP QTYS
+//          T = DMD QTYS
+//          U = DMD IND
+// 
+// Y being one of the following codes:
+//          C = CURRENT
+//          H = HISTORY
+// 
+// Z being one of the following codes:
+//          1 = SUBTOTAL ONE
+//          2 = SUBTOTAL TWO
+//          G = GRAND TOTAL
+// ***********************
+Record FF0PW02 type basicRecord
+  10 * char(64) [12] ; 
+    15 FF0PWAX1 FF0PWAX1 ; 
+    15 FF0PWBX1 FF0PWBX1 ; 
+    15 FF0PWCX1 FF0PWCX1 ; 
+    15 FF0PWDX1 FF0PWDX1 ; 
+    15 FF0PWAN1 FF0PWAN1 ; 
+    15 FF0PWBN1 FF0PWBN1 ; 
+    15 FF0PWCN1 FF0PWCN1 ; 
+    15 FF0PWDN1 FF0PWDN1 ; 
+    15 FF0PWEX1 FF0PWEX1 ; 
+    15 FF0PWFX1 FF0PWFX1 ; 
+    15 FF0PWGX1 FF0PWGX1 ; 
+    15 FF0PWHX1 FF0PWHX1 ; 
+    15 FF0PWEN1 FF0PWEN1 ; 
+    15 FF0PWFN1 FF0PWFN1 ; 
+    15 FF0PWGN1 FF0PWGN1 ; 
+    15 FF0PWHN1 FF0PWHN1 ; 
+  10 FF0PWPX FF0PWPX [13] ; 
+  10 FF0PWPN FF0PWPN [13] ; 
+  10 FF0PWPXA FF0PWPXA ; 
+  10 FF0PWPNA FF0PWPNA ; 
+  10 FF0PWIC FF0PWIC [13] ; 
+  10 FF0PWICA FF0PWICA ; 
+  10 FF0PWJC FF0PWJC [13] ; 
+  10 FF0PWJCA FF0PWJCA ; 
+  10 FF0PWKC FF0PWKC [13] ; 
+  10 FF0PWKCA FF0PWKCA ; 
+  10 FF0PWLC FF0PWLC [13] ; 
+  10 FF0PWLCA FF0PWLCA ; 
+  10 FF0PWOC FF0PWOC [13] ; 
+  10 FF0PWOCA FF0PWOCA ; 
+  10 FF0PWQC FF0PWQC [13] ; 
+  10 FF0PWQCA FF0PWQCA ; 
+  10 FF0PWRC FF0PWRC [13] ; 
+end // end FF0PW02
+
+//*** RECORD=FF0PW03 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// 
+// Some of the fields in this record follow this format:
+// FF0PWXYZ.
+// 
+// X being one of the following codes:
+//          A = PRE-ALLOCATED FUTURE QTY
+//          B = ALLOCATED FUTURE QTY
+//          C = SHIP FUTURE QTY
+//          D = CANCEL FUTURE QTY
+//          E = PRE-ALLOCATED PROP QTY
+//          F = ALLOCATED PROP QTY
+//          G = SHIP PROP QTY
+//          H = CANCEL PROP QTY
+// 
+// Y being one of the following codes:
+//          N = NATIONAL
+//          X = Non-National
+// 
+// Z being one of the following codes:
+//          1 = One Year Ago
+//          2 = Two Years Ago
+// 
+// Other fields in this record follow this format:
+// FF0PWXYZ.
+// 
+// X being one of the following codes:
+//          I = FUTURE QTYS
+//          J = NAT'L FUTURE QTYS
+//          K = TOTAL FUTURE QTYS
+//          L = MSTR DMD FCST
+//          M = FUTURE RATIO
+//          N = FCST SEAS IND
+//          O = REV FCST
+//          P = REV FUTURE RATIO
+//          Q = REV SEAS IND
+//          R = FREEZE FLAGS
+//          S = PROP QTY
+//          T = DMD QTY
+//          U = DMD IND
+// 
+// Y being one of the following codes:
+//          C = CURRENT
+//          H = HISTORY
+// 
+// Z being one of the following codes:
+//          1 = SUBTOTAL ONE
+//          2 = SUBTOTAL TWO
+//          G = GRAND TOTAL
+// ***********************
+Record FF0PW03 type basicRecord
+  10 * char(128) [12] ; 
+    15 FF0PWAX1 FF0PWAX1 ; 
+    15 FF0PWBX1 FF0PWBX1 ; 
+    15 FF0PWCX1 FF0PWCX1 ; 
+    15 FF0PWDX1 FF0PWDX1 ; 
+    15 FF0PWAN1 FF0PWAN1 ; 
+    15 FF0PWBN1 FF0PWBN1 ; 
+    15 FF0PWCN1 FF0PWCN1 ; 
+    15 FF0PWDN1 FF0PWDN1 ; 
+    15 FF0PWEX1 FF0PWEX1 ; 
+    15 FF0PWFX1 FF0PWFX1 ; 
+    15 FF0PWGX1 FF0PWGX1 ; 
+    15 FF0PWHX1 FF0PWHX1 ; 
+    15 FF0PWEN1 FF0PWEN1 ; 
+    15 FF0PWFN1 FF0PWFN1 ; 
+    15 FF0PWGN1 FF0PWGN1 ; 
+    15 FF0PWHN1 FF0PWHN1 ; 
+    15 FF0PWAX2 FF0PWAX2 ; 
+    15 FF0PWBX2 FF0PWBX2 ; 
+    15 FF0PWCX2 FF0PWCX2 ; 
+    15 FF0PWDX2 FF0PWDX2 ; 
+    15 FF0PWAN2 FF0PWAN2 ; 
+    15 FF0PWBN2 FF0PWBN2 ; 
+    15 FF0PWCN2 FF0PWCN2 ; 
+    15 FF0PWDN2 FF0PWDN2 ; 
+    15 FF0PWEX2 FF0PWEX2 ; 
+    15 FF0PWFX2 FF0PWFX2 ; 
+    15 FF0PWGX2 FF0PWGX2 ; 
+    15 FF0PWHX2 FF0PWHX2 ; 
+    15 FF0PWEN2 FF0PWEN2 ; 
+    15 FF0PWFN2 FF0PWFN2 ; 
+    15 FF0PWGN2 FF0PWGN2 ; 
+    15 FF0PWHN2 FF0PWHN2 ; 
+  10 FF0PWPX FF0PWPX [13] ; 
+  10 FF0PWPN FF0PWPN [13] ; 
+  10 FF0PWPXA FF0PWPXA ; 
+  10 FF0PWPNA FF0PWPNA ; 
+  10 FF0PWIH FF0PWIH [13] ; 
+  10 FF0PWIHA FF0PWIHA ; 
+  10 FF0PWJH FF0PWJH [13] ; 
+  10 FF0PWJHA FF0PWJHA ; 
+  10 FF0PWKH FF0PWKH [13] ; 
+  10 FF0PWKHA FF0PWKHA ; 
+  10 FF0PWSH FF0PWSH [13] ; 
+  10 FF0PWSHA FF0PWSHA ; 
+  10 FF0PWTH FF0PWTH [13] ; 
+  10 FF0PWTHA FF0PWTHA ; 
+end // end FF0PW03
+
+//*** RECORD=FF0PW04 ****
+// ----------------------------
+// Application display storage.
+// ----------------------------
+// 
+// Some of the fields in this record follow this format:
+// FF0PWXYZ.
+// 
+// X being one of the following codes:
+//          1 = FUTURE QTY
+//          2 = NAT'L FUTURE QTY
+//          3 = TOTAL FUTURE QTY
+//          4 = MSTR DMD FCST
+//          5 = FUTURE RATIO
+//          6 = FCST SEAS IND
+//          7 = REV FCST
+//          8 = REV FUTURE RATIO
+//          9 = REV SEAS IND
+//          V = FREEZE FLAG
+//          W = HIST PROP QTY
+//          X = HIST DMD QTY
+//          Y = HIST DMD IND
+// 
+// Y being one of the following codes:
+//          C = CURRENT
+//          H = HISTORY
+// 
+// Z being one of the following codes:
+//          1 = SUBTOTAL 1
+//          2 = SUBTOTAL 2
+//          G = GRAND TOTAL
+// ***********************
+Record FF0PW04 type basicRecord
+  10 * char(73) [13] ; 
+    15 FF0PW1C FF0PW1C ; 
+    15 FF0PW2C FF0PW2C ; 
+    15 FF0PW3C FF0PW3C ; 
+    15 FF0PW4C FF0PW4C ; 
+    15 FF0PW5C FF0PW5C ; 
+    15 FF0PW6C FF0PW6C ; 
+    15 FF0PW7C FF0PW7C ; 
+    15 FF0PW8C FF0PW8C ; 
+    15 FF0PW9C FF0PW9C ; 
+    15 FF0PWVC FF0PWVC ; 
+    15 FF0PW1H FF0PW1H ; 
+    15 FF0PW2H FF0PW2H ; 
+    15 FF0PW3H FF0PW3H ; 
+    15 FF0PWWH FF0PWWH ; 
+    15 FF0PWXH FF0PWXH ; 
+    15 FF0PW5H FF0PW5H ; 
+    15 FF0PWYH FF0PWYH ; 
+end // end FF0PW04
+
+// year hist ind
+DataItem FF0PMHST char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// future qty current
+DataItem FF0PW1C char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hist future qty
+DataItem FF0PW1H char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// nat'l future qty current
+DataItem FF0PW2C char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hist nat'l future qty
+DataItem FF0PW2H char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// total future qty current
+DataItem FF0PW3C char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hist total future qty
+DataItem FF0PW3H char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// mstr dmd fcst
+DataItem FF0PW4C char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// future ratio
+DataItem FF0PW5C num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist future ratio
+DataItem FF0PW5H num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// fcst seas ind
+DataItem FF0PW6C num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// rev fcst
+DataItem FF0PW7C char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// rev future ratio
+DataItem FF0PW8C num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// rev seas ind
+DataItem FF0PW9C num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pre-alloc nat'l fut
+DataItem FF0PWAN1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pre-alloc nat'l fut - yr 2
+DataItem FF0PWAN2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pre-alloc future
+DataItem FF0PWAX1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pre-alloc future - yr 2
+DataItem FF0PWAX2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// begin month available flag
+DataItem FF0PWBMA char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// begin month found flag
+DataItem FF0PWBMF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// alloc nat'l fut
+DataItem FF0PWBN1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// alloc nat'l fut - yr 2
+DataItem FF0PWBN2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// buy ccyymm
+DataItem FF0PWBUY num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// alloc future
+DataItem FF0PWBX1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// alloc future - yr 2
+DataItem FF0PWBX2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// buy century
+DataItem FF0PWBYC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// buy day
+DataItem FF0PWBYD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// buy month
+DataItem FF0PWBYM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// buy year
+DataItem FF0PWBYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// original cat viewed
+DataItem FF0PWCAT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// converted beg date
+DataItem FF0PWCDT num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Starting month on screen
+DataItem FF0PWCMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current ccyymm
+DataItem FF0PWCMO int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// calculated months in season
+DataItem FF0PWCMS num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship nat'l fut
+DataItem FF0PWCN1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship nat'l fut - yr 2
+DataItem FF0PWCN2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// season counter
+DataItem FF0PWCTS num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// calculations work area 2
+DataItem FF0PWCW2 bin(18,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// calculations work area 5
+DataItem FF0PWCW5 bigint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// calculations work area 6
+DataItem FF0PWCW6 bigint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// calculations work area 7
+DataItem FF0PWCW7 bigint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// calculations work area 8
+DataItem FF0PWCW8 bigint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// calculations work area
+DataItem FF0PWCWK bin(18,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship future
+DataItem FF0PWCX1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship future - yr 2
+DataItem FF0PWCX2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// beg date day
+DataItem FF0PWDAY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// display date
+DataItem FF0PWDDT char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// data modified flag
+DataItem FF0PWDMF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// display month
+DataItem FF0PWDMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cancel nat'l fut
+DataItem FF0PWDN1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cancel nat'l fut - yr 2
+DataItem FF0PWDN2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// data request flag
+DataItem FF0PWDRF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// beg date ccyymm work area
+DataItem FF0PWDT num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// beg date ccyymm work area
+DataItem FF0PWDT2 num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cancel future
+DataItem FF0PWDX1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cancel future - yr 2
+DataItem FF0PWDX2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// beg date ccyymm work area
+DataItem FF0PWDYM num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// display year
+DataItem FF0PWDYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pre-alloc nat'l prop
+DataItem FF0PWEN1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pre-alloc nat'l prop - yr 2
+DataItem FF0PWEN2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Summ wrksht csr flag
+DataItem FF0PWESC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// pre-alloc prop
+DataItem FF0PWEX1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pre-alloc prop - yr 2
+DataItem FF0PWEX2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// freeze flag mod
+DataItem FF0PWFFM char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// rev fcst grand tot mod
+DataItem FF0PWFGM char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Format Map flag
+DataItem FF0PWFMF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// rev fcst frozen months
+DataItem FF0PWFMR int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// alloc nat'l prop
+DataItem FF0PWFN1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// alloc nat'l prop - yr 2
+DataItem FF0PWFN2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// fill rate pct
+DataItem FF0PWFRP decimal(7,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// fut total ratio
+DataItem FF0PWFTR decimal(7,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// alloc prop
+DataItem FF0PWFX1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// alloc prop - yr 2
+DataItem FF0PWFX2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship nat'l prop
+DataItem FF0PWGN1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship nat'l prop - yr 2
+DataItem FF0PWGN2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// grand total position map
+DataItem FF0PWGTM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// grand total position WS
+DataItem FF0PWGTW num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship prop
+DataItem FF0PWGX1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship prop - yr 2
+DataItem FF0PWGX2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cancel nat'l prop
+DataItem FF0PWHN1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cancel nat'l prop - yr 2
+DataItem FF0PWHN2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cancel prop
+DataItem FF0PWHX1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cancel prop - yr 2
+DataItem FF0PWHX2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// future qty current
+DataItem FF0PWIC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// future qty cur grand tot
+DataItem FF0PWICA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist future qty
+DataItem FF0PWIH int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist future qty grand tot
+DataItem FF0PWIHA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// index one for stored fields
+DataItem FF0PWIX1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// index two for stored fields
+DataItem FF0PWIX2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// index three for stored fields
+DataItem FF0PWIX3 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// index four for stored fields
+DataItem FF0PWIX4 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// index for map fields
+DataItem FF0PWIXM smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nat'l future qty current
+DataItem FF0PWJC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nat'l future qty grand tot
+DataItem FF0PWJCA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist nat'l future qty
+DataItem FF0PWJH int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist nat'l future qty grand t
+DataItem FF0PWJHA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// total future qty current
+DataItem FF0PWKC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// total future qty cur grand tot
+DataItem FF0PWKCA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist total future qty
+DataItem FF0PWKH int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist total future qty grand t
+DataItem FF0PWKHA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mstr dmd fcst
+DataItem FF0PWLC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mstr dmd fcst grand tot
+DataItem FF0PWLCA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// map season begin month
+DataItem FF0PWMBM num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// max columns on screen
+DataItem FF0PWMCL num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// beg date month
+DataItem FF0PWMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// beg date month
+DataItem FF0PWMM2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Sum wrksht beg mm
+DataItem FF0PWMMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// max months on screen
+DataItem FF0PWMMX num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// months in season - 1 yr ago
+DataItem FF0PWMN1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", dateFormat = "yy-MM-dd", inputRequired = no
+}
+end
+
+// months in season - 2 yrs ago
+DataItem FF0PWMN2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", dateFormat = "yy-MM-dd", inputRequired = no
+}
+end
+
+// months in season - current
+DataItem FF0PWMNC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", dateFormat = "yy-MM-dd", inputRequired = no
+}
+end
+
+// months in season
+DataItem FF0PWMNS num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Sum wrksht beg month
+DataItem FF0PWMTH num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Sum wrksht beg ccyy
+DataItem FF0PWMYY num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// rev fcst
+DataItem FF0PWOC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// rev fcst grand tot
+DataItem FF0PWOCA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Max pages to scroll
+DataItem FF0PWPMX num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nat'l prop qtys
+DataItem FF0PWPN int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nat'l prop qtys grand tot
+DataItem FF0PWPNA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// prop qtys
+DataItem FF0PWPX int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// prop qtys grand tot
+DataItem FF0PWPXA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// rev seas ind
+DataItem FF0PWQC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// rev seas ind grand tot
+DataItem FF0PWQCA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// freeze flag
+DataItem FF0PWRC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// rev fcst qtys mod
+DataItem FF0PWRFM char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// rev seas ind mod (frozen)
+DataItem FF0PWRSF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// rev seas ind mod (unfrozen)
+DataItem FF0PWRSU char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hist prop qty
+DataItem FF0PWSH int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist prop qty grand tot
+DataItem FF0PWSHA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Season begin month
+DataItem FF0PWSMN int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", dateFormat = "yy-MM-dd", inputRequired = no
+}
+end
+
+// Historical option switch
+DataItem FF0PWSWO char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hist dmd qty
+DataItem FF0PWTH int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist dmd qty grand tot
+DataItem FF0PWTHA int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// rev seas ind unfrozen mon
+DataItem FF0PWURS int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// rev fcst unfrozen months
+DataItem FF0PWUTR int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// freeze flag
+DataItem FF0PWVC char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// buy ccyymmdd
+DataItem FF0PWWBD num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist prop qty
+DataItem FF0PWWH char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// last month in last season
+DataItem FF0PWWYM num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// beg date ccyymm work area
+DataItem FF0PWXDT num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist dmd qty
+DataItem FF0PWXH char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// beg date month
+DataItem FF0PWXMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// beg date year
+DataItem FF0PWXYY num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hist dmd ind
+DataItem FF0PWYH num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// conversion yymm
+DataItem FF0PWYMC num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// beg date year
+DataItem FF0PWYY num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// beg date year
+DataItem FF0PWYY2 num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

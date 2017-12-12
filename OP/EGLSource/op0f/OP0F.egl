@@ -1,0 +1,1077 @@
+package op0f;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import dg.common.*;
+import ku.common.*;
+import ob.common.*;
+import op.common.*;
+import pc.common.*;
+import pw.common.*;
+import sm.common.*;
+import sp.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+//*** PROGRAM=OP0F ****
+// Nike Order Entry  -  Special Instructions
+// 
+// Overview:  Display/allow change of special instructions
+// 
+// Date Created:  06/20/86
+//       Author:  David Smith
+// 
+// Maintenance History:
+// 
+//     Date     By Whom       Overview of Changes Made
+// ------------------------------------------------------------
+//   06/20/86   D Smith      Program Created
+//   08/07/86   jvande       fixed bugs: if delete all labels
+//                           or instructions didn't reset flag
+//                           to 'n'.
+//   10/26/88   jjohns       fixed error traps in sss, sdr,
+//                           and sur to display key.
+//   11/03/88   jwood        noncsp opt added to calls
+//   12/08/88   obecke       diagnostic reporting fixes.
+//                           sdr,sur,001,sss,ssn,w01.
+//   02/20/89   jwood        set segmented trans id logic added
+//   05/22/89   mbarna     added code to catch bad return
+//                         codes of sql for special instr.
+//                         made changes to ssn, sss, 001.
+//                         added s99 and added fields for
+//                         time and deadlock counter in w01.
+//   11/15/90   dflesh     map field between dept and special
+//                         inst. changed from protect to askp
+//   02/15/91   dmeier     regen for database changes
+//   04/01/94   gcalki     Log #1003 - renamed causera to
+//                         ca-user-workarea-4k so it can hold
+//                         opwrec which is now 3072 bytes.(ALL)
+// *********************
+Program OP0F type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  OP0FW01 OP0FW01; // record
+  OP1REC OP1REC; // record
+  OP4REC OP4REC; // record
+  OPAREC OPAREC; // record
+  OPWREC OPWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XNDTBL {deleteAfterUse = yes}; // table
+  use OP0FM.OP0FM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OP0F001: OP0F001();
+
+
+    goto OP0F005;
+
+
+    OP0F005: OP0F005();
+
+
+    if (OPAREC.OPAERR == "Y")
+      OPAREC.OPAERR = "N";
+    else
+      set OP0FM001.OP0FMDPT[1] cursor;
+    end
+
+
+    goto OP0F005;
+
+
+  end // end main
+end // end OP0F
+
+// Application Initialization
+Function OP0F001()
+
+
+     /* **********************************************************/
+     /* * this process performs the following functions:        **/
+     /* *     - checks entry security                           **/
+     /* *     - moves the working storage and order processing  **/
+     /* *       record from the incoming common area            **/
+     /* *     - initializes the map fields                      **/
+     /* **********************************************************/
+
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+      /* check entry security*/
+
+  XSENTRY();
+
+   /* ****************************************************/
+   /* *** set segmented trans id                      ****/
+   /* ****************************************************/
+
+  CAEZSAP = sysVar.transactionID;
+  CAEZSG12 = "OP";
+  CAEZSG4 = "F";
+  sysVar.transactionID = CAEZSAP;
+
+   /* *************************************************************/
+
+      /* retrieve user common area*/
+
+
+  XSOPS01(); /* check order entry security*/
+
+
+  OP0FSPI(); /* initialize program*/
+
+
+  OP0FM001.OPMRVN = 1; /* set revision number*/
+
+
+  OP0FSMI(); /* initialize map*/
+
+
+  if (OP1REC.OP1SPINF == "Y"
+   || OP1REC.OP1SPLBF == "Y")
+    OP0FW01.OP0FWDLC = 0; /* set deadloc counter to zero*/
+    OP0FSSS(); /* select instruction/label set*/
+  end
+
+  OP0FW01.OP0FWSIF = OP1REC.OP1SPINF; /* save inst flag*/
+  OP0FW01.OP0FWSLF = OP1REC.OP1SPLBF; /* save label flag*/
+
+end // end OP0F001
+
+// Display of Special Instruction
+Function OP0F005()
+
+
+     /* **********************************************************/
+     /* * this process performs the following functions:        **/
+     /* *     - presents the special instructions screen for    **/
+     /* *       data entry or modification                      **/
+     /* *     - edits the data entered and identifies any       **/
+     /* *       data errors                                     **/
+     /* *     - flows to the miscellaneous header, multiple     **/
+     /* *       product header, or accept order screen depend-  **/
+     /* *       ing on the source of the flow to this process   **/
+     /* *                                                       **/
+     /* **********************************************************/
+
+
+  converse OP0FM001 ;
+
+
+  OP0FSSM(); /* reset modified flag to retain setting for many converses*/
+
+
+  if (converseVar.eventKey is enter)
+    OP0FSET();
+  else
+    if (converseVar.eventKey is pf12)
+      OP0FSEO();
+    else
+      if (converseVar.eventKey is pf14)
+        OP0FSMH();
+      else
+        if (converseVar.eventKey is pa2)
+          OPAREC.OPAERR = "Y";
+          converseLib.validationFailed(65);
+        else
+          OPAREC.OPAERR = "Y";
+          converseLib.validationFailed(8);
+        end
+      end
+    end
+  end
+
+
+end // end OP0F005
+
+// compute delay time
+Function OP0FS99()
+
+
+
+       /* ******************************************************/
+       /* * this statement group computes the delay time      **/
+       /* * (1 second) if dead-lock occurred                  **/
+       /* ******************************************************/
+
+
+
+       /* if dead lock occurred, delay for 1 second and*/
+       /* then retry for 5 times before giving up*/
+
+  OP0FW01.OP0FWFTM = VGVar.currentFormattedTime;
+  OP0FW01.OP0FWFSS = OP0FW01.OP0FWFSS + 1;
+  OP0FW01.OP0FWTM2 = VGVar.currentFormattedTime;
+  while (OP0FW01.OP0FWSS2 < OP0FW01.OP0FWFSS
+   && OP0FW01.OP0FWMM2 <= OP0FW01.OP0FWFMM)
+    OP0FW01.OP0FWTM2 = VGVar.currentFormattedTime;
+  end
+
+
+   /* ***********************************************************8*/
+end // end OP0FS99
+
+// Delete Text Record From DB
+Function OP0FSDR()
+
+
+  set SQLCA empty;
+
+  OP0FW01.OP0FWTA1 = OP4REC.OP1CUOID;
+  OP0FW01.OP0FWTA2 = OP4REC.OP1NORID;
+  OP0FW01.OP0FWTA3 = OP1REC.KUCCOID;
+  OP0FW01.OP0FWTA4 = OP4REC.OP4TRTYP;
+  OP0FW01.OP0FWTR5 = OP4REC.OP4TRSEQ;
+  OP0FW01.OP0FWTA7 = OP0FW01.OP0FWCAL;
+  OP0FW01.OP0FWTA8 = OP0FW01.OP0FWSLF;
+  OP0FW01.OP0FWTA9 = OP0FW01.OP0FWSIF;
+
+  call "IO0470" ("D ", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "OP0F    ";
+    TA1REC.TA1LOCAT[1] = "D";
+    TA1REC.TA1LOCAT[2] = COMMAREA.CAFROMAP;
+    TA1REC.TA1MAP = "OP0FM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VTEXT001";
+    TA1REC.TA1TBLKE = OP0FW01.OP0FWTAK; /* record key used*/
+    TA1REC.TA1LOCAT[3] = "OP0FSDR";
+    TA1REC.TA1LOCAT[4] = "IO0470";
+    XSOPS02();
+  end
+
+
+
+end // end OP0FSDR
+
+// Edit Only
+Function OP0FSEO()
+
+
+  OP1REC.OP1SPINF = "N";
+  OPAREC.OPASUB = 10;
+  while (OPAREC.OPASUB >= 1)
+    if (OP0FM001.OP0FMDPT[OPASUB] != " ")
+      if (OP0FM001.OP0FMDPT[OPASUB] in XNDTBL.XNDCD
+       && XNDTBL.XXXSTAT[sysVar.arrayIndex] == "A"
+       && XNDTBL.XNDINSTF[sysVar.arrayIndex] == "Y")
+        OP1REC.OP1SPINF = "Y";
+        set OP0FM001.OP0FMDPT[OPASUB] normal;
+      else
+        OPAREC.OPAERR = "Y";
+        converseLib.validationFailed(80);
+        set OP0FM001.OP0FMDPT[OPASUB] cursor, modified, bold;
+      end
+    else
+      set OP0FM001.OP0FMDPT[OPASUB] normal;
+    end
+    OPAREC.OPASUB = OPAREC.OPASUB - 1;
+  end
+
+
+  if (OPAREC.OPAERR == "N")
+    OPAREC.OPASUB = 10;
+    while (OPAREC.OPASUB >= 1)
+      if (OP0FM001.OP0FMDPT[OPASUB] == " "
+       && OP0FM001.OP4TXT[OPASUB] != " ")
+        OPAREC.OPAERR = "Y";
+        converseLib.validationFailed(80);
+        set OP0FM001.OP0FMDPT[OPASUB] cursor, modified, bold;
+      else
+        set OP0FM001.OP0FMDPT[OPASUB] normal;
+      end
+      OPAREC.OPASUB = OPAREC.OPASUB - 1;
+    end
+  end
+
+
+end // end OP0FSEO
+
+// Edit & Transfer Via 'Enter'
+Function OP0FSET()
+
+
+  OP0FSEO();
+
+
+  if (OPAREC.OPAERR == "N")
+    OP0FSUP();
+    OPWREC.OP1GROUP = OP1REC.OP1GROUP;
+    COMMAREA.CA-USER-WORKAREA-4K = OPWREC.OPWSGRP;
+  end
+
+
+  if (OPAREC.OPAERR == "N") /* no errors*/
+    if (OPWREC.OPWREVM == 0) /* order entry mode*/
+      if (OPWREC.OPWOHD == "Y" /* show misc hdr?*/
+       && COMMAREA.CAFROMAP != "OP0G")
+        COMMAREA.CAFROMAP = "OP0F";
+        COMMAREA.CACURRAP = "OP0G";
+        transfer to program "OP0G" passing COMMAREA; /* transfer to misc order header*/
+      else
+        if (OPWREC.OPWSFLOW == "1") /* form flow*/
+          COMMAREA.CAFROMAP = "OP0F";
+          COMMAREA.CACURRAP = "OP0H";
+          transfer to program "OP0H" passing COMMAREA; /* transfer to multiple product screen*/
+        else /* phone flow*/
+          COMMAREA.CAFROMAP = "OP0F";
+          COMMAREA.CACURRAP = "OP0J";
+          transfer to program "OP0J" passing COMMAREA; /* transfer to accept order screen*/
+        end
+      end
+    else /* review mode*/
+      COMMAREA.CAFROMAP = "OP0F";
+      COMMAREA.CACURRAP = "OP0J";
+      transfer to program "OP0J" passing COMMAREA; /* transfer to accept order screen*/
+    end
+  end
+
+
+end // end OP0FSET
+
+// Edit/Xfer to Miscellaneous Hdr
+Function OP0FSMH()
+
+
+  if (OPWREC.OPWREVM == 0) /* order entry mode*/
+    if (COMMAREA.CAFROMAP == "OP0G") /* already been in misc order header?*/
+      OPAREC.OPAERR = "Y";
+      converseLib.validationFailed(8);
+      return;
+    end
+  end
+
+
+
+  OP0FSEO();
+
+  if (OPAREC.OPAERR == "N")
+    OP0FSUP(); /* update text data base*/
+    OPWREC.OP1GROUP = OP1REC.OP1GROUP;
+    COMMAREA.CA-USER-WORKAREA-4K = OPWREC.OPWSGRP;
+    COMMAREA.CAFROMAP = "OP0F";
+    COMMAREA.CACURRAP = "OP0G";
+    transfer to program "OP0G" passing COMMAREA;
+  end
+
+
+end // end OP0FSMH
+
+// Map Initalization
+Function OP0FSMI()
+
+
+  converseLib.clearScreen();
+  set OP0FM001 initial; /* initializes map*/
+
+
+  OPAREC.OPACUCO = OP1REC.KUCCOID; /* this series of instructions*/
+  OPAREC.OPASEP1 = ".";
+  OPAREC.OPACUSR = OP1REC.KUMSTRID; /* formats the customer number*/
+  OPAREC.OPASEP2 = ".";
+  OPAREC.OPACUDP = OP1REC.XNXCD;
+
+
+  OP0FM001.OPMDT = VGVar.currentShortGregorianDate;
+  OP0FM001.OP0FMCID = OPAREC.OPACUNO;
+  OP0FM001.KUMSTRNM = OPWREC.KUMSTRNM;
+  if (OP1REC.OP1ORDBY == " ")
+    set OP0FM001.OP0FMORD protect, invisible;
+    set OP0FM001.OP1ORDBY protect, invisible;
+  else
+    OP0FM001.OP1ORDBY = OP1REC.OP1ORDBY;
+  end
+
+
+  OPAREC.OPASUB = 1;
+  OPAREC.OPASUB1 = 1;
+  while (OPAREC.OPASUB1 <= 30
+   && XNDTBL.XNDCD[OPASUB] != "99  ")
+    if (XNDTBL.XNDINSTF[OPASUB] == "Y")
+      OP0FM001.XNDCD[OPASUB1] = XNDTBL.XNDCD[OPASUB];
+      OPAREC.OPASUB1 = OPAREC.OPASUB1 + 1;
+    end
+    OPAREC.OPASUB = OPAREC.OPASUB + 1;
+  end
+
+
+  OPAREC.OPASUB = 3;
+  while (OPAREC.OPASUB <= 6)
+    set OP0FM001.OP0FMLNO[OPASUB] protect, invisible;
+    set OP0FM001.OP0FMSPL[OPASUB] protect, invisible;
+    OPAREC.OPASUB = OPAREC.OPASUB + 1;
+  end
+
+
+  if (OPWREC.OPWREVM == 0)
+    if (COMMAREA.CAFROMAP == "OP0G")
+      set OP0FM001.OP0FMMOH protect, invisible;
+    end
+  end
+
+
+end // end OP0FSMI
+
+// Program Initialization
+Function OP0FSPI()
+
+
+  OP1REC.OP1GROUP = OPWREC.OP1GROUP;
+  OPAREC.OPAERR = "N";
+  set OP0FW01 empty;
+
+  OPAREC.OPAWDT = VGVar.currentShortGregorianDate;
+  if (OPAREC.OPAWYY > 56)
+    OPAREC.OPAWCC = 19;
+  else
+    OPAREC.OPAWCC = 20;
+  end
+
+  OP0FW01.OP0FWFTM = VGVar.currentFormattedTime;
+  OP0FW01.OP0FWCHH = OP0FW01.OP0FWFHH;
+  OP0FW01.OP0FWCMM = OP0FW01.OP0FWFMM;
+
+
+end // end OP0FSPI
+
+// Setup Instruction Fields
+Function OP0FSSI()
+
+
+  OP0FM001.OP4TXT[OPASUB] = OP4REC.OP4TXT;
+  OP0FM001.OP0FMDPT[OPASUB] = OP4REC.XNDCD;
+  OP0FW01.OP0FWICT[OPASUB] = OP4REC.ZZZCHGCT;
+  OP0FW01.OP0FWSPI[OPASUB] = OP4REC.OP4TRSEQ;
+  OP0FW01.OP0FWISQ = OP4REC.OP4TRSEQ;
+  OP0FM001.OP4TXTOF[OPASUB] = OP4REC.OP4TXTOF;
+  OP0FW01.OP0FWILL = OPAREC.OPASUB;
+  OP4REC.OP4TXT = " ";
+  OP4REC.XNDCD = " ";
+  OP4REC.OP4TRSEQ = 0;
+  OPAREC.OPASUB = OPAREC.OPASUB + 1;
+
+
+end // end OP0FSSI
+
+// Setup Label Fields
+Function OP0FSSL()
+
+
+  OP0FM001.OP0FMSPL[OPASUB1] = OP4REC.OP4TXT;
+  OP0FW01.OP0FWLCT[OPASUB1] = OP4REC.ZZZCHGCT;
+  OP0FW01.OP0FWSPL[OPASUB1] = OP4REC.OP4TRSEQ;
+  OP0FW01.OP0FWLSQ = OP4REC.OP4TRSEQ;
+  OP0FW01.OP0FWLLL = OPAREC.OPASUB1;
+  OP4REC.OP4TXT = " ";
+  OP4REC.OP4TRSEQ = 0;
+  OPAREC.OPASUB1 = OPAREC.OPASUB1 + 1;
+
+
+end // end OP0FSSL
+
+// Reset Modified Flags
+Function OP0FSSM()
+
+
+  OPAREC.OPASUB = 1;
+
+  while (OPAREC.OPASUB <= 10)
+    if (OP0FM001.OP0FMDPT[OPASUB] is modified)
+      set OP0FM001.OP0FMDPT[OPASUB] modified;
+    end
+    if (OP0FM001.OP4TXT[OPASUB] is modified)
+      set OP0FM001.OP4TXT[OPASUB] modified;
+    end
+    OPAREC.OPASUB = OPAREC.OPASUB + 1;
+  end
+
+
+  OPAREC.OPASUB = 1;
+
+  while (OPAREC.OPASUB <= 2)
+    if (OP0FM001.OP0FMSPL[OPASUB] is modified)
+      set OP0FM001.OP0FMSPL[OPASUB] modified;
+    end
+    OPAREC.OPASUB = OPAREC.OPASUB + 1;
+  end
+
+
+end // end OP0FSSM
+
+// Select Next Spec Inst/Labels
+Function OP0FSSN()
+
+
+  set OP4REC empty;
+  OP4REC.OP4KEY = OP1REC.OP1KEY;
+  OP0FW01.OP0FWTA1 = OP4REC.OP1CUOID;
+  OP0FW01.OP0FWTA2 = OP4REC.OP1NORID;
+  OP0FW01.OP0FWTA3 = OP1REC.KUCCOID;
+  OP0FW01.OP0FWTA4 = " ";
+  OP0FW01.OP0FWTA5 = " ";
+  OP0FW01.OP0FWTA7 = " ";
+  OP0FW01.OP0FWTA8 = OP0FW01.OP0FWSLF;
+  OP0FW01.OP0FWTA9 = OP0FW01.OP0FWSIF;
+
+
+  set SQLCA empty;
+
+  OPAREC.OPASUB = 1;
+  OPAREC.OPASUB1 = 1;
+  while (SQLCA.VAGen_SQLCODE != 100)
+    call "IO0470" ("SN", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 0)
+      if (OP4REC.OP4TRTYP == "C") /* comment line*/
+        OP0FW01.OP0FWILL = OP0FW01.OP0FWILL + 1;
+      else
+        if (OP4REC.OP4TRTYP == "I") /* special instruction line*/
+          OP0FSSI();
+        else /* it must be a label line*/
+          OP0FSSL();
+        end
+      end
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        if (OP0FW01.OP0FWDLC <= 2)
+          TA1REC.TA1PGMNM = "OP0F    ";
+          TA1REC.TA1FUNC = "POST";
+          TA1REC.TA1MAP = "OP0FM001";
+          TA1REC.TA1DBASE = "DORDER  ";
+          TA1REC.TA1TBLVU = "VTEXT001";
+          TA1REC.TA1LOCAT[1] = "SN      ";
+          TA1REC.TA1LOCAT[2] = "OP0FSSN ";
+          TA1REC.TA1LOCAT[3] = "OP0F-1  ";
+          TA1REC.TA1LOCAT[4] = "IO0470  ";
+          OP0FW01.OP0FWTA6 = COMMAREA.CAFROMAP;
+          TA1REC.TA1TBLKE = OP0FW01.OP0FWTAK;
+          call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+          OP0FS99(); /* delay for 1 sec*/
+          OP0FSSS(); /* try again*/
+          return;
+        else
+          TA1REC.TA1PGMNM = "OP0F    ";
+          TA1REC.TA1MAP = "OP0FM001";
+          TA1REC.TA1DBASE = "DORDER  ";
+          TA1REC.TA1TBLVU = "VTEXT001";
+          TA1REC.TA1LOCAT[1] = "SN      ";
+          TA1REC.TA1LOCAT[2] = "OP0FSSN ";
+          TA1REC.TA1LOCAT[3] = "OP0F-2  ";
+          TA1REC.TA1LOCAT[4] = "IO0470  ";
+          OP0FW01.OP0FWTA6 = COMMAREA.CAFROMAP;
+          TA1REC.TA1TBLKE = OP0FW01.OP0FWTAK;
+          XSOPS02();
+        end
+      else
+        if (SQLCA.VAGen_SQLCODE != 100)
+          TA1REC.TA1PGMNM = "OP0F    ";
+          TA1REC.TA1MAP = "OP0FM001";
+          TA1REC.TA1DBASE = "DORDER  ";
+          TA1REC.TA1TBLVU = "VTEXT001";
+          TA1REC.TA1LOCAT[1] = "SN      ";
+          TA1REC.TA1LOCAT[2] = "OP0FSSN ";
+          TA1REC.TA1LOCAT[3] = "OP0F-3  ";
+          TA1REC.TA1LOCAT[4] = "IO0470  ";
+          OP0FW01.OP0FWTA6 = COMMAREA.CAFROMAP;
+          TA1REC.TA1TBLKE = OP0FW01.OP0FWTAK;
+          XSOPS02();
+        end
+      end
+    end
+  end
+
+
+  call "IO0470" ("CS", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+
+
+  OPAREC.OPASUB = 1;
+  while (OPAREC.OPASUB <= 10)
+    if (OP0FM001.OP4TXTOF[OPASUB] == "Y")
+      OP0FM001.OP4TXTOF[OPASUB] = "*";
+    else
+      OP0FM001.OP4TXTOF[OPASUB] = " ";
+    end
+    OPAREC.OPASUB = OPAREC.OPASUB + 1;
+  end
+
+
+
+end // end OP0FSSN
+
+// fetch text records from db
+Function OP0FSSS()
+
+
+  OP0FW01.OP0FWDLC = OP0FW01.OP0FWDLC + 1; /* increment deadlock count*/
+  set OP4REC empty;
+  set SQLCA empty;
+  OP4REC.OP4KEY = OP1REC.OP1KEY;
+  OP0FW01.OP0FWTA1 = OP4REC.OP1CUOID;
+  OP0FW01.OP0FWTA2 = OP4REC.OP1NORID;
+  OP0FW01.OP0FWTA3 = OP1REC.KUCCOID;
+  OP0FW01.OP0FWTA4 = " ";
+  OP0FW01.OP0FWTA5 = " ";
+  OP0FW01.OP0FWTA6 = " ";
+
+  call "IO0470" ("SS", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "OP0F    ";
+    TA1REC.TA1LOCAT[1] = "SS";
+    TA1REC.TA1LOCAT[2] = COMMAREA.CAFROMAP;
+    TA1REC.TA1MAP = "OP0FM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VTEXT001";
+    TA1REC.TA1TBLKE = OP0FW01.OP0FWTAK; /* record key used*/
+    TA1REC.TA1LOCAT[3] = "OP0FSSS";
+    TA1REC.TA1LOCAT[4] = "IO0470";
+    XSOPS02();
+  end
+  OP0FSSN(); /* process cursor*/
+
+
+end // end OP0FSSS
+
+// Update Special Instruction DB
+Function OP0FSUI()
+
+
+  set OP4REC empty;
+  OP4REC.OP4KEY = OP1REC.OP1KEY;
+  OP4REC.OP4TRTYP = "I";
+  if (OPAREC.OPASUB <= OP0FW01.OP0FWILL)
+    OP4REC.OP4TRSEQ = OP0FW01.OP0FWSPI[OPASUB];
+    OP4REC.ZZZCHGCT = OP0FW01.OP0FWICT[OPASUB];
+    OP0FW01.OP0FWCAL = "U";
+  else
+    OP0FW01.OP0FWISQ = OP0FW01.OP0FWISQ + 1;
+    OP4REC.OP4TRSEQ = OP0FW01.OP0FWISQ;
+    OP4REC.ZZZCHGCT = 0;
+    OP0FW01.OP0FWCAL = "A";
+  end
+  if (OP0FM001.OP4TXT[OPASUB] == " ")
+    if (OP0FW01.OP0FWCAL == "U")
+      OP0FSDR(); /* delete text record*/
+    end
+  else
+    OP4REC.XNDCD = OP0FM001.OP0FMDPT[OPASUB];
+    OP4REC.OP4TXT = OP0FM001.OP4TXT[OPASUB];
+    OP4REC.OP4TXTOF = "Y";
+    OP4REC.ZZZCHGDT = OPAREC.OPAWDT;
+    OP4REC.ZZZCHGTM = OP0FW01.OP0FWCTM;
+    OP0FSUR(); /* update text record*/
+  end
+
+
+end // end OP0FSUI
+
+// Update Special Labels DB
+Function OP0FSUL()
+
+
+  set OP4REC empty;
+  OP4REC.OP4KEY = OP1REC.OP1KEY;
+  OP4REC.OP4TRTYP = "L";
+  if (OPAREC.OPASUB1 <= OP0FW01.OP0FWLLL)
+    OP4REC.OP4TRSEQ = OP0FW01.OP0FWSPL[OPASUB1];
+    OP4REC.ZZZCHGCT = OP0FW01.OP0FWLCT[OPASUB1];
+    OP0FW01.OP0FWCAL = "U";
+  else
+    OP0FW01.OP0FWLSQ = OP0FW01.OP0FWLSQ + 1;
+    OP4REC.OP4TRSEQ = OP0FW01.OP0FWLSQ;
+    OP4REC.OP4TXTOF = "Y";
+    OP4REC.ZZZCHGCT = 0;
+    OP0FW01.OP0FWCAL = "A";
+  end
+  if (OP0FM001.OP0FMSPL[OPASUB1] == " ")
+    if (OP0FW01.OP0FWCAL == "U")
+      OP0FSDR(); /* delete text record*/
+    end
+  else
+    OP4REC.OP4TXT = OP0FM001.OP0FMSPL[OPASUB1];
+    OP4REC.OP4TXTOF = "Y";
+    OP4REC.ZZZCHGDT = OPAREC.OPAWDT;
+    OP4REC.ZZZCHGTM = OP0FW01.OP0FWCTM;
+    OP0FSUR(); /* update text record*/
+    OP1REC.OP1SPLBF = "Y";
+  end
+
+
+end // end OP0FSUL
+
+// Update Spec Instruc/Label DB
+Function OP0FSUP()
+
+
+  OPAREC.OPASUB = 1;
+
+  while (OPAREC.OPASUB <= 10)
+    if (OP0FM001.OP4TXT[OPASUB] is modified
+     || OP0FM001.OP0FMDPT[OPASUB] is modified)
+      OP0FSUI();
+    end
+    OPAREC.OPASUB = OPAREC.OPASUB + 1;
+  end
+
+
+  OP1REC.OP1SPLBF = "N";
+  OPAREC.OPASUB1 = 1;
+
+  while (OPAREC.OPASUB1 <= 2)
+    OP0FSUL();
+    OPAREC.OPASUB1 = OPAREC.OPASUB1 + 1;
+  end
+
+
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+
+end // end OP0FSUP
+
+// Update Text Record On DB
+Function OP0FSUR()
+
+  OP0FW01.OP0FWTA1 = OP4REC.OP1CUOID;
+  OP0FW01.OP0FWTA2 = OP4REC.OP1NORID;
+  OP0FW01.OP0FWTA3 = OP1REC.KUCCOID;
+  OP0FW01.OP0FWTA4 = OP4REC.OP4TRTYP;
+  OP0FW01.OP0FWTR5 = OP4REC.OP4TRSEQ;
+  OP0FW01.OP0FWTA7 = OP0FW01.OP0FWCAL;
+  OP0FW01.OP0FWTA8 = OP0FW01.OP0FWSLF;
+  OP0FW01.OP0FWTA9 = OP0FW01.OP0FWSIF;
+
+  set SQLCA empty;
+
+  if (OP0FW01.OP0FWCAL == "U")
+    call "IO0470" ("U ", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (OP0FW01.OP0FWCAL == "A")
+    call "IO0470" ("A ", SQLCA, OP4REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "OP0F";
+    TA1REC.TA1LOCAT[1] = OP0FW01.OP0FWCAL;
+    TA1REC.TA1LOCAT[2] = COMMAREA.CAFROMAP;
+    TA1REC.TA1MAP = "OP0FM001";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VTEXT001";
+    TA1REC.TA1TBLKE = OP0FW01.OP0FWTAK; /* record key used*/
+    TA1REC.TA1LOCAT[3] = "OP0FSUR";
+    TA1REC.TA1LOCAT[4] = "IO0470";
+    XSOPS02();
+  end
+
+
+
+
+end // end OP0FSUR
+
+Record OP0FW01 type basicRecord
+  10 OP0FWSPI OP0FWSPI [10] ; 
+  10 OP0FWICT OP0FWICT [10] ; 
+  10 OP0FWSPL OP0FWSPL [2] ; 
+  10 OP0FWLCT OP0FWLCT [2] ; 
+  10 OP0FWISQ OP0FWISQ ; 
+  10 OP0FWLSQ OP0FWLSQ ; 
+  10 OP0FWILL OP0FWILL ; 
+  10 OP0FWLLL OP0FWLLL ; 
+  10 OP0FWCAL OP0FWCAL ; 
+  10 OP0FWDLC OP0FWDLC ; 
+  10 OP0FWFTM OP0FWFTM ; 
+    15 OP0FWFHH OP0FWFHH ; 
+    15 * char(1) ; 
+    15 OP0FWFMM OP0FWFMM ; 
+    15 * char(1) ; 
+    15 OP0FWFSS OP0FWFSS ; 
+  10 OP0FWTM2 OP0FWTM2 ; 
+    15 OP0FWHH2 OP0FWHH2 ; 
+    15 * char(1) ; 
+    15 OP0FWMM2 OP0FWMM2 ; 
+    15 * char(1) ; 
+    15 OP0FWSS2 OP0FWSS2 ; 
+  10 OP0FWCTM OP0FWCTM ; 
+    15 OP0FWCHH OP0FWCHH ; 
+    15 OP0FWCMM OP0FWCMM ; 
+  10 OP0FWTAK OP0FWTAK ; 
+    15 OP0FWTA1 OP0FWTA1 ; 
+    15 OP0FWTA2 OP0FWTA2 ; 
+    15 OP0FWTA3 OP0FWTA3 ; 
+    15 OP0FWTA4 OP0FWTA4 ; 
+    15 OP0FWTA5 OP0FWTA5 ; 
+      20 OP0FWTR5 OP0FWTR5 ; 
+    15 OP0FWTA6 OP0FWTA6 ; 
+      20 OP0FWTA7 OP0FWTA7 ; 
+      20 OP0FWTA8 OP0FWTA8 ; 
+      20 OP0FWTA9 OP0FWTA9 ; 
+      20 OP0FWT10 OP0FWT10 ; 
+  10 OP0FWSLF OP0FWSLF ; 
+  10 OP0FWSIF OP0FWSIF ; 
+end // end OP0FW01
+
+// db call type (update/add)
+DataItem OP0FWCAL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// change hour
+DataItem OP0FWCHH num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change minute
+DataItem OP0FWCMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change time
+DataItem OP0FWCTM num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// dead lock counter
+DataItem OP0FWDLC num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format hour
+DataItem OP0FWFHH num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format minute
+DataItem OP0FWFMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format second
+DataItem OP0FWFSS num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format time
+DataItem OP0FWFTM char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// format hour
+DataItem OP0FWHH2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// instructions count
+DataItem OP0FWICT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// instr last loaded
+DataItem OP0FWILL smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// instruction work sequence
+DataItem OP0FWISQ smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// labels count
+DataItem OP0FWLCT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// label last loaded
+DataItem OP0FWLLL smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// label work sequence
+DataItem OP0FWLSQ smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format minute
+DataItem OP0FWMM2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// save inst flag from op1rec
+DataItem OP0FWSIF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// save label flag from op1rec
+DataItem OP0FWSLF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// special inst sequence
+DataItem OP0FWSPI smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// special label sequence
+DataItem OP0FWSPL smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format second
+DataItem OP0FWSS2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// stuff for errdiag
+DataItem OP0FWT10 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// stuff for errdiag
+DataItem OP0FWTA1 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// stuff for errdiag
+DataItem OP0FWTA2 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// stuff for errdiag
+DataItem OP0FWTA3 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// stuff for errdiag
+DataItem OP0FWTA4 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// stuff for errdiag
+DataItem OP0FWTA5 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// stuff for errdiag
+DataItem OP0FWTA6 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// stuff for errdiag
+DataItem OP0FWTA7 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// stuff for errdiag
+DataItem OP0FWTA8 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// stuff for errdiag
+DataItem OP0FWTA9 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// display order number
+DataItem OP0FWTAK char(40)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// format time
+DataItem OP0FWTM2 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// redefined
+DataItem OP0FWTR5 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

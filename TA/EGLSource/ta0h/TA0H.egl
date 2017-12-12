@@ -1,0 +1,485 @@
+package ta0h;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import ta.common.*;
+import vv.common.*;
+//*** PROGRAM=TA0H ****
+// **********************************************************
+// .................   TA0H prologue ........................
+// 
+// 
+// This application is used to test all changes to TA0Q (a
+// re-gen'd version of TA0P) as follows:
+// 
+//    A)  via TEST CICS:
+//        1)  test with ta0pt01 (jcl with prod JOBLIB concat.)
+//        2)  test with ta0pt02 (jcl with test JOBLIB concat.)
+// 
+//    B)  via PROD CICS:
+//        1)  test with ta0pt01 (jcl with prod JOBLIB concat.)
+//            a)  JOB zt9921 (jcl will be re-routed to devlmvs
+//                via ESP Encore scheduler & run on devlmvs)
+//            a)  JOB zt9923 (jcl will be scheduled by ca7 &
+//                run on prodmvs)
+// 
+// **********************************************************
+// maint.
+// date      by     why
+// --------  ------ -------------------------------------------
+// 12-17-91  vcowan  New application...copied from ta0b
+// 04-15-92  vcowan  add code to test following TA0P options:
+//                   1.  GL & ZT appls on DEVLMVS,
+// 04-15-92  vcowan  add code to test following TA0P options:
+//                   1.  GL & ZT appls on DEVLMVS,
+//                   2.  SL appls using S00008 initator,
+//                   3.  all other apps using S00001 initator
+//                   4.  new ca-7 parms: MAINID, RELOPR, DELETE
+//                       CONCODE, JCLID=000 & SYSTEM=xxxx
+// 04-15-92  vcowan  add code to test following TA0P options:
+//                   1.  JOB GL1253 to run on PRODMVS only.
+// 07-31-92  vcowan  add code to test following TA0P options:
+//                   1.  logic to test the following systems
+//                       to use the su0006 initator:
+//                       ab, ab, fb, ff, fl, gl
+// 02-16-93  vcowan  chg msg file from FF to TA
+// 04-21-93  vcowan  add cics region 07 for europe ...
+// 04-22-93  vcowan  chg jcl table's joblib concatenation &
+//                   program logic to set proper PROCLIB
+//                   concatenation per the DOMESTIC or EURPOEAN
+//                   CICS processing region.
+//      ...NOTE: TA0Ht01 & TA0Ht02 have DOMESTIC concatenation
+//               in PRODMSL in the CMT
+//      ...NOTE: TA0Ht01 & TA0Ht02 have EUROPEAN concatenation
+//               in PRODMSL in the CET
+// 07-19-93  vcowan  chg jcl table's for MVSEURD
+// 08-16-93  vcowan  chg testrms to testenc; ref PROC TA0H-610
+// 12-09-93  vcowan  chg: european systems move from mvsprod to
+//                   run on production on MVSEURD LPAR ........
+//                   chg: cicso07 to cicso13; ref PROC TA0H-600
+// 12-11-93  vcowan  chg: DD overrides for DIAGREC & SYSUT1 in
+//                   in P0010 & S0010 respectively; ref PROC
+//                   TA0H-610
+// 08-10-94  vcowan  chg: for MVSASIA testing ... ADD LOGIC:
+//                   IF COMMAREA.XCTH.THEATER-RUNTYPE = 'PROD'
+//                   to check for MVS's Production Regions.
+//                   ref: PROC TA0H-600, TA0P-610.
+// 04-21-95  vcowan  correct documentation on TA0Hm000 map ...
+//                   chg ta0q to ta0r
+// *********************
+Program TA0H type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "TA00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  SQLCA SQLCA; // record
+  TA0HW01 TA0HW01; // record
+  TA0HW04 TA0HW04; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TAEREC TAEREC; // record
+  VCSP4001 VCSP4001; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use TA0HM.TA0HM000,  // forms
+      TA0HM.TA0HM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    TA0H-000: TA0H-000();
+    exit program;
+  end // end main
+end // end TA0H
+
+// main flow
+Function TA0H-000()
+   /* ************************************************************/
+   /* *   this is the "main logic" for the application.         **/
+   /* *                                                         **/
+   /* *   perform initialization, set application revision nbrs,**/
+   /* *   then do main perform until done with application      **/
+   /* *                                                         **/
+   /* ************************************************************/
+
+  XSENTRY();
+
+  XSSEGTR();
+
+  TA0H-001(); /* initialize the application*/
+
+   /* -------------------------------------------------------------*/
+        /* initialize map fields with default values*/
+   /* -------------------------------------------------------------*/
+  TA0HM000.TA0HMNBR = "00"; /* appl mx nbr for TA0Hm000*/
+  TA0HM001.TA0HMNBR = "00"; /* appl mx nbr for TA0Hm001*/
+
+
+  TA0H-002(); /* converse test instructions*/
+
+  while (TA0HW04.TA0HW-EOA-SW == "N") /* while not end of application*/
+    TA0H-003(); /* process the report options*/
+  end
+
+  COMMAREA.CATOAP = "MN0M"; /* return to main menu*/
+
+end // end TA0H-000
+
+// init NIL rept selection
+Function TA0H-001()
+
+
+  set TA0HM000 empty;
+  set TA0HM001 empty;
+
+  set TA0HM000 initial; /* clear map*/
+  set TA0HM001 initial; /* clear map*/
+
+  set TA0HW01 empty;
+  set TA0HW04 empty;
+  set SQLCA empty;
+
+  TA0HW04.TA0HW-EOA-SW = "N";
+
+  TA0HM001.TA0HMPNM = "TA0HM000"; /* first screen*/
+  TA0HM001.TA0HMPNM = "TA0HM001"; /* first screen*/
+
+  TA0HM000.TA0HMRDT = VGVar.currentShortGregorianDate; /* system date*/
+  TA0HM001.TA0HMRDT = VGVar.currentShortGregorianDate; /* system date*/
+
+
+end // end TA0H-001
+
+// Main process to display a map
+Function TA0H-002()
+
+
+  TA0HW04.TA0HW-ERR-SW = "N"; /* set map-err to no*/
+
+
+  converse TA0HM000 ;
+
+  TA0HM000.VAGen_EZEMSG = " "; /* clear msg line*/
+   /* clear msg line*/
+  TA0HM000.TA0HMMSG = " ";
+   /* ---------------------------------------------------------*/
+   /* go check which pf, pa, or enter key hit*/
+   /* ---------------------------------------------------------*/
+  TA0H-092(); /* check attention keys*/
+
+
+end // end TA0H-002
+
+// Main process to display a map
+Function TA0H-003()
+
+
+  TA0HW04.TA0HW-ERR-SW = "N"; /* set map-err to no*/
+
+
+  converse TA0HM001 ;
+
+  TA0HM001.VAGen_EZEMSG = " "; /* clear msg line*/
+   /* clear msg line*/
+  TA0HM001.TA0HMMSG = " ";
+  TA0H-092(); /* check attention keys*/
+
+
+  if (TA0HM-ABEND-OPT == "1" /* cics 1006 abend*/
+   || TA0HM-ABEND-OPT == "2" /* cics 1029 abend parm out of sync*/
+   || TA0HM-ABEND-OPT == "3" /* cics 1029 abend cobol display ta0010*/
+   || TA0HM-ABEND-OPT == "4" /* cics abend pgm ta0030 not found*/
+   || TA0HM-ABEND-OPT == "5" /* cics asra abend Soc7*/
+   || TA0HM-ABEND-OPT == "6") /* csp Maps out of Sync*/
+     /* *** next sentence ****/
+
+  else
+    TA0HM001.TA0HMMSG = "TA0H0001I -- SELECT A VALID OPTION";
+    TA0HW04.TA0HW-ERR-SW = "Y";
+    exit stack;
+  end
+
+
+   /* ---------------------------------------------------------*/
+   /* CICS 1006 ABEND logic ... ta0hw01.ta0hw-1006-items occurs 4 times*/
+   /* ---------------------------------------------------------*/
+
+  if (TA0HM-ABEND-OPT == "1") /* cics 1006 abend*/
+    TA0HW-IDX = 1;
+    TA0HW04.TA0HW-1006-ITEMS[TA0HW-IDX] = "A"; /* 1st occurrance*/
+    TA0HW-IDX = TA0HW-IDX + 1;
+    TA0HW04.TA0HW-1006-ITEMS[TA0HW-IDX] = "B"; /* 2nd occurrance*/
+    TA0HW-IDX = TA0HW-IDX + 1;
+    TA0HW04.TA0HW-1006-ITEMS[TA0HW-IDX] = "C"; /* 3rdoccurrance*/
+    TA0HW-IDX = TA0HW-IDX + 1;
+    TA0HW04.TA0HW-1006-ITEMS[TA0HW-IDX] = "D"; /* 4th occurrance*/
+    TA0HW-IDX = TA0HW-IDX + 1;
+    TA0HW04.TA0HW-1006-ITEMS[TA0HW-IDX] = "E"; /* 5th occurrance*/
+    TA0HW-IDX = TA0HW-IDX + 1;
+    TA0HW04.TA0HW-1006-ITEMS[TA0HW-IDX] = "F"; /* 6th occurrance*/
+  end
+
+   /* ---------------------------------------------------------*/
+   /* CICS 1029 ABEND logic ... parms out-of-sync .. ie wrong order*/
+   /* CALL IO7140 'A ',SQLCA,VCSP4001 (NOMAPS,NONCSP,REPLY;/* Update row*/
+   /* ---------------------------------------------------------*/
+
+  if (TA0HM-ABEND-OPT == "2") /* cics 1029 abend - parms out of sync*/
+
+    set SQLCA empty; /* initialize ta6rec*/
+    set VCSP4001 empty; /* initialize ta6rec*/
+
+    try
+      call "IO7140" ("A ", VCSP4001, SQLCA) {isNoRefresh = yes, isExternal = yes};
+    end /* Update row*/
+
+  end
+
+
+   /* ---------------------------------------------------------*/
+   /* CICS 1029 ABEND logic ... pgm contains COBOL Display Verbs*/
+   /* CALL ta0010 ta1rec,taerec (noncsp;   /**/
+   /* ---------------------------------------------------------*/
+
+  if (TA0HM-ABEND-OPT == "3") /* cics 1029 abend - cobol display verbs*/
+
+    set TAEREC empty; /* clear taerec*/
+    set TA1REC empty; /* clear ta1rec*/
+    TA1REC.TA1TYPE = "APPL"; /* errdiag error type*/
+    TA1REC.TA1FUNC = "RETN"; /* errdiag termination*/
+    TA1REC.TA1PGMAP = "PGMX"; /* appl name*/
+    TA1REC.TA1PGMNO = "    ";
+                                   /* process number - leave blank*/
+    TA1REC.TA1LOC = "TEST OF TA0HM001";
+    TA1REC.TA1MAPAP = "TA0H"; /* map application*/
+    TA1REC.TA1MAPNO = "M001"; /* map nunber*/
+    TAEREC.TAEDESC2 = "ANY MESSAGE CAN APPEAR HERE";
+
+    call "TA0010" (TA1REC, TAEREC) {isExternal = yes}; /* error diagnosis routine*/
+
+  end
+
+   /* ---------------------------------------------------------*/
+   /* CICS 1029 ABEND logic ... pgm not defined to CICS Regions*/
+   /* CALL ta0030 ta2rec (nomaps,noncsp;   /**/
+   /* ---------------------------------------------------------*/
+
+  if (TA0HM-ABEND-OPT == "4") /* cics 1029 abend - cobol display verbs*/
+
+    set TA2REC empty; /* clear ta2rec*/
+
+    TA2REC.TA2DTOPT = "GETDATE"; /* option*/
+    TA2REC.TA2GRTYP = "A"; /* type option*/
+    call "TA0030" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* common date checking/convert pgm*/
+
+  end
+
+
+   /* ---------------------------------------------------------*/
+   /* CICS asra ABEND logic ... s0c7  data exception*/
+   /* ---------------------------------------------------------*/
+
+  if (TA0HM-ABEND-OPT == "5") /* s0c7 abend -- data exception*/
+
+    TA0HW-DSPLY-VALUE = "   "; /* set field blank*/
+    TA0HW-DSPLY-NUM-VALUE = TA0HW-DSPLY-NUM-VALUE + 1; /* causes s0c7 abend*/
+
+  end
+
+
+   /* ---------------------------------------------------------*/
+   /* CICS asra abend ... maps out of sequence*/
+   /* must modify manually*/
+   /* ---------------------------------------------------------*/
+
+  if (TA0HM-ABEND-OPT == "6") /* csp maps out of sequence*/
+
+    TA0HM001.TA0HMMSG = "TA0H002I -- MANUALLY DELETE TA0HM OR TA0HMFM AND NEWCOPY OLD VER";
+    TA0HW04.TA0HW-ERR-SW = "Y";
+    exit stack;
+
+  end
+
+
+end // end TA0H-003
+
+// Check attention identifier
+Function TA0H-092()
+   /* ------------------------------------------------------------*/
+   /* ------------------------------------------------------------*/
+   /* If CANCEL was requested, indicate selection cancelled,*/
+   /* clear the map fields and exit to display the next map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+    set TA0HM001 initial; /* m001 input/output*/
+    TA0HW04.TA0HW-EOS-SW = "Y";
+    TA0HW04.TA0HW-EOA-SW = "Y";
+    converseLib.validationFailed(0);
+    TA0HW01.XXXMSGNO = 0;
+    TA0HM001.VAGen_EZEMSG = " ";
+    COMMAREA.CATOAP = "MN0M";
+    XSEXIT(); /* Exit to production menu*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If HELP was requested, indicate exit to the selection menu.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+    TA0HW04.TA0HW-EOS-SW = "Y";
+    TA0HW04.TA0HW-EOA-SW = "Y";
+    converseLib.validationFailed(0);
+    TA0HW01.XXXMSGNO = 0;
+    TA0HM001.VAGen_EZEMSG = " ";
+    COMMAREA.CATOAP = "GD01";
+    XSEXIT();
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If EXIT was requested, indicate exit to the selection menu.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+    TA0HW04.TA0HW-EOS-SW = "Y";
+    TA0HW04.TA0HW-EOA-SW = "Y";
+    converseLib.validationFailed(0);
+    TA0HW01.XXXMSGNO = 0;
+    TA0HM001.VAGen_EZEMSG = " ";
+    COMMAREA.CATOAP = "MN0M";
+    XSEXIT(); /* Exit to production menu*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If pf4....go to next screen: TA0Hm001*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf4) /* PF4 was pressed*/
+    return; /* Exit to display map*/
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+    TA0HW01.XXXMODID = "092"; /* Module identification*/
+    converseLib.validationFailed(3); /* Indicate invalid attention key*/
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+    return; /* Exit to display map*/
+  end
+
+
+end // end TA0H-092
+
+//*** RECORD=TA0HW01 ****
+// *********** FOOTWEAR FORECASTING SYSTEM COMMAREA ***********
+// 
+// This record contains data fields that are passed between the
+// Footwear Forecasting System applications.
+// 
+// -------  --------  ------  ---------------------------------
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+//          03/23/89  SPOPA   New record.
+// ***********************
+Record TA0HW01 type basicRecord
+  10 XXXMODID XXXMODID ; 
+  10 XXXMSGNO XXXMSGNO ; 
+  10 TA0HW-ABEND-OPT TA0HW-ABEND-OPT ; 
+end // end TA0HW01
+
+//*** RECORD=TA0HW04 ****
+// ****************** ta09w04 work record *********************
+// 
+// -------------------  maintenance log -----------------------
+// -------------------  maintenance log -----------------------
+// NIL applications. This is not a global working-storage
+// passed to other NIL applics.  It is a second w-s record
+// for an individual application .
+// 
+// ************************************************************
+// ***********************
+Record TA0HW04 type basicRecord
+  10 TA0HW-EOA-SW TA0HW-EOA-SW ; 
+  10 TA0HW-EOS-SW TA0HW-EOS-SW ; 
+  10 TA0HW-ERR-SW TA0HW-ERR-SW ; 
+  10 TA0HW-1006-ITEMS TA0HW-1006-ITEMS [4] ; 
+  10 TA0HW-DSPLY-VALUE TA0HW-DSPLY-VALUE ; 
+    15 TA0HW-DSPLY-NUM-VALUE TA0HW-DSPLY-NUM-VALUE ; 
+  10 TA0HW-IDX TA0HW-IDX ; 
+end // end TA0HW04
+
+DataItem TA0HW-1006-ITEMS char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TA0HW-ABEND-OPT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TA0HW-DSPLY-NUM-VALUE num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem TA0HW-DSPLY-VALUE char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end-of-application flag (y/n)
+DataItem TA0HW-EOA-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end-of-screen flag (y/n)
+DataItem TA0HW-EOS-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end-of-screen flag (y/n)
+DataItem TA0HW-ERR-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// index
+DataItem TA0HW-IDX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

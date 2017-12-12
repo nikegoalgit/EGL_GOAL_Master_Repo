@@ -1,0 +1,1537 @@
+package sy0l;
+import corpcom1.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import fk.common.*;
+import fy.common.*;
+import mn.common.*;
+import op.common.*;
+import pc.common.*;
+import pg.common.*;
+import sy.common.*;
+import ta.common.*;
+//*** PROGRAM=SY0L ****
+// THIS APPLICATION WILL CHANGE THE PRODUCT STYLE DB2 TABLES.
+// THERE is one SCREEN FOR EACH STYLE ROW. A CHANGE IS
+// DETERMINED BY COMPARING  THE RECORD  SY1REC to  SYDREC.
+// THEREFORE ANY CHANGES MADE TO SY1REC MUST ALSO BE MADE TO
+// SYDREC.  IF A TABLE ITEM HAS BECOME INACTIVE THE CODE WILL
+// NOT EDIT EXISTING INACTIVE CODES.
+// 
+// 
+// 
+// ************************************************************
+// MAINTENANCE:
+// 
+//  REV.
+// Rev #  WHO      WHEN     WHY
+// -----  ------  --------  -----------------------------------
+//  00    mbuhit  11-30-88  CREATED APPLICATION
+// P0104  MHALST  03-28-89  Remove XTVCD.
+//        VCowan  04-17-89  added XSSEGTR logic
+// -spl-  jwood   04-17-89  added noncsp option logic
+//        MHALST  11-13-89  Data base changes and add SYZTBL
+//        MHALST  11-20-89  Add duty rate and add on amounts to
+//                          screen.
+// P0134  MHALST  04-20-90  Remove transfer to SY08
+//        MHALST  10-08-90  Data base changes and SYAREC
+//        MHALST  03-22-93  Add color scan for EAO
+//        MHALST  10-03-95  Add MN0V to get region for user
+//        MHALST  09-01-00  Correct region validation if user
+//                          fast-paths in with-out GPC code.
+//        DROBI2    11-05-03    Add table XDRTBL.
+// ************************************************************
+// 
+//  io modules    table
+//  used          view name
+// -----------    --------------
+//  IO0040        dprod.vscale01
+//  IO0120        dprod.vstyle01
+//  IO0530        dprod.vsyaud01
+//  IO0520        dprod.vsytag01
+// 
+// 
+// *********************
+Program SY0L type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "SY00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  MNVREC MNVREC; // record
+  SQLCA SQLCA; // record
+  SY0LW01 SY0LW01; // record
+  SY1REC SY1REC; // record
+  SY2REC SY2REC; // record
+  SY4REC SY4REC; // record
+  SY9REC SY9REC; // record
+  SYAREC SYAREC; // record
+  SYBREC SYBREC; // record
+  SYDREC SYDREC; // record
+  SYWREC SYWREC; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TAEREC TAEREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XDRTBL {deleteAfterUse = yes}; // table
+  use SYRGTBL {deleteAfterUse = yes}; // table
+  use SYZTBL {deleteAfterUse = yes}; // table
+  use XGPTBL {deleteAfterUse = yes}; // table
+  use XQTTBL {deleteAfterUse = yes}; // table
+  use SY0LM.SY0LM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    SY0L001: SY0L001();
+     /* *****************************************/
+     /* FLOW STAGE*/
+
+    goto SY0L005;
+    SY0L005: SY0L005();
+
+    if (converseVar.eventKey is pa2)
+      goto SY0L001;
+    else
+      if (converseVar.validationMsgNum > 0
+       && SYWREC.SYWMSGFL == "N")
+        goto SY0L005;
+      else
+        if (converseVar.eventKey is pf12
+         || converseVar.eventKey is enter)
+          goto SY0L010;
+        else
+          converseLib.validationFailed(19);
+          goto SY0L005;
+        end
+      end
+    end
+    SY0L010: SY0L010();
+
+    if (converseVar.eventKey is pa2)
+      goto SY0L001;
+    else
+      if (converseVar.validationMsgNum > 0
+       && SYWREC.SYWMSGFL == "N")
+        goto SY0L010;
+      else
+        if (converseVar.eventKey is pf12)
+          goto SY0L010;
+        else
+          if (converseVar.eventKey is enter)
+            goto SY0L005;
+          else
+            converseLib.validationFailed(19);
+            goto SY0L010;
+          end
+        end
+      end
+    end
+  end // end main
+end // end SY0L
+
+// init. sy0lm001 screen & appl.
+Function SY0L001()
+
+       /* *****************************************/
+       /* * 1. init. application.                **/
+       /* * 2. set all rec & maps to empty       **/
+       /* *    and clear.                        **/
+       /* * 3. if the commarea.xgpcd is diff.    **/
+       /* *    than the sywrec.xgpcd use the     **/
+       /* *    sywrec.xgpcd because the user     **/
+       /* *    must have transfered into this    **/
+       /* *    application with the sywrec.xgpcd **/
+       /* * 4. validate the gpc code.            **/
+       /* *                                      **/
+       /* *****************************************/
+
+  XSENTRY(); /* security check*/
+
+  XSSEGTR(); /* set segemented transaction id*/
+
+  set SYWREC empty;
+
+  set SY1REC empty;
+  set SY4REC empty;
+  set SY9REC empty;
+  set SYAREC empty;
+  set SYWREC empty;
+  set TA2REC empty;
+  set SY0LM001 initial;
+
+  SYWREC.SYWMSGFL = "N";
+  SYWREC.SYWTRANF = COMMAREA.CAUSERA;
+  SY0LM001.SYMREV = "00"; /* program revision number!!!!!!!!!!*/
+
+   /* Now, find out what region user is and set-up table of*/
+   /* valid regions the user can use.*/
+  XPSY008(); /* Get users region*/
+  if (SYWREC.SYW-REG-TBL-SIZE == 0) /* No regions for user*/
+    converseLib.validationFailed(124); /* User Id not authorized*/
+    exit stack;
+  end
+
+  if (SYWREC.XGPCD == " ")
+    SY0LM001.XGPCD = COMMAREA.XGPCD;
+  else
+    if (SYWREC.XGPCD == COMMAREA.XGPCD)
+      SY0LM001.XGPCD = COMMAREA.XGPCD;
+    else
+      SY0LM001.XGPCD = SYWREC.XGPCD;
+    end
+  end
+  SY0LSAB(); /* validate gpc code*/
+
+end // end SY0L001
+
+// get style data for scr. 1
+Function SY0L005()
+
+       /* ***************************************/
+       /* *  1. display screen sy01m001 and    **/
+       /* *  let user enter xgpcd and style    **/
+       /* *  number.                           **/
+       /* *                                    **/
+       /* *  2. the process will validate      **/
+       /* *     and retrieve all code descs.   **/
+       /* *                                    **/
+       /* *  3. the user can transfer to       **/
+       /* *     any application from this      **/
+       /* *     screen.                        **/
+       /* *                                    **/
+       /* *                                    **/
+       /* *                                    **/
+       /* *                                    **/
+       /* ***************************************/
+
+  SY0LM001.SYMTTLNM = "  PRODUCTION STYLE CHANGE    ";
+  SY0LM001.SYMPRONM = "SY0L005";
+  SY0LM001.SYMCURDT = VGVar.currentShortGregorianDate;
+  SY0LM001.SYMREV = "00";
+
+  SY0LSBT(); /* set non-key fields to protect*/
+
+  if (converseVar.validationMsgNum > 0
+   && SYWREC.SYWMSGFL == "N")
+    /* next sentence*/
+  else
+    set SY0LM001.SY1STNBR cursor;
+  end
+
+  converseVar.segmentedMode = 1;
+
+
+   /* ***********************************************************/
+  converse SY0LM001 ;
+   /* ***********************************************************/
+
+  SYWREC.SYWMSGFL = "N";
+
+       /* ***************************************/
+       /* *  check pf keys and transfer to     **/
+       /* *  other applications.               **/
+       /* ***************************************/
+
+  SY0LSBA();
+
+       /* ***************************************/
+       /* *  set gpc and style fields to       **/
+       /* *  normal.                           **/
+       /* ***************************************/
+
+  set SY0LM001.SY1STNBR normal;
+  set SY0LM001.XGPCD normal;
+
+       /* ***************************************/
+       /* *  validate style and gpc codes      **/
+       /* ***************************************/
+
+  SY0LSBB();
+
+
+       /* ***************************************/
+       /* *  set screens to normal             **/
+       /* *  sy01sbf = screen sy01m001         **/
+       /* ***************************************/
+
+  SY0LSBF();
+
+       /* ***************************************/
+       /* *  get existing style row            **/
+       /* ***************************************/
+
+  SY0LSBC();
+
+       /* ***************************************/
+       /* * get code description for menu      **/
+       /* * screen sy0vm001                    **/
+       /* ***************************************/
+
+  SY0LSBD();
+  SYWREC.SYWMSGFL = "Y";
+
+
+end // end SY0L005
+
+// update style data from scr. 1
+Function SY0L010()
+
+       /* ***************************************/
+       /* *  1. init. screen, protect certain  **/
+       /* *     screen fields.                 **/
+       /* *                                    **/
+       /* *  2. display screen for user to     **/
+       /* *     make changes to it. if there   **/
+       /* *     are no changes then do not     **/
+       /* *     update the style record.       **/
+       /* *                                    **/
+       /* *  3. enter will cause the user to   **/
+       /* *     update and loop thru sy01m001. **/
+       /* *                                    **/
+       /* *  4. the other significant pf keys  **/
+       /* *     will update and then transfer  **/
+       /* *     the user to another application**/
+       /* *                                    **/
+       /* ***************************************/
+
+
+  SY0LM001.SYMTTLNM = "  PRODUCTION STYLE CHANGE    ";
+  SY0LM001.SYMPRONM = "SY0L010";
+  SY0LM001.SYMCURDT = VGVar.currentShortGregorianDate;
+
+  set SY0LM001.XGPCD skip;
+  set SY0LM001.SY1STNBR skip;
+  SY0LM001.SYMREV = "00"; /* program revision number!!!!!!!!!!!*/
+
+  if (converseVar.validationMsgNum > 0)
+    /* next sentence*/
+  else
+    set SY0LM001.SYBSTGNB cursor;
+  end
+
+  converseVar.segmentedMode = 1;
+
+
+   /* ***********************************************************/
+  converse SY0LM001 ;
+   /* ***********************************************************/
+
+  SYWREC.SYWMSGFL = "N"; /* set message flag to n*/
+
+       /* ******************************************************/
+       /* *     check for valid pf keys                       **/
+       /* ******************************************************/
+
+  SY0LSCH();
+
+       /* ******************************************************/
+       /* *     CLEAR ANY LEFTOVER MESSAGE FIELDS             **/
+       /* *     AND SET THE SCREEN ATTRIBUTES TO NORMAL.      **/
+       /* ******************************************************/
+
+  SY0LSBF();
+
+
+       /* ******************************************************/
+       /* *     validate required fields from screen          **/
+       /* *     sy0lm001.                                     **/
+       /* ******************************************************/
+
+  SY0LSCB();
+
+
+       /* ***************************************/
+       /* *  IF CHANGES MADE UPDATE STYLE      **/
+       /* *  OTHERWISE GO TO SY01005.          **/
+       /* ***************************************/
+
+  if (converseVar.validationMsgNum > 0
+   && SYWREC.SYWMSGFL == "N")
+    exit stack;
+  else
+    if (converseVar.eventKey is pf12)
+      exit stack;
+    else
+      SY0LSCD();
+    end
+  end
+
+       /* ******************************************************/
+       /* *     transfer to other applications if required    **/
+       /* ******************************************************/
+
+  SY0LSCA();
+
+
+
+  set SY0LM001 empty;
+  SY0LM001.XGPCD = SYWREC.XGPCD;
+  SY0LM001.XGPABRV = SYWREC.XGPABRV;
+
+
+end // end SY0L010
+
+// get todays date
+Function SY0LSAA()
+
+       /* ***************************************/
+       /* *   cobol date routine               **/
+       /* *                                    **/
+       /* ***************************************/
+
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (TA2REC.TA2RTNCD == 0222)
+    return;
+  else
+    if (TA2REC.TA2RTNCD != 0)
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "SY01SAA";
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC) {isExternal = yes};
+      converseLib.validationFailed(30); /* invalid date entered*/
+      exit stack;
+    else
+      /* next sentence*/
+    end
+  end
+
+end // end SY0LSAA
+
+// validate gpc code
+Function SY0LSAB()
+
+       /* ******************************************/
+       /* *  VERIFY GENERAL PRODUCT CLASS CODE    **/
+       /* ******************************************/
+
+  if (SY0LM001.XGPCD == "99")
+    converseLib.validationFailed(3); /* invalid code*/
+    set SY0LM001.XGPCD cursor, bold;
+    SY0LM001.XGPABRV = "INVALID";
+    return;
+  end
+
+  if (SY0LM001.XGPCD in XGPTBL.XGPCD)
+    if (XGPTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      SY0LM001.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+      SYWREC.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+      SYWREC.XGPCD = XGPTBL.XGPCD[sysVar.arrayIndex];
+    else
+      converseLib.validationFailed(65); /* status code is inactive*/
+      set SY0LM001.XGPCD cursor, bold;
+      SY0LM001.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+      return;
+    end
+  else
+    set SY0LM001.XGPCD cursor, bold;
+    converseLib.validationFailed(3); /* invalid code*/
+    SY0LM001.XGPABRV = "INVALID";
+    exit stack;
+  end
+
+
+       /* ******************************************/
+       /* *  CHECK IF USER  IS AUTHORIZED         **/
+       /* *  FOR THIS GPC CODE                    **/
+       /* ******************************************/
+
+
+
+  if (SY0LM001.XGPCD == "02"
+   && COMMAREA.CAALVL[2] == "N")
+    set SY0LM001.XGPCD cursor, bold;
+    converseLib.validationFailed(35); /* not authorized to access gpc*/
+    SY0LM001.XGPABRV = "INVALID";
+    exit stack;
+  else
+    if (SY0LM001.XGPCD == "03"
+     && COMMAREA.CAALVL[3] == "N")
+      set SY0LM001.XGPCD cursor, bold;
+      SY0LM001.XGPABRV = "INVALID CODE";
+      converseLib.validationFailed(35); /* not authorized to access gpc*/
+      exit stack;
+    else
+      /* next sentence*/
+    end
+  end
+
+  if (COMMAREA.XGPCD == " ") /* If no COMMAREA GPC*/
+    COMMAREA.XGPCD = SYWREC.XGPCD;
+  end
+
+end // end SY0LSAB
+
+// check function keys & transfer
+Function SY0LSBA()
+
+       /* *******************************************/
+       /* *    check function keys and transfer to **/
+       /* *    other application as nessary.       **/
+       /* *******************************************/
+
+  if (converseVar.validationMsgNum > 0
+   && SYWREC.SYWMSGFL == "N")
+    exit stack;
+  else
+    if (converseVar.eventKey is pf1)
+      XSPF1();
+      SY0LM001.SYMSCMSG = COMMAREA.CAMSG;
+      set SY0LM001 alarm;
+      converseLib.validationFailed(1);
+      exit stack;
+    else
+      if (converseVar.eventKey is pf3)
+        SY0LSBN(); /* transfer to sy0v application*/
+        SY0LM001.SYMSCMSG = COMMAREA.CAMSG;
+        set SY0LM001 alarm;
+        converseLib.validationFailed(1);
+        exit stack;
+      else
+        if (converseVar.eventKey is pf4)
+          XSPF4();
+          SY0LM001.SYMSCMSG = COMMAREA.CAMSG;
+          set SY0LM001 alarm;
+          converseLib.validationFailed(1);
+          exit stack;
+        else
+          if (converseVar.eventKey is pf15)
+            SYWREC.SYWPFOPT = "PF15";
+            COMMAREA.CAUSERA = SYWREC.SYWTRANF;
+            SY0LSBP(); /* transfer to sy09 color menu application*/
+            SY0LM001.SYMSCMSG = COMMAREA.CAMSG;
+            set SY0LM001 alarm;
+            converseLib.validationFailed(1);
+            exit stack;
+          else
+            if (converseVar.eventKey is pf16)
+              SYWREC.SYWPFOPT = "PF16";
+              COMMAREA.CAUSERA = SYWREC.SYWTRANF;
+              SY0LSBP(); /* transfer to sy09 chg. color application*/
+              SY0LM001.SYMSCMSG = COMMAREA.CAMSG;
+              set SY0LM001 alarm;
+              converseLib.validationFailed(1);
+              exit stack;
+            else
+              if (converseVar.eventKey is enter
+               || converseVar.eventKey is pf12)
+                return;
+              else
+                exit stack;
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+
+end // end SY0LSBA
+
+// gpc & style must be entered
+Function SY0LSBB()
+
+       /* ***************************************/
+       /* * gpc code and a style number must   **/
+       /* * be valid before continuing.        **/
+       /* ***************************************/
+
+  if (SY0LM001.SY1STNBR == " ")
+    converseLib.validationFailed(32);
+    set SY0LM001.SY1STNBR cursor, bold;
+  else
+    /* next sentence*/
+  end
+
+  if (SY0LM001.XGPCD == " ")
+    converseLib.validationFailed(40);
+    set SY0LM001.XGPCD cursor, bold;
+  else
+    SY0LSBS();
+    SYWREC.XGPCD = SY0LM001.XGPCD;
+    SYWREC.XGPABRV = SY0LM001.XGPABRV;
+  end
+end // end SY0LSBB
+
+// get style number
+Function SY0LSBC()
+
+
+       /* ******************************************/
+       /* *     GET  STYLE DATA                   **/
+       /* *                                       **/
+       /* ******************************************/
+
+  SY1REC.XGPCD = SY0LM001.XGPCD;
+  SY1REC.SY1STNBR = SY0LM001.SY1STNBR;
+
+  set SQLCA empty;
+
+  call "IO0120" ("S ", SQLCA, SY1REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+
+    if (SYWREC.SYW-ALL-REGIONS-FL == "Y" /* Global user*/
+     || SYWREC.XDR-PROD-REG-CD[1] == "01") /* USA User ok*/
+      /* Continue (Don't need to check for these)*/
+    else
+      SY0LSVC(); /* Check all colors for proper XDR code*/
+      if (SY0LW01.SY0LW-CLVF == "N") /* Failed check*/
+        converseLib.validationFailed(193); /* Dept and Region conflict*/
+        set SY0LM001.SY1STNBR cursor, bold;
+        exit stack;
+      end
+    end
+
+    SY0LSGB(); /* get style group name*/
+    SY0LSGC(); /* get blank style name*/
+
+    SYDREC.SY1DATA = SY1REC.SY1DATA;
+    move SY1REC to SY0LM001 withV60Compat;
+
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      converseLib.validationFailed(5); /* style record does not exists*/
+      set SY0LM001.SY1STNBR cursor, bold;
+      exit stack;
+    else
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "SY0L   ";
+      TA1REC.TA1LOCAT[1] = "S        ";
+      TA1REC.TA1LOCAT[2] = "SY0LSBC  ";
+      TA1REC.TA1LOCAT[3] = "IO0120   ";
+      TA1REC.TA1LOCAT[4] = " ";
+      TA1REC.TA1MAP = "SY0LM001";
+      TA1REC.TA1DBASE = "DPROD.";
+      TA1REC.TA1TBLVU = "VSTYLE01";
+      TA1TBLKE = SY1REC.SY1KEY;
+      move SQLCA to ERRSQLCA withV60Compat;
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      converseLib.validationFailed(20); /* style table error....*/
+      set SY0LM001.SY1STNBR cursor, bold;
+      exit stack;
+    end
+  end
+
+end // end SY0LSBC
+
+// get code desc. for style #1
+Function SY0LSBD()
+
+
+       /* ******************************************/
+       /* *   GET CODE DESC. FOR STYLE CHANGE     **/
+       /* *   SCREEN SY0lM001.                    **/
+       /* *                                       **/
+       /* ******************************************/
+
+
+       /* ******************************************/
+       /* *  get quota category descriptions      **/
+       /* ******************************************/
+
+  SY0LSEF(); /* desc for quota category 1*/
+  SY0LSEG(); /* desc for quota category 2*/
+
+end // end SY0LSBD
+
+// set scr. 1 attributes normal
+Function SY0LSBF()
+
+
+       /* ******************************************/
+       /* *  set sy0lm001 screen attributes to    **/
+       /* *  normal                               **/
+       /* ******************************************/
+
+  set SY0LM001.XGPCD normal;
+  set SY0LM001.SY1STNBR normal;
+  set SY0LM001.SYBSTGNB normal;
+  set SY0LM001.XQTCD1 normal;
+  set SY0LM001.XQTCD2 normal;
+  set SY0LM001.SY1DURT1 normal;
+  set SY0LM001.SY1ADON1 normal;
+  set SY0LM001.SY1DURT2 normal;
+  set SY0LM001.SY1ADON2 normal;
+  set SY0LM001.FY7MLDCD normal;
+  set SY0LM001.FY8LSTCD normal;
+
+  SY0LM001.SYMSCMSG = " ";
+
+end // end SY0LSBF
+
+// transfer to sy0v applicaion
+Function SY0LSBN()
+
+       /* ***************************************/
+       /* * transfer to production change sub. **/
+       /* * menu.                              **/
+       /* ***************************************/
+
+  COMMAREA.CATOAP = "SY0V";
+  XSEXIT();
+
+
+end // end SY0LSBN
+
+// transfer to sy09 application
+Function SY0LSBP()
+
+       /* ***************************************/
+       /* * transfer to production   color     **/
+       /* * menu application                   **/
+       /* ***************************************/
+
+  COMMAREA.CATOAP = "SY09";
+  XSEXIT();
+
+
+end // end SY0LSBP
+
+// validate gpc code
+Function SY0LSBS()
+
+       /* ******************************************/
+       /* *  VERIFY GENERAL PRODUCT CLASS CODE    **/
+       /* ******************************************/
+
+  if (SY0LM001.XGPCD == "99")
+    converseLib.validationFailed(3); /* invalid code*/
+    set SY0LM001.XGPCD cursor, bold;
+    SY0LM001.XGPABRV = "INVALID";
+    return;
+  end
+
+  if (SY0LM001.XGPCD in XGPTBL.XGPCD)
+    if (XGPTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      SY0LM001.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+      SYWREC.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+      SYWREC.XGPCD = XGPTBL.XGPCD[sysVar.arrayIndex];
+    else
+      converseLib.validationFailed(65); /* status code is inactive*/
+      set SY0LM001.XGPCD cursor, bold;
+      SY0LM001.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+      return;
+    end
+  else
+    set SY0LM001.XGPCD cursor, bold;
+    converseLib.validationFailed(3); /* invalid code*/
+    SY0LM001.XGPABRV = "INVALID";
+    exit stack;
+  end
+
+
+       /* ******************************************/
+       /* *  CHECK IF USER  IS AUTHORIZED         **/
+       /* *  FOR THIS GPC CODE                    **/
+       /* ******************************************/
+
+
+
+  if (SY0LM001.XGPCD == "02"
+   && COMMAREA.CAALVL[2] == "N")
+    set SY0LM001.XGPCD cursor, bold;
+    converseLib.validationFailed(35); /* not authorized to access gpc*/
+    SY0LM001.XGPABRV = "INVALID";
+    exit stack;
+  else
+    if (SY0LM001.XGPCD == "03"
+     && COMMAREA.CAALVL[3] == "N")
+      set SY0LM001.XGPCD cursor, bold;
+      SY0LM001.XGPABRV = "INVALID CODE";
+      converseLib.validationFailed(35); /* not authorized to access gpc*/
+      exit stack;
+    else
+      /* next sentence*/
+    end
+  end
+
+  if (COMMAREA.XGPCD == "  ")
+    COMMAREA.XGPCD = SYWREC.XGPCD;
+  end
+
+end // end SY0LSBS
+
+// set non-key fields protect
+Function SY0LSBT()
+
+
+
+       /* ******************************************/
+       /* *  set sy0bm001 screen attributes to    **/
+       /* *  protect                              **/
+       /* ******************************************/
+
+  set SY0LM001.SYBSTGNB protect;
+  set SY0LM001.XQTCD1 protect;
+  set SY0LM001.XQTCD2 protect;
+  set SY0LM001.SY1DURT1 protect;
+  set SY0LM001.SY1ADON1 protect;
+  set SY0LM001.SY1DURT2 protect;
+  set SY0LM001.SY1ADON2 protect;
+  set SY0LM001.FY7MLDCD protect;
+  set SY0LM001.FY8LSTCD protect;
+
+
+end // end SY0LSBT
+
+// check pf keys & transfer
+Function SY0LSCA()
+
+   /* ******************************************/
+   /* * CHECK FOR FUNCTION KEYS               **/
+   /* ******************************************/
+
+  if (converseVar.validationMsgNum > 0
+   && SYWREC.SYWMSGFL == "N")
+    exit stack;
+  else
+    if (converseVar.eventKey is pf15)
+      SYWREC.SYWPFOPT = "PF15";
+      COMMAREA.CAUSERA = SYWREC.SYWTRANF;
+      SY0LSBP(); /* transfer to sy09 color menu application*/
+      SY0LM001.SYMSCMSG = COMMAREA.CAMSG;
+      set SY0LM001 alarm;
+      converseLib.validationFailed(1);
+      exit stack;
+    else
+      if (converseVar.eventKey is pf16)
+        SYWREC.SYWPFOPT = "PF16";
+        COMMAREA.CAUSERA = SYWREC.SYWTRANF;
+        SY0LSBP(); /* transfer to sy09 chg. color application*/
+        SY0LM001.SYMSCMSG = COMMAREA.CAMSG;
+        set SY0LM001 alarm;
+        converseLib.validationFailed(1);
+        exit stack;
+      else
+        if (converseVar.eventKey is enter)
+          return;
+        else
+          exit stack;
+        end
+      end
+    end
+  end
+
+
+end // end SY0LSCA
+
+// validate sy0lm001 screen field
+Function SY0LSCB()
+
+       /* ******************************************/
+       /* *  validate quota category code 2       **/
+       /* ******************************************/
+
+  SY0LSEF();
+
+       /* ******************************************/
+       /* * validate quota category code 1        **/
+       /* ******************************************/
+
+  SY0LSEG();
+
+       /* ******************************************/
+       /* * Validate Style Group Number           **/
+       /* ******************************************/
+
+  SY0LSEH();
+
+
+
+end // end SY0LSCB
+
+// check for changes & update sy1
+Function SY0LSCD()
+
+
+       /* ***************************************/
+       /* *  check if changes made. if no      **/
+       /* *  changes return, else update style.**/
+       /* ***************************************/
+
+  move SY0LM001 to SY1REC withV60Compat;
+
+  if (SYDREC.SY1DATA != SY1REC.SY1DATA)
+    /* next sentence*/
+  else
+    converseLib.validationFailed(57);
+    SYWREC.SYWMSGFL = "Y";
+    return;
+  end
+
+  set TA2REC empty;
+  TA2REC.TA2DTOPT = "GETDATE";
+  SY0LSAA();
+
+       /* ******************************************/
+       /* *   set up zzz family record for adds   **/
+       /* *   zzzchgct is not updated because     **/
+       /* *   the io module will take care of it. **/
+       /* ******************************************/
+
+  SYWREC.ZZZSDT = TA2REC.TA2GRGGN;
+  SYWREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+  SYWREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+
+       /* ******************************************/
+       /* *   ADD STYLE RECORD TO STYLE TABLE     **/
+       /* ******************************************/
+
+  SY0LSCE();
+
+
+       /* ******************************************/
+       /* *   commit style/color/size records     **/
+       /* *   to their tables.                    **/
+       /* ******************************************/
+
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+  converseLib.validationFailed(11);
+  SYWREC.SYWMSGFL = "Y";
+
+end // end SY0LSCD
+
+// update style row.
+Function SY0LSCE()
+
+
+       /* ******************************************/
+       /* *   ADD STYLE RECORD TO STYLE TABLE     **/
+       /* *    1. SCREENS SY01M001 & SY01M002     **/
+       /* *       ARE MOVED TO THE SY1REC AND     **/
+       /* *       THEN ADDED TO THE STYLE TABLE.  **/
+       /* *                                       **/
+       /* *       IF THERE ARE ANY SQL ERRORS     **/
+       /* *       THE RECORD IS NOT ADDED AND     **/
+       /* *       THE TABLE IS ROLLED BACK TO     **/
+       /* *       ITS BEFORE CONDITION.           **/
+       /* *                                       **/
+       /* *   we do not have to move sy0em001     **/
+       /* *                to sy1rec because      **/
+       /* *   we moved it to sy1rec in sy01scd    **/
+       /* *   statement group.                    **/
+       /* *                                       **/
+       /* ******************************************/
+
+
+
+  if (converseVar.validationMsgNum > 0)
+    exit stack;
+  end
+
+  set SQLCA empty;
+
+   /* MOVE SY1HLREC.SY1DATA TO SY1REC.SY1DATA;*/
+  SY1REC.ZZZCHGDT = SYWREC.ZZZCHGDT;
+  SY1REC.ZZZCHGTM = SYWREC.ZZZCHGTM;
+
+
+  call "IO0120" ("U ", SQLCA, SY1REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    SY0LSCF(); /* write audit file*/
+    SY0LSCG(); /* write tag file*/
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      converseLib.validationFailed(37); /* style record  exists*/
+      set SY0LM001.SY1STNBR cursor, bold;
+      return;
+    else
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "SY0L   ";
+      TA1REC.TA1LOCAT[1] = "C       ";
+      TA1REC.TA1LOCAT[2] = "SY0LSCE ";
+      TA1REC.TA1LOCAT[3] = "IO0120  ";
+      TA1REC.TA1LOCAT[4] = " ";
+      TA1REC.TA1MAP = "SY0LM001";
+      TA1REC.TA1DBASE = "DPROD.";
+      TA1REC.TA1TBLVU = "VSTYLE01";
+      TA1TBLKE = SY1REC.SY1KEY;
+      move SQLCA to ERRSQLCA withV60Compat;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      converseLib.validationFailed(20); /* style table error...*/
+      set SY0LM001.SY1STNBR cursor, bold;
+      exit stack;
+
+    end
+  end
+
+
+end // end SY0LSCE
+
+// write audit style record
+Function SY0LSCF()
+
+
+       /* ******************************************/
+       /* *   WRITE AUDIT RECORD FOR STYLE ADD.   **/
+       /* *                                       **/
+       /* ******************************************/
+
+  set SYAREC empty;
+  set SQLCA empty;
+  set ERRSQLCA empty;
+
+  SYAREC.SYAUDTYP = "C";
+  SYAREC.XXXTBLNM = "VSTYLE01";
+  if (SYAREC.XXXTBLNM in SYZTBL.XXXTBLNM)
+    SYAREC.SYASRTSQ = SYZTBL.SYASRTSQ[sysVar.arrayIndex];
+    SYAREC.SYABFLN = SYZTBL.SYZIMLEN[sysVar.arrayIndex];
+    SYAREC.SYAFTLN = SYZTBL.SYZIMLEN[sysVar.arrayIndex];
+  else
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "SY0L   ";
+    TA1REC.TA1LOCAT[1] = "SY0LSCF  ";
+    TA1REC.TA1LOCAT[2] = "SYZTBL   ";
+    TA1REC.TA1LOCAT[3] = "VSTYLE01 ";
+    TA1REC.TA1MAP = "SY0LM001";
+    TA1REC.TA1DBASE = "DPROD.";
+    TA1REC.TA1TBLVU = "VSYAUD01";
+    TA1TBLKE = "TABLE NOT FOUND";
+    move SQLCA to ERRSQLCA withV60Compat;
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    converseLib.validationFailed(44); /* audit table error....*/
+    exit stack;
+  end
+  SYAREC.XNDCD = COMMAREA.XNDCD;
+  SYAREC.XXXUSRID = COMMAREA.CAUSERID;
+  SYAREC.XGPCD = SY1REC.XGPCD;
+  SYAREC.SY1STNBR = SY1REC.SY1STNBR;
+  SYAREC.ZZZSDT = SYWREC.ZZZSDT;
+  SYAREC.ZZZSTM = SYWREC.ZZZCHGTM;
+  SYAREC.SYABFR = SYDREC.SY1DATA;
+  SYAREC.SYAAFT = SY1REC.SY1DATA;
+
+  call "IO0530" ("A ", SQLCA, SYAREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    return;
+  else
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "SY0L   ";
+    TA1REC.TA1LOCAT[1] = "CHANGE   ";
+    TA1REC.TA1LOCAT[2] = "SY0LSCF  ";
+    TA1REC.TA1LOCAT[3] = "IO0530   ";
+    TA1REC.TA1LOCAT[4] = "STYLETBL";
+    TA1REC.TA1MAP = "SY0LM001";
+    TA1REC.TA1DBASE = "DPROD.";
+    TA1REC.TA1TBLVU = "VSYAUD01";
+    TA1TBLKE = SYAREC.SYAKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    converseLib.validationFailed(44); /* audit table error....*/
+    set SY0LM001.SY1STNBR cursor, bold;
+    exit stack;
+  end
+
+
+end // end SY0LSCF
+
+// write tag style record
+Function SY0LSCG()
+
+
+       /* ******************************************/
+       /* *   WRITE TAG RECORD FOR STYLE ADD.     **/
+       /* *                                       **/
+       /* ******************************************/
+
+
+  set SY9REC empty;
+  set SQLCA empty;
+  set ERRSQLCA empty;
+
+  SY9REC.SY9TGTYP = "C";
+  SYAREC.XXXTBLNM = "VSTYLE01";
+  SY9REC.XGPCD = SY1REC.XGPCD;
+  SY9REC.SY1STNBR = SY1REC.SY1STNBR;
+  SY9REC.ZZZSDT = SYWREC.ZZZSDT;
+  SY9REC.ZZZSTM = SYWREC.ZZZCHGTM;
+
+  call "IO0520" ("A ", SQLCA, SY9REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    return;
+  else
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "SY0L   ";
+    TA1REC.TA1LOCAT[1] = "CHANGE  ";
+    TA1REC.TA1LOCAT[2] = "SY0LSCG ";
+    TA1REC.TA1LOCAT[3] = "IO0520  ";
+    TA1REC.TA1LOCAT[4] = "STYLETBL";
+    TA1REC.TA1MAP = "SY0LM001";
+    TA1REC.TA1DBASE = "DPROD.";
+    TA1REC.TA1TBLVU = "VSYTAG01";
+    TA1TBLKE = SY9REC.SY9KEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    converseLib.validationFailed(45); /* tag table error...*/
+    set SY0LM001.SY1STNBR cursor, bold;
+    exit stack;
+  end
+
+
+end // end SY0LSCG
+
+// check for valid pf keys
+Function SY0LSCH()
+
+   /* ******************************************/
+   /* * CHECK FOR FUNCTION KEYS               **/
+   /* ******************************************/
+
+  if (converseVar.validationMsgNum > 0
+   && SYWREC.SYWMSGFL == "N")
+    exit stack;
+  else
+    if (converseVar.eventKey is pf1)
+      XSPF1();
+      SY0LM001.SYMSCMSG = COMMAREA.CAMSG;
+      set SY0LM001 alarm;
+      converseLib.validationFailed(1);
+      exit stack;
+    else
+      if (converseVar.eventKey is pf3)
+        SY0LSBN(); /* transfer to sy0v application*/
+        SY0LM001.SYMSCMSG = COMMAREA.CAMSG;
+        set SY0LM001 alarm;
+        converseLib.validationFailed(1);
+        exit stack;
+      else
+        if (converseVar.eventKey is pf4)
+          XSPF4();
+          SY0LM001.SYMSCMSG = COMMAREA.CAMSG;
+          set SY0LM001 alarm;
+          converseLib.validationFailed(1);
+          exit stack;
+        else
+          if (converseVar.eventKey is enter
+           || converseVar.eventKey is pf12
+           || converseVar.eventKey is pf15
+           || converseVar.eventKey is pf16)
+            return;
+          else
+            exit stack;
+          end
+        end
+      end
+    end
+  end
+
+
+end // end SY0LSCH
+
+// get quota cat. #2 code & desc.
+Function SY0LSEF()
+       /* ******************************************/
+       /* *   VERIFY QUOTA CAT. #2 CODE AND GET   **/
+       /* *   THE DESCRIPTION.                    **/
+       /* *    sy0lmqt2 = quota cat desc. field.  **/
+       /* ******************************************/
+
+  if (SY0LM001.XQTCD2 == " ")
+    return;
+  end
+
+  SYWREC.SYWINDEX = 1;
+
+  while (XQTTBL.XQTCD[SYWINDEX] != "999")
+    if (SY0LM001.XQTCD2 == XQTTBL.XQTCD[SYWINDEX]
+     && SYWREC.XGPCD == XQTTBL.XGPCD[SYWINDEX])
+      if (XQTTBL.XXXSTAT[SYWINDEX] == "A")
+        SY0LM001.SY0LMQT2[1] = XQTTBL.XQTDESC1[SYWINDEX];
+        SY0LM001.SY0LMQT2[2] = XQTTBL.XQTDESC2[SYWINDEX];
+        SY0LM001.SY0LMQT2[3] = XQTTBL.XQTDESC3[SYWINDEX];
+        return;
+      else
+        set SY0LM001.XQTCD2 cursor, bold;
+        converseLib.validationFailed(66); /* status code is inactive*/
+        return;
+      end
+    end
+    SYWREC.SYWINDEX = SYWREC.SYWINDEX + 1;
+  end
+
+  converseLib.validationFailed(3); /* invalid code*/
+  set SY0LM001.XQTCD2 cursor, bold;
+  SY0LM001.SY0LMQT2[1] = "INVALID";
+  SY0LM001.SY0LMQT2[2] = " ";
+  SY0LM001.SY0LMQT2[3] = " ";
+
+
+end // end SY0LSEF
+
+// get quota cat. #1 code & desc.
+Function SY0LSEG()
+       /* ******************************************/
+       /* *   VERIFY QUOTA CAT. #1 CODE AND GET   **/
+       /* *   THE DESCRIPTION.                    **/
+       /* *    sy0lmqt1 = quota cat desc. field.  **/
+       /* ******************************************/
+
+  if (SY0LM001.XQTCD1 == " ")
+    return;
+  end
+
+  SYWREC.SYWINDEX = 1;
+
+  while (XQTTBL.XQTCD[SYWINDEX] != "999")
+    if (SY0LM001.XQTCD1 == XQTTBL.XQTCD[SYWINDEX]
+     && SYWREC.XGPCD == XQTTBL.XGPCD[SYWINDEX])
+      if (XQTTBL.XXXSTAT[SYWINDEX] == "A")
+        SY0LM001.SY0LMQT1[1] = XQTTBL.XQTDESC1[SYWINDEX];
+        SY0LM001.SY0LMQT1[2] = XQTTBL.XQTDESC2[SYWINDEX];
+        SY0LM001.SY0LMQT1[3] = XQTTBL.XQTDESC3[SYWINDEX];
+        return;
+      else
+        set SY0LM001.XQTCD1 cursor, bold;
+        converseLib.validationFailed(66); /* status code is inactive*/
+        return;
+      end
+    end
+    SYWREC.SYWINDEX = SYWREC.SYWINDEX + 1;
+  end
+
+  converseLib.validationFailed(3); /* invalid code*/
+  set SY0LM001.XQTCD1 cursor, bold;
+  SY0LM001.SY0LMQT1[1] = "INVALID";
+  SY0LM001.SY0LMQT1[2] = " ";
+  SY0LM001.SY0LMQT1[3] = " ";
+
+
+end // end SY0LSEG
+
+// Get/Validate Style Group Num
+Function SY0LSEH()
+
+   /* This routine will validate the style group number.*/
+   /* NOTE: When the style group table is properly loaded and*/
+        /* the maintenance program in place, the check for*/
+        /* style group = spaces should be removed.*/
+
+  if (SY0LM001.XGPCD != "02" /* if not footwear gpc*/
+   || SY0LM001.SYBSTGNB == " ") /* or number = spaces*/
+    return; /* nothing to do*/
+  end
+
+  SYBREC.SYBSTGNB = SY0LM001.SYBSTGNB;
+  call "IO3150" ("S ", SQLCA, SYBREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 0)
+    SY0LM001.SYBSTGNM = SYBREC.SYBSTGNM;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      converseLib.validationFailed(5); /* style does not exist*/
+      set SY0LM001.SYBSTGNB cursor, bold;
+      SY0LM001.SYBSTGNM = " ";
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "SY0L";
+      TA1REC.TA1LOCAT[1] = "S";
+      TA1REC.TA1LOCAT[2] = "SY0LSEH";
+      TA1REC.TA1MAP = "SY0LM001";
+      TA1REC.TA1DBASE = "DPROD";
+      TA1REC.TA1TBLVU = "VSYGRP01";
+      TA1REC.TA1TBLKE = SYBREC.SYBSTGNB;
+      move SQLCA to ERRSQLCA withV60Compat;
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      converseLib.validationFailed(20);
+      set SY0LM001.SYBSTGNB cursor, bold;
+      exit stack;
+    end
+  end
+
+end // end SY0LSEH
+
+// retrieve style-group desc.
+Function SY0LSGB()
+
+
+       /* ******************************************/
+       /* *  get  style-group desc. from sybrec   **/
+       /* ******************************************/
+
+  if (SY1REC.SYBSTGNB == "  ")
+    return;
+  end
+
+  SYBREC.SYBSTGNB = SY1REC.SYBSTGNB;
+
+  set SQLCA empty;
+
+  call "IO3150" ("S ", SQLCA, SYBREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    SY0LM001.SYBSTGNM = SYBREC.SYBSTGNM;
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      SY0LM001.SYBSTGNM = "INVALID";
+      set SY0LM001.SYBSTGNB cursor, bold;
+      converseLib.validationFailed(3); /* invalid code*/
+      return;
+    else
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "SY0L   ";
+      TA1REC.TA1LOCAT[1] = "S       ";
+      TA1REC.TA1LOCAT[2] = "SY0LSGB ";
+      TA1REC.TA1LOCAT[3] = "IO3150  ";
+      TA1REC.TA1LOCAT[4] = " ";
+      TA1REC.TA1MAP = "SY0LM001";
+      TA1REC.TA1DBASE = "DPROD.";
+      TA1REC.TA1TBLVU = "VSYGRP01";
+      TA1TBLKE = SYBREC.SYBSTGNB;
+      move SQLCA to ERRSQLCA withV60Compat;
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      converseLib.validationFailed(141); /* style group table error*/
+      exit stack;
+    end
+  end
+
+
+
+end // end SY0LSGB
+
+// retrieve blank style desc.
+Function SY0LSGC()
+
+
+       /* ******************************************/
+       /* *  GET  style row                       **/
+       /* *  FOR BLANK-style DESCRIPTION          **/
+       /* ******************************************/
+
+  if (SY1REC.SY1BSTNB == " ")
+    return;
+  end
+
+  SYDREC.XGPCD = SY1REC.XGPCD;
+  SYDREC.SY1STNBR = SY1REC.SY1BSTNB;
+
+  set SQLCA empty;
+
+  call "IO0120" ("S ", SQLCA, SYDREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    SY0LM001.SY0LMBSN = SYDREC.SY1STYNM;
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      SY0LM001.SY0LMBSN = "INVALID";
+      return;
+    else
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "SY0L   ";
+      TA1REC.TA1LOCAT[1] = "S       ";
+      TA1REC.TA1LOCAT[2] = "SY0LSGC ";
+      TA1REC.TA1LOCAT[3] = "IO0120  ";
+      TA1REC.TA1LOCAT[4] = " ";
+      TA1REC.TA1MAP = "SY0LM001";
+      TA1REC.TA1DBASE = "DPROD.";
+      TA1REC.TA1TBLVU = "VSTYLE01";
+      TA1TBLKE = SYDREC.SY1KEY;
+      move SQLCA to ERRSQLCA withV60Compat;
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      converseLib.validationFailed(20); /* style table error*/
+      exit stack;
+    end
+  end
+
+
+
+end // end SY0LSGC
+
+// Check colors for proper region
+Function SY0LSVC()
+
+   /* *******************************************************/
+   /* Scan color rows to check if a color is in a region*/
+   /* the user has no access to. If so, the style cannot be*/
+   /* changed by this user.*/
+   /* *******************************************************/
+
+  SY0LW01.SY0LW-CLVF = "Y"; /* Reset color validation flag*/
+  SY0LW01.SY0LW-CLRF = "Y"; /* Reset color read flag*/
+
+  SY2REC.XGPCD = SY1REC.XGPCD;
+  SY2REC.SY1STNBR = SY1REC.SY1STNBR;
+
+  call "IO0130" ("SS", SQLCA, SY2REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    converseLib.validationFailed(21); /* color table error - contact systems*/
+                                   /* dvlpmnt*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "SY0L   ";
+    TA1REC.TA1LOCAT[1] = "SY0LEAO  ";
+    TA1REC.TA1LOCAT[2] = "IO0130   ";
+    TA1REC.TA1LOCAT[3] = "SS ";
+    TA1REC.TA1LOCAT[4] = " ";
+    TA1REC.TA1MAP = "SY0LM001";
+    TA1REC.TA1DBASE = "DPROD";
+    TA1REC.TA1TBLVU = "VCOLOR01";
+    TA1REC.TA1TBLKE = SY2REC.SY2KEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    exit stack;
+  end
+
+  while (SY0LW01.SY0LW-CLRF == "Y")
+    call "IO0130" ("SN", SQLCA, SY2REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 0) /* Good return?*/
+
+      if (SY2REC.XDR-PROD-REG-CD in SYWREC.XDR-PROD-REG-CD)
+         /* OK, color is valid*/
+      else
+        SY0LW01.SY0LW-CLVF = "N"; /* color invalid*/
+        SY0LW01.SY0LW-CLRF = "N"; /* terminate loop*/
+      end
+
+    else
+      if (SQLCA.VAGen_SQLCODE != 100) /* if not end of file, then bad error*/
+        converseLib.validationFailed(21); /* color table error - contact systems*/
+                                   /* dvlpmnt*/
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "SY0L   ";
+        TA1REC.TA1LOCAT[1] = "SY0LEAO  ";
+        TA1REC.TA1LOCAT[2] = "IO0130   ";
+        TA1REC.TA1LOCAT[3] = "SN ";
+        TA1REC.TA1LOCAT[4] = " ";
+        TA1REC.TA1MAP = "SY0LM001";
+        TA1REC.TA1DBASE = "DPROD";
+        TA1REC.TA1TBLVU = "VCOLOR01";
+        TA1REC.TA1TBLKE = SY2REC.SY2KEY;
+        move SQLCA to ERRSQLCA withV60Compat;
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+        exit stack;
+      else
+        SY0LW01.SY0LW-CLRF = "N"; /* terminate loop, EOF reached*/
+      end
+    end
+  end
+
+  call "IO0130" ("CS", SQLCA, SY2REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    converseLib.validationFailed(21); /* color table error - contact systems*/
+                                   /* dvlpmnt*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "SY0L   ";
+    TA1REC.TA1LOCAT[1] = "SY0LEAO  ";
+    TA1REC.TA1LOCAT[2] = "IO0130   ";
+    TA1REC.TA1LOCAT[3] = "CS ";
+    TA1REC.TA1LOCAT[4] = " ";
+    TA1REC.TA1MAP = "SY0LM001";
+    TA1REC.TA1DBASE = "DPROD";
+    TA1REC.TA1TBLVU = "VCOLOR01";
+    TA1REC.TA1TBLKE = SY2REC.SY2KEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    exit stack;
+  end
+
+
+end // end SY0LSVC
+
+//*** RECORD=SY0LW01 ****
+// ************************************************************
+// *   Working Storage Record for SY0L                        *
+// ************************************************************
+// ***********************
+Record SY0LW01 type basicRecord
+  10 SY0LW-CLVF SY0LW-CLVF ; 
+  10 SY0LW-CLRF SY0LW-CLRF ; 
+end // end SY0LW01
+
+// Validate colors work flag
+DataItem SY0LW-CLRF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Colors ok for Dept. (Y/N)
+DataItem SY0LW-CLVF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

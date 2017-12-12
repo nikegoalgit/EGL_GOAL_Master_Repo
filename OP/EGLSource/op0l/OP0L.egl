@@ -1,0 +1,3601 @@
+package op0l;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import fk.common.*;
+import fy.common.*;
+import in1.common.*;
+import ku.common.*;
+import op.common.*;
+import os.common.*;
+import pc.common.*;
+import pg.common.*;
+import sm.common.*;
+import sy.common.*;
+import ta.common.*;
+import ts.common.*;
+import vv.common.*;
+import ww.common.*;
+//*** PROGRAM=OP0L ****
+// nike order entry - lost demand entry detail
+// 
+// used to enter lost demand from the availability system
+// or the op menu, without entering an order
+// 
+// ************************************************************
+// 
+// subprograms called:
+// 
+// op04     lost demand entry edit module
+// 
+// ************************************************************
+// 
+// maintenance history:
+// 
+//   date      init      comments
+// --------   ------   ----------------------------------------
+//  9/15/89   rdavis   program creation
+// 02/23/90   craine   fix size display to validate with
+//                     xot allowable and disallowable divisions
+//  3/12/90   BWATSO   Bug 308
+//                     Modified code to accept a default phone
+//                     number from the edit program.  Also
+//                     added NOMAPS option to calls of OP04.
+//                     Two of the four calls in this program
+//                     did not have the option. Areas of
+//                     change: S40, S50, SEB, S41, SWR, S65,
+//                     S53, and W01.  New groups: SPH and S66.
+//                     Also fixed OP0l000 logic to allow fast
+//                     path from other applications.  Program
+//                     used to only allow entry from availabil-
+//                     ity or OP menu.
+//  5/31/90   BWATSO   Brand code changes.  Added logic to
+//                     make sure that when multiple products
+//                     are entered, their brands match.  Also
+//                     added logic to highlight all fields
+//                     invloved when the brand of the customer
+//                     does not match the products.  Changed
+//                     SOT, SR1, SYM, and W01.  New SBC.
+//  12/17/90  dflesh   created comments in sdf.  Log #469.
+//  01/08/91  schase   uncomment comments from above and alterd
+//                     whse to '51' from '32'. sdf.
+//  02/14/91  tfox     regen for db chgs
+//  03/15/91  jloyer   Change Memphis apparel xsocd from '03'
+//                     to '20'; sot, swr, op0lw01.
+//  03/28/91  jloyer   Assure lost demand qtys are moved to the
+//                     correct size buckets in OPTREC.  Changed
+//                     swr, s01, op0lw01.  New: sw1, sw2, sw3,
+//                     sw4, sw5, sw6.
+//  04/02/91  jloyer   Chg xsocd = '01' or '02' to '20' on
+//                     apparel orders; sot, sw1.
+//  03/12/92  trober   db2 table changes.  also, fix bug in
+//                     op0ls60 to stop moving '00' to color and
+//                     dim of footwear orders.
+//  05/06/92  SJOB     #776: STOP DEFAULTING BLANK COLORS TO
+//                     '00 ' IN OP0LSR1.
+//  05/01/93  dlegg    #937. NSG changes. Don't default apparel
+//                     to warehouse 51. sdf.
+//  08/27/93  schase   CSP 4.1 Conversion - Added code to check
+//                     for spaces in OPTREC for Phone Number
+//                     fields. If so, move zeros to map because
+//                     map fields are defined numeric. S65.
+//  04/01/94  gcalki   Log #1003 - Rename causera to
+//                     ca-user-workarea-4k so it can hold
+//                     opwrec which is now 3072 bytes. (ALL)
+//  12/07/96  csawki   Added Product Category for Equipment
+//  02/13/97  csawki   Added Equipment/Product Category changes
+//                     Modified OP0LSOT and added OPWREC01 to
+//                     Working Storage.
+//  03/24/98  sgopal   removed use of xvotbl and added code to
+//                     access dcorp.vxvo0001 using the iomod
+//                     vxvo0001
+//                     The statement group changed is: SOT
+//  04/01/98  sgopal   Removed code that accesses XVOTBL in
+//                     OP0LSOT.
+// *********************
+Program OP0L type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  KUYREC KUYREC; // record
+  OP0LW01 OP0LW01; // record
+  OPTREC OPTREC; // record
+  OPWREC01 OPWREC01; // record
+  OSEREC OSEREC; // record
+  OSFREC OSFREC; // record
+  SQLCA SQLCA; // record
+  SY1REC SY1REC; // record
+  SY4REC SY4REC; // record
+  SYCREC SYCREC; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TAEREC TAEREC; // record
+  VXVO0001 VXVO0001; // record
+  WEU0100 WEU0100; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XOBTBL {deleteAfterUse = yes}; // table
+  use XOTTBL {deleteAfterUse = yes}; // table
+  use XGPTBL {deleteAfterUse = yes}; // table
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use OP0LM.OP0LM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OP0L000: OP0L000();
+  end // end main
+end // end OP0L
+
+// main process
+Function OP0L000()
+
+
+
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+  XSENTRY();
+
+  COMMAREA.CACURRAP = "OP0L"; /* init commarea*/
+
+   /* set segmented trans id*/
+
+  CAEZSAP = sysVar.transactionID;
+  CAEZSG12 = "OP";
+  CAEZSG4 = "L";
+  sysVar.transactionID = CAEZSAP;
+
+
+  if (COMMAREA.CAFROMAP == "AV0A" /* if from availability system*/
+   || COMMAREA.CAFROMAP == "AV0P")
+    OSFREC.OSFGROUP = COMMAREA.CA-USER-WORKAREA-4K;
+  end
+
+
+
+   /* init appl working storage, constants, flags*/
+
+  OP0LS01(); /* initialize working storage*/
+
+
+
+   /* init map*/
+
+  set OP0LM001 initial; /* initialize map*/
+  OP0LM001.OPMDT = VGVar.currentShortGregorianDate;
+  OP0LM001.OPMRVN = 01; /* revision number*/
+  OP0LM001.CAMSG = COMMAREA.CAMSG;
+  COMMAREA.CAMSG = " ";
+
+
+
+   /* load map*/
+     /* if from availability, display all valid sizes*/
+     /* if from op menu, or pf19, display 'empty' map*/
+
+  if (COMMAREA.CAFRMSYS == "AV") /* From availability.*/
+    OP0LS20();
+  else /* From op menu, this application, or*/
+    OP0LS30(); /* fast path from another application.*/
+  end
+
+      /* ****************************************************/
+      /* * main process - converse loop*/
+      /* * performed while there is an error or*/
+      /* * until the application is left by xfer,dxfer*/
+      /* * if pf19 (cancel/refresh), start at the beginning*/
+      /* * of the application.*/
+      /* ***************************************************/
+
+  while (OP0LW01.OP0LWCFL == "Y") /* converse flag*/
+    OP0L010(); /* converse loop*/
+  end
+
+     /* last line of op0l000; end of application*/
+
+end // end OP0L000
+
+// converse op0lm100
+Function OP0L010()
+  converseLib.clearScreen();
+  
+  converse OP0LM001 ;
+
+
+
+   /* reset all map fields to normal*/
+
+  OP0LSRA();
+
+
+
+  if (converseVar.eventKey is pf3)
+    if (COMMAREA.CAFRMSYS == "AV") /* if coming from avialability*/
+      COMMAREA.CATOAP = COMMAREA.CAFROMAP; /* return to availability*/
+      COMMAREA.CAFROMAP = "OP0L";
+      XSEXIT();
+    else /* if order processing menu*/
+      COMMAREA.CAFROMAP = "OP0L";
+      COMMAREA.CACURRAP = "OP0X"; /* return to op menu*/
+      transfer to program "OP0X" passing COMMAREA;
+    end
+  end
+
+
+  if (COMMAREA.CAFRMSYS != "AV")
+    if (converseVar.eventKey is pf4) /* main menu*/
+      COMMAREA.CAFROMAP = "OP0L";
+      XSPF4();
+    end
+  end
+
+
+  if (converseVar.eventKey is pf19)
+    set OP0LM001 initial;
+    transfer to program "OP0L" passing COMMAREA;
+  else
+    if (converseVar.eventKey is pf12) /* edit only*/
+      OP0LS40();
+    else
+      if (converseVar.eventKey is enter) /* edit/write processing*/
+        OP0LS50();
+      else
+        converseLib.validationFailed(2); /* invalid pfkey*/
+      end
+    end
+  end
+end // end OP0L010
+
+// check for equipment product
+Function OP0LS-CHECK-EQMT()
+   /* --------------------- op0ls-check-eqmt ---------------------------*/
+
+   /* determine whether or not this is an equipment product*/
+
+  set WEU0100 empty; /* initialize the passing record*/
+  set SQLCA empty; /* initialize sqlca record*/
+
+  WEU0100.WEU0100-EQUIP-PROD-FL = "N";
+  WEU0100.WEU0100-CALLING-APPL = "OP0L";
+  WEU0100.SQLCAREC = SQLCA.SQLCAREC;
+
+  WEU0100.XGPCD = SYCREC.XGPCD;
+  WEU0100.SY1STNBR = SYCREC.SY1STNBR;
+  WEU0100.SY2CLRID = SYCREC.SY2CLRID;
+  WEU0100.XDMCD = SYCREC.XDMCD;
+
+  OP0LS-EU0100-SU(); /* select unique*/
+
+end // end OP0LS-CHECK-EQMT
+
+// call eu0100 select unique
+Function OP0LS-EU0100-SU()
+   /* ------------------- op0ls-eu0100-su -------------------------*/
+
+  WEU0100.WEU0100-TASK = "S ";
+  WEU0100.WEU0100-CALLER-LOCATION = "OP0LS-EU0100-SU";
+
+  try
+    call "EU0100" (WEU0100) {isNoRefresh = yes, isExternal = yes};
+  end /* select unique*/
+
+  SQLCA.SQLCAREC = WEU0100.SQLCAREC;
+
+  if (WEU0100.WEU0100-RETURN-CODE == 0) /* call successful*/
+    return; /* return to op0ls-check-eqmt*/
+  end
+
+  TA1REC.TA1MAP = WEU0100.WEU0100-RETURN-CODE; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  if (WEU0100.WEU0100-RETURN-CODE == 8) /* resource not available*/
+    TA1REC.TA1FUNC = "POST"; /* termination function*/
+  else
+    TA1REC.TA1FUNC = "RETN"; /* termination function*/
+  end
+
+  TA1REC.TA1TYPE = "DB2"; /* type of error*/
+  TA1REC.TA1LOC = "OP0LS-EU0100-SU"; /* program location*/
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* program application*/
+  TA1REC.TA1PGMNO = "EU0100"; /* called program*/
+  TA1REC.TA1DBASE = "DEQUIP"; /* database name*/
+  TA1REC.TA1TBLVU = "VEQPRD01"; /* table view name*/
+  TA1REC.TA1TBLKE = SYCREC.SYCKEY; /* table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* error diagnosis routine*/
+
+
+end // end OP0LS-EU0100-SU
+
+// initialize working storage
+Function OP0LS01()
+
+
+
+
+   /* initialize working storage*/
+
+
+
+   /* set application level recs empty where possible*/
+
+
+  set OP0LW01 empty; /* working storage*/
+  set OPTREC empty; /* dorder.vlost001*/
+  set OSEREC empty; /* pass record to edit module*/
+  set SYCREC empty; /* dprod.vcolor02*/
+  set SY4REC empty; /* dprod.vscale01*/
+  set KUYREC empty; /* dcust.vsvrep01*/
+  set TA1REC empty; /* for calling ta0020 - error diag*/
+  set TA2REC empty; /* for calling ta0040 - date routine*/
+  set SQLCA empty; /* sql cummunication area*/
+  set ERRSQLCA empty; /* sql cummunication area*/
+  set XX0XW01 empty; /* ws for formatting dates*/
+  set SY1REC empty; /* dprod.vstyle01*/
+
+
+
+   /* initialize flags*/
+
+  set OP0LW01 empty;
+  OP0LW01.OP0LWCFL = "Y"; /* converse flag*/
+  OP0LW01.OP0LWSFL = "N"; /* sizes displayed flag*/
+  OP0LW01.OP0LWHMF = "N"; /* hot model flag*/
+  OP0LW01.OP0LWFND = "N"; /* sizes found flag*/
+  OP0LW01.OP0LWERR = "N"; /* error flag*/
+  OP0LW01.OP0LWAFL = "N"; /* displaying style from availability*/
+
+
+
+
+   /* init error diag areas*/
+
+  TA1REC.TA1TYPE = "DB2 "; /* errdiag type*/
+  TA1REC.TA1PGMNM = "OP0L"; /* program name*/
+  TA1REC.TA1MAP = "OP0LM001"; /* current map name*/
+
+
+  XX0XS01(); /* get system date and time*/
+
+
+end // end OP0LS01
+
+// format map if from avail
+Function OP0LS20()
+
+   /* build map when coming from availability*/
+
+
+
+  TA1REC.TA1LOCAT[2] = "OP0LS20";
+
+  OP0LW01.OP0LWERR = "N";
+
+  OP0LWAFL = "Y"; /* displaying 1st style when coming from avail*/
+
+
+
+   /* move in default values for base order type, need date,*/
+   /* waiting list flag, gpc, drop date, and warehouse*/
+
+  OP0LSDF();
+
+
+
+   /* style, color, dimension - from availability*/
+
+  OP0LM001.SY1STNBR[1] = OSFREC.SY1STNBR;
+  OP0LM001.SY2CLRID[1] = OSFREC.SY2CLRID;
+  if (OSFREC.XDMCD == " ")
+    OP0LM001.XDMCD[1] = "00";
+  else
+    OP0LM001.XDMCD[1] = OSFREC.XDMCD;
+  end
+
+
+
+   /* protect gpc and warehouse*/
+
+  set OP0LM001.XGPCD skip;
+  set OP0LM001.XWHCD skip;
+
+
+
+   /* darken unused map fields*/
+
+
+   /* darken pf keys not valid from avialability*/
+
+  OP0LM001.OP0LMPF3 = "3:EXIT";
+  set OP0LM001.OP0LMPF4 skip, invisible;
+
+   /* darken  all quantitiy fields for first style*/
+   /* each will be set to defined as each size is displayed*/
+
+  OP0LSD1(); /* darken first style description and quantities*/
+
+
+
+   /* first and last size fields not used when from avail*/
+
+  set OP0LM001.OP0LMFSL[1] skip, invisible; /* first size literal*/
+  set OP0LM001.OP0LMLSL[1] skip, invisible; /* last  size literal*/
+  set OP0LM001.OP0LMFSZ[1] skip, invisible; /* first size*/
+  set OP0LM001.OP0LMLSZ[1] skip, invisible; /* last  size*/
+
+
+
+   /* darken all of second style*/
+
+  set OP0LM001.OP0LMSYL[2] skip, invisible; /* style literal*/
+  set OP0LM001.SY1STNBR[2] skip, invisible; /* style*/
+  set OP0LM001.SY2CLRID[2] skip, invisible; /* style color*/
+  set OP0LM001.XDMCD[2] skip, invisible; /* dimension*/
+  set OP0LM001.OP0LMFSL[2] skip, invisible; /* first size literal*/
+  set OP0LM001.OP0LMLSL[2] skip, invisible; /* last size literal*/
+  set OP0LM001.OP0LMFSZ[2] skip, invisible; /* first size*/
+  set OP0LM001.OP0LMLSZ[2] skip, invisible; /* last size*/
+
+  OP0LSD2(); /* darken 2nd style size descrip and*/
+                                   /* qtys*/
+
+
+   /* move sizes to map for style*/
+
+  OP0LW01.OP0LWSB3 = 1; /* set subscript for first style*/
+
+  OP0LSR1(); /* get size descriptions*/
+
+
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LW01.OP0LWSFL = "Y"; /* set sizes displayed flag*/
+    OP0LWFS1 = OP0LW01.OP0LWFSZ; /* save first and last size*/
+    OP0LWLS1 = OP0LW01.OP0LWLSZ;
+  end
+
+
+   /* *************************************************************/
+end // end OP0LS20
+
+// format map if from op menu
+Function OP0LS30()
+
+
+
+  OP0LW01.OP0LWERR = "N";
+
+
+
+   /* default need date, drop date, gpc*/
+   /* waiting list flag, and order type*/
+
+  OP0LSDF(); /* move defaults to screen*/
+
+
+
+   /* darken sizes and quantities of first style*/
+
+  OP0LSD1();
+
+
+
+   /* darken sizes and quantities of second style*/
+
+  OP0LSD2();
+
+
+
+  OP0LWSFL = "N"; /* set sizes displayed flag to 'no'*/
+end // end OP0LS30
+
+// edit only processing
+Function OP0LS40()
+
+
+  TA1REC.TA1LOCAT[2] = "OP0LS40";
+
+  OP0LSEB(); /* build record to pass for edit*/
+
+
+  OP0LW01.OP0LWERR = "N";
+
+   /* if coming from avialability, and style has been changed,*/
+   /* save new style*/
+
+  if (OP0LW01.OP0LWAFL == "Y")
+    if (OP0LM001.SY1STNBR[1] != OSFREC.SY1STNBR
+     || OP0LM001.SY2CLRID[1] != OSFREC.SY2CLRID
+     || OP0LM001.XDMCD[1] != OSFREC.XDMCD)
+      OP0LW01.OP0LWSFL = "N";
+      OSFREC.SY1STNBR = OP0LM001.SY1STNBR[1];
+      OSFREC.SY2CLRID = OP0LM001.SY2CLRID[1];
+      OSFREC.XDMCD = OP0LM001.XDMCD[1];
+    end
+  end
+
+  if (OP0LW01.OP0LWSFL == "Y") /* sizes displayed*/
+    if (OP0LW01.OP0LWAFL == "Y") /* displaying style from avail*/
+      OSEREC.OSETASK = "01"; /* availability edits*/
+    else
+      OSEREC.OSETASK = "03"; /* quantity edits*/
+    end
+  else
+    OSEREC.OSETASK = "02"; /* edit top of map only*/
+  end
+
+  OSEREC.OSERETN = "00";
+
+  call "OP04" (OSEREC) {isNoRefresh = yes}; /* lost demand edit subprogram*/
+
+
+  if (OSEREC.OSERETN == "00")
+    if (OSEREC.OSETASK == "01") /* availability edits*/
+      OP0LM001.KUMSTRNM = OSEREC.KUMSTRNM; /* move store name to map*/
+      OP0LM001.OP0LMDDT = OSEREC.OSEDRPDT; /* move need date to map*/
+      OP0LS41(); /* availability edit processing*/
+    else
+      if (OSEREC.OSETASK == "02")
+        OP0LM001.KUMSTRNM = OSEREC.KUMSTRNM;
+                                   /* move store name to map*/
+        OP0LM001.OP0LMDDT = OSEREC.OSEDRPDT; /* move need date to map*/
+        OP0LSPH(); /* Set phone number.*/
+        OP0LS42(); /* top edit processing*/
+        OP0LS66(); /* Save store and phone number in WS.*/
+      else
+        if (OSEREC.OSETASK == "03")
+          OP0LS61(); /* protect all fields except quantities*/
+          OP0LS43(); /* quantity edit processing*/
+        end
+      end
+    end
+  else
+    converseLib.validationFailed(536); /* lost demand not recorded*/
+    OP0LW01.OP0LWERR = "Y"; /* reconverse*/
+    OP0LSC1(); /* load ta1rec ta0020 post*/
+  end
+
+
+
+  OP0LS62(); /* display gpc, whse and bot descrip*/
+
+
+
+
+   /* ***********************************************************/
+end // end OP0LS40
+
+// avail. edit processing
+Function OP0LS41()
+
+
+
+  if (OSEERRFL == "N") /* no errors*/
+    OP0LSEB(); /* build record to pass for edits*/
+    OSEREC.OSETASK = "03"; /* quantity edits*/
+    OSEREC.OSERETN = "00";
+    call "OP04" (OSEREC) {isNoRefresh = yes}; /* lost demand edit program*/
+    if (OSEREC.OSERETN == "00")
+      if (OSEERRFL == "N") /* no errors*/
+        converseLib.validationFailed(518); /* edit performed with no errors*/
+      else
+        OP0LSYM(); /* set error message*/
+      end
+    else
+      converseLib.validationFailed(536); /* lost demand not recorded*/
+      OP0LW01.OP0LWERR = "Y";
+      OP0LSC1();
+    end
+  else
+    OP0LSYM(); /* set error message*/
+  end
+
+
+
+   /* ***********************************************************/
+end // end OP0LS41
+
+// top edit processing- edit only
+Function OP0LS42()
+
+
+
+  if (OSEERRFL == "N") /* no errors*/
+    OP0LS60(); /* edit styles*/
+    if (OP0LW01.OP0LWERR == "N")
+      OP0LS61(); /* protect all fields except quantities*/
+      OP0LS64(); /* darken unused style*/
+      converseLib.validationFailed(518); /* edit perfromed without errors*/
+    else
+       /* next sentence - reconverse map with style errors*/
+    end
+  else
+    OP0LSYM(); /* set error message*/
+  end
+
+
+
+   /* ***********************************************************/
+
+   /* ***********************************************************/
+end // end OP0LS42
+
+// qty edit processing-edit only
+Function OP0LS43()
+
+
+
+  OP0LS61(); /* protect all fields except quaitites*/
+  OP0LS64(); /* darken unused style*/
+
+  if (OSEERRFL == "N") /* no errors*/
+    converseLib.validationFailed(518); /* edits perfromed with no errors*/
+  else /* top of map okay*/
+    OP0LSYM(); /* set error messages*/
+  end
+
+
+
+
+   /* ***********************************************************/
+end // end OP0LS43
+
+// edit/write process
+Function OP0LS50()
+
+
+  TA1REC.TA1LOCAT[2] = "OP0LS50";
+
+  OP0LSEB(); /* build record to pass for edit*/
+
+  OP0LW01.OP0LWERR = "N";
+
+   /* if coming from avialability, and style has been changed,*/
+   /* save new style*/
+
+  if (OP0LW01.OP0LWAFL == "Y")
+    if (OP0LM001.SY1STNBR[1] != OSFREC.SY1STNBR
+     || OP0LM001.SY2CLRID[1] != OSFREC.SY2CLRID
+     || OP0LM001.XDMCD[1] != OSFREC.XDMCD)
+      OP0LW01.OP0LWSFL = "N";
+      OSFREC.SY1STNBR = OP0LM001.SY1STNBR[1];
+      OSFREC.SY2CLRID = OP0LM001.SY2CLRID[1];
+      OSFREC.XDMCD = OP0LM001.XDMCD[1];
+    end
+  end
+
+  if (OP0LW01.OP0LWSFL == "Y") /* sizes displayed*/
+    if (OP0LW01.OP0LWAFL == "Y") /* displaying style from avail*/
+      OSEREC.OSETASK = "01"; /* availability edits*/
+    else
+      OSEREC.OSETASK = "03"; /* quantity edits*/
+    end
+  else
+    OSEREC.OSETASK = "02"; /* edit top of map only*/
+  end
+
+
+  OSEREC.OSERETN = "00";
+
+  call "OP04" (OSEREC) {isNoRefresh = yes}; /* lost demand edit subprogram*/
+
+
+
+  if (OSEREC.OSERETN == "00")
+    if (OSEREC.OSETASK == "01")
+      OP0LM001.KUMSTRNM = OSEREC.KUMSTRNM; /* move store name to map*/
+      OP0LM001.OP0LMDDT = OSEREC.OSEDRPDT; /* move need date to map*/
+      OP0LS51(); /* do more availability edits*/
+    else
+      if (OSEREC.OSETASK == "02")
+        OP0LM001.KUMSTRNM = OSEREC.KUMSTRNM;
+                                   /* move store name to map*/
+        OP0LM001.OP0LMDDT = OSEREC.OSEDRPDT; /* move need date to map*/
+        OP0LSPH(); /* Set phone number.*/
+        OP0LS52(); /* top edit processing*/
+        OP0LS66(); /* Save store & phone number in WS.*/
+      else
+        if (OSEREC.OSETASK == "03")
+          OP0LS53(); /* quantity edit processing*/
+        end
+      end
+    end
+  else
+    converseLib.validationFailed(536); /* lost demand not recorded*/
+    OP0LW01.OP0LWERR = "Y"; /* reconverse*/
+    OP0LSC1(); /* load ta1rec ta0020 post*/
+  end
+
+
+
+  OP0LS62(); /* display gpc,whse and bot description*/
+
+   /* ***********************************************************/
+end // end OP0LS50
+
+// more availability edits
+Function OP0LS51()
+
+
+
+  if (OSEERRFL == "N") /* no errors*/
+    OP0LS62(); /* move in descript. and default warehouse*/
+    OP0LSEB(); /* build record to pass for edits*/
+    OSEREC.OSETASK = "03"; /* quantity edits*/
+    OSEREC.OSERETN = "00";
+
+
+
+    call "OP04" (OSEREC) {isNoRefresh = yes}; /* lost demand edit program*/
+
+
+
+    if (OSEREC.OSERETN == "00")
+      if (OSEREC.OSEERRFL == "N")
+        OP0LSWR(); /* write lost demand*/
+        if (OP0LW01.OP0LWERR == "N")
+          OP0LW01.OP0LWWM = " ";
+          OP0LW01.OP0LWW1 = "LOST DEMAND HAS BEEN";
+          OP0LW01.OP0LWW2 = " RECORDED           ";
+          COMMAREA.CAMSG = OP0LW01.OP0LWWM;
+          COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+          XSEXIT(); /* return to availability*/
+        else
+           /* next sentence*/
+        end
+      else
+        OP0LSYM(); /* set error message*/
+      end
+    else
+      converseLib.validationFailed(536); /* lost demand not recorded*/
+      OP0LW01.OP0LWERR = "Y"; /* reconverse*/
+      OP0LSC1(); /* load ta1rec ta0020 post*/
+    end
+  else
+    OP0LSYM(); /* set error message*/
+  end
+
+
+
+   /* ***********************************************************/
+end // end OP0LS51
+
+// top edit processing
+Function OP0LS52()
+
+
+
+  if (OSEERRFL == "N") /* no errors*/
+    OP0LS60(); /* edit styles*/
+    if (OP0LW01.OP0LWERR == "N")
+      OP0LS61(); /* protect all fields except quantities*/
+      OP0LS64(); /* darken unused style*/
+    else
+       /* next sentence - reconverse map with style errors*/
+    end
+  else
+    OP0LSYM(); /* set error message*/
+  end
+
+
+   /* ***********************************************************/
+end // end OP0LS52
+
+// quantity edit processing
+Function OP0LS53()
+
+
+  TA1REC.TA1LOCAT[2] = "OP0LS53";
+
+  if (OSEERRFL == "N") /* no errors*/
+    OP0LSWR(); /* write lost demand*/
+    if (OP0LW01.OP0LWERR == "N")
+      converseLib.validationFailed(494); /* lost demand has been record*/
+      OP0LS65(); /* clear screen for new styles*/
+      OP0LS66(); /* Save the store and phone number*/
+                                   /* in working storage.*/
+      OP0LW01.OP0LWSFL = "N"; /* reinitial. sizes displayed flag*/
+      OP0LW01.OP0LWHMF = "N"; /* reinitial. hot model flag*/
+    else
+      /* next sentence*/
+    end
+  else /* top of map okay*/
+    OP0LS61(); /* protect all fields except quantities*/
+    OP0LS64(); /* darken unused style*/
+    OP0LSYM(); /* set error messages*/
+  end
+
+
+
+   /* ***********************************************************/
+end // end OP0LS53
+
+// edit styles
+Function OP0LS60()
+
+  TA1REC.TA1LOCAT[2] = "OP0LS60";
+
+  OP0LW01.OP0LWERR = "N";
+
+   /* default color to '00' if footwear*/
+   /* default dimension to '00' if blank*/
+
+  if (OP0LM001.SY1STNBR[1] > " ")
+    if (OP0LM001.XDMCD[1] == " ")
+      OP0LM001.XDMCD[1] = "00";
+    end
+  end
+
+  if (OP0LM001.SY1STNBR[2] > " ")
+    if (OP0LM001.XDMCD[2] == " ")
+      OP0LM001.XDMCD[2] = "00";
+    end
+  end
+
+
+   /* make sure a style has been entered*/
+
+  if (OP0LM001.SY1STNBR[1] == " "
+   && OP0LM001.SY1STNBR[2] == " ")
+    OP0LW01.OP0LWERR = "Y";
+    converseLib.validationFailed(235); /* style color dimension required*/
+    set OP0LM001.SY1STNBR[1] cursor, bold;
+    set OP0LM001.SY2CLRID[1] bold;
+    set OP0LM001.XDMCD[1] bold;
+  end
+
+   /* if no errors, get style descriptions and sizes*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    if (OP0LM001.SY1STNBR[1] != " ")
+      OP0LSS1(); /* edit first style*/
+    end
+  end
+
+
+   /* if second style is entered*/
+   /* get second style description and sizes and move to map*/
+
+
+  if (OP0LW01.OP0LWERR == "N")
+    if (OP0LM001.SY1STNBR[2] != " ")
+      OP0LSS2(); /* edit second style;*/
+    end
+  end
+
+
+
+  if (OP0LW01.OP0LWERR == "N") /* sizes displayed without errors*/
+    OP0LW01.OP0LWSFL = "Y"; /* set 'sizes displayed' flag*/
+    if (OP0LM001.SY1STNBR[2] > " ")
+      set OP0LM001.OP0LMQT2[1] cursor;
+    end
+    if (OP0LM001.SY1STNBR[1] > " ")
+      set OP0LM001.OP0LMQT1[1] cursor;
+    end
+  end
+
+   /* *************************************************************/
+end // end OP0LS60
+
+// protect all fields except qtys
+Function OP0LS61()
+
+
+
+
+       /* autoskip all fields except drop date, waiting list flag*/
+       /* ordered by, phone and quantities*/
+
+
+  set OP0LM001.KUCCOID skip;
+  set OP0LM001.KUMSTRID skip;
+  set OP0LM001.XNXCD skip;
+  set OP0LM001.OP0LMNDT skip;
+  set OP0LM001.XOBCD skip;
+  set OP0LM001.XGPCD skip;
+  set OP0LM001.XWHCD skip;
+  set OP0LM001.SY1STNBR[1] skip;
+  set OP0LM001.SY1STNBR[2] skip;
+  set OP0LM001.SY2CLRID[1] skip;
+  set OP0LM001.SY2CLRID[2] skip;
+  set OP0LM001.XDMCD[1] skip;
+  set OP0LM001.XDMCD[2] skip;
+
+
+
+   /* if from availability, style can still be changed*/
+
+  if (COMMAREA.CAFRMSYS == "AV")
+    set OP0LM001.SY1STNBR[1] normal;
+    set OP0LM001.SY2CLRID[1] normal;
+    set OP0LM001.XDMCD[1] normal;
+  end
+
+
+   /* *************************************************************/
+end // end OP0LS61
+
+// get descriptions
+Function OP0LS62()
+
+
+
+   /* get base order type description*/
+
+  if (OP0LM001.XOBCD in XOBTBL.XOBCD
+   && XOBTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    OP0LM001.XOBDESC = XOBTBL.XOBDESC[sysVar.arrayIndex]; /* description*/
+  else
+    OP0LM001.XOBDESC = "UNKWN";
+  end
+
+
+
+
+
+   /* get gpc code description*/
+
+
+  if (OP0LM001.XGPCD in XGPTBL.XGPCD
+   && XGPTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    OP0LM001.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+  else
+    OP0LM001.XGPABRV = "UNKWN";
+  end
+
+
+
+   /* if warehouse has been changed by edit program*/
+   /* to warehouse from customer, change warehouse on map*/
+   /* and set informational message. if gpc is '03', warehouse*/
+   /* has been defaulted to 32 and message is not set.*/
+
+  if (OSEREC.XWHCD > " ")
+    if (OSEREC.XWHCD == OP0LM001.XWHCD)
+       /* next sentence*/
+    else
+      OP0LM001.XWHCD = OSEREC.XWHCD;
+      if (OSEREC.XGPCD == "03")
+         /* next sentence*/
+      else
+        OP0LW01.OP0LWW1 = "WAREHOUSE HAS BEEN C";
+        OP0LW01.OP0LWW2 = "HANGED TO CUSTOMER W";
+        OP0LW01.OP0LWW3 = "AREHOUSE            ";
+        OP0LM001.CAMSG = OP0LW01.OP0LWWM;
+      end
+    end
+  end
+
+
+
+   /* get warehouse description*/
+
+  if (OP0LM001.XWHCD in XWHTBL.XWHCD
+   && XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    OP0LM001.XWHSABRV = XWHTBL.XWHSABRV[sysVar.arrayIndex];
+  else
+    OP0LM001.XWHSABRV = "UNKNWN";
+  end
+
+
+
+
+   /* *************************************************************/
+end // end OP0LS62
+
+// darken unused style
+Function OP0LS64()
+
+
+   /* darken unused styles*/
+
+
+  if (OP0LM001.SY1STNBR[1] == " ")
+    set OP0LM001.OP0LMSYL[1] skip, invisible; /* style literal*/
+    set OP0LM001.OP0LMFSL[1] skip, invisible; /* first size literal*/
+    set OP0LM001.OP0LMLSL[1] skip, invisible; /* last size literal*/
+    set OP0LM001.SY1STNBR[1] skip, invisible;
+    set OP0LM001.SY2CLRID[1] skip, invisible;
+    set OP0LM001.XDMCD[1] skip, invisible;
+    set OP0LM001.OP0LMFSZ[1] skip, invisible; /* first size*/
+    set OP0LM001.OP0LMLSZ[1] skip, invisible; /* last size*/
+  end
+
+  if (OP0LM001.SY1STNBR[2] == " ")
+    set OP0LM001.OP0LMSYL[2] skip, invisible; /* style literal*/
+    set OP0LM001.OP0LMFSL[2] skip, invisible; /* first size literal*/
+    set OP0LM001.OP0LMLSL[2] skip, invisible; /* last size literal*/
+    set OP0LM001.SY1STNBR[2] skip, invisible;
+    set OP0LM001.SY2CLRID[2] skip, invisible;
+    set OP0LM001.XDMCD[2] skip, invisible;
+    set OP0LM001.OP0LMFSZ[2] skip, invisible; /* first size*/
+    set OP0LM001.OP0LMLSZ[2] skip, invisible; /* last size*/
+  end
+
+
+
+   /* *******************************************************/
+end // end OP0LS64
+
+// clear screen for new styles
+Function OP0LS65()
+
+   /* reset flag to show we are not coming from*/
+   /* availability with a style*/
+
+  OP0LW01.OP0LWAFL = "N";
+
+
+   /* save descriptions in working storage*/
+
+  OP0LW01.XOBDESC = OP0LM001.XOBDESC;
+  OP0LW01.XWHSABRV = OP0LM001.XWHSABRV;
+  OP0LW01.XGPABRV = OP0LM001.XGPABRV;
+
+  set OP0LM001 initial; /* clear map*/
+
+   /* move back top fields*/
+  OP0LM001.KUCCOID = OSEREC.KUCCOID;
+  OP0LM001.KUMSTRID = OSEREC.KUMSTRID;
+  OP0LM001.KUMSTRNM = OSEREC.KUMSTRNM;
+  OP0LM001.XNXCD = OSEREC.XNXCD;
+  OP0LM001.XOBCD = OSEREC.XOBCD;
+  OP0LM001.XGPCD = OSEREC.XGPCD;
+  OP0LM001.XWHCD = OSEREC.XWHCD;
+  OP0LM001.OP1ORDBY = OSEREC.OP1ORDBY;
+  OP0LM001.OPTWAITF = OSEREC.OPTWAITF;
+
+   /* The phone number from the edit record is the default*/
+   /* number from the store record.  Put the phone number*/
+   /* that was written to lost demand back on the screen.*/
+
+   /* *************** CSP 4.1 Change ***********************/
+   /* Added code to check group level (char) field for*/
+   /* spaces before attempting to move numeric phone number*/
+   /* fields to numeric defined map fields.*/
+   /* ******************************************************/
+  if (OPTREC.XXXPHN == " ") /* check for spaces*/
+    OP0LM001.XXXPHNA = 0;
+    OP0LM001.XXXPHNP = 0;
+    OP0LM001.XXXPHNN = 0;
+  else
+    OP0LM001.XXXPHNA = OPTREC.XXXPHNA;
+    OP0LM001.XXXPHNP = OPTREC.XXXPHNP;
+    OP0LM001.XXXPHNN = OPTREC.XXXPHNN;
+  end
+
+  OP0LM001.OP0LMNDT = OSEREC.OSECUNDT;
+  OP0LM001.OP0LMDDT = OSEREC.OSEDRPDT;
+  OP0LM001.XOBDESC = OP0LW01.XOBDESC;
+  OP0LM001.XWHSABRV = OP0LW01.XWHSABRV;
+  OP0LM001.XGPABRV = OP0LW01.XGPABRV;
+
+
+
+  OP0LSD1(); /* darken size descriptions and quantities - first style*/
+  OP0LSD2(); /* darken size descriptions and quantities - second style*/
+
+
+end // end OP0LS65
+
+// Save store & phone in WS
+Function OP0LS66()
+   /* This group is called from two places: when top screen edits*/
+   /* are done and after the lost demand record is written.  It*/
+   /* is used twice because users can change the store and*/
+   /* phone numbers in both places.*/
+
+  OP0LW01.OP0LWLCO = OP0LM001.KUCCOID; /* Company*/
+  OP0LW01.OP0LWLST = OP0LM001.KUMSTRID; /* Store*/
+  OP0LW01.OP0LWLGP = OP0LM001.XGPCD; /* GPC*/
+  OP0LW01.OP0LWLPA = OP0LM001.XXXPHNA; /* Area code*/
+  OP0LW01.OP0LWLPP = OP0LM001.XXXPHNP; /* Prefix*/
+  OP0LW01.OP0LWLPN = OP0LM001.XXXPHNN; /* Last 4 digits*/
+end // end OP0LS66
+
+// Check if prod brands match
+Function OP0LSBC()
+  if (OP0LW01.XBCCD[1] != OP0LW01.XBCCD[2])
+    converseLib.validationFailed(581); /* Product brands do not match.*/
+    OP0LW01.OP0LWERR = "Y";
+    set OP0LM001.SY1STNBR[1] cursor, bold;
+    set OP0LM001.SY1STNBR[2] bold;
+    set OP0LM001.SY2CLRID[1] bold;
+    set OP0LM001.SY2CLRID[2] bold;
+    set OP0LM001.XDMCD[1] bold;
+    set OP0LM001.XDMCD[2] bold;
+  end
+end // end OP0LSBC
+
+// load ta1rec for edit pgm post
+Function OP0LSC1()
+
+   /* post error and return code for bad call to op04*/
+
+  TA1REC.TA1FUNC = "POST";
+  TA1REC.TA1LOCAT[3] = "OP04";
+  TA1REC.TA1LOCAT[4] = OSEREC.OSERETN;
+  call "TA0020" (TA1REC, ERRSQLCA) {isNoRefresh = yes, isExternal = yes};
+
+end // end OP0LSC1
+
+// darken first style
+Function OP0LSD1()
+
+
+   /* darken descriptions and quantities, first style*/
+
+
+  set OP0LM001.OP0LMSL1[1] skip, invisible; /* size literal*/
+  set OP0LM001.OP0LMSL1[2] skip, invisible; /* size literal*/
+  set OP0LM001.OP0LMQL1[1] skip, invisible; /* quantity literal*/
+  set OP0LM001.OP0LMQL1[2] skip, invisible; /* quantity literal*/
+
+   /* size descriptions*/
+
+  OP0LW01.OP0LWSB1 = 1;
+  while (OP0LW01.OP0LWSB1 <= 24)
+    set OP0LM001.OP0LMSZ1[OP0LWSB1] skip, invisible;
+    OP0LWSB1 = OP0LWSB1 + 1;
+  end
+
+   /* quantities*/
+
+  OP0LW01.OP0LWSB1 = 1;
+  while (OP0LW01.OP0LWSB1 <= 24)
+    set OP0LM001.OP0LMQT1[OP0LWSB1] skip, invisible;
+    OP0LWSB1 = OP0LWSB1 + 1;
+  end
+
+
+
+end // end OP0LSD1
+
+// darken second style
+Function OP0LSD2()
+
+
+   /* darken descriptions and quantities, second style*/
+
+
+  set OP0LM001.OP0LMSL2[1] skip, invisible; /* size literal*/
+  set OP0LM001.OP0LMSL2[2] skip, invisible; /* size literal*/
+  set OP0LM001.OP0LMQL2[1] skip, invisible; /* quantity literal*/
+  set OP0LM001.OP0LMQL2[2] skip, invisible; /* quantity literal*/
+
+   /* size descriptions*/
+
+  OP0LW01.OP0LWSB1 = 1;
+  while (OP0LW01.OP0LWSB1 <= 24)
+    set OP0LM001.OP0LMSZ2[OP0LWSB1] skip, invisible;
+    OP0LWSB1 = OP0LWSB1 + 1;
+  end
+
+   /* quantities*/
+
+  OP0LW01.OP0LWSB1 = 1;
+  while (OP0LW01.OP0LWSB1 <= 24)
+    set OP0LM001.OP0LMQT2[OP0LWSB1] skip, invisible;
+    OP0LWSB1 = OP0LWSB1 + 1;
+  end
+
+
+
+end // end OP0LSD2
+
+// move defaults to map
+Function OP0LSDF()
+
+
+
+   /* default order type, need date, drop date,*/
+   /* waiting list flag, gpc and warehouse*/
+
+  OP0LM001.XOBCD = "P1"; /* default to at once order type*/
+
+  if (OP0LM001.XOBCD in XOBTBL.XOBCD
+   && XOBTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    OP0LM001.XOBDESC = XOBTBL.XOBDESC[sysVar.arrayIndex]; /* description*/
+  else
+    OP0LM001.XOBDESC = "UNKWN";
+  end
+
+
+
+   /* need date - default to current date*/
+
+  OP0LW01.OP0LWFYY = XX0XW01.XX0XWYY;
+  OP0LW01.OP0LWFMM = XX0XW01.XX0XWMM;
+  OP0LW01.OP0LWFDD = XX0XW01.XX0XWDD;
+  OP0LM001.OP0LMNDT = OP0LW01.OP0LWFDT;
+
+
+
+   /* gpc code - get from osfrec from availability if coming*/
+   /* from the availability system, otherwise get from commarea*/
+
+  if (COMMAREA.CAFRMSYS == "AV")
+    OP0LM001.XGPCD = OSFREC.XGPCD; /* gpc from availability*/
+    set OP0LM001.XGPCD protect;
+  else
+    OP0LM001.XGPCD = COMMAREA.XGPCD; /* gpc from commarea*/
+  end
+
+
+
+  if (OP0LM001.XGPCD in XGPTBL.XGPCD
+   && XGPTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    OP0LM001.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+  else
+    OP0LM001.XGPABRV = "UNKWN";
+  end
+
+
+
+   /* warehouse - get from commarea*/
+
+  OP0LM001.XWHCD = COMMAREA.XWHCD;
+
+  if (OP0LM001.XWHCD in XWHTBL.XWHCD
+   && XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    OP0LM001.XWHSABRV = XWHTBL.XWHSABRV[sysVar.arrayIndex];
+  else
+    OP0LM001.XWHSABRV = "UNKNWN";
+  end
+
+
+
+   /* waiting list flag*/
+
+  OP0LM001.OPTWAITF = "Y"; /* default to 'y'*/
+
+
+
+   /* drop date - default to current date +60 days*/
+
+  set TA2REC empty;
+  TA2REC.TA2DTOPT = "GREGGREG";
+  TA2DYAOD = +60;
+  TA2REC.TA2GRTYP = "G";
+  TA2REC.TA2GRGGN = XX0XW01.XX0XWDAT;
+
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (TA2REC.TA2RTNCD == 0)
+    OP0LM001.OP0LMDDT = TA2REC.TA2GRGAN;
+  else
+    OP0LSYT(); /* load ta1rec for ta0040 post*/
+  end
+
+
+
+   /* *************************************************************/
+end // end OP0LSDF
+
+// load ta1rec for add lost dmnd
+Function OP0LSE1()
+
+
+      /* ******************************/
+      /* load ta1rec diags from optrec*/
+      /* ******************************/
+
+  TA1REC.TA1FUNC = "POST";
+  TA1REC.TA1DBASE = "DORDER"; /* data base name*/
+  TA1REC.TA1TBLVU = "VLOST001"; /* table view*/
+  OP0LW01.OP0LWKY1 = OPTREC.OPTDMND;
+  OP0LW01.OP0LWKY2 = OPTREC.XDVCD;
+  OP0LW01.OP0LWKY3 = OPTREC.XSOCD;
+  OP0LW01.OP0LWKY4 = OPTREC.XOTCD;
+  OP0LW01.OP0LWKY5 = OPTREC.XWHCD;
+  OP0LW01.OP0LWKY6 = OPTREC.OP1PARTN;
+  OP0LW01.OP0LWKY7 = OPTREC.OP1CUOID;
+  TA1REC.TA1TBLKE = OP0LW01.OP0LWKEY; /* key value*/
+  TA1REC.TA1LOCAT[3] = "IO3070"; /* i/o mod*/
+  TA1REC.TA1LOCAT[4] = " ";
+  call "TA0020" (TA1REC, ERRSQLCA) {isNoRefresh = yes, isExternal = yes};
+
+
+
+   /* **********************************************************/
+end // end OP0LSE1
+
+// build record to pass for edit
+Function OP0LSEB()
+
+
+  set OSEREC empty;
+  OSEREC.OSEERRFL = "N"; /* map field error flag*/
+  OSEREC.OSEQT1FL = "N"; /* quantity error, 1st style*/
+  OSEREC.OSEQT2FL = "N"; /* quantity error, 2nd style*/
+
+   /* move all map fields that are editited to pass record*/
+
+  OSEREC.KUCCOID = OP0LM001.KUCCOID;
+  OSEREC.KUMSTRID = OP0LM001.KUMSTRID;
+  OSEREC.XNXCD = OP0LM001.XNXCD;
+  OSEREC.XOBCD = OP0LM001.XOBCD;
+  OSEREC.XOTCD = OP0LW01.XOTCD;
+
+  OSEREC.OSECUNDT = OP0LM001.OP0LMNDT;
+
+  OSEREC.XGPCD = OP0LM001.XGPCD;
+  OSEREC.XWHCD = OP0LM001.XWHCD;
+  OSEREC.OP1ORDBY = OP0LM001.OP1ORDBY;
+  OSEREC.OPTWAITF = OP0LM001.OPTWAITF;
+
+  OSEREC.OSEDRPDT = OP0LM001.OP0LMDDT;
+
+  OSEREC.SY1STNBR[1] = OP0LM001.SY1STNBR[1];
+  OSEREC.SY1STNBR[2] = OP0LM001.SY1STNBR[2];
+  OSEREC.SY2CLRID[1] = OP0LM001.SY2CLRID[1];
+  OSEREC.SY2CLRID[2] = OP0LM001.SY2CLRID[2];
+  OSEREC.XDMCD[1] = OP0LM001.XDMCD[1];
+  OSEREC.XDMCD[2] = OP0LM001.XDMCD[2];
+
+   /* get fields from commarea*/
+
+  OSEREC.XDVCD = COMMAREA.XDVCD;
+  OSEREC.XSOCD = COMMAREA.XSOCD;
+
+
+
+   /* quantities for first style*/
+
+  OP0LW01.OP0LWSB1 = 1;
+  while (OP0LWSB1 <= 24)
+    OSEREC.OP0LMQT1[OP0LWSB1] = OP0LM001.OP0LMQT1[OP0LWSB1];
+    OP0LWSB1 = OP0LWSB1 + 1;
+  end
+
+   /* quantities for second style*/
+
+  OP0LW01.OP0LWSB1 = 1;
+  while (OP0LWSB1 <= 24)
+    OSEREC.OP0LMQT2[OP0LWSB1] = OP0LM001.OP0LMQT2[OP0LWSB1];
+    OP0LWSB1 = OP0LWSB1 + 1;
+  end
+end // end OP0LSEB
+
+// edit first/ last size
+Function OP0LSFL()
+
+
+   /* edit first and last size requested*/
+   /* first or last size not required, and if left*/
+   /* blank, default is first or last valid size*/
+
+
+
+   /* set up size error message*/
+
+  OP0LW01.OP0LWSZ1 = "VALID SIZE RANGE IS ";
+  OP0LW01.OP0LWSZ3 = " THRU ";
+
+
+
+   /* size edits depend on input format*/
+     /* 'i' means size id, usually apparel*/
+     /* 'd' means dscriptive, usually footware*/
+
+  if (OP0LW01.XOTSZIND == "I")
+    OP0LSG5(); /* edit numeric sizes*/
+  else
+    OP0LSG6(); /* edit descriptive sizes*/
+  end
+
+
+   /* check if first size is greater than last size*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    if (OP0LW01.OP0LWSFS > OP0LW01.OP0LWSLS)
+      OP0LW01.OP0LWERR = "Y";
+      set OP0LM001.OP0LMFSZ[OP0LWSB3] cursor, modified, bold;
+      set OP0LM001.OP0LMLSZ[OP0LWSB3] modified, bold;
+    end
+  end
+
+
+
+   /* if errors, set up error message with valid sizes,*/
+   /* if no errors, move saved sizes to first and last size*/
+
+  if (OP0LW01.OP0LWERR == "Y")
+    OP0LSG9();
+                                   /* set up error message with valid sizes*/
+  else
+    OP0LW01.OP0LWFSZ = OP0LW01.OP0LWSFS;
+    OP0LW01.OP0LWLSZ = OP0LW01.OP0LWSLS;
+  end
+
+
+
+
+   /* ******************************************************/
+end // end OP0LSFL
+
+// get first valid size
+Function OP0LSFS()
+
+   /* find first valid size*/
+
+   /* ------------------------------------------------------------*/
+    /* first make sure that the xottbl.allowed/disallowed*/
+    /* division code = a or d.*/
+   /* ------------------------------------------------------------*/
+
+  if (OP0LW01.XOTCD in XOTTBL.XOTCD)
+    if (XOTTBL.XOTALWDV[sysVar.arrayIndex] == "A"
+     || XOTTBL.XOTALWDV[sysVar.arrayIndex] == "D")
+       /* next sentence--ok good values, keep going*/
+    else
+      OP0LW01.OP0LWERR = "Y";
+      set OP0LM001.SY1STNBR[OP0LWSB3] cursor, bold;
+      set OP0LM001.SY2CLRID[OP0LWSB3] bold;
+      set OP0LM001.XDMCD[OP0LWSB3] bold;
+      converseLib.validationFailed(131); /* style/color not valid*/
+      return;
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* look for a valid size based on division codes:*/
+   /* if xottbl.xotalwdv = 'a' (allowed) and the product divison*/
+   /* equals one of the order type's allowable divisions, and*/
+   /* the xtras/fringe/gut ok, save it.*/
+   /* ----------------------------------------------------*/
+
+  OP0LW01.OP0LWSB1 = 1;
+  OP0LW01.OP0LWFSZ = 0;
+
+  if (XOTTBL.XOTALWDV[sysVar.arrayIndex] == "A") /* allowed divisions*/
+
+    while (OP0LW01.OP0LWSB1 <= 40)
+      if (SYCREC.XDVCD[OP0LWSB1] > " ")
+        if (SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD1[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD2[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD3[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD4[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD5[sysVar.arrayIndex])
+
+          if (XOTTBL.XOTXTRAS[sysVar.arrayIndex] == "Y") /* if ord type allows extras*/
+            OP0LW01.OP0LWFSZ = OP0LW01.OP0LWSB1;
+            OP0LW01.OP0LWSB1 = 41;
+          else
+            if (SYCREC.SY3FRGUT[OP0LWSB1] == "F" /* if size is fringe*/
+             || SYCREC.SY3FRGUT[OP0LWSB1] == "G") /* if size is gut*/
+              OP0LW01.OP0LWFSZ = OP0LW01.OP0LWSB1;
+              OP0LW01.OP0LWSB1 = 41;
+            end
+          end
+
+        end
+      end
+      OP0LW01.OP0LWSB1 = OP0LW01.OP0LWSB1 + 1;
+    end
+
+  end
+
+       /* --------------------------------------------------*/
+       /* if the order type table indicates 'd', use*/
+       /* this 'disallowed' division logic instead*/
+       /* --------------------------------------------------*/
+  if (XOTTBL.XOTALWDV[sysVar.arrayIndex] == "D") /* disallowed divisions*/
+
+    while (OP0LW01.OP0LWSB1 <= 40)
+      if (SYCREC.XDVCD[OP0LWSB1] > " ")
+        if (SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD1[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD2[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD3[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD4[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD5[sysVar.arrayIndex])
+          /* next sentence--disallowed division, keep looking*/
+        else
+          if (XOTTBL.XOTXTRAS[sysVar.arrayIndex] == "Y") /* if ord type allows extras*/
+            OP0LW01.OP0LWFSZ = OP0LW01.OP0LWSB1;
+            OP0LW01.OP0LWSB1 = 41;
+          else
+            if (SYCREC.SY3FRGUT[OP0LWSB1] == "F" /* if size is fringe*/
+             || SYCREC.SY3FRGUT[OP0LWSB1] == "G") /* if size is gut*/
+              OP0LW01.OP0LWFSZ = OP0LW01.OP0LWSB1;
+              OP0LW01.OP0LWSB1 = 41;
+            end
+          end
+        end
+      end
+      OP0LW01.OP0LWSB1 = OP0LW01.OP0LWSB1 + 1;
+    end
+
+  end
+
+
+
+
+end // end OP0LSFS
+
+// edit numeric sizes
+Function OP0LSG5()
+
+
+
+
+
+
+
+    /* this routines makes sure that the numeric size entered*/
+    /* is between 1 and 40. this is hard due to the input field*/
+    /* being character. The edit goes as follows:*/
+
+      /* 1. move size field to array of 5 individual characters*/
+      /* 2. go through each cell and test for 0 through 9.*/
+         /* replace spaces with zeroes.*/
+      /* 3. if map field ok, check range.*/
+      /* 4. do all three steps for the first map size.*/
+
+
+
+
+
+       /* check first size*/
+
+
+  if (OP0LM001.OP0LMFSZ[OP0LWSB3] > " ") /* if first size enetered*/
+    OP0LW01.OP0LWSRC = OP0LM001.OP0LMFSZ[OP0LWSB3];
+    OP0LW01.OP0LWSB1 = 5;
+
+    while (OP0LW01.OP0LWSB1 >= 1)
+      if (OP0LW01.OP0LWSRA[OP0LWSB1] >= "0"
+       && OP0LW01.OP0LWSRA[OP0LWSB1] <= "9")
+        OP0LW01.OP0LWSB1 = OP0LW01.OP0LWSB1 - 1;
+      else
+        if (OP0LW01.OP0LWSRA[OP0LWSB1] == " ")
+          OP0LW01.OP0LWSRA[OP0LWSB1] = "0";
+          OP0LW01.OP0LWSB1 = OP0LW01.OP0LWSB1 - 1;
+        else
+          OP0LW01.OP0LWERR = "Y";
+          set OP0LM001.OP0LMFSZ[OP0LWSB3] cursor, modified, bold;
+          OP0LW01.OP0LWSB1 = 0;
+        end
+      end
+    end
+  end
+
+
+
+   /* if first size entered and okay, save it*/
+   /* if not entered, save first valid size*/
+
+  if (OP0LM001.OP0LMFSZ[OP0LWSB3] > " ")
+    if (OP0LW01.OP0LWERR == "N")
+      OP0LW01.OP0LWSFS = OP0LW01.OP0LWSRN;
+    else
+      /* next sentence*/
+    end
+  else
+    OP0LW01.OP0LWSFS = OP0LW01.OP0LWFSZ;
+  end
+
+
+
+   /* check if first size  is less than first valid size*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    if (OP0LW01.OP0LWSFS < OP0LW01.OP0LWFSZ)
+      OP0LW01.OP0LWERR = "Y";
+      set OP0LM001.OP0LMFSZ[OP0LWSB3] cursor, modified, bold;
+    end
+  end
+
+
+
+
+   /* now check last size*/
+
+
+
+  if (OP0LM001.OP0LMLSZ[OP0LWSB3] > " ")
+    OP0LW01.OP0LWSRC = OP0LM001.OP0LMLSZ[OP0LWSB3];
+    OP0LW01.OP0LWSB1 = 5;
+
+    while (OP0LW01.OP0LWSB1 >= 1)
+      if (OP0LW01.OP0LWSRA[OP0LWSB1] >= "0"
+       && OP0LW01.OP0LWSRA[OP0LWSB1] <= "9")
+        OP0LW01.OP0LWSB1 = OP0LW01.OP0LWSB1 - 1;
+      else
+        if (OP0LW01.OP0LWSRA[OP0LWSB1] == " ")
+          OP0LW01.OP0LWSRA[OP0LWSB1] = "0";
+          OP0LW01.OP0LWSB1 = OP0LW01.OP0LWSB1 - 1;
+        else
+          OP0LW01.OP0LWERR = "Y";
+          set OP0LM001.OP0LMLSZ[OP0LWSB3] cursor, modified, bold;
+          OP0LW01.OP0LWSB1 = 0;
+        end
+      end
+    end
+  end
+
+
+
+
+   /* if last size entered and okay, save it*/
+   /* if not entered, save last valid size*/
+
+  if (OP0LM001.OP0LMLSZ[OP0LWSB3] > " ")
+    if (OP0LW01.OP0LWERR == "N")
+      OP0LW01.OP0LWSLS = OP0LW01.OP0LWSRN;
+    else
+       /* next sentence*/
+    end
+  else
+    OP0LW01.OP0LWSLS = OP0LW01.OP0LWLSZ;
+  end
+
+
+
+   /* check if last size entered is greater than last valid size*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    if (OP0LW01.OP0LWSLS > OP0LW01.OP0LWLSZ)
+      OP0LW01.OP0LWERR = "Y";
+      set OP0LM001.OP0LMLSZ[OP0LWSB3] cursor, modified, bold;
+    end
+  end
+
+
+
+
+
+
+
+end // end OP0LSG5
+
+// edit descriptive sizes
+Function OP0LSG6()
+
+
+
+
+
+
+
+   /* this routine edits descriptive sizes*/
+
+
+
+
+
+   /* find a match on first size*/
+
+
+
+  if (OP0LM001.OP0LMFSZ[OP0LWSB3] > " ") /* if first size is entered*/
+    OP0LW01.OP0LWSB1 = 1;
+
+    while (OP0LWSB1 <= 40)
+      if (OP0LM001.OP0LMFSZ[OP0LWSB3] == SY4REC.SY4IDDSC[OP0LWSB1])
+        OP0LW01.OP0LWSFS = OP0LWSB1; /* save first size*/
+        OP0LWSB1 = 99;
+      else
+        OP0LWSB1 = OP0LWSB1 + 1;
+      end
+    end
+  end
+
+
+
+   /* if match is found in size scale record for size entered,*/
+   /* check that it is not smaller than first valid size.*/
+
+  if (OP0LM001.OP0LMFSZ[OP0LWSB3] > " ") /* if first size is entered*/
+    if (OP0LWSB1 != 99) /* if not found*/
+      set OP0LM001.OP0LMFSZ[OP0LWSB3] cursor, modified, bold;
+      OP0LW01.OP0LWERR = "Y";
+    else
+      if (OP0LW01.OP0LWSFS < OP0LW01.OP0LWFSZ)
+        set OP0LM001.OP0LMFSZ[OP0LWSB3] cursor, modified, bold;
+        OP0LW01.OP0LWERR = "Y";
+      end
+    end
+  else
+    OP0LW01.OP0LWSFS = OP0LW01.OP0LWFSZ;
+  end
+
+
+
+
+   /* find a match on last size*/
+
+
+
+  if (OP0LM001.OP0LMLSZ[OP0LWSB3] > " ") /* if last size is entered*/
+    OP0LW01.OP0LWSB1 = 1;
+
+    while (OP0LWSB1 <= 40)
+      if (OP0LM001.OP0LMLSZ[OP0LWSB3] == SY4REC.SY4IDDSC[OP0LWSB1])
+        OP0LW01.OP0LWSLS = OP0LWSB1; /* save last size*/
+        OP0LWSB1 = 99;
+      else
+        OP0LWSB1 = OP0LWSB1 + 1;
+      end
+    end
+  end
+
+
+
+   /* if match is found in size scale record for size entered,*/
+   /* check that it is not larger than first valid size.*/
+
+  if (OP0LM001.OP0LMLSZ[OP0LWSB3] > " ") /* if last size is entered*/
+    if (OP0LWSB1 != 99) /* if not found*/
+      set OP0LM001.OP0LMLSZ[OP0LWSB3] cursor, modified, bold;
+      OP0LW01.OP0LWERR = "Y";
+    else
+      if (OP0LW01.OP0LWSLS > OP0LW01.OP0LWLSZ)
+        set OP0LM001.OP0LMLSZ[OP0LWSB3] cursor, modified, bold;
+        OP0LW01.OP0LWERR = "Y";
+      end
+    end
+  else
+    OP0LW01.OP0LWSLS = OP0LW01.OP0LWLSZ;
+  end
+
+
+
+   /* ************************************************************/
+end // end OP0LSG6
+
+// set up size error message
+Function OP0LSG9()
+
+
+
+
+    /* when the user encounters some kind of size error we*/
+    /* want to display a message showing the valid size*/
+    /* range for the entered style. this sgrp builds this*/
+    /* size range message.*/
+
+
+
+
+
+
+  if (OP0LW01.XOTSZIND == "D") /* if sizes need to be descriptive*/
+    OP0LW01.OP0LWSZ4 = SY4REC.SY4IDDSC[OP0LWLSZ];
+    OP0LW01.OP0LWSZ2 = SY4REC.SY4IDDSC[OP0LWFSZ];
+  else
+    OP0LW01.OP0LWSZ4 = OP0LW01.OP0LWLSZ;
+    OP0LW01.OP0LWSZ2 = OP0LW01.OP0LWFSZ;
+  end
+
+
+  OP0LM001.VAGen_EZEMSG = OP0LW01.OP0LWSZM; /* move msg to map*/
+
+
+
+
+
+end // end OP0LSG9
+
+// check for hot model
+Function OP0LSHM()
+
+
+
+   /* if product is a hot model, default the waiting list*/
+   /* flag to 'n' and protect.*/
+
+  if (SYCREC.OPZHMIND == "Y")
+    OP0LW01.OP0LWHMF = "Y";
+    OP0LM001.OPTWAITF = "N";
+    set OP0LM001.OPTWAITF skip;
+    OP0LW01.OP0LWW1 = "HOT MODEL - WAITING ";
+    OP0LW01.OP0LWW2 = "LIST FLAG IS SET TO ";
+    OP0LW01.OP0LWW3 = "NO                  ";
+    OP0LM001.CAMSG = OP0LW01.OP0LWWM;
+  end
+
+
+
+end // end OP0LSHM
+
+// check life cycle
+Function OP0LSLC()
+
+
+
+   /* check if product life cycle is active ('10')*/
+      /* if coming from availability. return to calling*/
+      /* application. if coming from the op menu, reconverse*/
+      /* with an error message.*/
+
+
+  if (SYCREC.XLCCD1 == "10")
+     /* next sentence*/
+  else
+    if (COMMAREA.CAFRMSYS == "AV") /* if from availability*/
+      OP0LW01.OP0LWW1 = "BGRADE/CLOSEOUT PROD";
+      OP0LW01.OP0LWW2 = "UCTS NOT ELIGIBLE FO";
+      OP0LW01.OP0LWW3 = "R LOST DEMAND       ";
+      COMMAREA.CAMSG = OP0LW01.OP0LWWM;
+      COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+      XSEXIT(); /* return to availability*/
+    else
+      converseLib.validationFailed(532); /* not eligible for lost demand*/
+      OP0LW01.OP0LWERR = "Y";
+    end
+  end
+
+end // end OP0LSLC
+
+// get last valid size
+Function OP0LSLS()
+
+   /* find last valid size*/
+   /* ------------------------------------------------------------*/
+    /* first make sure that the xottbl.allowed/disallowed*/
+    /* division code = a or d.*/
+   /* ------------------------------------------------------------*/
+
+  if (OP0LW01.XOTCD in XOTTBL.XOTCD)
+    if (XOTTBL.XOTALWDV[sysVar.arrayIndex] == "A"
+     || XOTTBL.XOTALWDV[sysVar.arrayIndex] == "D")
+       /* next sentence--ok good values, keep going*/
+    else
+      OP0LW01.OP0LWERR = "Y";
+      set OP0LM001.SY1STNBR[OP0LWSB3] cursor, bold;
+      set OP0LM001.SY2CLRID[OP0LWSB3] bold;
+      set OP0LM001.XDMCD[OP0LWSB3] bold;
+      converseLib.validationFailed(131); /* style/color not valid*/
+      return;
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* look for a valid size based on division codes:*/
+   /* if xottbl.xotalwdv = 'a' (allowed) and the product divison*/
+   /* equals one of the order type's allowable divisions, and*/
+   /* the xtras/fringe/gut ok, save it.*/
+   /* ----------------------------------------------------*/
+
+  OP0LW01.OP0LWSB1 = 40;
+  OP0LW01.OP0LWLSZ = 0;
+
+  if (XOTTBL.XOTALWDV[sysVar.arrayIndex] == "A") /* allowed divisions*/
+
+    while (OP0LW01.OP0LWSB1 >= 1)
+      if (SYCREC.XDVCD[OP0LWSB1] > " ")
+        if (SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD1[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD2[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD3[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD4[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD5[sysVar.arrayIndex])
+
+          if (XOTTBL.XOTXTRAS[sysVar.arrayIndex] == "Y") /* if ord type allows extras*/
+            OP0LW01.OP0LWLSZ = OP0LW01.OP0LWSB1;
+            OP0LW01.OP0LWSB1 = 1;
+          else
+            if (SYCREC.SY3FRGUT[OP0LWSB1] == "F" /* if size is fringe*/
+             || SYCREC.SY3FRGUT[OP0LWSB1] == "G") /* if size is gut*/
+              OP0LW01.OP0LWLSZ = OP0LW01.OP0LWSB1;
+              OP0LW01.OP0LWSB1 = 1;
+            end
+          end
+
+        end
+      end
+      OP0LW01.OP0LWSB1 = OP0LW01.OP0LWSB1 - 1;
+    end
+
+  end
+
+       /* --------------------------------------------------*/
+       /* if the order type table indicates 'd', use*/
+       /* this 'disallowed' division logic instead*/
+       /* --------------------------------------------------*/
+  if (XOTTBL.XOTALWDV[sysVar.arrayIndex] == "D") /* disallowed divisions*/
+
+    while (OP0LW01.OP0LWSB1 >= 1)
+      if (SYCREC.XDVCD[OP0LWSB1] > " ")
+        if (SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD1[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD2[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD3[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD4[sysVar.arrayIndex]
+         || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD5[sysVar.arrayIndex])
+          /* next sentence--disallowed division, keep looking*/
+        else
+          if (XOTTBL.XOTXTRAS[sysVar.arrayIndex] == "Y") /* if ord type allows extras*/
+            OP0LW01.OP0LWLSZ = OP0LW01.OP0LWSB1;
+            OP0LW01.OP0LWSB1 = 1;
+          else
+            if (SYCREC.SY3FRGUT[OP0LWSB1] == "F" /* if size is fringe*/
+             || SYCREC.SY3FRGUT[OP0LWSB1] == "G") /* if size is gut*/
+              OP0LW01.OP0LWLSZ = OP0LW01.OP0LWSB1;
+              OP0LW01.OP0LWSB1 = 1;
+            end
+          end
+        end
+      end
+      OP0LW01.OP0LWSB1 = OP0LW01.OP0LWSB1 - 1;
+    end
+
+  end
+
+
+   /* *************************************************************/
+end // end OP0LSLS
+
+// get system order type
+Function OP0LSOT()
+
+
+    /* ***********************************************************/
+    /* * this statement group uses the 'if in' feature of csp.  **/
+    /* * the subscript, ezetst, is incremented after the first  **/
+    /* * hit and starts at 'n' position to retrieve the second  **/
+    /* * record.  ezetst is incremented until the end of the    **/
+    /* * array is reached. this process is much faster than     **/
+    /* * moving each member of the table and then doing a       **/
+    /* * compare to find each occurence of a field in the table.**/
+    /* * (Ref: CSP Ver. 3: Performance Characteristics and      **/
+    /* * Recommendations)                                       **/
+    /* ***********************************************************/
+
+    /* subscript use:*/
+          /* ezetst = xvo table index*/
+
+    /* ***********************************************************/
+    /* * If the commarea sales office (logon sales office) is   **/
+    /* * '01', '02', or '03' on an apparel order, use sales     **/
+    /* * office '20'.  Do not change the xsocd in commarea.     **/
+    /* ***********************************************************/
+
+  OP0LW01.XSOCD = COMMAREA.XSOCD; /* init op0lw01.xsocd*/
+
+  if (OP0LM001.XGPCD == "03") /* if an apparel order*/
+    if (COMMAREA.XSOCD == "01" /* from sales office '01'*/
+     || COMMAREA.XSOCD == "02" /* or   sales office '02'*/
+     || COMMAREA.XSOCD == "03") /* or   sales office '03'*/
+      OP0LW01.XSOCD = "20"; /* use sales office '20'*/
+    end
+  end
+
+   /* ----------------------------------------------------------*/
+   /* equipment check*/
+   /* ----------------------------------------------------------*/
+
+  if (OP0LM001.XGPCD == "02")
+    OP0LS-CHECK-EQMT(); /* call to eu0100*/
+    if (WEU0100.WEU0100-EQUIP-PROD-FL == "Y")
+      OPWREC01.XPCCK = WEU0100.XPCCD;
+    else
+      OPWREC01.XPCCK = "  ";
+    end
+  else
+    OPWREC01.XPCCK = "  ";
+  end
+
+  OP0LW01.OP0LWFND = "N";
+  OP0LW01.XOTCD = " ";
+
+
+
+   /* **********TCS INCLUDE BEGIN***********/
+
+  set VXVO0001 empty;
+  set SQLCA empty;
+  VXVO0001.XOBCD = OP0LM001.XOBCD; /* valid base order type*/
+  VXVO0001.XDVCD = COMMAREA.XDVCD; /* valid division code*/
+  VXVO0001.XSOCD = OP0LW01.XSOCD; /* valid salesoffice code*/
+  VXVO0001.XGPCD = OP0LM001.XGPCD; /* valid gpc code*/
+  VXVO0001.XBCCD = SYCREC.XBCCD; /* valid brand code*/
+  VXVO0001.XPC-PROD-CAT-CD = OPWREC01.XPCCK; /* valid brand code*/
+  VXVO0001.XXXSTAT = "A"; /* active status code*/
+
+  call "VXVO0001" ("S4", SQLCA, VXVO0001) {isNoRefresh = yes, isExternal = yes}; /* open cursor to scan*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* bad open cursor*/
+    TA1REC.TA1TYPE = "DB2"; /* type of error*/
+    TA1REC.TA1LOC = "OP0LSOT"; /* program location*/
+    TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* program application*/
+    TA1REC.TA1PGMNO = "VXVO0001"; /* called program*/
+    TA1REC.TA1DBASE = "DCORP"; /* database name*/
+    TA1REC.TA1TBLVU = "VXVO0001"; /* table view name*/
+    TA1REC.TA1TBLKE = VXVO0001-KEY; /* table key*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diagnosis routine*/
+
+
+   /* *************************************/
+
+
+  else
+    call "VXVO0001" ("N4", SQLCA, VXVO0001) {isNoRefresh = yes, isExternal = yes};
+
+    if (SQLCA.VAGen_SQLCODE == 0)
+      OP0LW01.XOTCD = VXVO0001.XOTCD;
+      OP0LW01.OP0LWFND = "Y";
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        OP0LW01.OP0LWERR = "Y";
+      else
+        TA1REC.TA1TYPE = "DB2"; /* type of error*/
+        TA1REC.TA1LOC = "OP0LSOT"; /* program location*/
+        TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* program application*/
+        TA1REC.TA1PGMNO = "VXVO0001"; /* called program*/
+        TA1REC.TA1DBASE = "DCORP"; /* database name*/
+        TA1REC.TA1TBLVU = "VXVO0001"; /* table view name*/
+        TA1REC.TA1TBLKE = VXVO0001-KEY; /* table key*/
+
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diagnosis routine*/
+
+      end
+    end
+  end
+
+
+  call "VXVO0001" ("C4", SQLCA, VXVO0001) {isNoRefresh = yes, isExternal = yes}; /* close cursor*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1TYPE = "DB2"; /* type of error*/
+    TA1REC.TA1LOC = "OP0LSOT"; /* program location*/
+    TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* program application*/
+    TA1REC.TA1PGMNO = "VXVO0001"; /* called program*/
+    TA1REC.TA1DBASE = "DCORP"; /* database name*/
+    TA1REC.TA1TBLVU = "VXVO0001"; /* table view name*/
+    TA1REC.TA1TBLKE = VXVO0001-KEY; /* table key*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diagnosis routine*/
+
+  end
+
+   /* **********TCS INCLUDE END***********/
+
+  if (OP0LW01.OP0LWFND == "N")
+    OP0LW01.OP0LWERR = "Y";
+    converseLib.validationFailed(482); /* ot not valid for division/gpc/so*/
+  end
+
+   /* *************************************************************/
+end // end OP0LSOT
+
+// Set phone number
+Function OP0LSPH()
+       /* This statement group will set the phone number to the*/
+       /* default (determined in OP04) if the store number has*/
+       /* changed.*/
+
+  if (OP0LM001.KUCCOID == OP0LW01.OP0LWLCO
+   && OP0LM001.KUMSTRID == OP0LW01.OP0LWLST
+   && OP0LM001.XGPCD == OP0LW01.OP0LWLGP)
+     /* Next sentence - store has not changed.*/
+  else
+
+     /* The store number has changed.  Set phone to the default*/
+     /* phone number if the phone number on the map was not*/
+     /* changed; otherwise, leave it alone (the user probably*/
+     /* entered a new phone number with the customer number).*/
+
+    if (OP0LM001.XXXPHNA == OP0LW01.OP0LWLPA
+     && OP0LM001.XXXPHNP == OP0LW01.OP0LWLPP
+     && OP0LM001.XXXPHNN == OP0LW01.OP0LWLPN)
+      OP0LM001.XXXPHNA = OSEREC.XXXPHNA;
+      OP0LM001.XXXPHNP = OSEREC.XXXPHNP;
+      OP0LM001.XXXPHNN = OSEREC.XXXPHNN;
+    end
+  end
+end // end OP0LSPH
+
+// get size descript and display
+Function OP0LSR1()
+
+   /* map field subscript is set to 1 or 2 for first*/
+   /* or second style before you get here*/
+
+  TA1REC.TA1LOCAT[2] = "OP0LSR1";
+
+
+
+   /* read db2 for the product's description and sizes*/
+   /* this is a combined view of 3 records.*/
+
+  set SQLCA empty;
+
+   /* set up read key*/
+
+  SYCREC.XGPCD = OP0LM001.XGPCD; /* general product class*/
+  SYCREC.SY1STNBR = OP0LM001.SY1STNBR[OP0LWSB3]; /* style*/
+   /*  */
+   /* **** FORCE USER TO ENTER A CORRECT COLOR CODE, PER:C.BEAN 5/6/92*/
+   /* IF OP0LM001.SY2CLRID(OP0LWSB3) EQ ' ';*/
+   /* MOVE '00' TO SYCREC.SY2CLRID;*/
+   /*  */
+  SYCREC.SY2CLRID = OP0LM001.SY2CLRID[OP0LWSB3]; /* color*/
+  if (OP0LM001.XDMCD[OP0LWSB3] == " ")
+    SYCREC.XDMCD = "00";
+  else
+    SYCREC.XDMCD = OP0LM001.XDMCD[OP0LWSB3]; /* dimension*/
+  end
+
+
+   /* read db2 - dprod.vcolor02*/
+
+  call "IO0560" ("S ", SQLCA, SYCREC) {isNoRefresh = yes, isExternal = yes}; /* i/o mod for single select*/
+
+
+      /* check db2 return code*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good return*/
+    OP0LW01.XBCCD[OP0LWSB3] = SYCREC.XBCCD; /* Save brand for product*/
+    OP0LSLC(); /* check life cycle*/
+    if (OP0LW01.OP0LWERR == "N")
+      OP0LSHM(); /* check for hot model*/
+    end
+  else
+    OP0LW01.XBCCD[OP0LWSB3] = " "; /* Blank out brand for product*/
+    OP0LM001.SY1SSTNM[OP0LWSB3] = " ";
+    OP0LM001.SY2CLRAB[OP0LWSB3] = " ";
+    OP0LW01.OP0LWERR = "Y";
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Make sure that the brand code for both products matches.*/
+   /* This check is done only if both products exist and after*/
+   /* the brand codes for both products have been saved.*/
+   /* ------------------------------------------------------------*/
+  if (OP0LW01.OP0LWSB3 == 2
+   && OP0LW01.OP0LWERR == "N")
+    if (OP0LM001.SY1STNBR[1] != " "
+     && OP0LM001.SY1STNBR[2] != " ")
+      OP0LSBC(); /* Check if brands match*/
+    end
+  end
+
+
+   /* determine system order type to establish valid sizes*/
+
+  if (OP0LWERR == "N")
+    OP0LSOT(); /* determine system order type*/
+  end
+
+
+   /* determine if system order type allows reporting lost demand*/
+   /* save size type indicator ('i','d') for editing sizes later*/
+
+  if (OP0LWERR == "N") /* if have system order type*/
+    sysVar.arrayIndex = 1;
+    if (OP0LW01.XOTCD in XOTTBL.XOTCD from sysVar.arrayIndex
+     && XOTTBL.XOTDMRPF[sysVar.arrayIndex] == "Y") /* ot demand rept flag*/
+      OP0LW01.XOTSZIND = XOTTBL.XOTSZIND[sysVar.arrayIndex];
+    else
+      converseLib.validationFailed(517);
+                                   /* cannot report lost demand for this ot*/
+      OP0LW01.OP0LWERR = "Y";
+    end
+  end
+
+
+
+   /* get first and last valid size*/
+
+  OP0LW01.OP0LWFSZ = 0; /* init first size to zero*/
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LSFS(); /* get first valid size*/
+  end
+
+  if (OP0LW01.OP0LWFSZ > 0) /* if got a size*/
+     /* next sentence*/
+  else
+    OP0LW01.OP0LWERR = "Y";
+    set OP0LM001.SY1STNBR[OP0LWSB3] cursor, bold;
+    set OP0LM001.SY2CLRID[OP0LWSB3] bold;
+    set OP0LM001.XDMCD[OP0LWSB3] bold;
+    if (converseVar.validationMsgNum == 0) /* if not set before*/
+      converseLib.validationFailed(131); /* style/color not valid*/
+    end
+  end
+
+
+
+
+
+  OP0LW01.OP0LWLSZ = 0; /* init last size to zero*/
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LSLS(); /* get last valid size*/
+  end
+
+
+  if (OP0LW01.OP0LWLSZ > 0) /* if got a size*/
+     /* next sentence*/
+  else
+    OP0LW01.OP0LWERR = "Y";
+    set OP0LM001.SY1STNBR[OP0LWSB3] cursor, bold;
+    set OP0LM001.SY2CLRID[OP0LWSB3] bold;
+    set OP0LM001.XDMCD[OP0LWSB3] bold;
+    if (converseVar.validationMsgNum == 0) /* if not set prior*/
+      converseLib.validationFailed(131); /* style/color not valid*/
+    end
+  end
+
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LSSD(); /* get 40 size descriptions*/
+  end
+
+
+
+   /* if no errors and if displaying a style from availability,*/
+   /* display all valid sizes, otherwise edit first and last*/
+   /* size requested*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    if (OP0LW01.OP0LWAFL == "Y")
+      /* next sentence*/
+    else
+      OP0LSFL(); /* edit first and last size requested*/
+    end
+  end
+
+
+   /* if no errors, check to make sure there are no more*/
+   /* than 24 valid sizes. if there are more than 24 valid sizes*/
+   /* the largest sizes will not be displayed on the screen and*/
+   /* lost demand cannot be recorded for them.*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LW01.OP0LWCAL = OP0LW01.OP0LWLSZ - OP0LW01.OP0LWFSZ;
+    if (OP0LW01.OP0LWCAL > 23)
+      OP0LW01.OP0LWLSZ = OP0LW01.OP0LWFSZ + 23;
+                                   /* last size is 1st size + 23*/
+      OP0LW01.OP0LWWM = " ";
+      OP0LW01.OP0LWW1 = "MORE THAN 24 VALID S";
+      OP0LW01.OP0LWW2 = "IZES - LAST SIZES NO";
+      OP0LW01.OP0LWW3 = "T SHOWN             ";
+      COMMAREA.CAMSG = OP0LW01.OP0LWWM;
+      OP0LM001.CAMSG = COMMAREA.CAMSG;
+    end
+  end
+
+
+
+   /* if from availability, clear map of descriptions*/
+   /* and quantities that may have been displayed*/
+   /* from a previously entered style*/
+
+  if (COMMAREA.CAFRMSYS == "AV")
+    set OP0LM001.OP0LMSL1[1] skip, invisible; /* first size literal*/
+    set OP0LM001.OP0LMQL1[1] skip, invisible; /* first quantity literal*/
+    set OP0LM001.OP0LMSL1[2] skip, invisible; /* second size literal*/
+    set OP0LM001.OP0LMQL1[2] skip, invisible; /* second quantity literal*/
+    OP0LW01.OP0LWSB2 = 1; /* map size bucket subscript*/
+    while (OP0LW01.OP0LWSB2 <= 24)
+      OP0LM001.OP0LMSZ1[OP0LWSB2] = " ";
+      OP0LM001.OP0LMQT1[OP0LWSB2] = 0;
+      OP0LW01.OP0LWSB2 = OP0LW01.OP0LWSB2 + 1;
+    end
+  end
+
+   /* if no errors, move size descriptions to map*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LW01.OP0LWSB2 = 1; /* map size bucket subscript*/
+    OP0LW01.OP0LWSB1 = OP0LWFSZ; /* start with first valid size*/
+    if (OP0LWSB3 == 1) /* first style*/
+      set OP0LM001.OP0LMSL1[1] initialAttributes; /* first size literal*/
+      set OP0LM001.OP0LMQL1[1] initialAttributes; /* first quantity literal*/
+      while (OP0LWSB1 <= OP0LW01.OP0LWLSZ)
+        OP0LSVS(); /* determine if size is valid for order type*/
+        if (OP0LW01.OP0LWVSF == "Y") /* size is valid for xot*/
+          set OP0LM001.OP0LMSZ1[OP0LWSB2] initialAttributes; /* size description*/
+          set OP0LM001.OP0LMQT1[OP0LWSB2] initialAttributes; /* quantity*/
+          OP0LM001.OP0LMSZ1[OP0LWSB2] = SY4REC.SY4IDDSC[OP0LWSB1];
+          OP0LWSB2 = OP0LWSB2 + 1;
+        end
+        OP0LWSB1 = OP0LWSB1 + 1;
+      end
+      if (OP0LW01.OP0LWSB2 > 13)
+        set OP0LM001.OP0LMSL1[2] initialAttributes; /* second size literal*/
+        set OP0LM001.OP0LMQL1[2] initialAttributes; /* second quantity literal*/
+      end
+    else /* second style*/
+      set OP0LM001.OP0LMSL2[1] initialAttributes; /* first size literal*/
+      set OP0LM001.OP0LMQL2[1] initialAttributes; /* first quantity literal*/
+      while (OP0LWSB1 <= OP0LW01.OP0LWLSZ)
+        OP0LSVS(); /* determine if size is valid for order type*/
+        if (OP0LW01.OP0LWVSF == "Y") /* size is valid for xot*/
+          set OP0LM001.OP0LMSZ2[OP0LWSB2] initialAttributes; /* size description*/
+          set OP0LM001.OP0LMQT2[OP0LWSB2] initialAttributes; /* quantity*/
+          OP0LM001.OP0LMSZ2[OP0LWSB2] = SY4REC.SY4IDDSC[OP0LWSB1];
+          OP0LWSB2 = OP0LWSB2 + 1;
+        end
+        OP0LWSB1 = OP0LWSB1 + 1;
+      end
+      if (OP0LW01.OP0LWSB2 > 13)
+        set OP0LM001.OP0LMSL2[OP0LWSB3] initialAttributes; /* second size literal*/
+        set OP0LM001.OP0LMQL2[OP0LWSB3] initialAttributes; /* second quantity literal*/
+      end
+    end
+  end
+
+
+
+   /* if everything is okay, move style and*/
+   /* color descriptions to the map*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LM001.SY1SSTNM[OP0LWSB3] = SYCREC.SY1SSTNM;
+    OP0LM001.SY2CLRAB[OP0LWSB3] = SYCREC.SY2CLRAB;
+  else
+    OP0LM001.SY1SSTNM[OP0LWSB3] = " ";
+    OP0LM001.SY2CLRAB[OP0LWSB3] = " ";
+  end
+
+
+   /* *************************************************************/
+end // end OP0LSR1
+
+// reset map attributes
+Function OP0LSRA()
+
+
+
+   /* set all enterable map fields to normal so*/
+   /* corrected errors are not highlighted*/
+   /* note: some of these fields may be protected*/
+   /* and darkened later, depending on where we*/
+   /* are in processing*/
+
+   /* if coming from availability, gpc and*/
+   /* warehouse are always protected*/
+
+  if (COMMAREA.CAFRMSYS == "AV")
+    set OP0LM001.XGPCD skip;
+    set OP0LM001.XWHCD skip;
+     /* sizes cannot be entered if from availability*/
+    set OP0LM001.OP0LMFSZ[1] skip, invisible;
+    set OP0LM001.OP0LMLSZ[1] skip, invisible;
+  else
+
+    set OP0LM001.XGPCD normal;
+    set OP0LM001.XWHCD normal;
+     /* first style*/
+    if (OP0LM001.SY1STNBR[1] > " ")
+      set OP0LM001.SY1STNBR[1] normal;
+      set OP0LM001.SY2CLRID[1] normal;
+      set OP0LM001.XDMCD[1] normal;
+      if (OP0LWSFL == "N") /* sizes are not displayed*/
+         /* set these fields normal so 1st-last size can be entered*/
+        set OP0LM001.OP0LMFSZ[1] normal;
+        set OP0LM001.OP0LMLSZ[1] normal;
+      else
+        set OP0LM001.OP0LMQT1[1] normal; /* sizes displayed*/
+      end
+    end
+     /* second style*/
+    if (OP0LM001.SY1STNBR[2] > " ")
+      set OP0LM001.SY1STNBR[2] normal;
+      set OP0LM001.SY2CLRID[2] normal;
+      set OP0LM001.XDMCD[2] normal;
+      if (OP0LWSFL == "N") /* sizes not displayed*/
+         /* set these fields normal so 1st-last size can be entered*/
+        set OP0LM001.OP0LMFSZ[2] normal;
+        set OP0LM001.OP0LMLSZ[2] normal;
+      else
+        set OP0LM001.OP0LMQT2[1] normal;
+      end
+      set OP0LM001.XGPCD normal;
+      set OP0LM001.XWHCD normal;
+    end
+  end
+
+
+
+
+
+   /* drop date*/
+
+  set OP0LM001.OP0LMDDT normal;
+
+
+   /* if product is a hot model - waiting list*/
+   /* flag has been set to 'n'. protect it.*/
+
+  if (OP0LW01.OP0LWHMF == "Y")
+    set OP0LM001.OPTWAITF skip;
+  else
+    set OP0LM001.OPTWAITF normal;
+  end
+
+
+   /* phone number*/
+
+  set OP0LM001.XXXPHNN normal;
+  set OP0LM001.XXXPHNP normal;
+  set OP0LM001.XXXPHNA normal;
+
+
+   /* ordered by*/
+
+  set OP0LM001.OP1ORDBY normal;
+
+
+
+   /* need date*/
+
+  set OP0LM001.OP0LMNDT normal;
+
+
+   /* base order type*/
+
+  set OP0LM001.XOBCD normal;
+
+
+   /* customer*/
+
+  set OP0LM001.KUCCOID normal;
+  set OP0LM001.KUMSTRID normal;
+  set OP0LM001.XNXCD normal;
+
+
+
+   /* clear camsg field*/
+
+  OP0LM001.CAMSG = " ";
+
+
+   /* ************************************************************/
+end // end OP0LSRA
+
+// edit first style
+Function OP0LSS1()
+
+
+
+   /* edit first style*/
+
+
+
+
+  OP0LW01.OP0LWSB3 = 1; /* set subscript to first style*/
+
+  OP0LSR1(); /* get style descriptions and sizes*/
+
+
+
+   /* save first and last valid size for writing lost demand*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LW01.OP0LWFS1 = OP0LW01.OP0LWFSZ;
+    OP0LW01.OP0LWLS1 = OP0LW01.OP0LWLSZ;
+  end
+
+
+
+   /* if no errors, darken unused map fields*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    set OP0LM001.OP0LMFSL[1] skip, invisible; /* first size literal*/
+    set OP0LM001.OP0LMLSL[1] skip, invisible; /* last  size literal*/
+    set OP0LM001.OP0LMFSZ[1] skip, invisible; /* first size*/
+    set OP0LM001.OP0LMLSZ[1] skip, invisible; /* last  size*/
+  end
+
+  if (OP0LW01.OP0LWERR == "Y")
+    OP0LW01.OP0LWSB2 = 1; /* sizes not found*/
+  end
+  while (OP0LW01.OP0LWSB2 <= 24) /* sub is last map field with size*/
+    set OP0LM001.OP0LMQT1[OP0LWSB2] skip, invisible;
+    OP0LW01.OP0LWSB2 = OP0LW01.OP0LWSB2 + 1;
+  end
+
+
+
+   /* *************************************************************/
+end // end OP0LSS1
+
+// edit second style
+Function OP0LSS2()
+
+
+
+  TA1REC.TA1LOCAT[2] = "OP0LSS2";
+
+
+  OP0LW01.OP0LWSB3 = 2; /* set subscript to second style*/
+  OP0LSR1(); /* get style descriptions and sizes for second style*/
+
+
+
+   /* save first and last valid size for writing lost demand*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LW01.OP0LWFS2 = OP0LW01.OP0LWFSZ;
+    OP0LW01.OP0LWLS2 = OP0LW01.OP0LWLSZ;
+  end
+
+
+
+   /* if no errors, darken unused map fields*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    set OP0LM001.OP0LMFSL[2] skip, invisible; /* first size literal*/
+    set OP0LM001.OP0LMLSL[2] skip, invisible; /* last  size literal*/
+    set OP0LM001.OP0LMFSZ[2] skip, invisible; /* first size*/
+    set OP0LM001.OP0LMLSZ[2] skip, invisible; /* last  size*/
+  end
+
+  if (OP0LW01.OP0LWERR == "Y")
+    OP0LW01.OP0LWSB2 = 1; /* sizes not found*/
+  end
+  while (OP0LW01.OP0LWSB2 <= 24) /* sub is last map field with size*/
+    set OP0LM001.OP0LMQT2[OP0LWSB2] skip, invisible;
+    OP0LW01.OP0LWSB2 = OP0LW01.OP0LWSB2 + 1;
+  end
+
+
+   /* *************************************************************/
+end // end OP0LSS2
+
+// get 40 size descriptions
+Function OP0LSSD()
+
+
+   /* read db2 for the product's size scale code*/
+   /* this gets us a record with 40 size descriptions*/
+
+  TA1REC.TA1LOCAT[2] = "OP0LSSD"; /* error diag group name*/
+
+
+      /* set up read key*/
+
+  SY4REC.SY4SZSCL = SYCREC.SY4SZSCL; /* scale code*/
+
+
+      /* read db2 - dprod.vscale01*/
+
+  call "IO0040" ("S ", SQLCA, SY4REC) {isNoRefresh = yes, isExternal = yes}; /* i/o mod for single select*/
+
+
+      /* check db2 return code*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good return*/
+     /* next sentence*/
+  else
+    OP0LW01.OP0LWERR = "Y";
+    TA1REC.TA1FUNC = "POST";
+    TA1REC.TA1LOCAT[3] = "IO0040 ";
+    TA1REC.TA1LOCAT[4] = " ";
+    call "TA0020" (TA1REC, ERRSQLCA) {isNoRefresh = yes, isExternal = yes};
+
+
+  end
+
+
+
+
+   /* *************************************************************/
+end // end OP0LSSD
+
+// validate size with xot and xdv
+Function OP0LSVS()
+
+
+
+   /* ----------------------------------------------------*/
+   /* if flag = a (allowed) and the product division equals one*/
+   /* of the order type's allowable divisions, it's ok*/
+   /* if flag = d (disallowed) and the product division equals*/
+   /* one of the order type's disallowable divisions, it's not ok*/
+
+   /* start with the assumption that the size is not valid*/
+   /* ----------------------------------------------------*/
+
+  OP0LW01.OP0LWVSF = "N";
+
+  if (OP0LW01.XOTCD in XOTTBL.XOTCD)
+    if (XOTTBL.XOTALWDV[sysVar.arrayIndex] == "A")
+      if (SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD1[sysVar.arrayIndex]
+       || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD2[sysVar.arrayIndex]
+       || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD3[sysVar.arrayIndex]
+       || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD4[sysVar.arrayIndex]
+       || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD5[sysVar.arrayIndex])
+        OP0LW01.OP0LWVSF = "Y"; /* size is valid*/
+      end
+    end
+    if (XOTTBL.XOTALWDV[sysVar.arrayIndex] == "D")
+      if (SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD1[sysVar.arrayIndex]
+       || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD2[sysVar.arrayIndex]
+       || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD3[sysVar.arrayIndex]
+       || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD4[sysVar.arrayIndex]
+       || SYCREC.XDVCD[OP0LWSB1] == XOTTBL.XDVCD5[sysVar.arrayIndex])
+         /* size is not valid*/
+      else
+        OP0LW01.OP0LWVSF = "Y"; /* size is valid*/
+      end
+    end
+       /* check size fringe gut indicators*/
+    if (XOTTBL.XOTXTRAS[sysVar.arrayIndex] == "Y") /* if order type allows extras*/
+       /* next sentence*/
+    else
+      if (SYCREC.SY3FRGUT[OP0LWSB1] == "X") /* if size is extra*/
+        OP0LW01.OP0LWVSF = "N"; /* size is not valid*/
+      end
+    end
+  end
+
+
+  if (SYCREC.XDVCD[OP0LWSB1] == " ")
+    OP0LW01.OP0LWVSF = "N"; /* size is not valid*/
+  end
+
+
+end // end OP0LSVS
+
+// build main body of optrec
+Function OP0LSW1()
+   /* ************************************************************/
+   /* move lost demand data to optrec (except style and qtys)  **/
+   /* ************************************************************/
+
+  set OPTREC empty;
+
+   /* if the commarea sales office (logon sales office) is '01',*/
+   /* '02', or '03' on an apparel order, use sales office '20'.*/
+   /* Do not change the commarea.xsocd.*/
+
+  OPTREC.XSOCD = COMMAREA.XSOCD; /* init optrec.xsocd*/
+
+  if (OP0LM001.XGPCD == "03") /* if an apparel order*/
+    if (COMMAREA.XSOCD == "01" /* if sales office = '01'*/
+     || COMMAREA.XSOCD == "02" /* or sales office = '02'*/
+     || COMMAREA.XSOCD == "03") /* or sales office = '03'*/
+      OPTREC.XSOCD = "20"; /* use sales office '20'*/
+    end
+  end
+
+  OPTREC.OPTDMND = "XD";
+  OPTREC.XDVCD = COMMAREA.XDVCD;
+  OPTREC.XOTCD = OP0LW01.XOTCD;
+  OPTREC.XWHCD = OSEREC.XWHCD;
+  OPTREC.OP1PARTN = " ";
+  OPTREC.OP1CUOID = 0;
+
+   /* format need date onto db2 form*/
+
+  OP0LW01.OP0LWFDT = OSEREC.OSECUNDT;
+  XX0XW01.XX0XWYY = OP0LW01.OP0LWFYY;
+  XX0XW01.XX0XWMM = OP0LW01.OP0LWFMM;
+  XX0XW01.XX0XWDD = OP0LW01.OP0LWFDD;
+  OPTREC.OP1CUNDT = XX0XW01.XX0XWDAT;
+
+  OPTREC.KUCCOID = OSEREC.KUCCOID;
+  OPTREC.KUMSTRID = OSEREC.KUMSTRID;
+  OPTREC.XNXCD = OSEREC.XNXCD;
+  OPTREC.XGPCD = OSEREC.XGPCD;
+  OPTREC.OP1TBREP = OSEREC.OP1TBREP;
+  OPTREC.OP1ORDBY = OSEREC.OP1ORDBY;
+
+   /* Phone numbers in the edit record are the defaults from*/
+   /* the store record.  The phone numbers from the map are*/
+   /* the ones to write to lost demand.*/
+
+  OPTREC.XXXPHNA = OP0LM001.XXXPHNA;
+  OPTREC.XXXPHNP = OP0LM001.XXXPHNP;
+  OPTREC.XXXPHNN = OP0LM001.XXXPHNN;
+  if (OPTREC.XXXPHN == "0000000000") /* if no phn nbr, default to blanks*/
+    OPTREC.XXXPHN = " ";
+  end
+
+  OPTREC.OPTWAITF = OSEREC.OPTWAITF;
+
+   /* format drop date onto db2 form*/
+
+  OP0LW01.OP0LWFDT = OSEREC.OSEDRPDT;
+  XX0XW01.XX0XWYY = OP0LW01.OP0LWFYY;
+  XX0XW01.XX0XWMM = OP0LW01.OP0LWFMM;
+  XX0XW01.XX0XWDD = OP0LW01.OP0LWFDD;
+  OPTREC.OPTDRPDT = XX0XW01.XX0XWDAT;
+
+
+   /* get date and time*/
+
+  XX0XS01();
+
+  OPTREC.ZZZSDT = XX0XW01.XX0XWDAT;
+  OPTREC.ZZZSTM = XX0XW01.XX0XWTIM;
+
+   /* get the numeric user id from dcust.vsvrep01*/
+
+  KUYREC.XXXUSRID = COMMAREA.CAUSERID; /* load key*/
+  call "IO0550" ("SA", SQLCA, KUYREC) {isNoRefresh = yes, isExternal = yes};
+
+      /* check db2 return code*/
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* check for good rc*/
+   || SQLCA.VAGen_SQLCODE == 100) /* check for notfnd rc*/
+     /* next sentence*/
+  else
+    TA1REC.TA1FUNC = "POST";
+    TA1REC.TA1DBASE = "DCUST   "; /* data base name*/
+    TA1REC.TA1TBLVU = "VSVREP01"; /* table view*/
+    TA1REC.TA1TBLKE = COMMAREA.CAUSERID; /* key value*/
+    TA1REC.TA1LOCAT[3] = "OP0LSW1 "; /* statement group*/
+    TA1REC.TA1LOCAT[4] = "IO0550  "; /* i/o mod name*/
+    move SQLCA to ERRSQLCA withV60Compat;
+    call "TA0020" (TA1REC, ERRSQLCA) {isNoRefresh = yes, isExternal = yes};
+  end
+
+
+      /* if not found or not active then error*/
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* check for found  rc*/
+   && KUYREC.XXXSTAT == "A")   /* check for active id*/
+    OPTREC.OP1TBREP = KUYREC.KUYSVRID;
+  else
+    converseLib.validationFailed(537); /* service rep not eligible to enter ld*/
+    OP0LW01.OP0LWERR = "Y";
+  end
+end // end OP0LSW1
+
+// move style-1 lost dmd qtys
+Function OP0LSW2()
+   /* ************************************************************/
+   /* determine the valid sizes for the first style entered    **/
+   /* on the lost demand screen and move the qtys to optrec.   **/
+   /* ************************************************************/
+
+  OP0LW01.SY1STNBR = OP0LM001.SY1STNBR[1]; /* hold style-1 in w-s*/
+
+  OP0LSW3(); /* call io0120 to read dprod.vstyle01*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LSW4(); /* call io0040 to read dprod.vscale01*/
+  end
+
+   /* Move style-1 qtys to correct OPTREC size buckets...*/
+
+   /* The size buckets which show on a map for a style may*/
+   /* not match one-for-one with the size buckets for the*/
+   /* same style's size-scale record (sy4rec).  To assure*/
+   /* the lost demand qty is placed in the correct size bucket*/
+   /* in OPTREC, compare the MAP size description(sub) to the*/
+   /* SY4REC size description(sub).  If the size descriptions*/
+   /* match, the qty from the MAP size bucket can be moved to*/
+   /* the OPTREC size bucket.  (OPTREC size buckets match the*/
+   /* SY4REC size buckets).*/
+
+   /* OP0LW01.OP0LWSB2 = subscript for MAP size buckets*/
+   /* OP0LW01.OP0LWSB1 = subscript for SY4REC/OPTREC size buckets*/
+   /* OP0LW01.OP0LWFS1 = 1st  SY4REC size bucket used - 1st style*/
+   /* OP0LW01.OP0LWLS1 = last SY4REC size bucket used - 1st style*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    OPTREC.SY1STNBR = OP0LM001.SY1STNBR[1];
+    OPTREC.SY2CLRID = OP0LM001.SY2CLRID[1];
+    OPTREC.XDMCD = OP0LM001.XDMCD[1];
+    OP0LW01.OP0LWSB2 = 1; /* subscript for MAP size buckets*/
+    OP0LW01.OP0LWSB1 = OP0LW01.OP0LWFS1; /* sub for SY4REC size buckets*/
+    while (OP0LWSB1 <= OP0LW01.OP0LWLS1)
+                                   /* SY4REC size bucket <= last size*/
+      if (OP0LM001.OP0LMSZ1[OP0LWSB2] == SY4REC.SY4IDDSC[OP0LWSB1])
+                                   /* sizes =*/
+        OPTREC.OPTDMDQT[OP0LWSB1] = OSEREC.OP0LMQT1[OP0LWSB2];
+        OP0LW01.OP0LWSB2 = OP0LW01.OP0LWSB2 + 1; /* goto next size on MAP*/
+      end
+      OP0LW01.OP0LWSB1 = OP0LW01.OP0LWSB1 + 1; /* goto next size in SY4REC*/
+    end
+  end
+end // end OP0LSW2
+
+// call io0120 for dprod.vstyle01
+Function OP0LSW3()
+   /* *************************************************************/
+     /* call io0120 to read dprod.vstyle01 (sy1rec)             **/
+   /* *************************************************************/
+
+  set SY1REC empty;
+  set SQLCA empty;
+
+  SY1REC.XGPCD = OP0LM001.XGPCD; /* gpc-code*/
+  SY1REC.SY1STNBR = OP0LW01.SY1STNBR; /* style-nbr*/
+
+  call "IO0120" ("S ", SQLCA, SY1REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* good return*/
+     /* next sentence*/
+  else
+    OP0LW01.OP0LWERR = "Y";
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DPROD   "; /* database*/
+    TA1REC.TA1TBLVU = "VSTYLE01"; /* table view of database*/
+    OP0LW01.OP0LWLK1 = OP0LM001.XGPCD;
+    OP0LW01.OP0LWLK2 = OP0LW01.SY1STNBR;
+    TA1TBLKE = OP0LW01.OP0LWLKY; /* key value*/
+    TA1REC.TA1LOCAT[1] = "S       "; /* call function*/
+    TA1REC.TA1LOCAT[2] = "OP0ISW3 "; /* statement group*/
+    TA1REC.TA1LOCAT[3] = "IO0120  "; /* i/o mod*/
+    TA1REC.TA1LOCAT[4] = "        ";
+    call "TA0020" (TA1REC, ERRSQLCA) {isNoRefresh = yes, isExternal = yes};
+  end
+end // end OP0LSW3
+
+// call io0040 for dprod.vscale01
+Function OP0LSW4()
+   /* *************************************************************/
+     /* call io0040 to read dprod.vscale01 (sy4rec)             **/
+   /* *************************************************************/
+
+  set SY4REC empty;
+  set SQLCA empty;
+
+  SY4REC.SY4SZSCL = SY1REC.SY4SZSCL; /* size-scale-code*/
+
+  call "IO0040" ("S ", SQLCA, SY4REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* good return*/
+     /* next sentence*/
+  else
+    OP0LW01.OP0LWERR = "Y";
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DPROD   "; /* database*/
+    TA1REC.TA1TBLVU = "VSCALE01"; /* table view of database*/
+    TA1TBLKE = SY1REC.SY4SZSCL; /* key value*/
+    TA1REC.TA1LOCAT[1] = "S       "; /* call function*/
+    TA1REC.TA1LOCAT[2] = "OP0LSW4 "; /* statement group*/
+    TA1REC.TA1LOCAT[3] = "IO0040  "; /* i/o mod*/
+    TA1REC.TA1LOCAT[4] = "        ";
+    call "TA0020" (TA1REC, ERRSQLCA) {isNoRefresh = yes, isExternal = yes};
+  end
+end // end OP0LSW4
+
+// call io3070 to add lost demand
+Function OP0LSW5()
+   /* ************************************************************/
+   /* call io3070 to add lost demand to dorder.vlost001        **/
+   /* ************************************************************/
+
+  set SQLCA empty;
+
+  call "IO3070" ("A ", SQLCA, OPTREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* good return, clear*/
+     /* next sentence*/
+  else
+    OP0LW01.OP0LWERR = "Y";
+    converseLib.validationFailed(536); /* lost demand not recorded*/
+    OP0LSE1(); /* load ta1rec to post error*/
+  end
+
+end // end OP0LSW5
+
+// move style-2 qtys to optrec
+Function OP0LSW6()
+   /* **********************************************************/
+   /* determine the valid sizes for the second style entered **/
+   /* on the lost demand screen and move the qtys to optrec  **/
+   /* **********************************************************/
+
+
+   /* Move the size qtys for the 2nd style entered...*/
+
+   /* The size buckets which show on a map for a style may*/
+   /* not match one-for-one with the size buckets for the*/
+   /* same style's size-scale record (SY4REC).  To assure*/
+   /* the lost demand qty is placed in the correct size bucket*/
+   /* in OPTREC, compare the MAP size description(sub) to the*/
+   /* SY4REC size description(sub).  If the size descriptions*/
+   /* match, the qty from the MAP size bucket can be moved to*/
+   /* the OPTREC size bucket.  (OPTREC size buckets match the*/
+   /* SY4REC size buckets).*/
+
+   /* OP0LW01.OP0LWSB2 = subscript for MAP size buckets*/
+   /* OP0LW01.OP0LWSB1 = subscript for SY4REC/OPTREC size buckets*/
+   /* OP0LW01.OP0LWFS2 = 1st  SY4REC size bucket used - 2nd style*/
+   /* OP0LW01.OP0LWLS2 = last SY4REC size bucket used - 2nd style*/
+
+
+  OP0LW01.SY1STNBR = OP0LM001.SY1STNBR[2]; /* move style to w-s*/
+
+  OP0LSW3(); /* call io0120 for dprod.vstyle01*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LSW4(); /* call io0040 for dprod.vscale01*/
+  end
+
+   /* build the lost demand quantities for the*/
+   /* second style entered*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    OPTREC.SY1STNBR = OP0LM001.SY1STNBR[2];
+    OPTREC.SY2CLRID = OP0LM001.SY2CLRID[2];
+    OPTREC.XDMCD = OP0LM001.XDMCD[2];
+    OP0LW01.OP0LWSB2 = 1; /* subscript for MAP size buckets*/
+    OP0LW01.OP0LWSB1 = OP0LW01.OP0LWFS2; /* sub for SY4REC size buckets*/
+    while (OP0LWSB1 <= OP0LW01.OP0LWLS2)
+                                   /* SY4REC size bucket <= last size*/
+      if (OP0LM001.OP0LMSZ2[OP0LWSB2] == SY4REC.SY4IDDSC[OP0LWSB1])
+                                   /* sizes =*/
+        OPTREC.OPTDMDQT[OP0LWSB1] = OSEREC.OP0LMQT2[OP0LWSB2];
+        OP0LW01.OP0LWSB2 = OP0LW01.OP0LWSB2 + 1; /* goto next size on MAP*/
+      end
+      OP0LW01.OP0LWSB1 = OP0LW01.OP0LWSB1 + 1; /* goto next size in SY4REC*/
+    end
+  end
+end // end OP0LSW6
+
+// write lost demand
+Function OP0LSWR()
+   /* ******************************************************/
+   /* add lost demand records to dorder.vlost001         **/
+   /* ******************************************************/
+
+  OP0LSW1(); /* build main body of optrec*/
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LSW2(); /* move style-1 qtys to optrec*/
+  end
+
+  if (OP0LW01.OP0LWERR == "N")
+    OP0LSW5(); /* call io3070 to add lost demand*/
+  end
+
+  if (OP0LW01.OP0LWERR == "N") /* if 1st lost demand added okay*/
+    if (OP0LM001.SY1STNBR[2] != " ") /* if 2nd style entered*/
+      OP0LSW1(); /* build main body of optrec*/
+      OP0LSW6(); /* move style-2 qtys to optrec*/
+      if (OP0LW01.OP0LWERR == "N")
+        OP0LSW5(); /* call io3070 to add lost demand*/
+      end
+    end
+  end
+end // end OP0LSWR
+
+// set error messages
+Function OP0LSYM()
+
+   /* all map fields are checked for errors from the bottom of*/
+   /* the map to the top. error messages have been passed from*/
+   /* the edit program, and overlay one another as they are moved*/
+   /* to ezemno. when finished, all fields in error will be*/
+   /* bright and the cursor will be on the first field in error.*/
+   /* the error message will be for the first field in error.*/
+
+
+   /* errors in quantity fields*/
+
+
+
+  if (OP0LM001.SY1STNBR[2] > " ") /* if second style entered*/
+    if (OSEREC.OSEQT2FL == "Y") /* quantity of second style has error*/
+      if (OSEREC.OSEQTY2M == 9999)
+        converseLib.validationFailed();
+      else
+        converseLib.validationFailed(OSEREC.OSEQTY2M);
+      end /* move in message for quantity error*/
+      set OP0LM001.OP0LMQT2[1] cursor, bold;
+    end
+  end
+
+
+  if (OP0LM001.SY1STNBR[1] > " ") /* if first style entered*/
+    if (OSEREC.OSEQT1FL == "Y") /* quantity of first style has error*/
+      if (OSEREC.OSEQTY1M == 9999)
+        converseLib.validationFailed();
+      else
+        converseLib.validationFailed(OSEREC.OSEQTY1M);
+      end /* move in message for quantity error*/
+      set OP0LM001.OP0LMQT1[1] cursor, bold;
+    end
+  end
+
+
+
+   /* error in drop date*/
+
+  if (OSEREC.OSEDRPDM != 0)
+    if (OSEREC.OSEDRPDM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSEDRPDM);
+    end
+    set OP0LM001.OP0LMDDT cursor, bold;
+  end
+
+
+
+   /* error in add to waiting list flag*/
+
+  if (OSEREC.OSEWAITM != 0)
+    if (OSEREC.OSEWAITM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSEWAITM);
+    end
+    set OP0LM001.OPTWAITF cursor, bold;
+  end
+
+
+
+
+
+   /* error phone number*/
+
+  if (OSEREC.OSEPHNNM != 0)
+    if (OSEREC.OSEPHNNM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSEPHNNM);
+    end
+    set OP0LM001.XXXPHNN cursor, bold;
+  end
+
+  if (OSEREC.OSEPHNPM != 0)
+    if (OSEREC.OSEPHNPM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSEPHNPM);
+    end
+    set OP0LM001.XXXPHNP cursor, bold;
+  end
+
+  if (OSEREC.OSEPHNAM != 0)
+    if (OSEREC.OSEPHNAM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSEPHNAM);
+    end
+    set OP0LM001.XXXPHNA cursor, bold;
+  end
+
+
+
+   /* error in ordered by*/
+
+  if (OSEREC.OSEORDBM != 0)
+    if (OSEREC.OSEORDBM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSEORDBM);
+    end
+    set OP0LM001.OP1ORDBY cursor, bold;
+  end
+
+
+
+   /* error in warehouse*/
+
+  if (OSEREC.OSEXWHSM != 0)
+    if (OSEREC.OSEXWHSM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSEXWHSM);
+    end
+    set OP0LM001.XWHCD cursor, bold;
+  end
+
+
+
+   /* error in need date*/
+
+  if (OSEREC.OSECUNDM != 0)
+    if (OSEREC.OSECUNDM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSECUNDM);
+    end
+    set OP0LM001.OP0LMNDT cursor, bold;
+  end
+
+
+
+   /* error in base order type*/
+
+  if (OSEREC.OSEXOBM != 0)
+    if (OSEREC.OSEXOBM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSEXOBM);
+    end
+    set OP0LM001.XOBCD cursor, bold;
+  end
+
+
+
+
+   /* error in customer*/
+
+  if (OSEREC.OSECOIDM != 0)
+    if (OSEREC.OSECOIDM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSECOIDM);
+    end
+    set OP0LM001.KUCCOID cursor, bold;
+    set OP0LM001.KUMSTRID bold;
+    set OP0LM001.XNXCD bold;
+    if (OSEREC.OSECOIDM == 588) /* Product/customer brands don't match*/
+      if (OSEREC.OSETASK == "02") /* Screen uses both product fields*/
+        set OP0LM001.SY1STNBR[1] bold;
+        set OP0LM001.SY1STNBR[2] bold;
+      else
+        set OP0LM001.SY1STNBR[1] bold;
+      end
+    end
+  end
+
+
+
+   /* error in gpc code*/
+
+  if (OSEREC.OSEXGPM != 0)
+    if (OSEREC.OSEXGPM == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OSEREC.OSEXGPM);
+    end
+    set OP0LM001.XGPCD cursor, bold;
+  end
+
+   /* ************************************************************/
+end // end OP0LSYM
+
+// load ta1rec with ta2rec
+Function OP0LSYT()
+
+   /* loads ta1rec for post ta0040 abends*/
+
+
+  TA1REC.TA1FUNC = "POST";
+  TA1REC.TA1LOCAT[3] = "TA0040 ";
+  TA1REC.TA1LOCAT[4] = TA2RTNCD;
+  move SQLCA to ERRSQLCA withV60Compat;
+  call "TA0020" (TA1REC, ERRSQLCA) {isNoRefresh = yes, isExternal = yes};
+
+
+end // end OP0LSYT
+
+//*** RECORD=OP0LW01 ****
+// working storage
+// Maintenance history:
+// 05/24/90 BWATSO  Added xbccd.
+// ***********************
+Record OP0LW01 type basicRecord
+  10 OP0LWCFL OP0LWCFL ; 
+  10 OP0LWSFL OP0LWSFL ; 
+  10 OP0LWFND OP0LWFND ; 
+  10 OP0LWHMF OP0LWHMF ; 
+  10 OP0LWERR OP0LWERR ; 
+  10 OP0LWVSF OP0LWVSF ; 
+  10 OP0LWAFL OP0LWAFL ; 
+  10 OP0LWSB1 OP0LWSB1 ; 
+  10 OP0LWSB2 OP0LWSB2 ; 
+  10 OP0LWSB3 OP0LWSB3 ; 
+  10 OP0LWCAL OP0LWCAL ; 
+  10 XOTCD XOTCD ; 
+  10 OP0LWFDT OP0LWFDT ; 
+    15 OP0LWFMM OP0LWFMM ; 
+    15 OP0LWFDD OP0LWFDD ; 
+    15 OP0LWFYY OP0LWFYY ; 
+  10 OP0LWFSZ OP0LWFSZ ; 
+  10 OP0LWLSZ OP0LWLSZ ; 
+  10 OP0LWFS1 OP0LWFS1 ; 
+  10 OP0LWLS1 OP0LWLS1 ; 
+  10 OP0LWFS2 OP0LWFS2 ; 
+  10 OP0LWLS2 OP0LWLS2 ; 
+  10 XOBDESC XOBDESC ; 
+  10 XGPABRV XGPABRV ; 
+  10 XWHSABRV XWHSABRV ; 
+  10 XOTSZIND XOTSZIND ; 
+  10 OP0LWSRC OP0LWSRC ; 
+    15 OP0LWSRN OP0LWSRN ; 
+      20 OP0LWSRA OP0LWSRA [5] ; 
+  10 OP0LWSFS OP0LWSFS ; 
+  10 OP0LWSLS OP0LWSLS ; 
+  10 OP0LWSZM OP0LWSZM ; 
+    15 OP0LWSZ1 OP0LWSZ1 ; 
+    15 OP0LWSZ2 OP0LWSZ2 ; 
+    15 OP0LWSZ3 OP0LWSZ3 ; 
+    15 OP0LWSZ4 OP0LWSZ4 ; 
+    15 * char(42) ; 
+  10 OP0LWWM OP0LWWM ; 
+    15 OP0LWW1 OP0LWW1 ; 
+    15 OP0LWW2 OP0LWW2 ; 
+    15 OP0LWW3 OP0LWW3 ; 
+    15 OP0LWW4 OP0LWW4 ; 
+  10 OP0LWKEY OP0LWKEY ; 
+    15 OP0LWKY1 OP0LWKY1 ; 
+    15 OP0LWKY2 OP0LWKY2 ; 
+    15 OP0LWKY3 OP0LWKY3 ; 
+    15 OP0LWKY4 OP0LWKY4 ; 
+    15 OP0LWKY5 OP0LWKY5 ; 
+    15 OP0LWKY6 OP0LWKY6 ; 
+    15 OP0LWKY7 OP0LWKY7 ; 
+  10 OP0LWLCO OP0LWLCO ; 
+  10 OP0LWLST OP0LWLST ; 
+  10 OP0LWLGP OP0LWLGP ; 
+  10 OP0LWLPA OP0LWLPA ; 
+  10 OP0LWLPP OP0LWLPP ; 
+  10 OP0LWLPN OP0LWLPN ; 
+  10 XBCCD XBCCD [2] ; 
+  10 XSOCD XSOCD ; 
+  10 SY1STNBR SY1STNBR ; 
+  10 OP0LWLKY OP0LWLKY ; 
+    15 OP0LWLK1 OP0LWLK1 ; 
+    15 OP0LWLK2 OP0LWLK2 ; 
+end // end OP0LW01
+
+// display style from avail
+DataItem OP0LWAFL char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// size calculation work field
+DataItem OP0LWCAL num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// converse flag
+DataItem OP0LWCFL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error flag
+DataItem OP0LWERR char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// format date day
+DataItem OP0LWFDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format date
+DataItem OP0LWFDT num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format date month
+DataItem OP0LWFMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// found flag
+DataItem OP0LWFND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// first size - 1st style
+DataItem OP0LWFS1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// first size - 2nd style
+DataItem OP0LWFS2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// first size
+DataItem OP0LWFSZ num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format date year
+DataItem OP0LWFYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hot model flag
+DataItem OP0LWHMF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// lost demand error key
+DataItem OP0LWKEY char(21)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// lost demand type code
+DataItem OP0LWKY1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// division code
+DataItem OP0LWKY2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// sales office code
+DataItem OP0LWKY3 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// order type
+DataItem OP0LWKY4 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// warehouse code
+DataItem OP0LWKY5 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// order part char
+DataItem OP0LWKY6 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// customer order id
+DataItem OP0LWKY7 num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Last customer id
+DataItem OP0LWLCO int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Last GPC
+DataItem OP0LWLGP char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// first part of key
+DataItem OP0LWLK1 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// second part of key
+DataItem OP0LWLK2 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// key to db lookup
+DataItem OP0LWLKY char(16)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Last area code
+DataItem OP0LWLPA num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Last last 4 digits
+DataItem OP0LWLPN num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Last prefix
+DataItem OP0LWLPP num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// last size - 1st style
+DataItem OP0LWLS1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// last size - 2nd style
+DataItem OP0LWLS2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Last store id
+DataItem OP0LWLST smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// last size
+DataItem OP0LWLSZ num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws subscript
+DataItem OP0LWSB1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws subscript- map size
+DataItem OP0LWSB2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ws subscript- style array
+DataItem OP0LWSB3 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// sizes displayed flag
+DataItem OP0LWSFL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// save first size entered
+DataItem OP0LWSFS num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// save last size entered
+DataItem OP0LWSLS num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// size redefine char array
+DataItem OP0LWSRA char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// size redefine char format
+DataItem OP0LWSRC char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// size redefine num format
+DataItem OP0LWSRN num(5)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// size message part 1
+DataItem OP0LWSZ1 char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// size message first size
+DataItem OP0LWSZ2 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// size message part 3
+DataItem OP0LWSZ3 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// size message last size
+DataItem OP0LWSZ4 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// size error message
+DataItem OP0LWSZM char(78)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// valid size for xot flag
+DataItem OP0LWVSF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// commarea message -1
+DataItem OP0LWW1 char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// commarea message -2
+DataItem OP0LWW2 char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// commarea message -3
+DataItem OP0LWW3 char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// commarea message -4
+DataItem OP0LWW4 char(18)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// commarea message msg
+DataItem OP0LWWM char(78)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

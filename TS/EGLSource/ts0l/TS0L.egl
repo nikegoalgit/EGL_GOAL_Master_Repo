@@ -1,0 +1,3275 @@
+package ts0l;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import dg.common.*;
+import fy.common.*;
+import in1.common.*;
+import ku.common.*;
+import ni.common.*;
+import ob.common.*;
+import op.common.*;
+import pc.common.*;
+import pv.common.*;
+import sm.common.*;
+import sp.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+import vv.common.*;
+//*** PROGRAM=TS0L ****
+// This program allows users to pull up shipment information
+// sorted in store, po, and style sequence for a specific
+// Customer within an ETA date range.  Store can also be
+// entered to further specify the number of shipment rows in
+// this inquiry.
+// 
+// control    date    name    description of change
+// -------  -------- ------  ----------------------------------
+//          10/03/88 CEPPLE  New application.
+//          05/29/90 CEPPLE  Set packing list on screen to
+//                           p/l status.
+//                           Fix map to autoskip to next field.
+//                           Stop suppression of list data
+//                           past status.
+// ts#012   08/06/90 CEPPLE  User can now specify gpc in header
+//                           selection criteria.
+// fix      08/16/90 CEPPLE  Clear TSWREC from application and
+//                           inquiry flag in initialization.
+// TS#015   11/15/90 KSTOKK  Increase allowable ETA date range
+//                           from 31 to 95 days.
+// TS#135   12/03/90 KSTOKK  Increase current temporary storage
+//                           page number from two to four
+//                           bytes.
+// TS#146   12/17/90 DHUFFM  Fix to carry information to ts0j.
+// TS#000   02/13/91 KSTOKK  Increase TS0LWLIN length from 79
+//                           to 83.
+// TS#000   03/05/91 DHUFFM  Increase TS0LWLEN for BOL increase
+// TS#212   10/17/91 DHUFFM  Chg to right/left inquiry screens.
+// TS#233   12/13/91 SFORD   Added Customer No. to screen
+//                           to satisfy b-grade requirements
+// TS#242   03/16/92 KSTOKK  Fix to allow fast path from map 2
+//                           and give msg if no data available.
+// TS#241   03/24/92 KSTOKK  Fix to require either SO nbr, cust
+//                           nbr, or 1st 3 chars of cust xref
+//                           to be entered in heading.
+// TS#246   10/05/92 SFORD   Fix 'S' and pop-up window
+//                           Problem on map 2
+// TS#260   12/07/92 TGIEBE  Disabled access to application
+//                           TS0J when PF12 pressed and no
+//                           shipment detail info selected.
+// TS#000   04/19/95 SLEWIS  CHG SO NUMBER LENGTH
+// TS#000   11/08/96 JCARL1  Remove alarm from error msgs.
+// *********************
+Program TS0L type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "TS00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  OP1REC OP1REC; // record
+  PC2REC PC2REC; // record
+  PC3REC PC3REC; // record
+  PCYREC PCYREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  TS0LW01 TS0LW01; // record
+  TS0LW02 TS0LW02; // record
+  TS7REC TS7REC; // record
+  TSNREC TSNREC; // record
+  TSWREC TSWREC; // record
+  XX0XW01 XX0XW01; // record
+  XX0XW02 XX0XW02; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use PC0CTBL {deleteAfterUse = yes}; // table
+  use YSSTBL {deleteAfterUse = yes}; // table
+  use XGPTBL {deleteAfterUse = yes}; // table
+  use TS0LM.TS0LM001,  // forms
+      TS0LM.TS0LM002, 
+      TS0LM.XX0XM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPTS001: XPTS001();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and map output areas.*/
+     /* Flow to converse the Shipment Inquiry by Customer.*/
+     /* ------------------------------------------------------------*/
+
+    set TSNREC empty; /* Initialize records*/
+    set TS7REC empty;
+    set PC2REC empty;
+    set TA1REC empty;
+    set TA2REC empty;
+    set TA5REC empty;
+    set XX0XW01 empty;
+    set ERRSQLCA empty;
+    set SQLCA empty;
+    set TS0LW01 empty; /* Initialize working storage*/
+    set TS0LW02 empty; /* Initialize temporary storage*/
+    set TS0LM001 initial; /* Initialize map output area*/
+
+    TS0LW01.TS0LWSWM = "1"; /* Set map 1*/
+    TS0LW01.TS0LWSWR = "N"; /* Indicate request for data*/
+    TS0LW01.TS0LWMXP = 10; /* set max number of passed shipment #s*/
+
+    TSWREC.TSWFRAPP = " "; /* Clear from application*/
+    TSWREC.TSWINQFL = " "; /* Clear inquiry flag*/
+    TS0LW01.TS0LWIXM = 1; /* set index*/
+    while (TS0LW01.TS0LWIXM <= TS0LW01.TS0LWMXP) /* while le max pass lines*/
+      TSWREC.TSWSHPID[TS0LWIXM] = 0; /* clear all pass fields*/
+      TSWREC.TSWBOL[TS0LWIXM] = " ";
+      TSWREC.TSWCARCD[TS0LWIXM] = " ";
+      TSWREC.TSWCRAFT[TS0LWIXM] = " ";
+      TSWREC.TSWSHPNB[TS0LWIXM] = " ";
+      TSWREC.TSWORIG[TS0LWIXM] = " ";
+      TSWREC.TSWDEST[TS0LWIXM] = " ";
+      TSWREC.TSWXWHCD[TS0LWIXM] = " ";
+      TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* incr index*/
+    end
+
+
+    TS0L001: TS0L001();
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the Shipment Inquiry by Customer.*/
+     /* ------------------------------------------------------------*/
+
+    goto TS0L001; /* Converse Shipment Inq by Customer*/
+
+
+  end // end main
+end // end TS0L
+
+// Load the data to w.s. record
+Function TS0L-13100()
+   /* ------------------------------------------------------------*/
+   /* 2) Format selected row into working storage.*/
+   /* ------------------------------------------------------------*/
+
+
+  TSWREC.XGPCD = TS7REC.XGPCD;
+
+  TS0LW02.TSFSHPID[TS0LWIXM] = TS7REC.TSFSHPID;
+  TS0LW02.TSFBOL[TS0LWIXM] = TS7REC.TSFBOL;
+  TS0LW02.TSHCNTNR[TS0LWIXM] = TS7REC.TSHCNTNR;
+  TS0LW02.TSFDESTE[TS0LWIXM] = TS7REC.TSFDESTE;
+  TS0LW02.TSEORIG[TS0LWIXM] = TS7REC.TSEORIG;
+  TS0LW02.TSEDEST[TS0LWIXM] = TS7REC.TSEDEST;
+  TS0LW02.XWHCD[TS0LWIXM] = TS7REC.XWHCD;
+  TS0LW02.TSACARCD[TS0LWIXM] = TS7REC.TSACARCD;
+  TS0LW02.TS5CRAFT[TS0LWIXM] = TS7REC.TS5CRAFT;
+  TS0LW02.TSFSHPNB[TS0LWIXM] = TS7REC.TSFSHPNB;
+  if (TS7REC.TSHSTAT == "RC") /* If container received*/
+    TS0LW02.YSSCD[TS0LWIXM] = TS7REC.TSHSTAT;
+  else
+    TS0LW02.YSSCD[TS0LWIXM] = TS7REC.TSISTAT;
+  end
+  TS0LW02.OP1CUOID[TS0LWIXM] = TS7REC.OP1CUOID;
+  TS0LW02.OP1NORID[TS0LWIXM] = TS7REC.OP1NORID;
+  TS0LW02.PC3PONBR[TS0LWIXM] = TS7REC.PC3PONBR;
+
+  TS0LS01(); /* get the po id and order type*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* If the row was found*/
+    TS0LW01.TS0LWDAT = PC3REC.PC3POIDT;
+    if (TSWREC.XGPCD == "03") /* If apparel*/
+      TS0LW02.TS0LMPYR[TS0LWIXM] = PC3REC.PCFSECD;
+    else
+      TS0LW02.TS0LMPYR[TS0LWIXM] = TS0LW01.TS0LWPYY;
+    end
+    TS0LW02.TS0LMPMO[TS0LWIXM] = TS0LW01.TS0LWPM1;
+    TS0LW02.TS0LMDMO[TS0LWIXM] = TS0LW01.TS0LWPM2;
+    TS0LW02.FY1FCTYC[TS0LWIXM] = PC3REC.FY1FCTYC;
+    TS0LW02.PC4ORTYP[TS0LWIXM] = PC3REC.PC4ORTYP;
+  end
+
+  TS0LW02.PC2CUXID[TS0LWIXM] = TS7REC.PC2CUXID;
+  TS0LW02.SY1STNBR[TS0LWIXM] = TS7REC.SY1STNBR;
+  TS0LW02.SY2CLRID[TS0LWIXM] = TS7REC.SY2CLRID;
+  TS0LW02.XDMCD[TS0LWIXM] = TS7REC.XDMCD;
+  TS0LW02.TSISHPQT[TS0LWIXM] = TS7REC.TSISHPQT;
+  TS0LW02.TSIDETFL[TS0LWIXM] = TS7REC.TSIDETFL;
+
+  TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* increment counter*/
+
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-13100 ********************/
+end // end TS0L-13100
+
+// Verify any changed data
+Function TS0L-52000()
+   /* ------------------------------------------------------------*/
+
+                /* VERIFY ANY CHANGED DATA*/
+
+   /* 1) Verify valid selections.*/
+   /* 2) Verify that all dates entered are valid.*/
+   /* 3) Verify that all locations entered are valid.*/
+   /* 4) If no errors, check for date span and overlap errors.*/
+
+   /* ------------------------------------------------------------*/
+
+   /* ------------------------------------------------------------*/
+     /* check valid selections*/
+   /* ------------------------------------------------------------*/
+
+  TS0LW01.TS0LWIXM = 13; /* set index to 13*/
+  while (TS0LW01.TS0LWIXM > 0) /* until end of selection lines*/
+    if (TS0LM001.TS0LMSEL[TS0LWIXM] != "S" /* if selection is not 's'*/
+     && TS0LM001.TS0LMSEL[TS0LWIXM] != " ") /* selection is not blank*/
+      converseLib.validationFailed(13); /* Error message*/
+      TS0LW01.TS0LWPSW = "Y"; /* indicate problem*/
+      TS0LM001.XXXPRCNM = "L-52000"; /* Process name*/
+      set TS0LM001.TS0LMSEL[TS0LWIXM] cursor, modified, bold;
+    end
+    TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM - 1; /* decrement*/
+  end
+
+  if (converseVar.eventKey not pf7 /* If a scroll request was made*/
+   && converseVar.eventKey not pf8) /* do not perform other edits*/
+
+
+    /* ------------------------------------------------------------*/
+       /* Check the sales order*/
+    /* ------------------------------------------------------------*/
+
+    if (TS0LM001.TS0LM-CUST-ORD-ID > 0)
+      if (TS0LM001.TS0LM-PRDCU-PROC-IND == "E")
+        TS0L-52150(); /* ===> Verify Sales OrderEURP*/
+      else
+        TS0L-52100(); /* ===> Verify Sales Order*/
+      end
+    end
+
+
+    /* ------------------------------------------------------------*/
+       /* check valid ETA end date entered*/
+    /* ------------------------------------------------------------*/
+
+    if (TS0LM001.TSNENDDT != " ") /* if date entered*/
+
+      TS0L-52200(); /* ===> Verify Ending Parm date*/
+
+    else
+
+      converseLib.validationFailed(57); /* Error message*/
+      TS0LW01.TS0LWPSW = "Y"; /* indicate problem*/
+      TS0LM001.XXXPRCNM = "L-52000"; /* Process name*/
+      set TS0LM001.TSNENDDT cursor, modified, bold;
+      TS0LM002.XXXPRCNM = "L-52000"; /* Process name*/
+      set TS0LM002.TSNENDDT cursor, modified, bold;
+      TS0LM002.TSNENDDT = " ";
+
+    end
+
+    /* ------------------------------------------------------------*/
+       /* check valid gpc entered*/
+    /* ------------------------------------------------------------*/
+
+    if (TS0LM001.XGPCD == " ") /* if general product is blank*/
+
+      TS0LM002.XGPCD = " ";
+
+    else
+
+      TS0L-52300(); /* ===> Verify GPC Code*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+       /* Check the customer number*/
+    /* ------------------------------------------------------------*/
+
+    if (TS0LM001.PC2CUXID == " " /* if customer not entered*/
+     && TS0LM001.KUCCOID > 0)    /* if customer no. entered*/
+
+      TS0L-52400(); /* ===> Verify Customer Number entered*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+       /* check valid ETA start date entered*/
+    /* ------------------------------------------------------------*/
+
+    if (TS0LM001.TSNBEGDT != " ") /* if date entered*/
+
+      TS0L-52500(); /* ===> Verify Beginning parm date*/
+
+    else
+
+      converseLib.validationFailed(57); /* Error message*/
+      TS0LW01.TS0LWPSW = "Y"; /* indicate problem*/
+      TS0LM001.XXXPRCNM = "L-52000"; /* Process name*/
+      set TS0LM001.TSNBEGDT cursor, modified, bold;
+      TS0LM002.XXXPRCNM = "L-52000"; /* Process name*/
+      set TS0LM002.TSNBEGDT cursor, modified, bold;
+      TS0LM002.TSNBEGDT = " ";
+
+    end
+
+    /* ------------------------------------------------------------*/
+       /* if yss entered, get the description and check*/
+    /* ------------------------------------------------------------*/
+
+    if (TS0LM001.TS0LMYSS != " ") /* If gpc entered*/
+
+      TS0L-52600(); /* ===> Verify P/L status code*/
+
+    else
+      TS0LM002.TS0LMYSS = " ";
+      TS0LW01.YSSDESC = " "; /* clear descr*/
+      TS0LM001.YSSDESC = " ";
+      TS0LM002.YSSDESC = " ";
+    end
+
+    /* ------------------------------------------------------------*/
+       /* Check the customer xref*/
+    /* ------------------------------------------------------------*/
+
+    if (TS0LW01.TS0LWPSW == "N") /* problem switch eq 'N'*/
+      if (TS0LM001.PC2CUXID == " ") /* if customer xref not entered*/
+                                  /* and cust number not entered*/
+                                  /* and so not entered*/
+        TS0LM001.PC2NAME = " "; /* clear cust name map 1*/
+        TS0LM002.PC2NAME = " "; /* clear cust name map 2*/
+        TS0LW01.PC2NAME = " "; /* clear cust name*/
+        TS0L-52700(); /* verify customer xref*/
+                                  /* display invalid xref msg*/
+      else /* customer xref present*/
+        TS0L-52700(); /* verify customer xref*/
+      end
+    end
+
+
+
+
+    if (TS0LW01.TS0LWPSW == "N") /* if all locations and dates valid*/
+      TS0L-52800(); /* check span and date overlap errors*/
+    end
+
+
+  end
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52000 ********************/
+end // end TS0L-52000
+
+// Select (S ) Unique    VORHDRR1
+Function TS0L-52100()
+   /* ------------------------------------------------------------*/
+   /* Verify that no data entered is valid.*/
+   /* ------------------------------------------------------------*/
+
+
+  if (TS0LM001.TS0LM-CUST-ORD-ID == 0
+   && TS0LM001.TS0LM-NIKE-ORD-ID == 0)
+
+    TS0LW01.TS0LM-CUST-ORD-ID = 0;
+    TS0LW01.TS0LM-NIKE-ORD-ID = 0;
+
+    return; /* ===> return to last process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Initialize the order header record and format key*/
+   /* ------------------------------------------------------------*/
+
+  set OP1REC empty; /* Intialize record*/
+
+  TS0LW01.TS0LM-CUST-ORD-ID = TS0LM001.TS0LM-CUST-ORD-ID;
+  OP1REC.OP1PARTN = TS0LW01.OP1PARTN;
+  OP1REC.OP1CUOID = TS0LM001.TS0LM-CUST-ORD-ID;
+  OP1REC.OP1NORID = TS0LM001.TS0LM-NIKE-ORD-ID;
+
+
+   /* ------------------------------------------------------------*/
+   /* Select a unique row.*/
+   /* If row not found return a message to the user.*/
+   /* If any other, indicate system error.*/
+   /* ------------------------------------------------------------*/
+
+
+  try
+    call "IO4140" ("S ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+  if (sysVar.errorCode == "00000000") /* Successful call*/
+
+    /* ------------------------------------------------------------*/
+     /* If successful, return to the previous process.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Row found*/
+
+      TS0LW01.TS0LM-CUST-ORD-ID = OP1REC.OP1CUOID;
+      TS0LW01.TS0LM-NIKE-ORD-ID = OP1REC.OP1NORID;
+
+      if (TS0LM001.PC2CUXID == " "
+       && TS0LM001.KUCCOID == 0
+       && TS0LM001.KUMSTRID == 0
+       && TS0LM001.XNXCD == 0)
+
+        TS0LM001.KUCCOID = OP1REC.KUCCOID;
+        TS0LM001.KUMSTRID = OP1REC.KUMSTRID;
+        TS0LM001.XNXCD = OP1REC.XNXCD;
+
+        TS0LM002.KUCCOID = OP1REC.KUCCOID;
+        TS0LM002.KUMSTRID = OP1REC.KUMSTRID;
+        TS0LM002.XNXCD = OP1REC.XNXCD;
+
+      end
+
+      return; /* ===> return to previous process*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* If row not found, indicate the invalid.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      set TS0LM001.TS0LM-CUST-ORD-ID cursor, bold;
+      set TS0LM001.TS0LM-NIKE-ORD-ID bold;
+      set TS0LM002.TS0LM-CUST-ORD-ID cursor, bold;
+      set TS0LM002.TS0LM-NIKE-ORD-ID bold;
+      TS0LW01.TS0LWPSW = "Y";
+      TS0LM001.XXXPRCNM = "L-52100";
+      TS0LM002.XXXPRCNM = "L-52100";
+      converseLib.validationFailed(173); /* ===> invalid sales order nbr*/
+
+      return; /* ===> return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Successful call*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* Resource not available*/
+    converseLib.validationFailed(11); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+  else
+    converseLib.validationFailed(10); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    converseLib.clearScreen();
+    
+    converseLib.clearScreen();
+    
+  end
+
+  TS0LW01.TS0LWPSW = "Y";
+  TS0LM001.XXXPRCNM = "L-52100";
+  TS0LM002.XXXPRCNM = "L-52100";
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* Csp return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* Sql comm. area*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = "L-52100"; /* PROCESS NAME*/
+  TA1REC.TA1LOC = "SELECT UNIQUE ROW       ";
+  TA1REC.TA1DBASE = "DREADO  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VORHDRR1"; /* Table view name*/
+  TA1REC.TA1TBLKE = OP1REC.OP1KEY; /* Table key*/
+
+  set TS0LM001.TS0LM-CUST-ORD-ID cursor, bold;
+  set TS0LM001.TS0LM-NIKE-ORD-ID bold;
+  set TS0LM002.TS0LM-CUST-ORD-ID cursor, bold;
+  set TS0LM002.TS0LM-NIKE-ORD-ID bold;
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52100 ********************/
+end // end TS0L-52100
+
+// Select (S ) Unique   VEORHD01
+Function TS0L-52150()
+  /* GET TS0L-52100*/
+   /* ------------------------------------------------------------*/
+   /* Verify that no data entered is valid.*/
+   /* ------------------------------------------------------------*/
+
+
+  if (TS0LM001.TS0LM-CUST-ORD-ID == 0
+   && TS0LM001.TS0LM-NIKE-ORD-ID == 0)
+
+    TS0LW01.TS0LM-CUST-ORD-ID = 0;
+    TS0LW01.TS0LM-NIKE-ORD-ID = 0;
+
+    return; /* ===> return to last process*/
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Initialize the order header record and format key*/
+   /* ------------------------------------------------------------*/
+
+  set OP1REC empty; /* Intialize record*/
+
+  TS0LW01.TS0LM-CUST-ORD-ID = TS0LM001.TS0LM-CUST-ORD-ID;
+  OP1REC.OP1PARTN = TS0LW01.OP1PARTN;
+  OP1REC.OP1CUOID = TS0LM001.TS0LM-CUST-ORD-ID;
+  OP1REC.OP1NORID = TS0LM001.TS0LM-NIKE-ORD-ID;
+
+
+   /* ------------------------------------------------------------*/
+   /* Select a unique row.*/
+   /* If row not found return a message to the user.*/
+   /* If any other, indicate system error.*/
+   /* ------------------------------------------------------------*/
+
+
+  try
+    call "VEORHD01" ("S ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+  if (sysVar.errorCode == "00000000") /* Successful call*/
+
+    /* ------------------------------------------------------------*/
+     /* If successful, return to the previous process.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Row found*/
+
+      TS0LW01.TS0LM-CUST-ORD-ID = OP1REC.OP1CUOID;
+      TS0LW01.TS0LM-NIKE-ORD-ID = OP1REC.OP1NORID;
+
+      if (TS0LM001.PC2CUXID == " "
+       && TS0LM001.KUCCOID == 0
+       && TS0LM001.KUMSTRID == 0
+       && TS0LM001.XNXCD == 0)
+
+        TS0LM001.KUCCOID = OP1REC.KUCCOID;
+        TS0LM001.KUMSTRID = OP1REC.KUMSTRID;
+        TS0LM001.XNXCD = OP1REC.XNXCD;
+
+        TS0LM002.KUCCOID = OP1REC.KUCCOID;
+        TS0LM002.KUMSTRID = OP1REC.KUMSTRID;
+        TS0LM002.XNXCD = OP1REC.XNXCD;
+
+      end
+
+      return; /* ===> return to previous process*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* If row not found, indicate the invalid.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      set TS0LM001.TS0LM-CUST-ORD-ID cursor, bold;
+      set TS0LM001.TS0LM-NIKE-ORD-ID bold;
+      set TS0LM002.TS0LM-CUST-ORD-ID cursor, bold;
+      set TS0LM002.TS0LM-NIKE-ORD-ID bold;
+      TS0LW01.TS0LWPSW = "Y";
+      TS0LM001.XXXPRCNM = "L-52150";
+      TS0LM002.XXXPRCNM = "L-52150";
+      converseLib.validationFailed(173); /* ===> invalid sales order nbr*/
+
+      return; /* ===> return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Successful call*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* Resource not available*/
+    converseLib.validationFailed(11); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+  else
+    converseLib.validationFailed(10); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    converseLib.clearScreen();
+    
+    converseLib.clearScreen();
+    
+  end
+
+  TS0LW01.TS0LWPSW = "Y";
+  TS0LM001.XXXPRCNM = "L-52150";
+  TS0LM002.XXXPRCNM = "L-52150";
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* Csp return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* Sql comm. area*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = "L-52150"; /* PROCESS NAME*/
+  TA1REC.TA1LOC = "SELECT UNIQUE ROW       ";
+  TA1REC.TA1DBASE = "DREADO  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VORHDRR1"; /* Table view name*/
+  TA1REC.TA1TBLKE = OP1REC.OP1KEY; /* Table key*/
+
+  set TS0LM001.TS0LM-CUST-ORD-ID cursor, bold;
+  set TS0LM001.TS0LM-NIKE-ORD-ID bold;
+  set TS0LM002.TS0LM-CUST-ORD-ID cursor, bold;
+  set TS0LM002.TS0LM-NIKE-ORD-ID bold;
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52150 ********************/
+end // end TS0L-52150
+
+// Verify ETA ending date
+Function TS0L-52200()
+   /* ------------------------------------------------------------*/
+   /* Check valid ETA end   date entered*/
+   /* ------------------------------------------------------------*/
+
+
+  set TA2REC empty; /* Clear working record*/
+
+  TA2REC.TA2DTOPT = "GREGGREG"; /* move date option to record*/
+  TA2REC.TA2GRTYP = "A"; /* move date type to record*/
+  TA2REC.TA2GRGA = TS0LM001.TSNENDDT; /* move date*/
+
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* Check valid date w/routine*/
+
+  if (TA2REC.TA2RTNCD == 0) /* valid date entered*/
+    TS0LW01.TSNENDDT = TA2REC.TA2GRGGN; /* save date in ccyymmdd*/
+  else /* Invalid date entered*/
+    converseLib.validationFailed(57); /* Error message*/
+    TS0LW01.TS0LWPSW = "Y"; /* indicate problem*/
+    TS0LM001.XXXPRCNM = "L-52200"; /* Process name*/
+    TS0LM002.XXXPRCNM = "L-52200"; /* Process name*/
+    set TS0LM001.TSNENDDT cursor, modified, bold;
+    set TS0LM002.TSNENDDT cursor, modified, bold;
+  end
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52200 ********************/
+end // end TS0L-52200
+
+// Verify GPC Code
+Function TS0L-52300()
+    /* ------------------------------------------------------------*/
+       /* check valid gpc entered*/
+    /* ------------------------------------------------------------*/
+
+  sysVar.arrayIndex = 0; /* Initialize ezetst*/
+
+  if (TS0LM001.XGPCD in XGPTBL.XGPCD) /* Check valid code*/
+  end
+
+  if (sysVar.arrayIndex == 0) /* Not in table*/
+
+    converseLib.validationFailed(101); /* Display error message*/
+    TS0LW01.TS0LWPSW = "Y"; /* Indicate problem*/
+    TS0LM001.XXXPRCNM = "L-52300"; /* Process name*/
+    set TS0LM001.XGPCD cursor, bold; /* highlight field*/
+    TS0LM002.XXXPRCNM = "L-52300"; /* Process name*/
+    set TS0LM002.XGPCD cursor, bold; /* highlight field*/
+
+  end
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52300 ********************/
+end // end TS0L-52300
+
+// Verify Cust. Number entered
+Function TS0L-52400()
+   /* ------------------------------------------------------------*/
+
+                 /* SELECT THE CXREF, CUSTOMER NAME*/
+
+   /* ------------------------------------------------------------*/
+
+
+  if (TS0LM001.XGPCD > "  ")
+
+    PC2REC.XGPCD = TS0LM001.XGPCD; /* MOVE IN KEY*/
+    PC2REC.KUCCOID = TS0LM001.KUCCOID; /* MOVE IN KEY*/
+    PC2REC.KUMSTRID = TS0LM001.KUMSTRID; /* MOVE IN KEY*/
+    PC2REC.XNXCD = TS0LM001.XNXCD; /* MOVE IN KEY*/
+   /* MOVE IN KEY*/
+    PC2REC.PC-PRDCU-APAO-FL = TS0LM001.TS0LM-PRDCU-PROC-IND;
+    TS0L-52410(); /* select customer*/
+
+    return;
+
+  end
+
+        /* ----------------------------------------------*/
+         /* process all gpc's to check the customer xref*/
+        /* ----------------------------------------------*/
+
+  TS0LW01.TS0LWIXM = 1; /* Set index to 1*/
+
+  while (TS0LW01.TS0LWIXM != 9999 /* While not end of loop*/
+   && XGPTBL.XGPCD[TS0LWIXM] != "99") /* and not end gpc table*/
+
+    PC2REC.XGPCD = XGPTBL.XGPCD[TS0LWIXM];
+    PC2REC.KUCCOID = TS0LM001.KUCCOID; /* MOVE IN KEY*/
+    PC2REC.KUMSTRID = TS0LM001.KUMSTRID; /* MOVE IN KEY*/
+    PC2REC.XNXCD = TS0LM001.XNXCD; /* MOVE IN KEY*/
+   /* MOVE IN KEY*/
+    PC2REC.PC-PRDCU-APAO-FL = TS0LM001.TS0LM-PRDCU-PROC-IND;
+
+    TS0L-52410(); /* select customer*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* if row found*/
+      return; /* return to previous process*/
+    else
+
+      if (SQLCA.VAGen_SQLCODE == 100) /* if row not found*/
+        TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* increment index*/
+      else
+        TS0LW01.TS0LWIXM = 9999; /* end loop*/
+      end
+
+    end
+
+  end
+
+   /* ---------------------------------------------------------------*/
+    /* If  this point is reached then the Customer No is invalid*/
+   /* ---------------------------------------------------------------*/
+
+  converseLib.validationFailed(331); /* Customer Number is invalid*/
+  set TS0LM001.KUCCOID cursor, bold;
+  set TS0LM001.KUMSTRID bold;
+  set TS0LM001.XNXCD bold;
+  set TS0LM002.KUCCOID cursor, bold;
+  set TS0LM002.KUMSTRID bold;
+  set TS0LM002.XNXCD bold;
+  TS0LW01.TS0LWPSW = "Y"; /* Indicate Problem*/
+  TS0LM001.XXXPRCNM = "L-52400"; /* Process name*/
+  TS0LM002.XXXPRCNM = "L-52400"; /* Process name*/
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52400 ********************/
+end // end TS0L-52400
+
+// Select (SA) Unique    VPRDCU01
+Function TS0L-52410()
+   /* ------------------------------------------------------------*/
+
+                 /* SELECT THE CXREF, CUSTOMER NAME*/
+
+   /* ------------------------------------------------------------*/
+
+
+  call "IO3340" ("SA", SQLCA, PC2REC) {isNoRefresh = yes, isExternal = yes}; /* select row*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* Good  return code*/
+
+    TS0LM001.PC2CUXID = PC2REC.PC2CUXID;
+    TS0LM002.PC2CUXID = PC2REC.PC2CUXID;
+    TS0LW01.PC2CUXID = PC2REC.PC2CUXID;
+
+    TS0LM001.PC2NAME = PC2REC.PC2NAME;
+    TS0LM002.PC2NAME = PC2REC.PC2NAME;
+    TS0LW01.PC2NAME = PC2REC.PC2NAME;
+
+    TS0LW01.KUCCOID = PC2REC.KUCCOID;
+    TS0LM001.KUCCOID = PC2REC.KUCCOID;
+    TS0LM002.KUCCOID = PC2REC.KUCCOID;
+
+    TS0LW01.KUMSTRID = PC2REC.KUMSTRID;
+    TS0LM001.KUMSTRID = PC2REC.KUMSTRID;
+    TS0LM002.KUMSTRID = PC2REC.KUMSTRID;
+
+    TS0LW01.XNXCD = PC2REC.XNXCD;
+    TS0LM001.XNXCD = PC2REC.XNXCD;
+    TS0LM002.XNXCD = PC2REC.XNXCD;
+
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* handled in previous process*/
+
+      if (TS0LM001.XGPCD > " ")
+        converseLib.validationFailed(331); /* Customer Number is invalid*/
+        set TS0LM001.KUCCOID cursor, bold;
+        set TS0LM001.KUMSTRID bold;
+        set TS0LM001.XNXCD bold;
+        set TS0LM002.KUCCOID cursor, bold;
+        set TS0LM002.KUMSTRID bold;
+        set TS0LM002.XNXCD bold;
+        TS0LW01.TS0LWPSW = "Y"; /* Indicate Problem*/
+        TS0LM001.XXXPRCNM = "L-52410"; /* Process name*/
+        TS0LM002.XXXPRCNM = "L-52410"; /* Process name*/
+      end
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+        converseLib.validationFailed(11); /* Indicate not available*/
+        TA1REC.TA1FUNC = "POST"; /* Termination function*/
+      else
+        converseLib.validationFailed(10); /* Indicate system error*/
+        TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+        converseLib.clearScreen();
+         /* Clear screen before redisplay*/
+        converseLib.clearScreen();
+         /* Clear screen before redisplay*/
+      end
+
+      TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+      TA1REC.TA1PGMNM = "L-52410"; /* Process name*/
+      TA1REC.TA1LOC = "SELECT TABLE ROW";
+      TA1REC.TA1MAP = "TS0LM001"; /* Map name*/
+      TA1REC.TA1DBASE = "DPRODC  "; /* Data base name*/
+      TA1REC.TA1TBLVU = "VPRDCU01"; /* Table view name*/
+
+      call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+      TS0LW01.TS0LWPSW = "Y"; /* Indicate Problem*/
+      TS0LM001.XXXPRCNM = "L-52410"; /* Process name*/
+      TS0LM002.XXXPRCNM = "L-52410"; /* Process name*/
+
+    end
+
+  end
+
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52410 ********************/
+end // end TS0L-52410
+
+// Verify ETA beginning date
+Function TS0L-52500()
+    /* ------------------------------------------------------------*/
+       /* check valid ETA start date entered*/
+    /* ------------------------------------------------------------*/
+
+
+  set TA2REC empty; /* Clear working record*/
+  TA2REC.TA2DTOPT = "GREGGREG"; /* move date option to record*/
+  TA2REC.TA2GRTYP = "A"; /* move date type to record*/
+  TA2REC.TA2GRGA = TS0LM001.TSNBEGDT; /* move date*/
+
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* Check valid date w/routine*/
+
+  if (TA2REC.TA2RTNCD == 0) /* valid date entered*/
+
+    TS0LW01.TSNBEGDT = TA2REC.TA2GRGGN; /* save date in ccyymmdd*/
+
+  else /* Invalid date entered*/
+
+    converseLib.validationFailed(57); /* Error message*/
+    TS0LW01.TS0LWPSW = "Y"; /* indicate problem*/
+    TS0LM001.XXXPRCNM = "L-52500"; /* Process name*/
+    set TS0LM001.TSNBEGDT cursor, modified, bold;
+    TS0LM002.XXXPRCNM = "L-52500"; /* Process name*/
+    set TS0LM002.TSNBEGDT cursor, modified, bold;
+
+  end
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52500 ********************/
+end // end TS0L-52500
+
+// Verify P/L Status
+Function TS0L-52600()
+    /* ------------------------------------------------------------*/
+       /* if yss entered, get the description and check*/
+    /* ------------------------------------------------------------*/
+
+
+  if (TS0LM001.TS0LMYSS in YSSTBL.YSSCD) /* If in the table*/
+
+    TS0LM001.YSSDESC = YSSTBL.YSSSDESC[sysVar.arrayIndex]; /* move descr*/
+    TS0LM002.YSSDESC = YSSTBL.YSSSDESC[sysVar.arrayIndex]; /* move descr*/
+    TS0LW01.YSSDESC = YSSTBL.YSSSDESC[sysVar.arrayIndex]; /* save descr*/
+
+  else
+
+    TS0LW01.YSSDESC = " "; /* clear descr*/
+    TS0LM001.YSSDESC = " ";
+    TS0LM002.YSSDESC = " ";
+    converseLib.validationFailed(158); /* Error message*/
+    TS0LW01.TS0LWPSW = "Y"; /* indicate problem*/
+    TS0LM001.XXXPRCNM = "L-52600"; /* Process name*/
+    set TS0LM001.TS0LMYSS cursor, modified, bold;
+    TS0LM002.XXXPRCNM = "L-52600"; /* Process name*/
+    set TS0LM002.TS0LMYSS cursor, modified, bold;
+
+  end
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52600 ********************/
+end // end TS0L-52600
+
+// Verify the CXREF entered
+Function TS0L-52700()
+    /* ------------------------------------------------------------*/
+       /* Check the customer xref*/
+    /* ------------------------------------------------------------*/
+
+
+  TS0LW01.TS0LWCU5 = TS0LM001.PC2CUXID; /* Seperate field*/
+
+  if (TS0LW01.TS0LWCU1[1] == " "
+   || TS0LW01.TS0LWCU1[2] == " "
+   || TS0LW01.TS0LWCU1[3] == " ")
+
+    TS0LM001.PC2NAME = " "; /* move cust descr*/
+    TS0LM002.PC2NAME = " "; /* move cust descr*/
+    TS0LW01.PC2NAME = " "; /* move cust descr*/
+    converseLib.validationFailed(296); /* Error message*/
+    TS0LW01.TS0LWPSW = "Y"; /* indicate problem*/
+    TS0LM001.XXXPRCNM = "L-52700"; /* Process name*/
+    set TS0LM001.PC2CUXID cursor, modified, bold;
+    TS0LM002.XXXPRCNM = "L-52700"; /* Process name*/
+    set TS0LM002.PC2CUXID cursor, modified, bold;
+
+
+  else
+
+    if (TS0LW01.TS0LWCU1[4] == " "
+     && TS0LW01.TS0LWCU1[5] == " ")
+
+      TS0LW01.PC2NAME = " "; /* clear cust descr*/
+      TS0LM001.PC2NAME = " "; /* clear cust descr map 1*/
+      TS0LM002.PC2NAME = " "; /* clear cust descr map 2*/
+
+      TS0LW01.KUMSTRID = 0; /* clear store*/
+      TS0LM001.KUMSTRID = 0; /* clear store map 1*/
+      TS0LM002.KUMSTRID = 0; /* clear store map 2*/
+
+      TS0LW01.XNXCD = 0; /* clear dept*/
+      TS0LM001.XNXCD = 0; /* clear dept map 1*/
+      TS0LM002.XNXCD = 0; /* clear dept map 2*/
+
+      return;
+    end
+
+    /* ------------------------------------------------------------*/
+       /* Check the customer xref with the entered GPC code*/
+    /* ------------------------------------------------------------*/
+
+    if (TS0LM001.XGPCD > "  ")
+
+      PC2REC.XGPCD = TS0LM001.XGPCD;
+      PC2REC.PC2CUXID = TS0LM001.PC2CUXID; /* MOVE IN KEY*/
+
+      TS0L-52710(); /* select customer*/
+
+      return;
+
+    end
+
+        /* ----------------------------------------------*/
+         /* process all gpc's to check the customer xref*/
+        /* ----------------------------------------------*/
+
+    TS0LW01.TS0LWIXM = 1; /* Set index to 1*/
+
+    while (TS0LW01.TS0LWIXM != 9999 /* While not end of loop*/
+     && XGPTBL.XGPCD[TS0LWIXM] != "99") /* and not end gpc table*/
+
+      PC2REC.XGPCD = XGPTBL.XGPCD[TS0LWIXM];
+      PC2REC.PC2CUXID = TS0LM001.PC2CUXID; /* MOVE IN KEY*/
+
+      TS0L-52710(); /* select customer*/
+
+      if (SQLCA.VAGen_SQLCODE == 0) /* if row found*/
+        return; /* ===> return to previous process*/
+      else
+        if (SQLCA.VAGen_SQLCODE == 100) /* if row not found*/
+          TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* increment index*/
+        else
+          TS0LW01.TS0LWIXM = 9999; /* end loop*/
+        end
+      end
+
+    end
+
+  end
+
+
+   /* ---------------------------------------------------------------*/
+    /* If  this point is reached then the Customer Xref is invalid*/
+   /* ---------------------------------------------------------------*/
+
+  converseLib.validationFailed(161); /* Customer xref is invalid*/
+  TS0LW01.TS0LWPSW = "Y"; /* Indicate Problem*/
+  set TS0LM001.PC2CUXID cursor, bold;
+  TS0LM001.XXXPRCNM = "L-52700"; /* Process name*/
+  set TS0LM002.PC2CUXID cursor, bold;
+  TS0LM002.XXXPRCNM = "L-52700"; /* Process name*/
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52700 ********************/
+end // end TS0L-52700
+
+// Select (S ) Unique    VPRDCU01
+Function TS0L-52710()
+   /* ------------------------------------------------------------*/
+
+                 /* SELECT THE CUSTOMER NAME*/
+
+   /* ------------------------------------------------------------*/
+
+  call "IO3340" ("S ", SQLCA, PC2REC) {isNoRefresh = yes, isExternal = yes}; /* select row*/
+
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* if customer found*/
+
+    TS0LW01.PC2NAME = PC2REC.PC2NAME;
+    TS0LM001.PC2NAME = PC2REC.PC2NAME;
+    TS0LM002.PC2NAME = PC2REC.PC2NAME;
+
+    TS0LW01.KUCCOID = PC2REC.KUCCOID;
+    TS0LM001.KUCCOID = PC2REC.KUCCOID;
+    TS0LM002.KUCCOID = PC2REC.KUCCOID;
+
+    TS0LW01.KUMSTRID = PC2REC.KUMSTRID;
+    TS0LM001.KUMSTRID = PC2REC.KUMSTRID;
+    TS0LM002.KUMSTRID = PC2REC.KUMSTRID;
+
+    TS0LW01.XNXCD = PC2REC.XNXCD;
+    TS0LM001.XNXCD = PC2REC.XNXCD;
+    TS0LM002.XNXCD = PC2REC.XNXCD;
+
+    return; /* ===> return to previous process*/
+
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* if customer not found*/
+
+      TS0LM001.PC2NAME = " "; /* move cust descr*/
+      TS0LM002.PC2NAME = " "; /* move cust descr*/
+      TS0LW01.PC2NAME = " "; /* move cust descr*/
+      TS0LW01.KUCCOID = 0;
+      TS0LM001.KUCCOID = 0;
+      TS0LM002.KUCCOID = 0;
+      TS0LW01.KUMSTRID = 0;
+      TS0LM001.KUMSTRID = 0;
+      TS0LM002.KUMSTRID = 0;
+      TS0LW01.XNXCD = 0;
+      TS0LM001.XNXCD = 0;
+      TS0LM002.XNXCD = 0;
+
+      if (TS0LM001.XGPCD > " ")
+        converseLib.validationFailed(161); /* ===> CXREF invalid*/
+        TS0LW01.TS0LWPSW = "Y"; /* Indicate Problem*/
+        set TS0LM001.PC2CUXID cursor, bold; /* move cust descr*/
+        TS0LM001.XXXPRCNM = "L-52710"; /* Process name*/
+        set TS0LM002.PC2CUXID cursor, bold; /* move cust descr*/
+        TS0LM002.XXXPRCNM = "L-52710"; /* Process name*/
+      end
+
+      return; /* ===> return to previous process*/
+
+    end
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0 /* Unexpected return code*/
+   && SQLCA.VAGen_SQLCODE != 100) /* handled in previous process*/
+
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+      converseLib.validationFailed(11); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    else
+      converseLib.validationFailed(10); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      converseLib.clearScreen();
+       /* Clear screen before redisplay*/
+      converseLib.clearScreen();
+       /* Clear screen before redisplay*/
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "L-52710"; /* Process name*/
+    TA1REC.TA1LOC = "SELECT TABLE ROW";
+    TA1REC.TA1MAP = "TS0LM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPRODC  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VPRDCU01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    TS0LW01.TS0LWPSW = "Y"; /* Indicate Problem*/
+    TS0LM001.XXXPRCNM = "L-52710"; /* Process name*/
+    TS0LM002.XXXPRCNM = "L-52710"; /* Process name*/
+
+  end
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52710 ********************/
+end // end TS0L-52710
+
+// Check date span and overlap
+Function TS0L-52800()
+   /* ------------------------------------------------------------*/
+
+            /* CHECK DATE SPAN AND OVERLAP*/
+
+   /* 1) Check that ETA end date is >= ETA begin date.*/
+   /* 2) Check that not > 95 days between begin and end dates.*/
+
+   /* Each of these checks will only be performed if the previous*/
+      /* check has been successfully completed with no errors.*/
+
+   /* ------------------------------------------------------------*/
+
+  if (TS0LW01.TSNENDDT < TS0LW01.TSNBEGDT) /* if end date LT beg date*/
+    TS0LW01.TS0LWPSW = "Y"; /* indicate error*/
+    converseLib.validationFailed(58); /* error 'must be >=' message*/
+    TS0LM001.XXXPRCNM = "L-52800"; /* process name*/
+    set TS0LM001.TSNENDDT cursor, modified, bold;
+    TS0LM002.XXXPRCNM = "L-52800"; /* process name*/
+    set TS0LM002.TSNENDDT cursor, modified, bold;
+  end
+
+  if (TS0LW01.TS0LWPSW == "N") /* if no errors*/
+
+     /* check date span < 96 for ETA dates*/
+
+    set TA2REC empty; /* clear record*/
+    TA2REC.TA2DTOPT = "DAYSDIFF"; /* move in option field*/
+    TA2REC.TA2DBDFN = TS0LW01.TSNBEGDT; /* begn date*/
+    TA2REC.TA2DBDTN = TS0LW01.TSNENDDT; /* to date*/
+
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date routine*/
+
+    if (TA2REC.TA2RTNCD == 0) /* if no errors from call*/
+      if (TA2REC.TA2DBDDN >= 96) /* if diff between dates > 95*/
+        TS0LW01.TS0LWPSW = "Y"; /* indicate error*/
+        converseLib.validationFailed(68); /* error 'range too large'*/
+        TS0LM001.XXXPRCNM = "L-52800"; /* process name*/
+        set TS0LM001.TSNBEGDT cursor, modified, bold;
+        set TS0LM001.TSNENDDT modified, bold;
+        TS0LM002.XXXPRCNM = "L-52800"; /* process name*/
+        set TS0LM002.TSNBEGDT cursor, modified, bold;
+        set TS0LM002.TSNENDDT modified, bold;
+      end
+    end
+
+  end
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L-52800 ********************/
+end // end TS0L-52800
+
+// Shipment inquiry by customer
+Function TS0L001()
+   /* ------------------------------------------------------------*/
+
+                /* SHIPMENT INQUIRY BY CUSTOMER*/
+
+   /* This is the main process used to display the schedule map.*/
+   /* Processing always return to the top of this group.*/
+
+   /* 1) Obtain the data to display.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Reset highlighted fields to normal intensity.*/
+   /* 5) Verify the data that was entered.*/
+   /* 6) Process a valid input request.*/
+
+   /* ------------------------------------------------------------*/
+
+  if (TS0LW01.TS0LWSWR == "Y" /* If request for data is yes*/
+   && TS0LW01.TS0LWPSW == "N") /* and no errors*/
+    TS0L100(); /* Obtain the data to display*/
+  end
+
+  if (TS0LW01.TS0LWSWM != "2") /* If map 1 is requested*/
+    TS0L200(); /* Format and display map 1*/
+  else
+    TS0L250(); /* Format and display map 2*/
+  end
+
+  TS0L300(); /* Check attention identifier*/
+
+  TS0L400(); /* Reset fields to normal intensity*/
+
+   /* - TS0LW01.TS0LWSWM NE '2';       /* If map 1 is requested*/
+  TS0L500(); /* Verify map 1 entered data*/
+   /* LSE;*/
+   /* PERFORM TS0L550;                /* Verify map 2 entered data*/
+   /* ND;*/
+
+  TS0L600(); /* Process valid input request*/
+
+
+end // end TS0L001
+
+// Obtain the data to display
+Function TS0L100()
+   /* ------------------------------------------------------------*/
+
+               /* OBTAIN THE DATA TO DISPLAY*/
+
+   /* 1) Move valid screen parameters to TSNREC fields.*/
+   /* 2) Select sets and open cursors for DTRANS.VSHPHD02.*/
+   /* 3) Fetch rows from SHIPMENT HEADER table.*/
+
+   /* ------------------------------------------------------------*/
+
+  set TSNREC empty; /* Initialize records*/
+  set TS7REC empty; /* Initialize records*/
+
+  TSNREC.TSNBEGDT = TS0LW01.TSNBEGDT;
+  TSNREC.TSNENDDT = TS0LW01.TSNENDDT;
+
+
+  TS0LW01.TS0LWCU5 = "     "; /* Clear customer ws*/
+  if (TS0LW01.TS0LWSWM != "2")
+    TS0LW01.TS0LWCU5 = TS0LM001.PC2CUXID; /* Move in customer*/
+  else
+    TS0LW01.TS0LWCU5 = TS0LM002.PC2CUXID;
+  end
+  TSNREC.TSNLOCXR = TS0LW01.TS0LWCU5; /* LO Customer number*/
+  if (TS0LW01.TS0LWCU1[4] == " ") /* If character blank*/
+    TS0LW01.TS0LWCU1[4] = "9"; /* set for like condition*/
+    TS0LW01.TS0LWCU1[5] = "9";
+  else
+    if (TS0LW01.TS0LWCU1[5] == " ") /* If character blank*/
+      TS0LW01.TS0LWCU1[5] = "9"; /* set for like condition*/
+    end
+  end
+  TS7REC.PC2CUXID = TS0LW01.TS0LWCU5; /* Customer number*/
+  TSNREC.TSNHICXR = TS0LW01.TS0LWCU5; /* HI Customer number*/
+
+
+  if (TS0LW01.TS0LWSWM != "2")
+    if (TS0LM001.TS0LMYSS == "  ") /* If warehouse not entered*/
+      TS7REC.TSISTAT = "*";
+    else
+      TS7REC.TSISTAT = TS0LM001.TS0LMYSS;
+    end
+  else
+    if (TS0LM002.TS0LMYSS == "  ") /* If warehouse not entered*/
+      TS7REC.TSISTAT = "*";
+    else
+      TS7REC.TSISTAT = TS0LM002.TS0LMYSS;
+    end
+  end
+
+
+  TS0L110(); /* Purge any temporary storage*/
+
+  TS0L120(); /* Select set, open the cursor Vshphd02*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* If no problems with select*/
+    set TS0LW02 empty; /* Clear screen WS*/
+    TS0LW01.TS0LWSW1 = "N"; /* Set end of selected set switch*/
+    TS0LW01.TS0LWIXM = 1; /* Set counter for screen ws*/
+
+    while (TS0LW01.TS0LWSW1 == "N") /* While data exists to fetch*/
+      TS0L130(); /* Obtain data and format page*/
+      if (TS0LW01.TS0LWIXM > 13) /* If page full*/
+        TS0L140(); /* add that page to temp storage*/
+      end
+    end
+
+    if (TS0LW01.TS0LWSW1 == "Y") /* If last fetch of detail done*/
+      if (TS0LW01.TS0LWIXM > 1) /* and a partial page exists*/
+        TS0L140(); /* add that page to temp storage*/
+      end
+      TS0LW01.TS0LWTSP = 1; /* initialize page number*/
+      TS0LW01.TS0LWSWR = "N"; /* reset request for data switch*/
+      TS0L150(); /* Close the shphd selected set*/
+    end
+
+  end
+
+  if (TS0LW01.TA5TSQIX == 0) /* No data to display*/
+    converseLib.validationFailed(21); /* Indicate no data to display*/
+    TS0LW01.TS0LWPSW = "Y";
+    if (TS0LW01.TS0LWSWM == "1") /* On map 1*/
+      TS0LW01.TS0LW-NO-DATA-MAP-1 = "Y"; /* Set no data map 1 to 'Y'*/
+      TS0LM001.XXXPRCNM = "TS0L100"; /* Process name*/
+    else
+      if (TS0LW01.TS0LWSWM == "2") /* On map 2*/
+        TS0LW01.TS0LW-NO-DATA-MAP-2 = "Y"; /* Set no data map 2 to 'Y'*/
+        TS0LM002.XXXPRCNM = "TS0L100"; /* Process name*/
+      end
+    end
+  else
+    if (TS0LW01.TS0LWSWM == "1") /* On map 1*/
+      TS0LW01.TS0LW-NO-DATA-MAP-1 = "N"; /* Set no data map 1 to 'N'*/
+    else
+      if (TS0LW01.TS0LWSWM == "2") /* On map 2*/
+        TS0LW01.TS0LW-NO-DATA-MAP-2 = "N"; /* Set no data map 2 to 'N'*/
+      end
+    end
+  end
+
+
+end // end TS0L100
+
+// Purge any temporary storage
+Function TS0L110()
+   /* ------------------------------------------------------------*/
+
+              /* PURGE ANY TEMPORARY STORAGE*/
+
+   /* 1) Purge any temporary storage for this application.*/
+
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5APPID = "TS0L"; /* Application identification*/
+  TA5REC.TA5FNCCD = "P"; /* Function code*/
+
+  call "TA0050" (TS0LW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* Temporary storage subr*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "TS0L110"; /* Process name*/
+    TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "TS0LM001"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  end
+
+  TS0LW01.TS0LWTSP = 0; /* Reset current page number*/
+  TS0LW01.TA5TSQIX = 0; /* Reset highest page number*/
+
+
+end // end TS0L110
+
+// Select (S3)    DTRANS.VSHPHD02
+Function TS0L120()
+   /* ------------------------------------------------------------*/
+
+              /* SELECT SET AND OPEN CURSOR VSHPHD02*/
+
+   /* 1) If unexpected return code:*/
+      /* a. call error diagnosis routine.*/
+      /* b. indicate system error.*/
+
+   /* ------------------------------------------------------------*/
+
+  TSNREC.TSNFNC = "S3";
+  call "IO5240" (TSNREC, SQLCA, TS7REC) {isNoRefresh = yes, isExternal = yes}; /* Select table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+      converseLib.validationFailed(11); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    else
+      converseLib.validationFailed(10); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      converseLib.clearScreen();
+       /* Clear screen before redisplay*/
+      converseLib.clearScreen();
+       /* Clear screen before redisplay*/
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "TS0L120"; /* Process name*/
+    TA1REC.TA1LOC = "SELECT SET OF TABLE ROWS";
+    TA1REC.TA1MAP = "TS0LM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSHPHD02"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    TS0LM001.XXXPRCNM = "TS0L120"; /* Process name*/
+    TS0LM002.XXXPRCNM = "TS0L120"; /* Process name*/
+    TS0LW01.TS0LWPSW = "Y"; /* Indicate problem*/
+
+  end
+
+
+end // end TS0L120
+
+// Fetch  (N3)    DTRANS.VSHPHD02
+Function TS0L130()
+   /* ------------------------------------------------------------*/
+                   /* FETCH ROW VSHPHD02*/
+
+   /* 1) If no row found then continue.*/
+   /* 2) Format selected row into working storage.*/
+   /* 3) If unexpected return code:*/
+      /* a. call error diagnosis routine.*/
+      /* b. indicate system error.*/
+
+   /* ------------------------------------------------------------*/
+
+  TSNREC.TSNFNC = "N3";
+  call "IO5240" (TSNREC, SQLCA, TS7REC) {isNoRefresh = yes, isExternal = yes}; /* Fetch the next row*/
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+    TS0LW01.TS0LWSW1 = "Y"; /* Set end switch*/
+  else
+    if (SQLCA.VAGen_SQLCODE != 0) /* unexpected return code*/
+      if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+        converseLib.validationFailed(11); /* Indicate not available*/
+        TA1REC.TA1FUNC = "POST"; /* Termination function*/
+      else
+        converseLib.validationFailed(10); /* Indicate system error*/
+        TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+        converseLib.clearScreen();
+         /* Clear screen before redisplay*/
+        converseLib.clearScreen();
+         /* Clear screen before redisplay*/
+      end
+
+      TS0LW01.TS0LWPSW = "Y"; /* Indicate problem*/
+      TS0LW01.TS0LWSW1 = "Y"; /* Set end switch*/
+
+      TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+      TA1REC.TA1PGMNM = "TS0L130"; /* Process name*/
+      TA1REC.TA1LOC = "FETCH NEXT SELECTED TABLE ROW";
+      TA1REC.TA1MAP = "TS0LM001"; /* Map name*/
+      TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+      TA1REC.TA1TBLVU = "VSHPHD02"; /* Table view name*/
+
+      call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+      TS0LM001.XXXPRCNM = "TS0L130"; /* Process name*/
+      TS0LM002.XXXPRCNM = "TS0L130"; /* Process name*/
+
+    else
+
+      /* ----------------------------------------------------------*/
+            /* Determine if the select row fits requested criteria*/
+      /* ----------------------------------------------------------*/
+
+      if (TS0LM001.XGPCD == "  "         /* If no screen gpc entered*/
+       || TS0LM001.XGPCD == TS7REC.XGPCD /* or matches*/
+       || TS0LM002.XGPCD == TS7REC.XGPCD) /* or matches*/
+
+        if (TS0LM001.TS0LM-CUST-ORD-ID == 0
+        )
+          TS0L-13100(); /* ===> Load the data to the w.s record*/
+
+        else /* ===> check map sales order =*/
+                                   /* selected row's sales order*/
+
+          if (TS0LM001.TS0LM-CUST-ORD-ID == TS7REC.OP1CUOID
+           && TS0LM001.TS0LM-NIKE-ORD-ID == TS7REC.OP1NORID)
+
+            TS0L-13100(); /* ===> Load the data to the w.s record*/
+
+          end
+
+        end
+
+      end
+
+    end
+  end
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L130 ***********************/
+end // end TS0L130
+
+// Add a page to temp storage
+Function TS0L140()
+   /* ------------------------------------------------------------*/
+               /* ADD PAGE TO TEMPORARY STORAGE*/
+   /* ------------------------------------------------------------*/
+
+  TS0LW02.TS0LWLEN = 1365; /* Temporary storage length*/
+  TA5REC.TA5APPID = "TS0L"; /* Application identification*/
+  TA5REC.TA5FNCCD = "A"; /* Function code*/
+
+  call "TA0050" (TS0LW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* Temporary storage subr*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    TA1REC.TA1PGMNM = "TS0L143"; /* Process name*/
+    TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "TS0LM001"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    TS0LM001.XXXPRCNM = "TS0L143"; /* Process name*/
+    converseLib.validationFailed(10); /* Indicate system error*/
+
+    converseLib.clearScreen();
+     /* Clear screen before redisplay*/
+
+    return; /* Return to previous process*/
+
+  end
+
+  TS0LW01.TA5TSQIX = TA5REC.TA5TSQIX; /* Highest page number*/
+
+  TS0LW01.TS0LWIXM = 1; /* Reset display line number*/
+
+  set TS0LW02 empty; /* Clear temporary storage record*/
+
+
+end // end TS0L140
+
+// Close  (C3)    DTRANS.VSHPHD02
+Function TS0L150()
+   /* ------------------------------------------------------------*/
+
+              /* CLOSE SELECTED SET CURSOR VSHPHD02*/
+
+   /* 1) Close set.*/
+   /* 2) If unexpected return code:*/
+      /* a. call error diagnosis routine.*/
+      /* b. indicate system error.*/
+
+   /* ------------------------------------------------------------*/
+
+  TSNREC.TSNFNC = "C3";
+  call "IO5240" (TSNREC, SQLCA, TS7REC) {isNoRefresh = yes, isExternal = yes}; /* Close table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    TA1REC.TA1PGMNM = "TS0L150"; /* Process name*/
+    TA1REC.TA1LOC = "CLOSE SELECTED SET OF TABLE ROWS";
+    TA1REC.TA1MAP = "TS0LM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSHPHD01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    TS0LM001.XXXPRCNM = "TS0L150"; /* Process name*/
+    TS0LM002.XXXPRCNM = "TS0L150"; /* Process name*/
+    converseLib.validationFailed(10); /* Indicate system error*/
+    TS0LW01.TS0LWPSW = "Y"; /* Indicate problem*/
+
+    converseLib.clearScreen();
+     /* Clear screen before redisplay*/
+    converseLib.clearScreen();
+     /* Clear screen before redisplay*/
+
+  end
+
+
+end // end TS0L150
+
+// Format and display    TS0KM001
+Function TS0L200()
+   /* ------------------------------------------------------------*/
+
+               /* FORMAT AND DISPLAY THE MAP*/
+
+   /* 1) If no error to display, format and display the map.*/
+   /* 2) Indicate sound audible alarm for any error.*/
+
+   /* ------------------------------------------------------------*/
+
+  if (TS0LW01.TS0LWPSW == "N") /* No errors found*/
+
+    set TS0LM001 initial; /* clear the map*/
+    set TS0LM002 initial; /* clear the map*/
+
+    TS0LM001.PC2CUXID = TS0LW01.PC2CUXID; /* MOVE IN HEADING*/
+    TS0LM001.PC2NAME = TS0LW01.PC2NAME;
+    TS0LM001.TS0LMYSS = TS0LW01.TS0LMYSS;
+    TS0LM001.YSSDESC = TS0LW01.YSSDESC;
+    TS0LM001.XGPCD = TS0LW01.XGPCD;
+    TS0LM001.TSNBEGDT = TS0LW01.TS0LWBDT;
+    TS0LM001.TSNENDDT = TS0LW01.TS0LWEDT;
+    TS0LM001.KUCCOID = TS0LW01.KUCCOID;
+    TS0LM001.KUMSTRID = TS0LW01.KUMSTRID;
+    TS0LM001.XNXCD = TS0LW01.XNXCD;
+    TS0LM001.TS0LM-CUST-ORD-ID = TS0LW01.TS0LM-CUST-ORD-ID;
+    TS0LM001.TS0LM-NIKE-ORD-ID = TS0LW01.TS0LM-NIKE-ORD-ID;
+    TS0LM001.TS0LM-PRDCU-PROC-IND = TS0LW01.TS0LW-PRDCU-PROC-IND;
+
+  end
+
+  if (TS0LW01.TS0LWPSW == " ") /* first time thru and sw not set*/
+
+    if (TS0LW01.TS0LWBDT == " ") /* if beginning date is blank*/
+      XX0XS01(); /* call date routine*/
+      TS0LW01.TS0LWMYY = XX0XW01.XX0XWYY; /* set date to mmddyy*/
+      TS0LW01.TS0LWMMM = XX0XW01.XX0XWMM;
+      TS0LW01.TS0LWMDD = XX0XW01.XX0XWDD;
+    end
+
+    if (TS0LW01.TS0LWBDT == " ") /* if beginning date is blank*/
+      set TA2REC empty; /* clear record*/
+      TA2REC.TA2DTOPT = "GETDATE"; /* move in option field*/
+      TA2REC.TA2GRGA = TS0LW01.TS0LWMDT; /* begn date*/
+      TA2REC.TA2DYAOD = -9; /* subtr 9 days from todays date*/
+
+      call "TA0040" (TA2REC) {isNoRefresh = yes}; /* call date routine*/
+
+      if (TA2REC.TA2RTNCD == 0) /* if no errors from call*/
+        TS0LM001.TSNBEGDT = TA2REC.TA2GRGA; /* move beg date*/
+        TS0LM002.TSNBEGDT = TA2REC.TA2GRGA; /* move beg date*/
+        TS0LW01.TSNBEGDT = TA2REC.TA2GRGGN;
+      end
+    end
+
+    if (TS0LW01.TS0LWEDT == " ") /* if beginning date is blank*/
+      set TA2REC empty; /* clear record*/
+      TA2REC.TA2DTOPT = "GETDATE"; /* move in option field*/
+      TA2REC.TA2GRGA = TS0LM001.TSNBEGDT; /* begn date*/
+      TA2REC.TA2DYAOD = 22; /* add 22 days to todays date*/
+
+      call "TA0040" (TA2REC) {isNoRefresh = yes}; /* call date routine*/
+
+      if (TA2REC.TA2RTNCD == 0) /* if no errors from call*/
+        TS0LM001.TSNENDDT = TA2REC.TA2GRGA; /* move end date*/
+        TS0LM002.TSNENDDT = TA2REC.TA2GRGA; /* move end date*/
+        TS0LW01.TSNENDDT = TA2REC.TA2GRGGN;
+      end
+    end
+
+  end
+
+  if (TS0LW01.TS0LWPSW == "N") /* No errors found*/
+
+    TS0L210(); /* Format the data on the page*/
+
+    if (TS0LM001.TSFDESTE[1] != " ") /* if detail does exist*/
+      set TS0LM001.TS0LMSEL[1] cursor; /* set cursor to carrier code*/
+    end
+
+  end
+
+  TS0LM001.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+  TS0LM002.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  /* IF EZEMNO NE 0;                  /* Error message to display*/
+  /* SET TS0LM001 ALARM;            /* Indicate sound alarm*/
+  /* END;*/
+
+  converse TS0LM001 ;
+
+  TS0LW01.TS0LWPSW = "N"; /* reset problem switch*/
+
+  TS0L220(); /* Check for ? inquiry by user*/
+
+
+   /* ------------------------------------------------------------*/
+      /* Load the other map with entered data*/
+   /* ------------------------------------------------------------*/
+
+  TS0LM002.PC2CUXID = TS0LM001.PC2CUXID;
+  TS0LM002.TS0LMYSS = TS0LM001.TS0LMYSS;
+  TS0LM002.XGPCD = TS0LM001.XGPCD;
+  TS0LM002.TSNBEGDT = TS0LM001.TSNBEGDT;
+  TS0LM002.TSNENDDT = TS0LM001.TSNENDDT;
+  TS0LM002.KUCCOID = TS0LM001.KUCCOID;
+  TS0LM002.KUMSTRID = TS0LM001.KUMSTRID;
+  TS0LM002.XNXCD = TS0LM001.XNXCD;
+  TS0LM002.TS0LM-CUST-ORD-ID = TS0LM001.TS0LM-CUST-ORD-ID;
+  TS0LM002.TS0LM-NIKE-ORD-ID = TS0LM001.TS0LM-NIKE-ORD-ID;
+
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L200 ***********************/
+end // end TS0L200
+
+// Format the selected data
+Function TS0L210()
+   /* ------------------------------------------------------------*/
+
+               /* FORMAT THE SELECTED DATA*/
+
+   /* 1) If no pages in temporary storage indicate no data.*/
+   /* 2) Obtain the next page from temporary storage.*/
+   /* 3) Format the plan sequence data in the map.*/
+      /* - always display the entire first line.*/
+      /* - suppress all repeating first leg fields on map.*/
+      /* - supress all generic carrier code fields.*/
+
+   /* ------------------------------------------------------------*/
+
+  if (TS0LW01.TA5TSQIX == 0) /* No data to display*/
+     /* continue on*/
+  else
+
+    TS0L211(); /* Obtain temporary storage page*/
+
+    set TS0LM001.TS0LMPGL skip; /* Display "PAGE" literal*/
+    set TS0LM001.TS0LMOFL skip; /* Display "OF" literal*/
+
+    TS0LM001.TS0LWTSP = TS0LW01.TS0LWTSP; /* Current page number*/
+    TS0LM001.TA5TSQIX = TS0LW01.TA5TSQIX; /* Highest page number*/
+
+    TS0LW01.TS0LWIXM = 1; /* Initialize line indexes*/
+    TS0LW01.TS0LWIX2 = 0;
+
+      /* move in first line of screen data*/
+
+    TS0LW01.TS0LWWDT = TS0LW02.TSFDESTE[TS0LWIXM];
+                                   /* make date mmddyy*/
+    TS0LW01.TS0LWMMM = TS0LW01.TS0LWWMM; /* month*/
+    TS0LW01.TS0LWMDD = TS0LW01.TS0LWWDD; /* day*/
+    TS0LW01.TS0LWMYY = TS0LW01.TS0LWWYY; /* year*/
+    TS0LM001.TSFDESTE[TS0LWIXM] = TS0LW01.TS0LWMDT;
+
+    TS0LM001.TSACARCD[TS0LWIXM] = TS0LW02.TSACARCD[TS0LWIXM];
+    TS0LM001.TS5CRAFT[TS0LWIXM] = TS0LW02.TS5CRAFT[TS0LWIXM];
+
+    TS0LM001.YSSCD[TS0LWIXM] = TS0LW02.YSSCD[TS0LWIXM];
+    TS0LM001.TS0LMPOI[TS0LWIXM] = TS0LW02.TS0LWPOI[TS0LWIXM];
+    TS0LM001.PC4ORTYP[TS0LWIXM] = TS0LW02.PC4ORTYP[TS0LWIXM];
+    TS0LM001.PC3PONBR[TS0LWIXM] = TS0LW02.PC3PONBR[TS0LWIXM];
+    TS0LM001.TS0LMCXR[TS0LWIXM] = TS0LW02.PC2CUXID[TS0LWIXM];
+    if (TS0LW02.OP1NORID[TS0LWIXM] > 0)
+      TS0LW01.TS0LWSOI = TS0LW02.OP1NORID[TS0LWIXM] / 1000;
+      TS0LW01.TS0LWSOI = TS0LW01.TS0LWSOI + TS0LW02.OP1CUOID[TS0LWIXM];
+      TS0LM001.TS0LMSOI[TS0LWIXM] = TS0LW01.TS0LWSOI;
+    else
+      TS0LM001.TS0LMSOI[TS0LWIXM] = 0;
+    end
+    TS0LM001.SY1STNBR[TS0LWIXM] = TS0LW02.SY1STNBR[TS0LWIXM];
+    TS0LM001.SY2CLRID[TS0LWIXM] = TS0LW02.SY2CLRID[TS0LWIXM];
+    TS0LM001.TSISHPQT[TS0LWIXM] = TS0LW02.TSISHPQT[TS0LWIXM];
+    TS0LM001.TSIDETFL[TS0LWIXM] = TS0LW02.TSIDETFL[TS0LWIXM];
+
+    if (TS0LM001.TSIDETFL[TS0LWIXM] == "Y") /* if detail flag is yes*/
+      TS0LM001.TSIDETFL[TS0LWIXM] = "*"; /* move '*' to detail*/
+    else
+      TS0LM001.TSIDETFL[TS0LWIXM] = " "; /* move ' ' to detail*/
+    end
+
+    set TS0LM001.TS0LMSEL[TS0LWIXM] normal; /* display the selection*/
+
+    TS0LW01.TS0LWIXW = 1; /* set index*/
+    while (TS0LW01.TS0LWIXW <= TS0LW01.TS0LWMXP) /* until end of array*/
+      if (TS0LW02.TSFSHPID[TS0LWIXM] == TS0LW01.TSWSHPID[TS0LWIXW])
+        TS0LM001.TS0LMSEL[TS0LWIXM] = "S"; /* move s to field*/
+        TS0LW01.TS0LWIXW = TS0LW01.TS0LWMXP + 1; /* end loop*/
+      else
+        TS0LW01.TS0LWIXW = TS0LW01.TS0LWIXW + 1; /* increment index*/
+      end
+    end
+
+    TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* Increment line indexes*/
+    TS0LW01.TS0LWIX2 = TS0LW01.TS0LWIX2 + 1;
+
+     /* Move all display lines to the map.*/
+     /* Supress all repeating fields.*/
+
+    /* *************************************************************/
+    /* * This nested IF statement needed to be very large in order*/
+    /* * to accommodate the necessary screen field suppression*/
+    /* * required by the application specification.  This accounts*/
+    /* * for the 'perform TS0m212' statement which will continue*/
+    /* * the nested IF in another process, therefore making TS0m210*/
+    /* * (this process) much more readable.*/
+    /* *************************************************************/
+
+    while (TS0LW01.TS0LWIXM <= 13 /* Until end of lines*/
+     && TS0LW02.TSACARCD[TS0LWIXM] != " ") /* and lines exist*/
+
+      TS0LW01.TS0LWWDT = TS0LW02.TSFDESTE[TS0LWIXM];
+      TS0LW01.TS0LWMMM = TS0LW01.TS0LWWMM;
+      TS0LW01.TS0LWMDD = TS0LW01.TS0LWWDD;
+      TS0LW01.TS0LWMYY = TS0LW01.TS0LWWYY;
+      TS0LM001.TSFDESTE[TS0LWIXM] = TS0LW01.TS0LWMDT;
+
+      TS0LM001.TSACARCD[TS0LWIXM] = TS0LW02.TSACARCD[TS0LWIXM];
+      TS0LM001.TS5CRAFT[TS0LWIXM] = TS0LW02.TS5CRAFT[TS0LWIXM];
+
+      TS0LM001.YSSCD[TS0LWIXM] = TS0LW02.YSSCD[TS0LWIXM];
+      TS0LM001.TS0LMPOI[TS0LWIXM] = TS0LW02.TS0LWPOI[TS0LWIXM];
+      TS0LM001.PC4ORTYP[TS0LWIXM] = TS0LW02.PC4ORTYP[TS0LWIXM];
+      TS0LM001.PC3PONBR[TS0LWIXM] = TS0LW02.PC3PONBR[TS0LWIXM];
+      TS0LM001.TS0LMCXR[TS0LWIXM] = TS0LW02.PC2CUXID[TS0LWIXM];
+      if (TS0LW02.OP1NORID[TS0LWIXM] > 0)
+        TS0LW01.TS0LWSOI = TS0LW02.OP1NORID[TS0LWIXM] / 1000;
+        TS0LW01.TS0LWSOI = TS0LW01.TS0LWSOI + TS0LW02.OP1CUOID[TS0LWIXM];
+        TS0LM001.TS0LMSOI[TS0LWIXM] = TS0LW01.TS0LWSOI;
+      else
+        TS0LM001.TS0LMSOI[TS0LWIXM] = 0;
+      end
+      TS0LM001.SY1STNBR[TS0LWIXM] = TS0LW02.SY1STNBR[TS0LWIXM];
+      TS0LM001.SY2CLRID[TS0LWIXM] = TS0LW02.SY2CLRID[TS0LWIXM];
+      TS0LM001.TSISHPQT[TS0LWIXM] = TS0LW02.TSISHPQT[TS0LWIXM];
+      TS0LM001.TSIDETFL[TS0LWIXM] = TS0LW02.TSIDETFL[TS0LWIXM];
+
+      if (TS0LW02.TSFSHPID[TS0LWIXM] == TS0LW02.TSFSHPID[TS0LWIX2])
+         /* continue on*/
+        if (TS0LW02.TSFDESTE[TS0LWIXM] == TS0LW02.TSFDESTE[TS0LWIX2])
+          TS0LM001.TSFDESTE[TS0LWIXM] = " "; /* move ' ' to etat*/
+          TS0L212(); /* continue repeating supression*/
+        end
+      end
+
+      if (TS0LM001.TSIDETFL[TS0LWIXM] == "Y") /* if detail flag is yes*/
+        TS0LM001.TSIDETFL[TS0LWIXM] = "*"; /* move '*' to detail*/
+      else
+        TS0LM001.TSIDETFL[TS0LWIXM] = " "; /* move ' ' to detail*/
+      end
+
+      if (TS0LM001.TSFDESTE[TS0LWIXM] != " ") /* if eta exists on map*/
+        set TS0LM001.TS0LMSEL[TS0LWIXM] normal; /* display the selection*/
+        set TS0LM002.TS0LMSEL[TS0LWIXM] normal; /* display the selection*/
+
+        TS0LW01.TS0LWIXW = 1; /* set index*/
+        while (TS0LW01.TS0LWIXW <= TS0LW01.TS0LWMXP) /* until end of array*/
+          if (TS0LW02.TSFSHPID[TS0LWIXM] == TS0LW01.TSWSHPID[TS0LWIXW])
+            TS0LM001.TS0LMSEL[TS0LWIXM] = "S"; /* move s to field*/
+            TS0LW01.TS0LWIXW = TS0LW01.TS0LWMXP + 1; /* end loop*/
+          else
+            TS0LW01.TS0LWIXW = TS0LW01.TS0LWIXW + 1; /* increment index*/
+          end
+        end
+
+      end
+
+      TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* Increment line index*/
+      TS0LW01.TS0LWIX2 = TS0LW01.TS0LWIX2 + 1;
+    end
+  end
+
+
+end // end TS0L210
+
+// Read temporary storage page
+Function TS0L211()
+   /* ------------------------------------------------------------*/
+            /* READ TEMPORARY STORAGE PAGE*/
+
+   /* 1) Obtain the next page of data to display.*/
+   /* 2) If error occurs, indicate system error and exit to*/
+      /* redisplay the map.*/
+
+   /* ------------------------------------------------------------*/
+
+  TS0LW02.TS0LWLEN = 1365; /* Temporary storage length*/
+  TA5REC.TA5APPID = "TS0L"; /* Application identification*/
+  TA5REC.TA5TSQIX = TS0LW01.TS0LWTSP; /* Page number*/
+  TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+  call "TA0050" (TS0LW02, TA5REC) {isNoRefresh = yes}; /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    TA1REC.TA1PGMNM = "TS0L211"; /* Process name*/
+    TA1REC.TA1LOC = "READ PAGE FROM TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "TS0LM001"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes}; /* Error diagnosis routine*/
+
+    TS0LM001.XXXPRCNM = "TS0L211"; /* Process name*/
+    TS0LW01.TS0LWPSW = "Y"; /* indicate problem*/
+    converseLib.validationFailed(10); /* Indicate system error*/
+    converseLib.clearScreen();
+     /* Clear screen before redisplay*/
+    exit stack; /* Exit to redisplay map*/
+  end
+
+
+end // end TS0L211
+
+// Continue supression nested IF
+Function TS0L212()
+   /* ------------------------------------------------------------*/
+               /* CONTINUE SUPRESSION OF NESTED IF*/
+
+   /* 1) This process is used in order to help maintain better*/
+      /* readability in TS0m210.  The nested IF for the necessary*/
+      /* screen suppression is very large, therefore causing poor*/
+      /* indentation of lines.  The indentation is still poor*/
+      /* within this process but the size is of TS0m210 is kept*/
+      /* at a much more reasonable level.*/
+
+   /* ------------------------------------------------------------*/
+
+  if (TS0LW02.TSEDEST[TS0LWIXM] == TS0LW02.TSEDEST[TS0LWIX2])
+    TS0LM002.TSEDEST[TS0LWIXM] = " "; /* move ' ' to dest*/
+    if (TS0LW02.XWHCD[TS0LWIXM] == TS0LW02.XWHCD[TS0LWIX2])
+      TS0LM002.XWHCD[TS0LWIXM] = " "; /* move ' ' to whse*/
+      if (TS0LW02.TSACARCD[TS0LWIXM] == TS0LW02.TSACARCD[TS0LWIX2])
+        TS0LM001.TSACARCD[TS0LWIXM] = " "; /* move ' ' to carc*/
+        if (TS0LW02.TS5CRAFT[TS0LWIXM] == TS0LW02.TS5CRAFT[TS0LWIX2])
+          TS0LM001.TS5CRAFT[TS0LWIXM] = " "; /* move ' ' to craft*/
+          TS0LM002.TS5CRAFT[TS0LWIXM] = " "; /* move ' ' to craft*/
+          if (TS0LW02.TSFSHPNB[TS0LWIXM] == TS0LW02.TSFSHPNB[TS0LWIX2])
+            TS0LM002.TSFSHPNB[TS0LWIXM] = " "; /* move ' ' to shp num*/
+            if (TS0LW02.TSFBOL[TS0LWIXM] == TS0LW02.TSFBOL[TS0LWIX2])
+              TS0LM002.TSFBOL[TS0LWIXM] = " "; /* move ' ' to bol*/
+              if (TS0LW02.TSHCNTNR[TS0LWIXM] == TS0LW02.TSHCNTNR[TS0LWIX2])
+                TS0LM002.TSHCNTNR[TS0LWIXM] = " "; /* move ' ' to cntnr*/
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+
+end // end TS0L212
+
+// Check for ? inquiry by user
+Function TS0L220()
+   /* ------------------------------------------------------------*/
+
+              /* CHECK FOR USER ? CODE INQUIRY*/
+
+     /* 1) If the user has enter a '?' in any of the appropiate*/
+        /* fields, display the pop up window for that CSP table*/
+        /* and allow for inquiry.*/
+
+     /* 2) Set map page after all windows displayed*/
+
+   /* ------------------------------------------------------------*/
+
+  if (TS0LM001.TS0LMYSS == "?" /* if any ? entered*/
+   || TS0LM002.TS0LMYSS == "?" /* if any ? entered*/
+   || TS0LM001.XGPCD == "?"    
+   || TS0LM001.TS0LM-PRDCU-PROC-IND == "?"
+   || TS0LM002.XGPCD == "?"    
+   || TS0LM002.TS0LM-PRDCU-PROC-IND == "?")
+
+    if (TS0LM001.TS0LMYSS == "?" /* if ? in ship stat field*/
+     || TS0LM002.TS0LMYSS == "?") /* if ? in ship stat field*/
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "              SHIPMENT STATUS  ";
+                                   /* heading*/
+
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPYSS01(); /* perform ship stat window*/
+      end
+
+       /* **********************************************************/
+       /* *  If the pass index is greater than zero, use the      **/
+       /* *  passed table index 'XX0XWPIX' to move the ship status**/
+       /* *  type table code and description to the map.          **/
+       /* **********************************************************/
+
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        TS0LM001.TS0LMYSS = YSSTBL.YSSCD[XX0XWPIX]; /* move code*/
+        TS0LM001.YSSDESC = YSSTBL.YSSDESC[XX0XWPIX]; /* move name*/
+        TS0LM002.TS0LMYSS = YSSTBL.YSSCD[XX0XWPIX]; /* move code*/
+        TS0LM002.YSSDESC = YSSTBL.YSSDESC[XX0XWPIX]; /* move name*/
+      else
+        TS0LM001.TS0LMYSS = " "; /* clear fields*/
+        TS0LM001.YSSDESC = " ";
+        TS0LM002.TS0LMYSS = " "; /* clear fields*/
+        TS0LM002.YSSDESC = " ";
+      end
+    end
+
+    if (TS0LM001.XGPCD == "?"
+     || TS0LM002.XGPCD == "?")
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "                   GPC "; /* heading*/
+
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPXGP01(); /* perform product code window*/
+      end
+
+       /* **********************************************************/
+       /* *  If the pass index is greater than zero, use the      **/
+       /* *  passed table index 'XX0XWPIX' to move the container  **/
+       /* *  type table code and description to the map.          **/
+       /* **********************************************************/
+
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        TS0LM001.XGPCD = XGPTBL.XGPCD[XX0XWPIX]; /* move code*/
+        TS0LM002.XGPCD = XGPTBL.XGPCD[XX0XWPIX]; /* move code*/
+      else
+        TS0LM001.XGPCD = " "; /* clear fields*/
+        TS0LM002.XGPCD = " "; /* clear fields*/
+      end
+    end
+
+
+
+
+    /* *************************************************************/
+     /* Check Customer Process Incidator of '?'*/
+    /* *************************************************************/
+
+    if (TS0LM001.TS0LM-PRDCU-PROC-IND == "?" /* if any ? entered*/
+     || TS0LM002.TS0LM-PRDCU-PROC-IND == "?")
+
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "CUSTOMER PROCESS INDICATOR"; /* heading*/
+
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPPC040(); /* perform  window*/
+      end
+
+       /* **********************************************************/
+       /* *  If the pass index is greater than zero, use the      **/
+       /* *  passed table index 'XX0XWPIX' to move the gpc        **/
+       /* *  table code and description to the map.               **/
+       /* **********************************************************/
+
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        TS0LM002.TS0LM-PRDCU-PROC-IND = PC0CTBL.PC-PRDCU-APAO-FL[XX0XWPIX]; /* move code*/
+        TS0LM001.TS0LM-PRDCU-PROC-IND = PC0CTBL.PC-PRDCU-APAO-FL[XX0XWPIX]; /* move code*/
+      else
+        TS0LM002.TS0LM-PRDCU-PROC-IND = "N"; /* move code*/
+        TS0LM001.TS0LM-PRDCU-PROC-IND = "N"; /* move code*/
+      end
+
+      set TS0LM001.TS0LM-PRDCU-PROC-IND cursor; /* set cursor*/
+      set TS0LM002.TS0LM-PRDCU-PROC-IND cursor; /* set cursor*/
+
+    end
+
+    converseLib.clearScreen();
+     /* restore the original map*/
+    converseLib.clearScreen();
+     /* restore the original map*/
+
+    TS0LW01.TS0LWPSW = "Y"; /* bypass exit by indicating fake error*/
+
+
+  end
+
+
+
+
+end // end TS0L220
+
+// Format and display    TS0KM002
+Function TS0L250()
+   /* ------------------------------------------------------------*/
+
+               /* FORMAT AND DISPLAY map 2*/
+
+   /* 1) If no error to display, format and display the map.*/
+   /* 2) Indicate sound audible alarm for any error.*/
+
+   /* ------------------------------------------------------------*/
+
+  if (TS0LW01.TS0LWPSW == "N") /* No errors found*/
+
+    set TS0LM002 initial; /* clear the map*/
+    set TS0LM001 initial; /* clear the map*/
+
+    TS0LM002.PC2CUXID = TS0LW01.PC2CUXID; /* MOVE IN HEADING*/
+    TS0LM002.PC2NAME = TS0LW01.PC2NAME;
+    TS0LM002.TS0LMYSS = TS0LW01.TS0LMYSS;
+    TS0LM002.YSSDESC = TS0LW01.YSSDESC;
+    TS0LM002.XGPCD = TS0LW01.XGPCD;
+    TS0LM002.TSNBEGDT = TS0LW01.TS0LWBDT;
+    TS0LM002.TSNENDDT = TS0LW01.TS0LWEDT;
+    TS0LM002.KUCCOID = TS0LW01.KUCCOID;
+    TS0LM002.KUMSTRID = TS0LW01.KUMSTRID;
+    TS0LM002.XNXCD = TS0LW01.XNXCD;
+    TS0LM002.TS0LM-CUST-ORD-ID = TS0LW01.TS0LM-CUST-ORD-ID;
+    TS0LM002.TS0LM-NIKE-ORD-ID = TS0LW01.TS0LM-NIKE-ORD-ID;
+    TS0LM002.TS0LM-PRDCU-PROC-IND = TS0LW01.TS0LW-PRDCU-PROC-IND;
+
+  end
+
+  if (TS0LW01.TS0LWPSW == " ") /* first time thru and sw not set*/
+
+    if (TS0LW01.TS0LWBDT == " ") /* if beginning date is blank*/
+      XX0XS01(); /* call date routine*/
+      TS0LW01.TS0LWMYY = XX0XW01.XX0XWYY; /* set date to mmddyy*/
+      TS0LW01.TS0LWMMM = XX0XW01.XX0XWMM;
+      TS0LW01.TS0LWMDD = XX0XW01.XX0XWDD;
+    end
+
+    if (TS0LW01.TS0LWBDT == " ") /* if beginning date is blank*/
+      set TA2REC empty; /* clear record*/
+      TA2REC.TA2DTOPT = "GETDATE"; /* move in option field*/
+      TA2REC.TA2GRGA = TS0LW01.TS0LWMDT; /* begn date*/
+      TA2REC.TA2DYAOD = -9; /* subtr 9 days from todays date*/
+
+      call "TA0040" (TA2REC) {isNoRefresh = yes}; /* call date routine*/
+
+      if (TA2REC.TA2RTNCD == 0) /* if no errors from call*/
+        TS0LM002.TSNBEGDT = TA2REC.TA2GRGA; /* move beg date*/
+        TS0LM001.TSNBEGDT = TA2REC.TA2GRGA; /* move beg date*/
+        TS0LW01.TSNBEGDT = TA2REC.TA2GRGGN;
+      end
+    end
+
+    if (TS0LW01.TS0LWEDT == " ") /* if beginning date is blank*/
+      set TA2REC empty; /* clear record*/
+      TA2REC.TA2DTOPT = "GETDATE"; /* move in option field*/
+      TA2REC.TA2GRGA = TS0LM002.TSNBEGDT; /* begn date*/
+      TA2REC.TA2DYAOD = 22; /* add 22 days to todays date*/
+
+      call "TA0040" (TA2REC) {isNoRefresh = yes}; /* call date routine*/
+
+      if (TA2REC.TA2RTNCD == 0) /* if no errors from call*/
+        TS0LM002.TSNENDDT = TA2REC.TA2GRGA; /* move end date*/
+        TS0LM001.TSNENDDT = TA2REC.TA2GRGA; /* move end date*/
+        TS0LW01.TSNENDDT = TA2REC.TA2GRGGN;
+      end
+    end
+
+  end
+
+  if (TS0LW01.TS0LWPSW == "N") /* No errors found*/
+
+    TS0L260(); /* Format the data on the page*/
+
+    if (TS0LM002.TSFDESTE[1] != " ") /* if detail does exist*/
+      set TS0LM002.TS0LMSEL[1] cursor; /* set cursor to carrier code*/
+    end
+
+  end
+
+  TS0LM002.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+  TS0LM001.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  /* IF EZEMNO NE 0;                  /* Error message to display*/
+  /* SET TS0LM002 ALARM;            /* Indicate sound alarm*/
+  /* END;*/
+
+
+
+  converse TS0LM002 ;
+
+  TS0LW01.TS0LWPSW = "N"; /* reset problem switch*/
+
+  TS0L220(); /* Check for ? inquiry by user*/
+
+
+   /* ------------------------------------------------------------*/
+      /* Load the other map with entered data*/
+   /* ------------------------------------------------------------*/
+
+  TS0LM001.PC2CUXID = TS0LM002.PC2CUXID;
+  TS0LM001.TS0LMYSS = TS0LM002.TS0LMYSS;
+  TS0LM001.XGPCD = TS0LM002.XGPCD;
+  TS0LM001.TSNBEGDT = TS0LM002.TSNBEGDT;
+  TS0LM001.TSNENDDT = TS0LM002.TSNENDDT;
+  TS0LM001.KUCCOID = TS0LM002.KUCCOID;
+  TS0LM001.KUMSTRID = TS0LM002.KUMSTRID;
+  TS0LM001.XNXCD = TS0LM002.XNXCD;
+  TS0LM001.TS0LM-CUST-ORD-ID = TS0LM002.TS0LM-CUST-ORD-ID;
+  TS0LM001.TS0LM-NIKE-ORD-ID = TS0LM002.TS0LM-NIKE-ORD-ID;
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L250 ***********************/
+end // end TS0L250
+
+// Format the selected data
+Function TS0L260()
+   /* ------------------------------------------------------------*/
+
+               /* FORMAT THE SELECTED DATA MAP 2*/
+
+   /* 1) If no pages in temporary storage indicate no data.*/
+   /* 2) Obtain the next page from temporary storage.*/
+   /* 3) Format the plan sequence data in the map.*/
+      /* - always display the entire first line.*/
+      /* - suppress all repeating first leg fields on map.*/
+      /* - supress all generic carrier code fields.*/
+
+   /* ------------------------------------------------------------*/
+
+  if (TS0LW01.TA5TSQIX == 0) /* No data to display*/
+     /* continue on*/
+  else
+
+    TS0L211(); /* Obtain temporary storage page*/
+
+    set TS0LM002.TS0LMPGL skip; /* Display "PAGE" literal*/
+    set TS0LM002.TS0LMOFL skip; /* Display "OF" literal*/
+
+    TS0LM002.TS0LWTSP = TS0LW01.TS0LWTSP; /* Current page number*/
+    TS0LM002.TA5TSQIX = TS0LW01.TA5TSQIX; /* Highest page number*/
+
+    TS0LW01.TS0LWIXM = 1; /* Initialize line indexes*/
+    TS0LW01.TS0LWIX2 = 0;
+
+      /* move in first line of screen data*/
+
+    TS0LW01.TS0LWWDT = TS0LW02.TSFDESTE[TS0LWIXM];
+                                   /* make date mmddyy*/
+    TS0LW01.TS0LWMMM = TS0LW01.TS0LWWMM; /* month*/
+    TS0LW01.TS0LWMDD = TS0LW01.TS0LWWDD; /* day*/
+    TS0LW01.TS0LWMYY = TS0LW01.TS0LWWYY; /* year*/
+    TS0LM002.TSFDESTE[TS0LWIXM] = TS0LW01.TS0LWMDT;
+
+    TS0LM002.TS5CRAFT[TS0LWIXM] = TS0LW02.TS5CRAFT[TS0LWIXM];
+    TS0LM002.TSFSHPNB[TS0LWIXM] = TS0LW02.TSFSHPNB[TS0LWIXM];
+    TS0LM002.TSEDEST[TS0LWIXM] = TS0LW02.TSEDEST[TS0LWIXM];
+    TS0LM002.XWHCD[TS0LWIXM] = TS0LW02.XWHCD[TS0LWIXM];
+    TS0LM002.TSFBOL[TS0LWIXM] = TS0LW02.TSFBOL[TS0LWIXM];
+    TS0LM002.TSHCNTNR[TS0LWIXM] = TS0LW02.TSHCNTNR[TS0LWIXM];
+    TS0LM002.SY1STNBR[TS0LWIXM] = TS0LW02.SY1STNBR[TS0LWIXM];
+    TS0LM002.SY2CLRID[TS0LWIXM] = TS0LW02.SY2CLRID[TS0LWIXM];
+    TS0LM002.XDMCD[TS0LWIXM] = TS0LW02.XDMCD[TS0LWIXM];
+    TS0LM002.TSISHPQT[TS0LWIXM] = TS0LW02.TSISHPQT[TS0LWIXM];
+
+    set TS0LM002.TS0LMSEL[TS0LWIXM] normal; /* display the selection*/
+
+    TS0LW01.TS0LWIXW = 1; /* set index*/
+    while (TS0LW01.TS0LWIXW <= TS0LW01.TS0LWMXP) /* until end of array*/
+      if (TS0LW02.TSFSHPID[TS0LWIXM] == TS0LW01.TSWSHPID[TS0LWIXW])
+        TS0LM002.TS0LMSEL[TS0LWIXM] = "S"; /* move s to field*/
+        TS0LW01.TS0LWIXW = TS0LW01.TS0LWMXP + 1; /* end loop*/
+      else
+        TS0LW01.TS0LWIXW = TS0LW01.TS0LWIXW + 1; /* increment index*/
+      end
+    end
+
+    TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* Increment line indexes*/
+    TS0LW01.TS0LWIX2 = TS0LW01.TS0LWIX2 + 1;
+
+     /* Move all display lines to the map.*/
+     /* Supress all repeating fields.*/
+
+    /* *************************************************************/
+    /* * This nested IF statement needed to be very large in order*/
+    /* * to accommodate the necessary screen field suppression*/
+    /* * required by the application specification.  This accounts*/
+    /* * for the 'perform TS0m212' statement which will continue*/
+    /* * the nested IF in another process, therefore making TS0m210*/
+    /* * (this process) much more readable.*/
+    /* *************************************************************/
+
+    while (TS0LW01.TS0LWIXM <= 13 /* Until end of lines*/
+     && TS0LW02.TSACARCD[TS0LWIXM] != " ") /* and lines exist*/
+
+      TS0LW01.TS0LWWDT = TS0LW02.TSFDESTE[TS0LWIXM];
+                                     /* make date mmddyy*/
+      TS0LW01.TS0LWMMM = TS0LW01.TS0LWWMM; /* month*/
+      TS0LW01.TS0LWMDD = TS0LW01.TS0LWWDD; /* day*/
+      TS0LW01.TS0LWMYY = TS0LW01.TS0LWWYY; /* year*/
+      TS0LM002.TSFDESTE[TS0LWIXM] = TS0LW01.TS0LWMDT;
+
+      TS0LM002.TS5CRAFT[TS0LWIXM] = TS0LW02.TS5CRAFT[TS0LWIXM];
+      TS0LM002.TSFSHPNB[TS0LWIXM] = TS0LW02.TSFSHPNB[TS0LWIXM];
+      TS0LM002.TSEDEST[TS0LWIXM] = TS0LW02.TSEDEST[TS0LWIXM];
+      TS0LM002.XWHCD[TS0LWIXM] = TS0LW02.XWHCD[TS0LWIXM];
+      TS0LM002.TSFBOL[TS0LWIXM] = TS0LW02.TSFBOL[TS0LWIXM];
+      TS0LM002.TSHCNTNR[TS0LWIXM] = TS0LW02.TSHCNTNR[TS0LWIXM];
+      TS0LM002.SY1STNBR[TS0LWIXM] = TS0LW02.SY1STNBR[TS0LWIXM];
+      TS0LM002.SY2CLRID[TS0LWIXM] = TS0LW02.SY2CLRID[TS0LWIXM];
+      TS0LM002.XDMCD[TS0LWIXM] = TS0LW02.XDMCD[TS0LWIXM];
+      TS0LM002.TSISHPQT[TS0LWIXM] = TS0LW02.TSISHPQT[TS0LWIXM];
+
+      if (TS0LW02.TSFSHPID[TS0LWIXM] == TS0LW02.TSFSHPID[TS0LWIX2])
+         /* continue on*/
+        if (TS0LW02.TSFDESTE[TS0LWIXM] == TS0LW02.TSFDESTE[TS0LWIX2])
+          TS0LM002.TSFDESTE[TS0LWIXM] = " "; /* move ' ' to etat*/
+          TS0L212(); /* continue repeating supression*/
+        end
+      end
+
+      if (TS0LM002.TSFDESTE[TS0LWIXM] != "      ") /* if eta exists on map*/
+        set TS0LM002.TS0LMSEL[TS0LWIXM] normal; /* display the selection*/
+
+        TS0LW01.TS0LWIXW = 1; /* set index*/
+        while (TS0LW01.TS0LWIXW <= TS0LW01.TS0LWMXP) /* until end of array*/
+          if (TS0LW02.TSFSHPID[TS0LWIXM] == TS0LW01.TSWSHPID[TS0LWIXW])
+            TS0LM002.TS0LMSEL[TS0LWIXM] = "S"; /* move s to field*/
+            TS0LW01.TS0LWIXW = TS0LW01.TS0LWMXP + 1; /* end loop*/
+          else
+            TS0LW01.TS0LWIXW = TS0LW01.TS0LWIXW + 1; /* increment index*/
+          end
+        end
+
+      end
+
+      TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* Increment line index*/
+      TS0LW01.TS0LWIX2 = TS0LW01.TS0LWIX2 + 1;
+    end
+  end
+
+
+end // end TS0L260
+
+// Check attention identifier
+Function TS0L300()
+   /* ------------------------------------------------------------*/
+                /* CHECK ATTENTION IDENTIFIER*/
+
+   /* 1) If PA2 pressed, restart the application fresh.*/
+   /* 2) If fast path request, exit to requested application.*/
+   /* 3) If PF3 pressed, exit to transportation menu.*/
+   /* 4) If PF1 or PF4 pressed, transfer to HELP or main menu.*/
+   /* 5) If PF16 pressed, exit to published schedule application.*/
+   /* 6) If PF17 pressed, exit to projected schedule application.*/
+   /* 7) If any AI pressed other than ENTER, PF7, or PF8*/
+      /* indicate PF/PA key pressed error.*/
+   /* If any errors occur in transfers or keys pressed then*/
+      /* exit to redisplay the map.*/
+
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+    TS0LW01.TS0LWPSW = "N"; /* Reset problem switch*/
+    TS0LW01.TS0LWSWR = "N"; /* Reset request for data*/
+    TS0LM001.XXXPRCNM = "TS0L300"; /* Process name*/
+    exit stack; /* Exit to redisplay map*/
+  end
+
+  if (TS0LM001.CATOAP > " " /* FAST PATH was requested from map 1*/
+   || TS0LM002.CATOAP > " ") /* FAST PATH was requested from map 2*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+      if (TS0LW01.TS0LWSWM == "1") /* If already map 1*/
+        COMMAREA.CATOAP = TS0LM001.CATOAP; /* TO application*/
+        COMMAREA.CAITEM = TS0LM001.CAITEM; /* Application data*/
+      else
+        if (TS0LW01.TS0LWSWM == "2") /* If already map 2*/
+          COMMAREA.CATOAP = TS0LM002.CATOAP; /* TO application*/
+          COMMAREA.CAITEM = TS0LM002.CAITEM; /* Application data*/
+        end
+      end
+      COMMAREA.CAUSERA = " "; /* clear user area*/
+      TS0L110(); /* purge any temp storage*/
+      XSTSS01(); /* Exit to another application*/
+      if (TS0LW01.PC2CUXID != " " /* If keys exist*/
+       && TS0LW01.TS0LWBDT != " " 
+       && TS0LW01.TS0LWEDT != " ")
+        TS0LW01.TS0LWSWR = "Y"; /* set request for data to yes*/
+      end
+    else
+      converseLib.validationFailed(5); /* Indicate PF key not valid*/
+      TS0LW01.TS0LWPSW = "Y"; /* Indicate problem*/
+    end
+    if (TS0LW01.TS0LWSWM == "1") /* If already map 1*/
+      set TS0LM001.CATOAP cursor, modified, bold; /* Highlight*/
+      TS0LM001.XXXPRCNM = "TS0L300"; /* Process name*/
+    else
+      if (TS0LW01.TS0LWSWM == "2") /* If already map 2*/
+        set TS0LM002.CATOAP cursor, modified, bold; /* Highlight*/
+        TS0LM002.XXXPRCNM = "TS0L300"; /* Process name*/
+      end
+    end
+    exit stack; /* Exit to redisplay map*/
+  end
+
+  if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+    COMMAREA.CATOAP = "TS0A"; /* set to Carrier application*/
+    COMMAREA.CAITEM = " "; /* clear item field*/
+    COMMAREA.CAUSERA = " "; /* clear user area*/
+    TS0L110(); /* purge any temp storage*/
+    XSTSS01(); /* Exit to another application*/
+    TS0LM001.XXXPRCNM = "TS0L300"; /* Process name*/
+    exit stack; /* Exit to redisplay map*/
+  end
+
+  if (converseVar.eventKey is pf1 /* PF1 was pressed*/
+   || converseVar.eventKey is pf4) /* or PF4 was pressed*/
+
+    if (converseVar.eventKey is pf1) /* pf1 pressed*/
+      COMMAREA.CAITEM = "TS0LM001"; /* move in map name for help*/
+    else
+      COMMAREA.CAITEM = " "; /* clear item field*/
+    end
+
+    COMMAREA.CAUSERA = " "; /* clear user area*/
+    TS0L110(); /* purge any temp storage*/
+    XSTSS01(); /* Exit to another application*/
+    TS0LM001.XXXPRCNM = "TS0L300"; /* Process name*/
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+  if (converseVar.eventKey is pf10) /* Right screen requested*/
+    if (TS0LW01.TS0LWSWM == "1") /* If already map 1*/
+      TS0LW01.TS0LWPSW = "Y"; /* Indicate problem*/
+      TS0LM001.XXXPRCNM = "TS0L300";
+      converseLib.validationFailed(4);
+      exit stack;
+    else
+      TS0LW01.TS0LWSWM = "1"; /* Indicate map 1*/
+    end
+  end
+
+  if (converseVar.eventKey is pf11) /* Left screen requested*/
+    if (TS0LW01.TS0LWSWM == "2") /* If already map 2*/
+      TS0LW01.TS0LWPSW = "Y"; /* Indicate problem*/
+      TS0LM002.XXXPRCNM = "TS0L300";
+      converseLib.validationFailed(4);
+      exit stack;
+    else
+      TS0LW01.TS0LWSWM = "2"; /* Indicate map 2*/
+    end
+  end
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf7   /* and not scroll request*/
+   && converseVar.eventKey not pf8   
+   && converseVar.eventKey not pf10  
+   && converseVar.eventKey not pf11  
+   && converseVar.eventKey not pf12)
+    TS0LM001.XXXPRCNM = "TS0M200"; /* Process name*/
+    TS0LW01.TS0LWPSW = "Y"; /* Indicate problem*/
+    converseLib.validationFailed(4); /* Indicate invalid attention key*/
+
+    if (converseVar.eventKey is pa1 /* PA1 was pressed*/
+     || converseVar.eventKey is pa3) /* or PA3 was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before redisplay*/
+    end
+    exit stack; /* Exit to redisplay map*/
+  end
+
+
+end // end TS0L300
+
+// Reset highlighted fields
+Function TS0L400()
+   /* ------------------------------------------------------------*/
+                /* RESET HIGHLIGHTED FIELDS*/
+
+   /* 1) Reset field attributes to normal intensity.*/
+
+   /* ------------------------------------------------------------*/
+
+  set TS0LM001.PC2CUXID initialAttributes; /* Reset all fields*/
+  set TS0LM001.KUCCOID initialAttributes;
+  set TS0LM001.KUMSTRID initialAttributes;
+  set TS0LM001.XNXCD initialAttributes;
+  set TS0LM001.TS0LMYSS initialAttributes;
+  set TS0LM001.XGPCD initialAttributes;
+  set TS0LM001.TSNBEGDT initialAttributes;
+  set TS0LM001.TSNENDDT initialAttributes;
+  set TS0LM001.TS0LM-CUST-ORD-ID initialAttributes;
+  set TS0LM001.TS0LM-NIKE-ORD-ID initialAttributes;
+
+  set TS0LM002.PC2CUXID initialAttributes;
+  set TS0LM002.KUCCOID initialAttributes;
+  set TS0LM002.KUMSTRID initialAttributes;
+  set TS0LM002.XNXCD initialAttributes;
+  set TS0LM002.TS0LMYSS initialAttributes;
+  set TS0LM002.XGPCD initialAttributes;
+  set TS0LM002.TSNBEGDT initialAttributes;
+  set TS0LM002.TSNENDDT initialAttributes;
+  set TS0LM002.TS0LM-CUST-ORD-ID initialAttributes;
+  set TS0LM002.TS0LM-NIKE-ORD-ID initialAttributes;
+
+  set TS0LM001.CATOAP initialAttributes; /* Commarea TO application*/
+  set TS0LM001.CAITEM initialAttributes; /* Commarea application data*/
+  set TS0LM002.CATOAP initialAttributes; /* Commarea TO application*/
+  set TS0LM002.CAITEM initialAttributes; /* Commarea application data*/
+
+  TS0LW01.TS0LWIXM = 1; /* Initialize line index*/
+  while (TS0LW01.TS0LWIXM <= 13) /* Until end of lines*/
+    if (TS0LM001.TSFDESTE[TS0LWIXM] != " ") /* if eta exists*/
+      set TS0LM001.TS0LMSEL[TS0LWIXM] normal; /* Reset select flag*/
+    end
+    if (TS0LM002.TSFDESTE[TS0LWIXM] != "      ") /* if eta exists*/
+      set TS0LM002.TS0LMSEL[TS0LWIXM] normal; /* Reset select flag*/
+    end
+    TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* Increment line index*/
+  end
+
+
+end // end TS0L400
+
+// Verify the entered data LEFT
+Function TS0L500()
+   /* ------------------------------------------------------------*/
+                /* VERIFY THE ENTERED DATA*/
+
+   /* 1) If caitem entered and no fast path then error.*/
+   /* 2) If scroll request then verify that pages exist to scroll*/
+   /* 3) If any key fields entered then validate them*/
+
+   /* ------------------------------------------------------------*/
+
+  if (TS0LM001.CAITEM > " ") /* Application data was entered*/
+    set TS0LM001.CAITEM cursor, modified, bold; /* Highlight data*/
+    converseLib.validationFailed(7); /* Enter only with FAST PATH*/
+    TS0LW01.TS0LWPSW = "Y"; /* indicate error message*/
+    TS0LM001.XXXPRCNM = "TS0L500"; /* Process name*/
+  else
+
+    if (converseVar.eventKey is pf7 /* Scroll back request*/
+     || converseVar.eventKey is pf8) /* or scroll forward request*/
+
+      TS0L510(); /* Verify scroll request*/
+
+      TS0L-52000(); /* Verify data entered*/
+
+    else
+
+      if (TS0LM001.PC2CUXID == " " /* If no data entered*/
+       && TS0LM001.TS0LMYSS == " " 
+       && TS0LM001.XGPCD == " "    
+       && TS0LM001.TSNBEGDT == " " 
+       && TS0LM001.TSNENDDT == " " 
+       && TS0LM001.KUCCOID == 0    
+       && TS0LM001.KUMSTRID == 0   
+       && TS0LM001.XNXCD == 0      
+       && TS0LM001.TS0LM-CUST-ORD-ID == 0
+       && TS0LM001.TS0LM-NIKE-ORD-ID == 0)
+
+        TS0L110(); /* purge temporary storage*/
+
+        set TS0LW02 empty; /* empty screen ws*/
+
+        TS0LW01.TS0LWIXM = 1; /* set index to 1*/
+        while (TS0LW01.TS0LWIXM <= TS0LW01.TS0LWMXP) /* until end array*/
+          TS0LW01.TSWSHPID[TS0LWIXM] = 0; /* clear fields*/
+          TS0LW01.TSWBOL[TS0LWIXM] = " ";
+          TS0LW01.TSWCARCD[TS0LWIXM] = " ";
+          TS0LW01.TSWCRAFT[TS0LWIXM] = " ";
+          TS0LW01.TSWSHPNB[TS0LWIXM] = " ";
+          TS0LW01.TSWORIG[TS0LWIXM] = " ";
+          TS0LW01.TSWDEST[TS0LWIXM] = " ";
+          TS0LW01.TSWXWHCD[TS0LWIXM] = " ";
+          TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* increment index*/
+        end
+
+        TS0LW01.PC2CUXID = " "; /* Save the keys*/
+        TS0LW01.TS0LMYSS = " ";
+        TS0LW01.XGPCD = " ";
+        TS0LW01.TS0LWBDT = " ";
+        TS0LW01.TS0LWEDT = " ";
+        TS0LW01.KUCCOID = 0;
+        TS0LW01.KUMSTRID = 0;
+        TS0LW01.XNXCD = 0;
+        TS0LW01.TS0LM-CUST-ORD-ID = 0;
+        TS0LW01.TS0LM-NIKE-ORD-ID = 0;
+        set TS0LM001 initial; /* clear map*/
+        TS0LW01.TS0LWPSW = "Y"; /* indicate error message*/
+        set TS0LM001.PC2CUXID cursor; /* set cursor*/
+        converseLib.validationFailed(34); /* data must be entered*/
+        TS0LM001.XXXPRCNM = "TS0L500"; /* process name*/
+      else
+        if (TS0LM001.PC2CUXID != TS0LW01.PC2CUXID
+         /* If any new data entered*/
+         || TS0LM001.TS0LMYSS != TS0LW01.TS0LMYSS
+         || TS0LM001.XGPCD != TS0LW01.XGPCD
+         || TS0LM001.TSNBEGDT != TS0LW01.TS0LWBDT
+         || TS0LM001.TSNENDDT != TS0LW01.TS0LWEDT
+         || TS0LM001.KUCCOID != TS0LW01.KUCCOID
+         || TS0LM001.KUMSTRID != TS0LW01.KUMSTRID
+         || TS0LM001.XNXCD != TS0LW01.XNXCD
+         || TS0LM001.TS0LM-CUST-ORD-ID != TS0LW01.TS0LM-CUST-ORD-ID
+         || TS0LM001.TS0LM-NIKE-ORD-ID != TS0LW01.TS0LM-NIKE-ORD-ID
+         || TS0LW01.TS0LW-NO-DATA-MAP-1 == "Y"
+         || TS0LW01.TS0LW-NO-DATA-MAP-2 == "Y")
+
+          TS0L110(); /* purge temporary storage*/
+          set TS0LW02 empty; /* empty screen ws*/
+
+          TS0LW01.TS0LWIXM = 1; /* set index to 1*/
+          while (TS0LW01.TS0LWIXM <= TS0LW01.TS0LWMXP) /* until end array*/
+            TS0LW01.TSWSHPID[TS0LWIXM] = 0; /* clear shpid field*/
+            TS0LW01.TSWBOL[TS0LWIXM] = " ";
+            TS0LW01.TSWCARCD[TS0LWIXM] = " ";
+            TS0LW01.TSWCRAFT[TS0LWIXM] = " ";
+            TS0LW01.TSWSHPNB[TS0LWIXM] = " ";
+            TS0LW01.TSWORIG[TS0LWIXM] = " ";
+            TS0LW01.TSWDEST[TS0LWIXM] = " ";
+            TS0LW01.TSWXWHCD[TS0LWIXM] = " ";
+            TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* increment index*/
+          end
+
+          TS0LW01.PC2CUXID = TS0LM001.PC2CUXID;
+          TS0LW01.TS0LMYSS = TS0LM001.TS0LMYSS;
+          TS0LW01.XGPCD = TS0LM001.XGPCD;
+          TS0LW01.TS0LWBDT = TS0LM001.TSNBEGDT;
+          TS0LW01.TS0LWEDT = TS0LM001.TSNENDDT;
+          TS0LW01.KUCCOID = TS0LM001.KUCCOID;
+          TS0LW01.KUMSTRID = TS0LM001.KUMSTRID;
+          TS0LW01.XNXCD = TS0LM001.XNXCD;
+          TS0LW01.TS0LM-CUST-ORD-ID = TS0LM001.TS0LM-CUST-ORD-ID;
+          TS0LW01.TS0LM-NIKE-ORD-ID = TS0LM001.TS0LM-NIKE-ORD-ID;
+          TS0LW01.TS0LW-PRDCU-PROC-IND = TS0LM001.TS0LM-PRDCU-PROC-IND;
+          set TS0LM001 initial; /* clear map*/
+          set TS0LM002 initial; /* clear map*/
+
+          TS0LM001.PC2CUXID = TS0LW01.PC2CUXID;
+          TS0LM001.TS0LMYSS = TS0LW01.TS0LMYSS;
+          TS0LM001.XGPCD = TS0LW01.XGPCD;
+          TS0LM001.TSNBEGDT = TS0LW01.TS0LWBDT;
+          TS0LM001.TSNENDDT = TS0LW01.TS0LWEDT;
+          TS0LM001.KUCCOID = TS0LW01.KUCCOID;
+          TS0LM001.KUMSTRID = TS0LW01.KUMSTRID;
+          TS0LM001.XNXCD = TS0LW01.XNXCD;
+          TS0LM001.TS0LM-CUST-ORD-ID = TS0LW01.TS0LM-CUST-ORD-ID;
+          TS0LM001.TS0LM-NIKE-ORD-ID = TS0LW01.TS0LM-NIKE-ORD-ID;
+          TS0LM001.TS0LM-PRDCU-PROC-IND = TS0LW01.TS0LW-PRDCU-PROC-IND;
+
+          TS0LM002.PC2CUXID = TS0LW01.PC2CUXID;
+          TS0LM002.TS0LMYSS = TS0LW01.TS0LMYSS;
+          TS0LM002.XGPCD = TS0LW01.XGPCD;
+          TS0LM002.TSNBEGDT = TS0LW01.TS0LWBDT;
+          TS0LM002.TSNENDDT = TS0LW01.TS0LWEDT;
+          TS0LM002.KUCCOID = TS0LW01.KUCCOID;
+          TS0LM002.KUMSTRID = TS0LW01.KUMSTRID;
+          TS0LM002.XNXCD = TS0LW01.XNXCD;
+          TS0LM002.TS0LM-CUST-ORD-ID = TS0LW01.TS0LM-CUST-ORD-ID;
+          TS0LM002.TS0LM-NIKE-ORD-ID = TS0LW01.TS0LM-NIKE-ORD-ID;
+          TS0LM002.TS0LM-PRDCU-PROC-IND = TS0LW01.TS0LW-PRDCU-PROC-IND;
+
+          TS0LW01.TS0LWSWR = "Y"; /* set request for data to yes*/
+
+          TS0L-52000(); /* Verify any changed data*/
+
+        else /* If no data was changed*/
+
+          TS0L-52000(); /* Verify any changed data*/
+
+        end
+      end
+    end
+  end
+
+
+   /* **                                                        ***/
+   /* ********************** End of TS0L500 ***********************/
+end // end TS0L500
+
+// Verify scroll request
+Function TS0L510()
+   /* ------------------------------------------------------------*/
+
+               /* VERIFY SCROLL REQUEST*/
+
+   /* 1) Ensure that pages exist to scroll forward or back.*/
+
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   && TS0LW01.TS0LWTSP < 2)       /* and no previous pages*/
+    TS0LW01.TS0LWPSW = "Y"; /* indicate problem*/
+    TS0LM001.XXXPRCNM = "TS0L510"; /* Process name*/
+    converseLib.validationFailed(2); /* No previous page to display*/
+  end
+
+  if (converseVar.eventKey is pf8 /* Scroll forward request*/
+   && TS0LW01.TS0LWTSP >= TS0LW01.TA5TSQIX) /* and no more pages*/
+    TS0LW01.TS0LWPSW = "Y"; /* indicate problem*/
+    TS0LM001.XXXPRCNM = "TS0L510"; /* Process name*/
+    converseLib.validationFailed(3); /* No more pages to display*/
+  end
+
+
+end // end TS0L510
+
+// Process valid input request
+Function TS0L600()
+   /* ------------------------------------------------------------*/
+                /* PROCESS VALID INPUT REQUESTS*/
+
+   /* 1) Record map shipment number selections.*/
+   /* 2) If a scroll request, adjust temp storage page number.*/
+   /* 3) If enter is pressed and no errors set request for data*/
+      /* to yes.*/
+
+   /* ------------------------------------------------------------*/
+
+  if (TS0LW01.TS0LWPSW == "N") /* no errors*/
+
+    /* ------------------------------------------------------------*/
+                  /* Process Screen Selections*/
+
+       /* 1) check to see if any selections have been made*/
+       /* 2) if a selection has been made, then check to see*/
+          /* if this shipment id has already been recorded in*/
+          /* the shipment id array.*/
+       /* 3) if the selction has not been recorded yet or has*/
+          /* been deleted from the screen, then update the*/
+          /* shipment id array with current values.*/
+
+    /* ------------------------------------------------------------*/
+
+    TS0LW01.TS0LWIXM = 1; /* initialize index*/
+    while (TS0LW01.TS0LWIXM <= 13) /* until end of detail*/
+      if (TS0LM001.TSFDESTE[TS0LWIXM] != " " /* for each selection field*/
+       || TS0LM002.TSFDESTE[TS0LWIXM] != " ") /* for each selection field*/
+        if (TS0LM001.TS0LMSEL[TS0LWIXM] == "S" /* if selection made*/
+         || TS0LM002.TS0LMSEL[TS0LWIXM] == "S")
+          TS0LW01.TS0LWSFL = "N"; /* set selection flag*/
+          TS0LW01.TS0LWIX2 = 1; /* set index*/
+          while (TS0LW01.TS0LWIX2 <= TS0LW01.TS0LWMXP) /* until end of array*/
+            if (TS0LW02.TSFSHPID[TS0LWIXM] == TS0LW01.TSWSHPID[TS0LWIX2])
+              TS0LW01.TS0LWSFL = "Y"; /* set selection flag*/
+              TS0LW01.TS0LWIX2 = TS0LW01.TS0LWMXP + 1; /* end loop*/
+            else
+              TS0LW01.TS0LWIX2 = TS0LW01.TS0LWIX2 + 1; /* increment index*/
+            end
+          end
+          if (TS0LW01.TS0LWSFL == "N") /* if shpid does not exist*/
+            TS0LW01.TS0LWIX2 = 1; /* set index*/
+            while (TS0LW01.TS0LWIX2 <= TS0LW01.TS0LWMXP) /* until end array*/
+              if (TS0LW01.TSWSHPID[TS0LWIX2] == 0) /* if field is open*/
+                TS0LW01.TSWSHPID[TS0LWIX2] = TS0LW02.TSFSHPID[TS0LWIXM];
+                TS0LW01.TSWBOL[TS0LWIX2] = TS0LW02.TSFBOL[TS0LWIXM];
+                TS0LW01.TSWCARCD[TS0LWIX2] = TS0LW02.TSACARCD[TS0LWIXM];
+                TS0LW01.TSWCRAFT[TS0LWIX2] = TS0LW02.TS5CRAFT[TS0LWIXM];
+                TS0LW01.TSWSHPNB[TS0LWIX2] = TS0LW02.TSFSHPNB[TS0LWIXM];
+                TS0LW01.TSWORIG[TS0LWIX2] = TS0LW02.TSEORIG[TS0LWIXM];
+                TS0LW01.TSWDEST[TS0LWIX2] = TS0LW02.TSEDEST[TS0LWIXM];
+                TS0LW01.TSWXWHCD[TS0LWIX2] = TS0LW02.XWHCD[TS0LWIXM];
+                TS0LW01.TS0LWIX2 = TS0LW01.TS0LWMXP + 1; /* end loop*/
+              else
+                TS0LW01.TS0LWIX2 = TS0LW01.TS0LWIX2 + 1; /* increment index*/
+              end
+            end
+          end
+        else
+                 /* MOVE 1 TO TS0LW01.TS0LWIX2     ; set index*/
+          while (TS0LW01.TS0LWIX2 <= TS0LW01.TS0LWMXP) /* until end of array*/
+            if (TS0LW01.TSWSHPID[TS0LWIX2] == TS0LW02.TSFSHPID[TS0LWIXM])
+              TS0LW01.TSWSHPID[TS0LWIX2] = 0;
+              TS0LW01.TSWBOL[TS0LWIX2] = " ";
+              TS0LW01.TSWCARCD[TS0LWIX2] = " ";
+              TS0LW01.TSWCRAFT[TS0LWIX2] = " ";
+              TS0LW01.TSWSHPNB[TS0LWIX2] = " ";
+              TS0LW01.TSWORIG[TS0LWIX2] = " ";
+              TS0LW01.TSWDEST[TS0LWIX2] = " ";
+              TS0LW01.TSWXWHCD[TS0LWIX2] = " ";
+            end
+            TS0LW01.TS0LWIX2 = TS0LW01.TS0LWIX2 + 1; /* increment index*/
+          end
+        end
+      end
+      TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* increment index*/
+    end
+
+    if (converseVar.eventKey is pf7) /* Scroll back requested*/
+      TS0LW01.TS0LWTSP = TS0LW01.TS0LWTSP - 1; /* Decrement page number*/
+    else
+      if (converseVar.eventKey is pf8) /* Scroll forward requested*/
+        TS0LW01.TS0LWTSP = TS0LW01.TS0LWTSP + 1; /* Increment page number*/
+      else
+        if (converseVar.eventKey is pf12) /* Scroll forward requested*/
+
+          /* ------------------------------------------------------------*/
+             /* transfer to ts0j, shipment maintenance*/
+          /* ------------------------------------------------------------*/
+
+          TS0LW01.TS0LWIXM = 1; /* set index*/
+          TS0LW01.TS0LWIXW = 1;
+          while (TS0LW01.TS0LWIXM <= TS0LW01.TS0LWMXP) /* while le max*/
+            if (TS0LW01.TSWSHPID[TS0LWIXM] > 0) /* if data exists*/
+              TSWREC.TSWARR1[TS0LWIXW] = TS0LW01.TSWARR1[TS0LWIXM];
+              TSWREC.TSWINQFL = "Y"; /* indicate inquiry exists*/
+              TS0LW01.TS0LWIXW = TS0LW01.TS0LWIXW + 1; /* incr index*/
+            end
+            TS0LW01.TS0LWIXM = TS0LW01.TS0LWIXM + 1; /* incr index*/
+          end
+
+          if (TSWREC.TSWINQFL == " ") /* no ship id's found in array*/
+            TS0LW01.TS0LWPSW = "Y"; /* indicate error*/
+            converseLib.validationFailed(153); /* error message*/
+            TS0LM001.XXXPRCNM = "TS0L600"; /* process name*/
+          else
+            TSWREC.TSWSHPOS = 1; /* set ship id index position*/
+            COMMAREA.CATOAP = "TS0J"; /* to application*/
+            COMMAREA.CAFROMAP = "TS0L"; /* from application*/
+            TSWREC.TSWFRAPP = "TS0L"; /* from application*/
+            COMMAREA.CAUSERA = TSWREC.CAUSERA; /* move pass data*/
+            COMMAREA.CAITEM = " "; /* application data*/
+            TS0L110(); /* purge any temporary storage*/
+            XSTSS01(); /* exit to another application*/
+            TS0LW01.TS0LWSWR = "Y"; /* set request for data to yes*/
+          end
+
+        else
+          if (converseVar.eventKey is enter /* if enter is pressed*/
+           && TS0LW01.TS0LWPSW == "N")      /* and no errors*/
+          end
+        end
+      end
+    end
+  end
+
+
+end // end TS0L600
+
+// Get po id and order type
+Function TS0LS01()
+   /* ------------------------------------------------------------*/
+   /* Select a unique row from the PC3REC*/
+   /* If not available, return an error message to the user.*/
+   /* If any other, indicate system error.*/
+   /* ------------------------------------------------------------*/
+
+  set PCYREC empty; /* Clear the passing record*/
+  set PC3REC empty; /* Clear the P.O. header record*/
+  PC3REC.XGPCD = TSWREC.XGPCD; /* gpc*/
+  PC3REC.PC3PONBR = TS7REC.PC3PONBR; /* P.O. type*/
+  PCYREC.PCYFUNC = "S "; /* Select alternate*/
+
+  try
+    call "IO3270" (PCYREC, SQLCA, PC3REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+  if (sysVar.errorCode == "00000000") /* Good call*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* Row found*/
+     || SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+  end
+
+  if (sysVar.errorCode == "00000000" /* Good call*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* Resource not available*/
+    converseLib.validationFailed(11); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+  else
+    converseLib.validationFailed(10); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    converseLib.clearScreen();
+     /* Clear screen before redisplay*/
+  end
+
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* Sql commarea*/
+  TA1REC.TA1MAP = sysVar.errorCode; /* Csp return code*/
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = "TS0LS01"; /* Process name*/
+  TA1REC.TA1LOC = "SELECT UNIQUE P.O. HEADER ROW  ";
+  TA1REC.TA1DBASE = "DPRODC  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPOHDR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PC3REC.PC3KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  TS0LM001.XXXPRCNM = "TS0LS01"; /* Process name*/
+  TS0LW01.TS0LWPSW = "Y"; /* INDICATE PROBLEM*/
+
+
+end // end TS0LS01
+
+//*** RECORD=TS0LW01 ****
+// Working storage for TS0G - Schedule Inquiry
+// ***********************
+Record TS0LW01 type basicRecord
+  10 TS0LWIXM TS0LWIXM ; 
+  10 TS0LWIXW TS0LWIXW ; 
+  10 TS0LWIX2 TS0LWIX2 ; 
+  10 TS0LWMXP TS0LWMXP ; 
+  10 TS0LWSW1 TS0LWSW1 ; 
+  10 TS0LWSW2 TS0LWSW2 ; 
+  10 TS0LWSW3 TS0LWSW3 ; 
+  10 TS0LWSWM TS0LWSWM ; 
+  10 TS0LWSWR TS0LWSWR ; 
+  10 TS0LWPSW TS0LWPSW ; 
+  10 TS0LW-NO-DATA-MAP-1 TS0LW-NO-DATA-MAP-1 ; 
+  10 TS0LW-NO-DATA-MAP-2 TS0LW-NO-DATA-MAP-2 ; 
+  10 TS0LWSFL TS0LWSFL ; 
+  10 TS0LWCU5 TS0LWCU5 ; 
+    15 TS0LWCU1 TS0LWCU1 [5] ; 
+  10 PC2CUXID PC2CUXID ; 
+  10 PC2NAME PC2NAME ; 
+  10 KUCCOID KUCCOID ; 
+  10 KUMSTRID KUMSTRID ; 
+  10 XNXCD XNXCD ; 
+  10 TS0LM-CUST-ORD-ID TS0LM-CUST-ORD-ID ; 
+    15 * char(8) ; 
+    15 OP1PARTN OP1PARTN ; 
+  10 TS0LM-NIKE-ORD-ID TS0LM-NIKE-ORD-ID ; 
+  10 TS0LW-PRDCU-PROC-IND TS0LW-PRDCU-PROC-IND ; 
+  10 TS0LMYSS TS0LMYSS ; 
+  10 YSSDESC YSSDESC ; 
+  10 XGPCD XGPCD ; 
+  10 TS0LWBDT TS0LWBDT ; 
+  10 TS0LWEDT TS0LWEDT ; 
+  10 TSNBEGDT TSNBEGDT ; 
+  10 TSNENDDT TSNENDDT ; 
+  10 TSWARR1 TSWARR1 [10] ; 
+    15 TSWSHPID TSWSHPID ; 
+    15 TSWBOL TSWBOL ; 
+    15 TSWCARCD TSWCARCD ; 
+    15 TSWCRAFT TSWCRAFT ; 
+    15 TSWSHPNB TSWSHPNB ; 
+    15 TSWORIG TSWORIG ; 
+    15 TSWDEST TSWDEST ; 
+    15 TSWXWHCD TSWXWHCD ; 
+  10 TS0LWDAT TS0LWDAT ; 
+    15 TS0LWPCN TS0LWPCN ; 
+    15 TS0LWPYY TS0LWPYY ; 
+    15 TS0LWPM1 TS0LWPM1 ; 
+    15 TS0LWPM2 TS0LWPM2 ; 
+  10 TS0LWWDT TS0LWWDT ; 
+    15 TS0LWWCC TS0LWWCC ; 
+    15 TS0LWWYY TS0LWWYY ; 
+    15 TS0LWWMM TS0LWWMM ; 
+    15 TS0LWWDD TS0LWWDD ; 
+  10 TS0LWMDT TS0LWMDT ; 
+    15 TS0LWMMM TS0LWMMM ; 
+    15 TS0LWMDD TS0LWMDD ; 
+    15 TS0LWMYY TS0LWMYY ; 
+  10 TS0LWTSP TS0LWTSP ; 
+  10 TA5TSQIX TA5TSQIX ; 
+  10 TS0LWORI TS0LWORI ; 
+    15 TS0LWOR1 TS0LWOR1 ; 
+    15 TS0LWOR2 TS0LWOR2 ; 
+      20 TS0LWOR3 TS0LWOR3 ; 
+      20 TS0LWOR4 TS0LWOR4 ; 
+  10 TS0LWSOI TS0LWSOI ; 
+end // end TS0LW01
+
+//*** RECORD=TS0LW02 ****
+// Temporary storage record for TS0G - Schedule Inquiry
+// ***********************
+Record TS0LW02 type basicRecord
+  10 TS0LWLEN TS0LWLEN ; 
+  10 TS0LWLIN TS0LWLIN [13] ; 
+    15 TSFSHPID TSFSHPID ; 
+    15 TSFBOL TSFBOL ; 
+    15 TSHCNTNR TSHCNTNR ; 
+    15 TSFDESTE TSFDESTE ; 
+    15 TSEORIG TSEORIG ; 
+    15 TSEDEST TSEDEST ; 
+    15 XWHCD XWHCD ; 
+    15 TSACARCD TSACARCD ; 
+    15 TS5CRAFT TS5CRAFT ; 
+    15 TSFSHPNB TSFSHPNB ; 
+    15 YSSCD YSSCD ; 
+    15 TS0LWPOI TS0LWPOI ; 
+      20 TS0LMPYR TS0LMPYR ; 
+      20 TS0LMPMO TS0LMPMO ; 
+      20 TS0LMDMO TS0LMDMO ; 
+      20 FY1FCTYC FY1FCTYC ; 
+    15 PC4ORTYP PC4ORTYP ; 
+    15 PC3PONBR PC3PONBR ; 
+    15 PC2CUXID PC2CUXID ; 
+    15 OP1CUOID OP1CUOID ; 
+    15 OP1NORID OP1NORID ; 
+    15 SY1STNBR SY1STNBR ; 
+    15 SY2CLRID SY2CLRID ; 
+    15 XDMCD XDMCD ; 
+    15 TSISHPQT TSISHPQT ; 
+    15 TSIDETFL TSIDETFL ; 
+end // end TS0LW02
+
+// Customer order id map display
+DataItem TS0LM-CUST-ORD-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Nike order id map display
+DataItem TS0LM-NIKE-ORD-ID num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// po id demand month
+DataItem TS0LMDMO char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// po id production month
+DataItem TS0LMPMO char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// po id production year
+DataItem TS0LMPYR char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// yss-shp-stat-cd
+DataItem TS0LMYSS char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// No data on map 1 to display
+DataItem TS0LW-NO-DATA-MAP-1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// No data on map 2 to display
+DataItem TS0LW-NO-DATA-MAP-2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TS0LW-PRDCU-PROC-IND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// map begin parm date
+DataItem TS0LWBDT char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// single customer xref chara.
+DataItem TS0LWCU1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// PC_PRDCU_ID split
+DataItem TS0LWCU5 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// date
+DataItem TS0LWDAT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// map end parm date
+DataItem TS0LWEDT char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields 2
+DataItem TS0LWIX2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem TS0LWIXM smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem TS0LWIXW smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Temporary storage length
+DataItem TS0LWLEN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Data Display Line
+DataItem TS0LWLIN char(105)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// working map day
+DataItem TS0LWMDD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// working map date mmddyy
+DataItem TS0LWMDT char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// working map month
+DataItem TS0LWMMM char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// max pass shipment array lines
+DataItem TS0LWMXP smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// working map year
+DataItem TS0LWMYY char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TS0LWOR1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TS0LWOR2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TS0LWOR3 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TS0LWOR4 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem TS0LWORI num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// po id century
+DataItem TS0LWPCN char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// month
+DataItem TS0LWPM1 char(2)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// delivery month
+DataItem TS0LWPM2 char(2)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// po id
+DataItem TS0LWPOI char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Problem switch
+DataItem TS0LWPSW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// year
+DataItem TS0LWPYY char(2)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Selection flag
+DataItem TS0LWSFL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Shipping order number
+DataItem TS0LWSOI bin(18,3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Cursor end of file switch1
+DataItem TS0LWSW1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Cursor end of file switch2
+DataItem TS0LWSW2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Cursor end of file switch3
+DataItem TS0LWSW3 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Working storage map switch
+DataItem TS0LWSWM char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Request for data switch
+DataItem TS0LWSWR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Current temporary storage page
+DataItem TS0LWTSP num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// working century
+DataItem TS0LWWCC num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// working day
+DataItem TS0LWWDD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// working date ccyymmdd
+DataItem TS0LWWDT num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// working month
+DataItem TS0LWWMM char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// working year
+DataItem TS0LWWYY char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+
