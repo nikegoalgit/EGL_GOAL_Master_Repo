@@ -1,0 +1,1839 @@
+package da01;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import da.common.*;
+import ta.common.*;
+import vv.common.*;
+import ww.common.*;
+//*** PROGRAM=DA01 ****
+// NIKE TABLE HANDLER - STATUS DISPLAY/UPDATE
+// 
+// OVERVIEW: This application displays a list of transactions
+//           in the DADMIN.VDATRN01 table, depending on the
+//           entered selection criteria. The user may change
+//           the transaction status to approved or rejected or
+//           they may delete the transaction. This application
+//           will also submit the batch process.
+// 
+// DATE CREATED: 05/27/96
+//       AUTHOR: Leslie Rainey
+// 
+// MAINTENANCE HISTORY:
+// 
+//     date     by whom     overview of changes made
+//   --------  ----------  ------------------------------------
+//   10-03-96  sjohn6      regen to pick up srgp xsdas
+//   10-11-96  OENFIE      chg to not allow approve/reject
+//                         trans in edit/complete/process stat
+// *********************
+Program DA01 type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "DA00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  DA01W01 DA01W01; // record
+  DA01W02 DA01W02; // record
+  DAWREC DAWREC; // record
+  ERRSQLCA ERRSQLCA; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  VDATRN01 VDATRN01; // record
+  WDA1140 WDA1140; // record
+  XSDAW01 XSDAW01; // record
+  XSDAW02 XSDAW02; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use DAWTBL; // table
+  use DA01M.DA01M001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    DA01P00-DRIVER: DA01P00-DRIVER();
+    exit program;
+  end // end main
+end // end DA01
+
+// DRIVER FOR APPLICATION
+Function DA01P00-DRIVER()
+  /* **************************************************************/
+  /* DRIVER FOR APPLICATION*/
+  /* **************************************************************/
+
+  DA01P10-INITIALIZE(); /* Initialize application*/
+
+  DA01P20-BUILD-MAP();
+
+  while (DAWREC.DAW-TERM-APPL-FL == "N")
+    DA01P30-MAIN-MAP(); /* Process map until ready to exit*/
+  end
+
+  DA01P99-TERMINATE(); /* Terminate the application*/
+
+  /* **************/
+  /* ****************** END DA01P00 *******************************/
+  /* **************/
+end // end DA01P00-DRIVER
+
+// INITIALIZE THE APPLICATION
+Function DA01P10-INITIALIZE()
+  /* **********************************************************/
+  /* This process initializes the program work area and map.*/
+  /* **********************************************************/
+
+  XSENTRY(); /* Check entry security*/
+
+  XSSEGTR(); /* Set segmented transaction id*/
+
+  /* Initialize records*/
+
+  DAWREC.DAWGROUP = COMMAREA.CAUSERA; /* restore system record*/
+  if (DAWREC.DAW-INIT != "INIT")
+    set DAWREC empty;
+    DAWREC.DAW-INIT = "INIT";
+  end
+
+  set DA01W01 empty; /* Working storage record*/
+  set DA01W02 empty; /* Temp storage record*/
+  set VDATRN01 empty; /* Transaction DB2 record*/
+  set WDA1140 empty; /* Transaction DB2 record*/
+
+  DAWREC.DAW-TERM-APPL-FL = "N";
+  DAWREC.DAW-EDIT-ERROR-FL = "N";
+
+   /* Get change date*/
+
+  DAWREC.DAW-SYS-DATE = VGVar.currentShortGregorianDate; /* yymmdd*/
+  if (DAWREC.DAW-DATE-COMP-YY > 57)
+    DAWREC.DAW-DATE-COMP-CC = 19;
+  else
+    DAWREC.DAW-DATE-COMP-CC = 20;
+  end
+  DAWREC.ZZ-CHNG-DT = DAWREC.DAW-DATE-COMP;
+
+  /* Initialize and move standard information to the map*/
+
+  set DA01M001 initial;
+  XSDAS-FMT-DB2-MDCY();
+  DA01M001.DAW-MAP-DATE = DAWREC.DAW-DATE-MDCY;
+  DA01M001.DAW-MAP-TIME = VGVar.currentFormattedTime;
+
+  if (COMMAREA.CAMSG != " "
+   && COMMAREA.CAFRMSYS == "DA")
+    DA01M001.DAW-INFO-MESSAGE = COMMAREA.CAMSG; /* commarea message*/
+  end
+
+  /* **************/
+  /* ****************** END DA01P10 ******************************/
+  /* **************/
+end // end DA01P10-INITIALIZE
+
+Function DA01P20-BUILD-MAP()
+  /* **************************************************************/
+  /* Build the map with whatever infomation is available*/
+  /* **************************************************************/
+
+  if (DAWREC.DAW-RETURN-TO-DA01-FL == "Y") /* Returning from a DA maint appl.*/
+
+    WDA1140.WDA1140-GROUP = DAWREC.WDA1140-GROUP;
+    DAWREC.DAW-VDATRN01-KEY = " ";
+    DAWREC.WDA1140-GROUP = " ";
+
+    if (WDA1140.WDA1140-TABLE-SELECTION == "*")
+      DA01M001.DA01M-TABLE-SELECTION = " ";
+    else
+      DA01M001.DA01M-TABLE-SELECTION = WDA1140.WDA1140-TABLE-SELECTION;
+    end
+
+    if (WDA1140.WDA1140-STATUS-SELECTION == "*")
+      DA01M001.DA01M-STATUS-SELECTION = " ";
+    else
+      DA01M001.DA01M-STATUS-SELECTION = WDA1140.WDA1140-STATUS-SELECTION;
+    end
+
+    DAWREC.DAW-DATE-COMP = WDA1140.WDA1140-BEGIN-DATE;
+    DAWREC.DAW-DTE-MDCY-MM = DAWREC.DAW-DATE-COMP-MM;
+    DAWREC.DAW-DTE-MDCY-DD = DAWREC.DAW-DATE-COMP-DD;
+    DAWREC.DAW-DTE-MDCY-CC = DAWREC.DAW-DATE-COMP-YY;
+    DAWREC.DAW-DTE-MDCY-YY = DAWREC.DAW-DATE-COMP-YY;
+    DA01M001.DA01M-BEGIN-DATE = DAWREC.DAW-DTE-MDCY;
+
+    DAWREC.DAW-DATE-COMP = WDA1140.WDA1140-END-DATE;
+    DAWREC.DAW-DTE-MDCY-MM = DAWREC.DAW-DATE-COMP-MM;
+    DAWREC.DAW-DTE-MDCY-DD = DAWREC.DAW-DATE-COMP-DD;
+    DAWREC.DAW-DTE-MDCY-CC = DAWREC.DAW-DATE-COMP-YY;
+    DAWREC.DAW-DTE-MDCY-YY = DAWREC.DAW-DATE-COMP-YY;
+    DA01M001.DA01M-END-DATE = DAWREC.DAW-DTE-MDCY;
+
+    DA01P63-EDIT-CRI();
+
+    DA01P72-BUILD-TSQ();
+
+    if (DA01W01.DA01W-TEMP-STORAGE-EXISTS == "Y"
+     && DAWREC.DAW-CURR-PAGE != DA01M001.DAW-CURR-PAGE)
+      DA01S-TS-READ-PAGE();
+      DA01P74-TSQ-TO-MAP();
+    else
+      DA01M001.DAW-INFO-MESSAGE = "NOTHING FOUND IN TRANSACTION TABLE FOR SELECTION CRITERIA";
+    end
+
+    DAWREC.DAW-RETURN-TO-DA01-FL = "N";
+
+    DA01M001.DAW-INFO-MESSAGE = "UPDATE COMPLETED - PLEASE REVIEW LIST";
+
+  end
+
+  DA01P25-SET-ATTR(); /* set field attributes*/
+
+
+  /* **************/
+  /* ****************** END DA01P20 *******************************/
+  /* **************/
+end // end DA01P20-BUILD-MAP
+
+// SET FIELD ATTRIBUTES
+Function DA01P25-SET-ATTR()
+  /* *********************************************************/
+  /* Set map field attributes - only show page numbers when*/
+  /* there is more than 1 page. Autoskip,dark the heading*/
+  /* and select cd when temp storage doesn't exist and autoskip*/
+  /* the selection criteria when temp storage does exists*/
+  /* *********************************************************/
+
+  if (DA01M001.DAW-LAST-PAGE > 1)
+    DA01M001.DAW-PAGE-LIT = "PAGE";
+    set DA01M001.DAW-CURR-PAGE initialAttributes;
+    DA01M001.DAW-OF-LIT = "OF";
+    set DA01M001.DAW-LAST-PAGE initialAttributes;
+    DA01M001.DAW-PF7-LIT = "PF7 = SCROLL BACK";
+    DA01M001.DAW-PF8-LIT = "PF8 = SCROLL FRWD";
+  else
+    DA01M001.DAW-PAGE-LIT = " ";
+    set DA01M001.DAW-CURR-PAGE skip, invisible;
+    DA01M001.DAW-OF-LIT = " ";
+    set DA01M001.DAW-LAST-PAGE skip, invisible;
+    DA01M001.DAW-PF7-LIT = " ";
+    DA01M001.DAW-PF8-LIT = " ";
+  end
+
+  sysVar.arrayIndex = 11;
+  while (sysVar.arrayIndex > 0)
+    if (DA01M001.XXX-TBL-PFX[sysVar.arrayIndex] == " ")
+      set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] skip, invisible;
+    else
+      set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, initialAttributes;
+    end
+    sysVar.arrayIndex = sysVar.arrayIndex - 1;
+  end
+
+  if (DA01W01.DA01W-TEMP-STORAGE-EXISTS == "Y")
+    set DA01M001.DA01M-COLUMN-HEADINGS initialAttributes;
+    set DA01M001.DA01M-TABLE-SELECTION skip;
+    set DA01M001.DA01M-STATUS-SELECTION skip;
+    set DA01M001.DA01M-BEGIN-DATE skip;
+    set DA01M001.DA01M-END-DATE skip;
+  else
+    set DA01M001.DA01M-COLUMN-HEADINGS skip, invisible;
+    set DA01M001.DA01M-TABLE-SELECTION initialAttributes;
+    set DA01M001.DA01M-STATUS-SELECTION initialAttributes;
+    set DA01M001.DA01M-BEGIN-DATE initialAttributes;
+    set DA01M001.DA01M-END-DATE initialAttributes;
+  end
+
+  set DA01M001.DAW-PRINTER-ID initialAttributes;
+
+
+  /* **************/
+  /* ****************** END DA01P25 **************************/
+  /* **************/
+end // end DA01P25-SET-ATTR
+
+// MAIN PROCESS LOOP
+Function DA01P30-MAIN-MAP()
+  /* **********************************************************/
+  /* MAIN PROCESS - Program loops through this process until*/
+  /* the user exits with a PF key or transfers to another*/
+  /* application. Exit occurs when DA-TERM-APPL = 'Y'*/
+  /* **********************************************************/
+
+  DA01P40-CONVERSE(); /* Display the map*/
+
+  converseLib.validationFailed(0);
+  DA01M001.VAGen_EZEMSG = " ";
+  DA01M001.DAW-INFO-MESSAGE = " ";
+  DAWREC.DAW-EDIT-ERROR-FL = "N";
+
+  DA01P25-SET-ATTR(); /* Reset field attributes to defined*/
+
+  DA01P50-PF-KEYS(); /* Edit pf keys*/
+
+  if (DAWREC.DAW-EDIT-ERROR-FL == "N"
+   && DAWREC.DAW-TERM-APPL-FL == "N") /* No errors and not ready to exit*/
+
+    DA01P60-EDIT-MAP(); /* Do all edits for map*/
+
+    if (DAWREC.DAW-EDIT-ERROR-FL == "N")
+      DA01P70-PROC-MAP(); /* Do any processing needed for map*/
+    end
+
+  end
+
+
+  /* **************/
+  /* ****************** END DA01P30 *****************************/
+  /* **************/
+end // end DA01P30-MAIN-MAP
+
+// CONVERSE MAP
+Function DA01P40-CONVERSE()
+  /* **********************************************************/
+  /* CONVERSE MAP - List Transaction Table*/
+  /* **********************************************************/
+  converse DA01M001 ;
+
+  /* **************/
+  /* ****************** END DA01P40 *****************************/
+  /* **************/
+end // end DA01P40-CONVERSE
+
+// EDIT PF KEYS FOR MAP
+Function DA01P50-PF-KEYS()
+  /* **************************************************************/
+  /* Edit the PF keys for MAP 001*/
+  /* **************************************************************/
+
+  if (converseVar.eventKey is enter
+   || converseVar.eventKey is pf3
+   || converseVar.eventKey is pf4
+   || converseVar.eventKey is pf5
+   || converseVar.eventKey is pf6
+   || converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8
+   || converseVar.eventKey is pf9
+   || converseVar.eventKey is pf10)
+    /* valid pf keys for this application*/
+  else
+    converseLib.validationFailed(001); /* Invalid PF Key*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+  end
+
+  if (converseVar.eventKey is pf7)
+    if (DA01M001.DAW-CURR-PAGE != DAWREC.DAW-CURR-PAGE)
+      converseLib.validationFailed(002); /* Can't change page number and use*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* PF7 at the same time*/
+    end
+    if (DA01M001.DAW-LAST-PAGE <= 1)
+      converseLib.validationFailed(001); /* Invalid PF Key*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    end
+    if (DA01M001.DAW-CURR-PAGE <= 1)
+      converseLib.validationFailed(003); /* Can't use PF7 - already at the*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* first page*/
+    end
+  end
+
+  if (converseVar.eventKey is pf8)
+    if (DA01M001.DAW-CURR-PAGE != DAWREC.DAW-CURR-PAGE)
+      converseLib.validationFailed(004); /* Can't change page number and use*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* PF8 at the same time*/
+    end
+    if (DA01M001.DAW-LAST-PAGE <= 1)
+      converseLib.validationFailed(001); /* Invalid PF Key*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    end
+    if (DA01M001.DAW-CURR-PAGE >= DAWREC.DAW-MAX-PAGE)
+      converseLib.validationFailed(005); /* Can't use PF8 - already at the*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* last page*/
+    end
+  end
+
+  if (converseVar.eventKey is pf10)
+    DA01P56-CHECK-IP();
+  end
+
+  if (DAWREC.DAW-EDIT-ERROR-FL == "N")
+    DA01P55-HNDL-PFKEY();
+  end
+
+  /* **************/
+  /* ****************** END DA01P50 *******************************/
+  /* **************/
+end // end DA01P50-PF-KEYS
+
+// HANDLE PF KEYS
+Function DA01P55-HNDL-PFKEY()
+  /* ************************************************************/
+  /* Process PF Keys - do whatever is needed to handle the*/
+  /* pf key and set the exit flag to 'y' when the pfkey does not*/
+  /* require any furthur edits. If the pf key does require editting*/
+  /* of anything entered on the map (like fastpath option) the exit*/
+  /* flag will be set to 'Y' in the map edit process when there are*/
+  /* no errors and there is something in the DA-EXIT-OPTION*/
+  /* ************************************************************/
+
+  if (converseVar.eventKey is pf3)
+    DAWREC.DAW-EXIT-OPTION = "RETN";
+    DAWREC.DAW-TERM-APPL-FL = "Y";
+  end
+
+  if (converseVar.eventKey is pf4)
+    DAWREC.DAW-EXIT-OPTION = "MENU";
+    DAWREC.DAW-TERM-APPL-FL = "Y";
+  end
+
+  if (converseVar.eventKey is pf5)
+    DAWREC.DAW-EXIT-OPTION = "REFR";
+    DAWREC.DAW-TERM-APPL-FL = "Y";
+  end
+
+  if (converseVar.eventKey is pf7) /* subtract 1 from the map page number*/
+    DA01M001.DAW-CURR-PAGE = DA01M001.DAW-CURR-PAGE - 1;
+  end
+
+  if (converseVar.eventKey is pf8) /* add 1 to the map page number*/
+    DA01M001.DAW-CURR-PAGE = DA01M001.DAW-CURR-PAGE + 1;
+  end
+
+  /* **************/
+  /* ****************** END DA01P55 *****************************/
+  /* **************/
+end // end DA01P55-HNDL-PFKEY
+
+Function DA01P56-CHECK-IP()
+  /* ****************************************************************/
+  /* CHECK distinct table prefixes in an in-process status*/
+  /* ****************************************************************/
+  /* Call DA1140 to check if rows exist in the trans file with*/
+  /* status 'I' (in-process).  If the sql code returned is 0 or -811*/
+  /* then set the error flag and display the error msg.*/
+  /* ****************************************************************/
+   /* MOVE 11 TO EZETST;*/
+
+   /* WHILE EZETST NE 0;*/
+
+    /* IF DA01M001.DAW-STATUS-DESC(EZETST) EQ 'PROCESS';*/
+      /* MOVE 'Y' TO DAWREC.DAW-EDIT-ERROR-FL;*/
+      /* MOVE*/
+      /* 'CANNOT SUBMIT BATCH UPDATE WHEN ANY*/
+                                  /* TRANSACTION IS IN PROCESS STATUS'*/
+        /* TO DA01M001.DAW-INFO-MESSAGE;*/
+      /* SET DA01M001.DAW-SELECT-CD(EZETST) CURSOR,BRIGHT;*/
+    /* END;*/
+
+    /* EZETST = EZETST - 1;*/
+   /* END;*/
+
+  set SQLCA empty;
+  WDA1140.WDA1140-DB2-FUNCTION = "SI";
+
+  call "DA1140" (WDA1140, SQLCA, VDATRN01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* row not found*/
+     /* okay*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 0 /* 1 row found*/
+     || SQLCA.VAGen_SQLCODE == -811) /* multiple rows found*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      converseLib.validationFailed(149); /* cannot submit batch update when any*/
+                                      /* transaction is in-process status'*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+        DAWREC.DAW-EDIT-ERROR-FL = "Y";
+        DAWREC.DAW-INFO-MESSAGE = "DATABASE BUSY - PLEASE TRY AGAIN ";
+      else
+        DAWREC.DAW-EDIT-ERROR-FL = "Y";
+
+        TA1REC.TA1DBASE = "DADMIN  "; /* data base name*/
+        TA1REC.TA1TBLVU = "VDATRN01"; /* table view*/
+        TA1REC.TA1LOCAT[1] = "SELECT  ";
+        TA1REC.TA1LOCAT[2] = "DA1140  ";
+        XSDAS-DB2-ABEND-RB();
+      end
+    end
+  end
+
+
+  /* ************************/
+  /* ***************** END XSDAS-DA1140-SEL  ******************************/
+  /* ************************/
+  /* **************/
+  /* ***************** END DA01P56 **********************************/
+  /* **************/
+end // end DA01P56-CHECK-IP
+
+// EDIT ALL MAP FIELDS
+Function DA01P60-EDIT-MAP()
+  /* ***********************************************************/
+  /* Edit MAP 001 fields in reverse order*/
+  /* ***********************************************************/
+
+  if (DA01W01.DA01W-TEMP-STORAGE-EXISTS == "Y")
+    DA01P61-EDIT-SEL(); /* edit row select code*/
+    DA01P62-EDIT-PAGE(); /* edit current page number*/
+  else
+    DA01P63-EDIT-CRI(); /* edit selection criteria*/
+  end
+
+  if (DAWREC.DAW-EDIT-ERROR-FL == "Y" /* any errors*/
+   && DAWREC.DAW-EXIT-OPTION != " ")  /* don't allow exit from appl*/
+    DAWREC.DAW-TERM-APPL-FL = "N";
+    DAWREC.DAW-EXIT-OPTION = " ";
+  end
+
+  if (DA01M001.DAW-PRINTER-ID != " ")
+    DAWREC.DAW-PRINTER-ID = DA01M001.DAW-PRINTER-ID;
+  end
+
+  /* **************/
+  /* ****************** END DA01P60 ****************************/
+  /* **************/
+end // end DA01P60-EDIT-MAP
+
+// EDIT MAP PREFIX OPTION
+Function DA01P61-EDIT-SEL()
+  /* ***********************************************************/
+  /* Edit map select codes - user may enter multiple selects*/
+  /* on a single page. Each will be processed as long as there*/
+  /* are no errors.*/
+  /* ***********************************************************/
+
+  DA01W01.DA01W-CHANGE-FL = "N";
+  DA01W01.DA01W-UPDATE-FL = "N";
+  DA01W01.DA01W-DELETE-FL = "N";
+
+  sysVar.arrayIndex = 11;
+
+  while (sysVar.arrayIndex != 0)
+
+    if (DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] == " ")
+       /* CONTINUE*/
+    else
+      if (DA01M001.DAW-STATUS-DESC[sysVar.arrayIndex] == "PROCESS")
+        DAWREC.DAW-EDIT-ERROR-FL = "Y";
+        DA01M001.DAW-INFO-MESSAGE = "CANNOT CHANGE STATUS, UPDATE OR DELETE TRANSACTIONS IN PROCESS STATUS";
+        set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+      else
+        if (DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] == "U")
+          DA01P611-EDIT-UPD();
+        else
+          if (DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] == "A" /* Approve*/
+           || DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] == "R") /* Reject*/
+            DA01P611-EDIT-A-R();
+          else
+            if (DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] == "D") /* delete*/
+              DA01P611-EDIT-DEL();
+            else
+              converseLib.validationFailed(024); /* invalid select - use 'a' to approve*/
+              DAWREC.DAW-EDIT-ERROR-FL = "Y";
+                                   /* 'r' to reject or 'd' to delete*/
+              set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+            end
+          end
+        end
+      end
+    end
+
+    sysVar.arrayIndex = sysVar.arrayIndex - 1;
+  end
+
+  /* **************/
+  /* ****************** END DA01P61 ****************************/
+  /* **************/
+end // end DA01P61-EDIT-SEL
+
+Function DA01P611-EDIT-A-R()
+  /* ***********************************************************/
+  /* Edit map select codes 'a' and 'r. Multiple selects allowed*/
+  /* on a single page, but not if updateing or deleting*/
+  /* ***********************************************************/
+
+  if (DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] == "A" /* Approve*/
+   || DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] == "R") /* Reject*/
+    if (DA01W01.DA01W-UPDATE-FL == "Y")
+      converseLib.validationFailed(026); /* Cannot update and change status at*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* the same time*/
+      set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+    else
+      if (DA01W01.DA01W-DELETE-FL == "Y")
+        converseLib.validationFailed(031); /* Cannot delete and change status at*/
+        DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* the same time*/
+        set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+      else
+        if (DA01M001.DAW-STATUS-DESC[sysVar.arrayIndex] == "EDIT    "
+         || DA01M001.DAW-STATUS-DESC[sysVar.arrayIndex] == "COMPLETE"
+         || DA01M001.DAW-STATUS-DESC[sysVar.arrayIndex] == "PROCESS ")
+          converseLib.validationFailed(033); /* Cannot Approve or reject when*/
+          DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* trans is in edit/complete/*/
+                                             /* process status*/
+          set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+        else
+          DA01W01.DA01W-CHANGE-FL = "Y";
+        end
+      end
+    end
+  end
+
+  /* ***************/
+  /* ****************** END DA01P611 ***************************/
+  /* ***************/
+end // end DA01P611-EDIT-A-R
+
+Function DA01P611-EDIT-DEL()
+  /* ***********************************************************/
+  /* Edit select code when delete - multiples allowed but*/
+  /* cannot be used with 'a', 'r' or 'u'*/
+  /* ***********************************************************/
+
+  if (DA01W01.DA01W-CHANGE-FL == "Y")
+    converseLib.validationFailed(031); /* Cannot delete and change status at*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* the same time*/
+    set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+  else
+    if (DA01W01.DA01W-UPDATE-FL == "Y")
+      converseLib.validationFailed(027); /* Cannot update and delete*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* the same time*/
+      set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+    else
+      DA01W01.DA01W-DELETE-FL = "Y";
+    end
+  end
+
+  /* ***************/
+  /* ****************** END DA01P611 ***************************/
+  /* ***************/
+end // end DA01P611-EDIT-DEL
+
+Function DA01P611-EDIT-UPD()
+  /* ***********************************************************/
+  /* Edit select code when update - only one allowed at a time*/
+  /* and cannot be used with 'a', 'r' or 'd'*/
+  /* ***********************************************************/
+
+  if (DA01W01.DA01W-UPDATE-FL == "Y")
+    converseLib.validationFailed(025); /* Cannot update on more than one row.*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+    set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+  else
+    if (DA01W01.DA01W-CHANGE-FL == "Y")
+      converseLib.validationFailed(026); /* Cannot update and change status at*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* the same time*/
+      set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+    else
+      if (DA01W01.DA01W-DELETE-FL == "Y")
+        converseLib.validationFailed(027); /* Cannot update and delete*/
+        DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* the same time*/
+        set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] cursor, bold;
+      else
+        DA01W01.DA01W-UPDATE-FL = "Y";
+      end
+    end
+  end
+
+  /* ***************/
+  /* ****************** END DA01P611 ***************************/
+  /* ***************/
+end // end DA01P611-EDIT-UPD
+
+// EDIT MAP PAGE NUMBER
+Function DA01P62-EDIT-PAGE()
+  /* ***********************************************************/
+  /* Edit map current page number*/
+  /* ***********************************************************/
+
+  if (DA01M001.DAW-CURR-PAGE == DAWREC.DAW-CURR-PAGE)
+    return;
+  end
+
+  /* If select codes entered and page number changed*/
+  /* then reset page number*/
+
+  if (DA01W01.DA01W-CHANGE-FL == "Y")
+    set DA01M001.DAW-CURR-PAGE bold;
+    DA01M001.VAGen_EZEMSG = "CANNOT CHANGE STATUS FOR A ROW AND CHANGE PAGE AT THE SAME TIME";
+    DA01M001.DAW-CURR-PAGE = DAWREC.DAW-CURR-PAGE;
+    DA01M001.DAW-INFO-MESSAGE = "PAGE NUMBER HAS BEEN RESET - HIT ENTER TO CONTINUE";
+    DAWREC.DAW-EDIT-ERROR-FL = "Y";
+  end
+
+  if (DA01M001.DAW-CURR-PAGE > DA01M001.DAW-LAST-PAGE)
+    set DA01M001.DAW-CURR-PAGE cursor, bold;
+    converseLib.validationFailed(006); /* page number entered is greater than*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* last page available*/
+  end
+
+  if (DA01M001.DAW-CURR-PAGE == 0)
+    set DA01M001.DAW-CURR-PAGE cursor, bold;
+    converseLib.validationFailed(007); /* page number entered is zero - page*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* does not exist*/
+  end
+
+  /* **************/
+  /* ****************** END DA01P62 ****************************/
+  /* **************/
+end // end DA01P62-EDIT-PAGE
+
+// EDIT SELECTION CRITERIA
+Function DA01P63-EDIT-CRI()
+  /* **********************************************************************/
+  /* Edit the selection criteria*/
+  /* **********************************************************************/
+
+  set WDA1140 empty;
+
+  DA01P64-EDIT-DATES(); /* Edit begin and end dates*/
+
+  DA01P65-EDIT-STAT(); /* Edit status*/
+
+  DA01P66-EDIT-PREF(); /* Edit table prefix*/
+
+
+  /* **************/
+  /* ****************** END DA01P63 ***************************************/
+  /* **************/
+end // end DA01P63-EDIT-CRI
+
+// EDIT BEGIN AND END DATES
+Function DA01P64-EDIT-DATES()
+  /* *****************************************************************/
+  /* Edit the beginning and ending change dates*/
+  /* *****************************************************************/
+
+  /* Edit ending date*/
+
+  if (DA01M001.DA01M-END-DATE == 0 /* no ending date entered*/
+   || DA01M001.DA01M-END-DATE == 99999999)
+    WDA1140.WDA1140-END-DATE = 99999999; /* format ending date*/
+  else
+    set TA2REC empty;
+    TA2REC.TA2GRECN = DA01M001.DA01M-END-DATE; /* format is MMDDYY*/
+    TA2REC.TA2DTOPT = "GREGGREG";
+    TA2REC.TA2GRTYP = "C";
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+    if (TA2REC.TA2RTNCD == 0) /* good return*/
+      WDA1140.WDA1140-END-DATE = TA2REC.TA2GRGGN;
+    else
+      set DA01M001.DA01M-END-DATE cursor, bold;
+      converseLib.validationFailed(019); /* date entered is invalid*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* set error flag*/
+    end
+  end
+
+  /* Edit beginning date*/
+
+  if (DA01M001.DA01M-BEGIN-DATE == 0) /* no begining date entered*/
+    WDA1140.WDA1140-BEGIN-DATE = 0; /* format begining date*/
+  else
+    set TA2REC empty;
+    TA2REC.TA2GRECN = DA01M001.DA01M-BEGIN-DATE; /* format is MMDDYY*/
+    TA2REC.TA2DTOPT = "GREGGREG";
+    TA2REC.TA2GRTYP = "C";
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+    if (TA2REC.TA2RTNCD == 0) /* good return*/
+      WDA1140.WDA1140-BEGIN-DATE = TA2REC.TA2GRGGN;
+    else
+      set DA01M001.DA01M-BEGIN-DATE cursor, bold;
+      converseLib.validationFailed(020); /* date entered is invalid*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* set error flag*/
+    end
+  end
+
+
+   /* Edit beginning and ending date range*/
+
+  if (WDA1140.WDA1140-END-DATE >= WDA1140.WDA1140-BEGIN-DATE)
+     /* next sentence*/
+  else
+    converseLib.validationFailed(021); /* ending date must be > or = to*/
+                                   /* beginning date*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* set error flag*/
+    set DA01M001.DA01M-BEGIN-DATE cursor, bold;
+  end
+
+  /* **************/
+  /* ****************** END DA01P64 **********************************/
+  /* **************/
+end // end DA01P64-EDIT-DATES
+
+// EDIT STATUS SELECTION
+Function DA01P65-EDIT-STAT()
+  /* ***************************************************************/
+  /* EDIT THE STATUS*/
+  /* ***************************************************************/
+
+  if (DA01M001.DA01M-STATUS-SELECTION == "E"
+   || DA01M001.DA01M-STATUS-SELECTION == "P"
+   || DA01M001.DA01M-STATUS-SELECTION == "A"
+   || DA01M001.DA01M-STATUS-SELECTION == "R"
+   || DA01M001.DA01M-STATUS-SELECTION == "I"
+   || DA01M001.DA01M-STATUS-SELECTION == "C")
+    WDA1140.WDA1140-STATUS-SELECTION = DA01M001.DA01M-STATUS-SELECTION;
+  else
+    if (DA01M001.DA01M-STATUS-SELECTION == " ")
+      WDA1140.WDA1140-STATUS-SELECTION = "*";
+    else
+      converseLib.validationFailed(022); /* invalid status - enter e, w, a, r, p*/
+                                   /* or c*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      set DA01M001.DA01M-STATUS-SELECTION cursor, bold;
+    end
+  end
+
+  if (DA01M001.DA01M-STATUS-SELECTION == "E")
+    DA01M001.DA01M-STATUS-DESC = "EDIT    ";
+  end
+  if (DA01M001.DA01M-STATUS-SELECTION == "P")
+    DA01M001.DA01M-STATUS-DESC = "PENDING ";
+  end
+  if (DA01M001.DA01M-STATUS-SELECTION == "A")
+    DA01M001.DA01M-STATUS-DESC = "APPROVED";
+  end
+  if (DA01M001.DA01M-STATUS-SELECTION == "R")
+    DA01M001.DA01M-STATUS-DESC = "REJECTED";
+  end
+  if (DA01M001.DA01M-STATUS-SELECTION == "I")
+    DA01M001.DA01M-STATUS-DESC = "PROCESS ";
+  end
+  if (DA01M001.DA01M-STATUS-SELECTION == "C")
+    DA01M001.DA01M-STATUS-DESC = "COMPLETE";
+  end
+  if (DA01M001.DA01M-STATUS-SELECTION == "*")
+    DA01M001.DA01M-STATUS-DESC = "ALL     ";
+  end
+
+  /* **************/
+  /* ****************** END DA01P65******************************/
+  /* **************/
+end // end DA01P65-EDIT-STAT
+
+// EDIT TBL PREFIX SELECTION
+Function DA01P66-EDIT-PREF()
+  /* ********************************************************************/
+  /* Edit Table prefix selected*/
+  /* ********************************************************************/
+
+  if (DA01M001.DA01M-TABLE-SELECTION == " ")
+    WDA1140.WDA1140-TABLE-SELECTION = "*";
+    DA01M001.DA01M-TABLE-DESC = "ALL PREFIXES";
+    return;
+  end
+
+  if (DA01M001.DA01M-TABLE-SELECTION in DAWTBL.XXX-TBL-PFX
+   && DAWTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    WDA1140.WDA1140-TABLE-SELECTION = DA01M001.DA01M-TABLE-SELECTION;
+    DA01M001.DA01M-TABLE-DESC = DAWTBL.DAW-TABLE-DESC[sysVar.arrayIndex];
+  else
+    converseLib.validationFailed(023); /* invalid table prefix - choose from*/
+    DAWREC.DAW-EDIT-ERROR-FL = "Y"; /* displayed prefix values*/
+    set DA01M001.DA01M-TABLE-SELECTION cursor, bold;
+  end
+
+  /* **************/
+  /* ****************** END DA0AP66 ****************************/
+  /* **************/
+end // end DA01P66-EDIT-PREF
+
+// DO PROCESSING FOR THE MAP 1
+Function DA01P70-PROC-MAP()
+  /* ****************************************************************/
+  /* Do any processing for MAP 001*/
+  /* ****************************************************************/
+
+  /* *****************************************************************/
+  /* Print selected changes*/
+  /* *****************************************************************/
+
+  if (converseVar.eventKey is pf9)
+    set XSDAW01 empty;
+    XSDAW01.XXX-TBL-PFX = WDA1140-TABLE-SELECTION;
+    XSDAW01.XSDAW-STATUS = WDA1140-STATUS-SELECTION;
+    XSDAW01.XSDAW-BEGIN-DATE = WDA1140-BEGIN-DATE;
+    XSDAW01.XSDAW-END-DATE = WDA1140-END-DATE;
+    DA01S-PRINT-TABLE();
+    DA01M001.DAW-INFO-MESSAGE = DAWREC.DAW-INFO-MESSAGE;
+  end
+
+  /* *****************************************************************/
+  /* Display new page*/
+  /* *****************************************************************/
+
+  if (DA01W01.DA01W-TEMP-STORAGE-EXISTS == "Y"
+   && DAWREC.DAW-CURR-PAGE != DA01M001.DAW-CURR-PAGE)
+    DA01S-TS-READ-PAGE();
+    DA01P74-TSQ-TO-MAP();
+    DA01P25-SET-ATTR();
+    return;
+  end
+
+  /* *****************************************************************/
+  /* Set approved rows to inprocess when PF10 (submit batch process)*/
+  /* *****************************************************************/
+
+  if (DA01W01.DA01W-TEMP-STORAGE-EXISTS == "Y"
+   && converseVar.eventKey is pf10)
+    DA01S-UPD-STATUS(); /* set the status to in-process*/
+    DA01P71-BATCH-UPD(); /* submit the batch process*/
+  end
+
+  /* *****************************************************************/
+  /* Process any rows selected for status update*/
+  /* *****************************************************************/
+
+  if (DA01W01.DA01W-TEMP-STORAGE-EXISTS == "Y"
+   && DA01W01.DA01W-CHANGE-FL == "Y")
+    DAWREC.DAW-ROW-NBR = 1;
+    while (DAWREC.DAW-ROW-NBR <= 11) /* check each row on the map*/
+      if (DA01M001.DAW-SELECT-CD[DAW-ROW-NBR] == "A"
+       || DA01M001.DAW-SELECT-CD[DAW-ROW-NBR] == "R")
+        DA01S-SET-STATUS(); /* set the status*/
+      end
+      DAWREC.DAW-ROW-NBR = DAWREC.DAW-ROW-NBR + 1;
+    end
+    DA01S-TS-PURGE-FIL(); /* build temp storage again*/
+    DA01M001.DAW-INFO-MESSAGE = "STATUS FOR SELECTED ROWS HAVE BEEN UPDATED - PLEASE REVIEW LIST";
+  end
+
+  /* *****************************************************************/
+  /* Process any row selected for update*/
+  /* *****************************************************************/
+
+  if (DA01W01.DA01W-TEMP-STORAGE-EXISTS == "Y"
+   && DA01W01.DA01W-UPDATE-FL == "Y")
+    VDATRN01.DAW-VDATRN01-KEY = " ";
+    DAWREC.DAW-ROW-NBR = 1;
+    while (DAWREC.DAW-ROW-NBR <= 11 /* check each row on the map*/
+     && VDATRN01.DAW-VDATRN01-KEY == " ")
+      if (DA01M001.DAW-SELECT-CD[DAW-ROW-NBR] == "U")
+        VDATRN01.DAW-VDATRN01-KEY = DA01W02.DAW-VDATRN01-KEY[DAW-ROW-NBR];
+        DA01P75-INQUIRY(); /* /prepare to transfer to maint appl*/
+      end
+      DAWREC.DAW-ROW-NBR = DAWREC.DAW-ROW-NBR + 1;
+    end
+  end
+
+  /* *****************************************************************/
+  /* Process any row selected for delete*/
+  /* *****************************************************************/
+
+  if (DA01W01.DA01W-TEMP-STORAGE-EXISTS == "Y"
+   && DA01W01.DA01W-DELETE-FL == "Y")
+
+    if (DAWREC.DAW-OK-TO-DELETE-FL == "Y")
+
+      DAWREC.DAW-ROW-NBR = 1;
+      while (DAWREC.DAW-ROW-NBR <= 11) /* check each row on the map*/
+        if (DA01M001.DAW-SELECT-CD[DAW-ROW-NBR] == "D")
+          set VDATRN01 empty;
+          VDATRN01.DAW-VDATRN01-KEY = DA01W02.DAW-VDATRN01-KEY[DAW-ROW-NBR];
+          XSDAS-DA1140-SEL(); /* Select the transaction*/
+          XSDAS-DA1140-DEL(); /* Update the transaction*/
+        end
+        DAWREC.DAW-ROW-NBR = DAWREC.DAW-ROW-NBR + 1;
+      end
+      DAWREC.DAW-OK-TO-DELETE-FL = "N";
+      DA01S-TS-PURGE-FIL(); /* build temp storage again*/
+      DA01M001.DAW-INFO-MESSAGE = "SELECTED ROWS HAVE BEEN DELETED - PLEASE REVIEW LIST";
+
+    else
+
+      if (converseVar.eventKey is pf6)
+        DAWREC.DAW-OK-TO-DELETE-FL = "Y";
+        DA01M001.DAW-INFO-MESSAGE = "USE PF6 AGAIN IF YOU ARE SURE YOU WANT TO DELETE TRANSACTIONS";
+      else
+        DA01M001.DAW-INFO-MESSAGE = "USE PF6 TO DELETE THE SELECTED TRANSACTION(S)";
+      end
+    end
+  end
+
+  /* ****************************************************************/
+  /* Build temp storage and move first page to map*/
+  /* ****************************************************************/
+
+  if (DA01W01.DA01W-TEMP-STORAGE-EXISTS != "Y")
+    DA01P72-BUILD-TSQ(); /* build temp storage file*/
+
+    if (DA01W01.DA01W-TEMP-STORAGE-EXISTS == "Y")
+      if (DAWREC.DAW-CURR-PAGE != DA01M001.DAW-CURR-PAGE)
+        DA01S-TS-READ-PAGE(); /* read temp storage page*/
+        DA01P74-TSQ-TO-MAP(); /* move page to the map*/
+      end
+    else
+
+       /* -------------------------------------------------------*/
+        /* initialize the detail section of the screen only.*/
+       /* -------------------------------------------------------*/
+      DA01S-INIT-DETAIL();
+
+      sysVar.arrayIndex = 1;
+      while (sysVar.arrayIndex <= 10)
+        DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] = " ";
+        DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] = " ";
+        set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] skip, invisible;
+        sysVar.arrayIndex = sysVar.arrayIndex + 1;
+      end
+
+      if (DA01M001.DAW-INFO-MESSAGE != " ") /* some msgs in there....*/
+          /* next sentence*/
+      else
+        DA01M001.DAW-INFO-MESSAGE = "NOTHING FOUND IN TRANSACTION TABLE FOR SELECTION CRITERIA";
+   /* IF DA01W01.DA01W-CHANGE-FL = 'Y';*/
+   /* SET DA01M001 CLEAR;*/
+   /* MOVE*/
+   /* 'STATUS FOR SELECTED ROWS HAVE BEEN UPDATED - PLEASE REVIEW LIST'*/
+   /* TO DA01M001.DAW-INFO-MESSAGE;*/
+   /* ELSE;*/
+   /* SET DA01M001 CLEAR;*/
+      end
+    end
+
+  end
+
+  DA01P25-SET-ATTR(); /* Set field attributes*/
+
+  /* **************/
+  /* ***************** END DA01P70 **********************************/
+  /* **************/
+end // end DA01P70-PROC-MAP
+
+// BUILD TEMP STORAGE FILE
+Function DA01P71-BATCH-UPD()
+  /* ****************************************************************/
+  /* Select distinct table prefixes in an in-process status*/
+  /* ****************************************************************/
+
+  if (DAWREC.DAW-APPROVED-FOUND-FL == "N")
+    DA01M001.DAW-INFO-MESSAGE = "NO APPROVED TRANSACTIONS FOUND FOR SELECTED CRITERIA, NOTHING PROCESSED";
+    return;
+  end
+
+  DA01S-DA1140-OPEN4(); /* open cursor*/
+  DA01S-DA1140-FETC4(); /* fetch first row*/
+
+  while (SQLCA.VAGen_SQLCODE == 0) /* until last row*/
+    sysVar.arrayIndex = 1;
+    if (VDATRN01.XXX-TBL-PFX in DAWTBL.XXX-TBL-PFX
+     && DAWTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      DA01S-PROD-UPDATE(); /* Submit batch update for prefix*/
+    end
+    DA01S-DA1140-FETC4(); /* fetch next row*/
+  end
+
+  DA01S-DA1140-CLOS4(); /* close cursor*/
+
+  DA01S-TS-PURGE-FIL(); /* build temp storage again*/
+
+  if (DA01M001.DAW-INFO-MESSAGE == " ")
+    DA01M001.DAW-INFO-MESSAGE = "ERROR SUBMITTING BATCH PROCESS ";
+  end
+
+  /* **************/
+  /* ***************** END DA01P71 **********************************/
+  /* **************/
+end // end DA01P71-BATCH-UPD
+
+// BUILD TEMP STORAGE FILE
+Function DA01P72-BUILD-TSQ()
+  /* ****************************************************************/
+  /* Build temp storage to allow scrolling*/
+  /* ****************************************************************/
+
+  set DA01W02 empty; /* temp storage record*/
+  DAWREC.DAW-ROW-NBR = 0; /* temp storage row subscript*/
+  DAWREC.DAW-CURR-PAGE = 0; /* temp storage page(record) number*/
+  DAWREC.DAW-MAX-PAGE = 0; /* temp storage max page number*/
+
+  /* Move the Transaction records to temp storage*/
+
+  DA01S-DA1140-OPEN(); /* open cursor*/
+  DA01S-DA1140-FETCH(); /* fetch first row*/
+
+  while (SQLCA.VAGen_SQLCODE == 0) /* until last row*/
+    DAWREC.DAW-ROW-NBR = DAWREC.DAW-ROW-NBR + 1;
+    DA01P73-DB2-TO-TSQ(); /* move tbl row to temp storage row*/
+    if (DAWREC.DAW-ROW-NBR == 11) /* maximum tsq rows per map*/
+      DA01S-TS-ADD-PAGE(); /* write temp storage record when full*/
+    end
+    DA01S-DA1140-FETCH(); /* fetch next row*/
+  end
+
+  DA01S-DA1140-CLOSE(); /* close cursor*/
+
+
+  if (DAWREC.DAW-ROW-NBR > 0 /* rows were moved*/
+   || DAWREC.DAW-MAX-PAGE > 0) /* or tsq pages were written*/
+
+    if (DAWREC.DAW-ROW-NBR < 11 /* last page not full*/
+     && DAWREC.DAW-ROW-NBR != 0) /* rows exist*/
+      DA01S-TS-ADD-PAGE();
+    end
+
+    DA01M001.DAW-CURR-PAGE = 1; /* page number to read*/
+    DAWREC.DAW-CURR-PAGE = 0; /* last page read*/
+    DA01M001.DAW-LAST-PAGE = DAWREC.DAW-MAX-PAGE;
+    DA01W01.DA01W-TEMP-STORAGE-EXISTS = "Y";
+
+  else /* Nothing found*/
+    DA01W01.DA01W-TEMP-STORAGE-EXISTS = "N";
+   /* MOVE 'NOTHING FOUND IN TRANSACTION TABLE FOR SELECTION CRITERIA'*/
+     /* TO DA01M001.DAW-INFO-MESSAGE;*/
+  end
+
+  /* **************/
+  /* ***************** END DA01P22 **********************************/
+  /* **************/
+end // end DA01P72-BUILD-TSQ
+
+// MOVE TO TEMP STORAGE PAGE
+Function DA01P73-DB2-TO-TSQ()
+  /* **************************************************************/
+  /* Move db2 table row to temp storage*/
+  /* The key to the view is saved in temp storage to make it*/
+  /* easier to retrieve and update/delete the row if necessary.*/
+  /* **************************************************************/
+
+  DA01W02.DAW-SELECT-CD[DAW-ROW-NBR] = " ";
+
+  DA01W01.DA-CCAT-KEY-TXT = VDATRN01.DA-CCAT-KEY-TXT;
+  DA01W02.DA01W-TBL-KEY[DAW-ROW-NBR] = DA01W01.DA01W-TBL-KEY;
+
+  DA01W02.XXX-TBL-PFX[DAW-ROW-NBR] = VDATRN01.XXX-TBL-PFX;
+  DA01W02.DA-PLOG-TXT1[DAW-ROW-NBR] = VDATRN01.DA-PLOG-TXT1;
+
+  if (VDATRN01.DA-CHNG-STAT-IND == "E")
+    DA01W02.DAW-STATUS-DESC[DAW-ROW-NBR] = "EDIT      ";
+  end
+  if (VDATRN01.DA-CHNG-STAT-IND == "P")
+    DA01W02.DAW-STATUS-DESC[DAW-ROW-NBR] = "PENDING ";
+  end
+  if (VDATRN01.DA-CHNG-STAT-IND == "A")
+    DA01W02.DAW-STATUS-DESC[DAW-ROW-NBR] = "APPROVED";
+  end
+  if (VDATRN01.DA-CHNG-STAT-IND == "R")
+    DA01W02.DAW-STATUS-DESC[DAW-ROW-NBR] = "REJECTED";
+  end
+  if (VDATRN01.DA-CHNG-STAT-IND == "I")
+    DA01W02.DAW-STATUS-DESC[DAW-ROW-NBR] = "PROCESS ";
+  end
+  if (VDATRN01.DA-CHNG-STAT-IND == "C")
+    DA01W02.DAW-STATUS-DESC[DAW-ROW-NBR] = "COMPLETE";
+  end
+
+  DA01W02.DA-ROW-EDIT-IND[DAW-ROW-NBR] = VDATRN01.DA-ROW-EDIT-IND;
+  DA01W02.DA-CHNG-USER-ID[DAW-ROW-NBR] = VDATRN01.DA-CHNG-USER-ID;
+
+  DAWREC.DAW-DATE-COMP = VDATRN01.ZZ-CHNG-DT;
+  XSDAS-FMT-DB2-MDCY();
+  DA01W02.DAW-CHNG-DT-MDY[DAW-ROW-NBR] = DAWREC.DAW-DATE-MDCY;
+
+  DA01W02.DAW-VDATRN01-KEY[DAW-ROW-NBR] = VDATRN01.DAW-VDATRN01-KEY;
+
+
+  /* ***************/
+  /* ****************** END DA01P221 ******************************/
+  /* ***************/
+end // end DA01P73-DB2-TO-TSQ
+
+// MOVE TEMP STORAGE PAGE TO MAP
+Function DA01P74-TSQ-TO-MAP()
+  /* ************************************************************/
+  /* Move temp storage page to map*/
+  /* ************************************************************/
+
+  sysVar.arrayIndex = 1;
+
+  while (sysVar.arrayIndex <= 11)
+    DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] = DA01W02.DAW-SELECT-CD[sysVar.arrayIndex];
+    DA01M001.XXX-TBL-PFX[sysVar.arrayIndex] = DA01W02.XXX-TBL-PFX[sysVar.arrayIndex];
+    DA01M001.DA01M-TBL-KEY[sysVar.arrayIndex] = DA01W02.DA01W-TBL-KEY[sysVar.arrayIndex];
+    DA01M001.DA-PLOG-TXT1[sysVar.arrayIndex] = DA01W02.DA-PLOG-TXT1[sysVar.arrayIndex];
+    DA01M001.DAW-STATUS-DESC[sysVar.arrayIndex] = DA01W02.DAW-STATUS-DESC[sysVar.arrayIndex];
+    DA01M001.DA-ROW-EDIT-IND[sysVar.arrayIndex] = DA01W02.DA-ROW-EDIT-IND[sysVar.arrayIndex];
+    DA01M001.DA-CHNG-USER-ID[sysVar.arrayIndex] = DA01W02.DA-CHNG-USER-ID[sysVar.arrayIndex];
+    DA01M001.DAW-CHNG-DT-MDY[sysVar.arrayIndex] = DA01W02.DAW-CHNG-DT-MDY[sysVar.arrayIndex];
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+
+  /* **************/
+  /* ****************** END DA01P71 *****************************/
+  /* **************/
+end // end DA01P74-TSQ-TO-MAP
+
+Function DA01P75-INQUIRY()
+  /* ******************************************************************/
+  /* Prepare to transfer to the maintenance application for the row.*/
+  /* ******************************************************************/
+
+  if (VDATRN01.XXX-TBL-PFX in DAWTBL.XXX-TBL-PFX
+   && DAWTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    DAWREC.DAW-TO-APPL = DAWTBL.DAW-TO-APPL[sysVar.arrayIndex];
+    DAWREC.DAW-VDATRN01-KEY = VDATRN01.DAW-VDATRN01-KEY;
+    DAWREC.WDA1140-GROUP = WDA1140.WDA1140-GROUP;
+    DAWREC.DAW-EXIT-OPTION = "INQ ";
+    DAWREC.DAW-RETURN-TO-DA01-FL = "Y";
+    DAWREC.DAW-TERM-APPL-FL = "Y";
+  else
+    DA01M001.DAW-INFO-MESSAGE = "CANNOT INQUIRY ON ROW - MAINTENANCE PROGRAM IS UNAVAILABLE";
+  end
+end // end DA01P75-INQUIRY
+
+// EXIT FROM THE APPLICATION
+Function DA01P99-TERMINATE()
+  /* ************************************************************/
+  /* Transfer out of the application*/
+  /* ************************************************************/
+
+  COMMAREA.CAUSERA = DAWREC.DAWGROUP;
+
+  DA01S-TS-PURGE-FIL(); /* purge temp storage*/
+
+  if (DAW-EXIT-OPTION == "RETN") /* return to main menu*/
+    XSPF4();
+  end
+
+  if (DAW-EXIT-OPTION == "MENU") /* return to main menu*/
+    XSPF4();
+  end
+
+  if (DAW-EXIT-OPTION == "REFR") /* refresh - restart curr application*/
+    COMMAREA.CATOAP = "DA01";
+    XSEXIT();
+  end
+
+  if (DAW-EXIT-OPTION == "HELP") /* check for system help*/
+    XSPF1(); /* help facility*/
+  end
+
+  if (DAW-EXIT-OPTION == "INQ ") /* transfer to maintenance appl*/
+    COMMAREA.CATOAP = DAWREC.DAW-TO-APPL;
+    XSEXIT();
+  end
+
+  /* Still here - then XSEXIT didn't allow the transfer so restart*/
+  /* the current application and display the error message*/
+
+  if (COMMAREA.CASECRC != 0) /* no message from xsexit*/
+    XSDAS-XSEXIT-CAMSG();
+  end
+
+  COMMAREA.CAFROMAP = "DA01";
+  sysVar.transferName = "DA01";
+  transfer to program sysVar.transferName passing COMMAREA;
+
+  /* **************/
+  /* ****************** END DA01P99 *****************************/
+  /* **************/
+end // end DA01P99-TERMINATE
+
+// CLOSE VDATRN01 CURSOR 3
+Function DA01S-DA1140-CLOS4()
+  /* *********************************************************************/
+  /* Close cursor 4 for DADMIN.VDATRN01*/
+  /* *********************************************************************/
+
+  set SQLCA empty;
+  set VDATRN01 empty;
+  WDA1140.WDA1140-DB2-FUNCTION = "C4";
+
+  call "DA1140" (WDA1140, SQLCA, VDATRN01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* check for good rc*/
+   || SQLCA.VAGen_SQLCODE == 100) /* or not found*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      DAWREC.DAW-INFO-MESSAGE = "DATABASE BUSY - PLEASE TRY AGAIN ";
+    else
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+
+      TA1REC.TA1DBASE = "DADMIN  "; /* data base name*/
+      TA1REC.TA1TBLVU = "VDATRN01"; /* table view*/
+      TA1REC.TA1LOCAT[1] = "CLOSE   ";
+      TA1REC.TA1LOCAT[2] = "DA1140  ";
+      XSDAS-DB2-ABEND-RB();
+    end
+  end
+
+
+  /* *************************/
+  /* ***************** END DA01S-DA1140-CLOS4 *****************************/
+  /* *************************/
+end // end DA01S-DA1140-CLOS4
+
+// CLOSE VDATRN01 CURSOR 3
+Function DA01S-DA1140-CLOSE()
+  /* *********************************************************************/
+  /* Close cursor 3 for DADMIN.VDATRN01*/
+  /* *********************************************************************/
+
+  set SQLCA empty;
+  set VDATRN01 empty;
+  WDA1140.WDA1140-DB2-FUNCTION = "C3";
+
+  call "DA1140" (WDA1140, SQLCA, VDATRN01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* check for good rc*/
+   || SQLCA.VAGen_SQLCODE == 100) /* or not found*/
+   /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      DAWREC.DAW-INFO-MESSAGE = "DATABASE BUSY - PLEASE TRY AGAIN ";
+    else
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+
+      TA1REC.TA1DBASE = "DADMIN  "; /* data base name*/
+      TA1REC.TA1TBLVU = "VDATRN01"; /* table view*/
+      TA1REC.TA1LOCAT[1] = "CLOSE   ";
+      TA1REC.TA1LOCAT[2] = "DA1140  ";
+      XSDAS-DB2-ABEND-RB();
+    end
+  end
+
+
+  /* *************************/
+  /* ***************** END DA01S-DA1140-CLOSE *****************************/
+  /* *************************/
+end // end DA01S-DA1140-CLOSE
+
+// FETCH VDATRN01 CURSOR 3
+Function DA01S-DA1140-FETC4()
+  /* *********************************************************************/
+  /* Fetch next row DADMIN.VDATRN01 cursor 3*/
+  /* *********************************************************************/
+
+  set SQLCA empty;
+  set VDATRN01 empty;
+  WDA1140.WDA1140-DB2-FUNCTION = "N4";
+
+  call "DA1140" (WDA1140, SQLCA, VDATRN01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* check for good rc*/
+   || SQLCA.VAGen_SQLCODE == 100) /* or not found*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      DAWREC.DAW-INFO-MESSAGE = "DATABASE BUSY - PLEASE TRY AGAIN ";
+    else
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+
+      TA1REC.TA1DBASE = "DADMIN  "; /* data base name*/
+      TA1REC.TA1TBLVU = "VDATRN01"; /* table view*/
+      TA1REC.TA1LOCAT[1] = "FETCH   ";
+      TA1REC.TA1LOCAT[2] = "DA1140  ";
+      XSDAS-DB2-ABEND-RB();
+    end
+  end
+
+
+  /* *************************/
+  /* ***************** END DA01S-DA1140-FETCH *****************************/
+  /* *************************/
+end // end DA01S-DA1140-FETC4
+
+// FETCH VDATRN01 CURSOR 3
+Function DA01S-DA1140-FETCH()
+  /* *********************************************************************/
+  /* Fetch next row DADMIN.VDATRN01 cursor 3*/
+  /* *********************************************************************/
+
+  set SQLCA empty;
+  set VDATRN01 empty;
+  WDA1140.WDA1140-DB2-FUNCTION = "N3";
+
+  call "DA1140" (WDA1140, SQLCA, VDATRN01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* check for good rc*/
+   || SQLCA.VAGen_SQLCODE == 100) /* or not found*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      DAWREC.DAW-INFO-MESSAGE = "DATABASE BUSY - PLEASE TRY AGAIN ";
+    else
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+
+      TA1REC.TA1DBASE = "DADMIN  "; /* data base name*/
+      TA1REC.TA1TBLVU = "VDATRN01"; /* table view*/
+      TA1REC.TA1LOCAT[1] = "FETCH   ";
+      TA1REC.TA1LOCAT[2] = "DA1140  ";
+      XSDAS-DB2-ABEND-RB();
+    end
+  end
+
+
+  /* *************************/
+  /* ***************** END DA01S-DA1140-FETCH *****************************/
+  /* *************************/
+end // end DA01S-DA1140-FETCH
+
+// OPEN VDATRN01 CURSOR 3
+Function DA01S-DA1140-OPEN()
+  /* *********************************************************************/
+  /* Open cursor 3 for DADMIN.VDATRN01*/
+  /* *********************************************************************/
+
+  set SQLCA empty;
+  set VDATRN01 empty;
+  WDA1140.WDA1140-DB2-FUNCTION = "S3";
+
+  call "DA1140" (WDA1140, SQLCA, VDATRN01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* check for good rc*/
+   || SQLCA.VAGen_SQLCODE == 100) /* or not found*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      DAWREC.DAW-INFO-MESSAGE = "DATABASE BUSY - PLEASE TRY AGAIN ";
+    else
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+
+      TA1REC.TA1DBASE = "DADMIN  "; /* data base name*/
+      TA1REC.TA1TBLVU = "VDATRN01"; /* table view*/
+      TA1REC.TA1LOCAT[1] = "OPEN    ";
+      TA1REC.TA1LOCAT[2] = "DA1140  ";
+      XSDAS-DB2-ABEND-RB();
+    end
+  end
+
+
+  /* ************************/
+  /* ***************** END DA01S-DA1140-OPEN ******************************/
+  /* ************************/
+end // end DA01S-DA1140-OPEN
+
+// OPEN VDATRN01 CURSOR 3
+Function DA01S-DA1140-OPEN4()
+  /* *********************************************************************/
+  /* Open cursor 3 for DADMIN.VDATRN01*/
+  /* *********************************************************************/
+
+  set SQLCA empty;
+  set VDATRN01 empty;
+  WDA1140.WDA1140-DB2-FUNCTION = "S4";
+
+  call "DA1140" (WDA1140, SQLCA, VDATRN01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* check for good rc*/
+   || SQLCA.VAGen_SQLCODE == 100) /* or not found*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+      DAWREC.DAW-INFO-MESSAGE = "DATABASE BUSY - PLEASE TRY AGAIN ";
+    else
+      DAWREC.DAW-EDIT-ERROR-FL = "Y";
+
+      TA1REC.TA1DBASE = "DADMIN  "; /* data base name*/
+      TA1REC.TA1TBLVU = "VDATRN01"; /* table view*/
+      TA1REC.TA1LOCAT[1] = "OPEN    ";
+      TA1REC.TA1LOCAT[2] = "DA1140  ";
+      XSDAS-DB2-ABEND-RB();
+    end
+  end
+
+
+  /* ************************/
+  /* ***************** END DA01S-DA1140-OPEN ******************************/
+  /* ************************/
+end // end DA01S-DA1140-OPEN4
+
+// initialize detail lines
+Function DA01S-INIT-DETAIL()
+   /* -------------------------------------------------------*/
+   /* initialize the detail section of the screen only.*/
+   /* -------------------------------------------------------*/
+
+  sysVar.arrayIndex = 1;
+
+  while (sysVar.arrayIndex <= 10)
+    DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] = " ";
+    DA01M001.XXX-TBL-PFX[sysVar.arrayIndex] = " ";
+    DA01M001.DA01M-TBL-KEY[sysVar.arrayIndex] = " ";
+    DA01M001.DA-PLOG-TXT1[sysVar.arrayIndex] = " ";
+    DA01M001.DAW-STATUS-DESC[sysVar.arrayIndex] = " ";
+    DA01M001.DA-ROW-EDIT-IND[sysVar.arrayIndex] = " ";
+    DA01M001.DA-CHNG-USER-ID[sysVar.arrayIndex] = " ";
+    DA01M001.DAW-CHNG-DT-MDY[sysVar.arrayIndex] = " ";
+    set DA01M001.DAW-SELECT-CD[sysVar.arrayIndex] skip, invisible;
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+
+end // end DA01S-INIT-DETAIL
+
+// PRINT TABLE CHANGES
+Function DA01S-PRINT-TABLE()
+  /* **********************************************************************/
+  /* Creates the JCL to print all or part of the DADMIN.VDATRN01 table*/
+  /* depending on the parms passed. JCL lines are created and stored*/
+  /* in a table in xsdaw01. After the table is created its is moved to*/
+  /* xsdaw02 - the passing record for TA0070.*/
+  /* **********************************************************************/
+
+  /* * * * change class to 'p' and msgclass to j  for production*/
+  /* * * * uncomment the other line 6 and comment out the jobparm line 6*/
+
+  XSDAW01.XSDAW-JCL-LINE[1] = "//DA2001   JOB (DV,MILI),'TH SELECTION RPT',";
+  XSDAW01.XSDAW-JCL-LINE[2] = "//             CLASS=P,"; /* prod*/
+  XSDAW01.XSDAW-JCL-LINE[3] = "//             MSGCLASS=J"; /* prod*/
+
+  XSDAW01.XSDAW-JCL-LINE[4] = "//*";
+
+  XSDAW01.XSDAW-JCL-LINE[5] = "//*";
+
+  XSDAW01.XSDAW-OUTPUT-CARD-INFO = "/*OUTPUT RTE1 DEST=";
+  if (DAWREC.DAW-PRINTER-ID == " ")
+    XSDAW01.XSDAW-OUTPUT-DEST = "LOCAL";
+  else
+    XSDAW01.XSDAW-OUTPUT-DEST = DAWREC.DAW-PRINTER-ID;
+  end
+  XSDAW01.XSDAW-JCL-LINE[6] = XSDAW01.XSDAW-OUTPUT-LINE;
+
+  XSDAW01.XSDAW-JCL-LINE[7] = "//* "; /* for prod*/
+  XSDAW01.XSDAW-JCL-LINE[8] = "//*";
+
+  XSDAW01.XSDAW-JCL-LINE[9] = "//JOBLIB     DD   DSN=PROD.ONETIME.LOADLIB,DISP=SHR";
+  XSDAW01.XSDAW-JCL-LINE[10] = "//           DD   DSN=PROD.COB2.LOADLIB,DISP=SHR";
+  XSDAW01.XSDAW-JCL-LINE[11] = "//*";
+
+  XSDAW01.XSDAW-PROC-LINE-INFO = "//S0010   EXEC ";
+  XSDAW01.XSDAW-PROC = "DA2001";
+  XSDAW01.XSDAW-PROC-COMMA = " "; /* for prod*/
+  XSDAW01.XSDAW-JCL-LINE[12] = XSDAW01.XSDAW-PROC-LINE;
+
+  XSDAW01.XSDAW-JCL-LINE[13] = "//*                      "; /* prod*/
+
+  XSDAW01.XSDAW-JCL-LINE[14] = "//*                      "; /* prod*/
+
+  XSDAW01.XSDAW-JCL-LINE[15] = "//*";
+
+  XSDAW01.XSDAW-JCL-LINE[16] = "//P0010.CNTRLIN  DD *";
+
+  XSDAW01.XSDAW-JCL-LINE[17] = XSDAW-PARM-RECORD;
+
+  XSDAW01.XSDAW-JCL-LINE[18] = "/*";
+
+  XSDAW01.XSDAW-JCL-LINE[19] = "//*";
+
+  sysVar.arrayIndex = 1;
+  while (sysVar.arrayIndex <= 19)
+    XSDAW02.XSDAW-JCL-LINE[sysVar.arrayIndex] = XSDAW01.XSDAW-JCL-LINE[sysVar.arrayIndex];
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+
+  XSDAW02.XSDAW-RETURN-CODE = 0;
+  XSDAW02.XSDAW-LINE-COUNT = 19;
+  call "TA0070" (XSDAW02) {isNoRefresh = yes, isExternal = yes};
+  if (XSDAW02.XSDAW-RETURN-CODE != 0)
+    DAWREC.DAW-INFO-MESSAGE = "PRINT REQUEST FAILED - TABLE NOT PRINTED";
+  else
+    DAWREC.DAW-INFO-MESSAGE = "PRINT REQUEST SUBMITTED - TABLE WILL BE PRINTED";
+  end
+
+  /* ************************/
+  /* ****************** END XSDAS-PRINT-TABLE *****************************/
+  /* ************************/
+end // end DA01S-PRINT-TABLE
+
+Function DA01S-PROD-UPDATE()
+  /* *******************************************************************/
+  /* Create JCL to submit batch update - IN PRODUCTION ENVIRONMENT*/
+  /* *******************************************************************/
+  /*  */
+  XSDAW01.XSDAW-JOB-CARD = "//";
+  XSDAW01.XSDAW-JOB-NAME = "DA5011S";
+  XSDAW01.XSDAW-JOB-CARD-INFO = "   JOB (DV,MUR2),'TBL UPDT',";
+  XSDAW01.XSDAW-JCL-LINE[1] = XSDAW01.XSDAW-JOB-CARD-LINE;
+
+  XSDAW01.XSDAW-JCL-LINE[2] = "//             CLASS=P,"; /* prod*/
+
+  XSDAW01.XSDAW-JCL-LINE[3] = "//             MSGCLASS=J"; /* prod*/
+
+  /* MOVE "//             NOTIFY=" TO XSDAW01.XSDAW-NOTIFY-INFO;*/
+  /* MOVE EZEUSRID TO XSDAW01.XSDAW-USERID;*/
+  /* MOVE XSDAW01.XSDAW-NOTIFY-LINE TO XSDAW01.XSDAW-JCL-LINE(4);*/
+  XSDAW01.XSDAW-JCL-LINE[4] = "//* ";
+  XSDAW01.XSDAW-JCL-LINE[5] = "//* ";
+
+  XSDAW01.XSDAW-JCL-LINE[6] = "//S0010   EXEC ESPCOMM,";
+
+  XSDAW01.XSDAW-COMMAND-LINE-INFO1 = "//             CMD='E=DAREQ01 U1(";
+  XSDAW01.XSDAW-COMMAND-JCL = DAWTBL.DAW-UPDATE-PROC[sysVar.arrayIndex];
+  XSDAW01.XSDAW-COMMAND-LINE-INFO2 = ")'";
+
+  XSDAW01.XSDAW-JCL-LINE[7] = XSDAW01.XSDAW-COMMAND-LINE;
+
+  XSDAW01.XSDAW-JCL-LINE[8] = "//* ";
+
+  sysVar.arrayIndex = 1;
+  while (sysVar.arrayIndex <= 8)
+    XSDAW02.XSDAW-JCL-LINE[sysVar.arrayIndex] = XSDAW01.XSDAW-JCL-LINE[sysVar.arrayIndex];
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+
+  XSDAW02.XSDAW-RETURN-CODE = 0;
+  XSDAW02.XSDAW-LINE-COUNT = 8;
+  call "TA0070" (XSDAW02) {isNoRefresh = yes, isExternal = yes};
+  if (XSDAW02.XSDAW-RETURN-CODE != 0)
+    DA01M001.DAW-INFO-MESSAGE = "BATCH UPDATE REQUEST FAILED ";
+  else
+    DA01M001.DAW-INFO-MESSAGE = "BATCH UPDATE REQUEST SUBMITTED";
+  end
+
+  /* ************************/
+  /* ****************** END DA01S-PROD-UPDATE *****************************/
+  /* ************************/
+end // end DA01S-PROD-UPDATE
+
+// SET STATUS OR DELETE VDATRN01
+Function DA01S-SET-STATUS()
+  /* ******************************************************************/
+  /* set status to 'pending'*/
+  /* ******************************************************************/
+
+  set VDATRN01 empty;
+  VDATRN01.DAW-VDATRN01-KEY = DA01W02.DAW-VDATRN01-KEY[DAW-ROW-NBR];
+
+  XSDAS-DA1140-SEL(); /* Select the transaction*/
+
+  if (DA01M001.DAW-SELECT-CD[DAW-ROW-NBR] == "A"
+   || DA01M001.DAW-SELECT-CD[DAW-ROW-NBR] == "R")
+    VDATRN01.DA-APVD-USER-ID = sysVar.userID;
+    VDATRN01.DA-CHNG-STAT-IND = DA01M001.DAW-SELECT-CD[DAW-ROW-NBR];
+    XSDAS-DA1140-UPD(); /* Update the transaction*/
+
+  end
+
+  if (DA01M001.DAW-SELECT-CD[DAW-ROW-NBR] == "D")
+    XSDAS-DA1140-DEL(); /* Update the transaction*/
+  end
+
+  /* ***********************/
+  /* ****************** END DA01S-SET-STATUS ***************************/
+  /* ***********************/
+end // end DA01S-SET-STATUS
+
+// ADD TEMP STORAGE PAGE(RECORD)
+Function DA01S-TS-ADD-PAGE()
+  /* ************************************************************/
+  /* Write temporary storage*/
+  /* ************************************************************/
+
+  TA5REC.TA5APPID = "DA01"; /* appl identification*/
+  TA5REC.TA5FNCCD = "A"; /* function code*/
+  DA01W02.DAW-TEMP-STORAGE-LENGTH = 1313;
+
+  call "TA0050" (DA01W02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    DAWREC.DAW-MAX-PAGE = TA5REC.TA5TSQIX;
+    set DA01W02 empty; /* Reset for next write*/
+    DAWREC.DAW-ROW-NBR = 0;
+  else
+    TA1REC.TA1LOCAT[1] = "ADD TSQ";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    TA1REC.TA1TBLKE = DAWREC.XXX-TBL-PFX; /* first row*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "POST";
+    TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    DA01M001.DAW-INFO-MESSAGE = "TEMPORARY STORAGE FAILURE - CONTACT HELP DESK";
+  end
+
+  /* *************************/
+  /* ****************** END DA01S-ADD-TSQ-PAGE ******************/
+  /* *************************/
+end // end DA01S-TS-ADD-PAGE
+
+// PURGE TEMP STORAGE FILE
+Function DA01S-TS-PURGE-FIL()
+  /* ************************************************************/
+  /* Purge temporary storage*/
+  /* ************************************************************/
+
+  TA5REC.TA5APPID = "DA01"; /* appl identification*/
+  TA5REC.TA5FNCCD = "P"; /* function code*/
+
+  call "TA0050" (DA01W02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  DAWREC.DAW-ROW-NBR = 0; /* temp storage row subscript*/
+  DAWREC.DAW-CURR-PAGE = 0; /* temp storage page(record) number*/
+  DAWREC.DAW-MAX-PAGE = 0; /* temp storage max page number*/
+  DA01M001.DAW-LAST-PAGE = 0; /* / map last page number*/
+  DA01W01.DA01W-TEMP-STORAGE-EXISTS = "N";
+
+
+  /* **********************/
+  /* ****************** END DA01S-PURGE-TSQ *********************/
+  /* **********************/
+end // end DA01S-TS-PURGE-FIL
+
+// READ TEMP STORAGE PAGE
+Function DA01S-TS-READ-PAGE()
+  /* ************************************************************/
+  /* Read temporary storage*/
+  /* ************************************************************/
+
+  DAWREC.DAW-CURR-PAGE = DA01M001.DAW-CURR-PAGE;
+
+  set DA01W02 empty;
+
+  TA5REC.TA5APPID = "DA01"; /* appl identification*/
+  TA5REC.TA5FNCCD = "R"; /* function code*/
+  TA5REC.TA5TSQIX = DAWREC.DAW-CURR-PAGE; /* current page*/
+  DA01W02.DAW-TEMP-STORAGE-LENGTH = 1313;
+
+  call "TA0050" (DA01W02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == 0)
+     /* NEXT SENTENCE*/
+  else
+    TA1REC.TA1LOCAT[1] = "READ TSQ";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    TA1REC.TA1TBLKE = DAWREC.XXX-TBL-PFX; /* first row*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "POST";
+    TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    DA01M001.DAW-INFO-MESSAGE = "TEMPORARY STORAGE FAILURE - CONTACT HELP DESK";
+  end
+
+  /* *************************/
+  /* ****************** END DA01S-READ-TSQ-PAGE ******************/
+  /* *************************/
+end // end DA01S-TS-READ-PAGE
+
+// SET STATUS OR DELETE VDATRN01
+Function DA01S-UPD-STATUS()
+  /* ****************************************************************/
+  /* Update status to In-process for any row in an approved status*/
+  /* ****************************************************************/
+
+  DA01S-DA1140-OPEN(); /* open cursor*/
+  DA01S-DA1140-FETCH(); /* fetch first row*/
+
+  DAWREC.DAW-APPROVED-FOUND-FL = "N";
+  while (SQLCA.VAGen_SQLCODE == 0) /* until last row*/
+
+    if (VDATRN01.DA-CHNG-STAT-IND == "A")
+      VDATRN01.DA-CHNG-STAT-IND = "I";
+      XSDAS-DA1140-UPD(); /* Update the transaction*/
+      DAWREC.DAW-APPROVED-FOUND-FL = "Y";
+    end
+
+    DA01S-DA1140-FETCH(); /* fetch next row*/
+  end
+
+  DA01S-DA1140-CLOSE(); /* close cursor*/
+
+  /* ***********************/
+  /* ****************** END DA01S-SET-PROCES ***************************/
+  /* ***********************/
+end // end DA01S-UPD-STATUS
+
+//*** RECORD=DA01W01 ****
+//  /*********************************************************
+//  /*   Working storage record for DA01
+//  /*
+//  /* DATE      USERID     DESC. OF CHANGE
+//  /* --------  ------     ----------------------------------
+//  /* 05/15/96  LRAINE     CREATED RECORD
+//  /*
+//  /*********************************************************
+// ***********************
+Record DA01W01 type basicRecord
+  10 DA-CCAT-KEY-TXT DA-CCAT-KEY-TXT ; 
+    15 DA01W-TBL-KEY DA01W-TBL-KEY ; 
+    15 DA01W-FILLER char(16) ; // FILLER
+  10 DA01W-TEMP-STORAGE-EXISTS char(1) ; // TEMP STORAGE EXISTS FLAG
+  10 DA01W-CHANGE-FL DA01W-CHANGE-FL ; 
+  10 DA01W-UPDATE-FL DA01W-UPDATE-FL ; 
+  10 DA01W-DELETE-FL DA01W-DELETE-FL ; 
+end // end DA01W01
+
+//*** RECORD=DA01W02 ****
+//  /*********************************************************
+//  /*   TEMP STORAGE RECORD FOR DA01
+//  /*
+//  /* DATE      USERID     DESC. OF CHANGE
+//  /* --------  ------     ----------------------------------
+//  /* 05/15/96  LRAINE     CREATED RECORD
+//  /*
+//  /*********************************************************
+// ***********************
+Record DA01W02 type basicRecord
+  5 DA00W-TEMP-STORAGE-RECORD char(1313) ; // TEMP STORAGE RECORD FOR DA0A
+    10 DAW-TEMP-STORAGE-LENGTH DAW-TEMP-STORAGE-LENGTH ; 
+    10 DA00W-TEMP-STORAGE-ROW char(119) [11] ; // DA0A TSQ ROW
+      15 DAW-SELECT-CD DAW-SELECT-CD ; 
+      15 DA01W-TBL-KEY DA01W-TBL-KEY ; 
+      15 DA-PLOG-TXT1 DA-PLOG-TXT1 ; 
+      15 DAW-STATUS-DESC DAW-STATUS-DESC ; 
+      15 DA-ROW-EDIT-IND DA-ROW-EDIT-IND ; 
+      15 DA-CHNG-USER-ID DA-CHNG-USER-ID ; 
+      15 DAW-CHNG-DT-MDY DAW-CHNG-DT-MDY ; 
+      15 DAW-VDATRN01-KEY DAW-VDATRN01-KEY ; 
+        20 XXX-TBL-PFX XXX-TBL-PFX ; 
+        20 DA-CCAT-KEY-TXT DA-CCAT-KEY-TXT ; 
+        20 ZZ-CHNG-DT ZZ-CHNG-DT ; 
+end // end DA01W02
+
+// USER REQUESTED CHANGE TO ROW
+DataItem DA01W-CHANGE-FL char(1)  {
+  align = none, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// USER REQUESTED CHANGE TO ROW
+DataItem DA01W-DELETE-FL char(1)  {
+  align = none, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TABLE CODE
+DataItem DA01W-TBL-KEY char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// USER REQUESTED CHANGE TO ROW
+DataItem DA01W-UPDATE-FL char(1)  {
+  align = none, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

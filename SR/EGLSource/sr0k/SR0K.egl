@@ -1,0 +1,944 @@
+package sr0k;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import fy.common.*;
+import in1.common.*;
+import ku.common.*;
+import op.common.*;
+import pk.common.*;
+import sm.common.*;
+import sp.common.*;
+import sr.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+//*** PROGRAM=SR0K ****
+// --------------  sr0k - inquiry of schedules  -------------
+// 
+// overview:  this application browses the shiprec schedule
+//            header table for a requested warehouse.  a
+//            beginning schedule number may be provided.  the
+//            user may page forward from the entered beginning
+//            schedule number and page back as many pages as
+//            he or she has paged forward.
+// 
+// -------- maintenance history ------------------------------
+// date written: 10/86
+// author:       dave ply - cap gemni america
+// 
+//   10/20/88    jwood    added call option NONCSP
+//   01/17/89    bgowle   increased sr0kmamt to 12 bytes
+//   03/20/89    jwood    added xssegtr logic
+//   03/01/94    HKEMPE   Generate/Compile to pick up revised
+//                        COMMAREA and XWHTBL
+//   06/24/97    dgerlt   Added userid and pick status to the
+//                        second screen
+//   06/24/97    dgerlt   Added userid and pick status to the
+//                        second screen
+//   03/20/01    rnunna   modified to show if an order is
+//                        Goods Issued or not.
+// 
+// ************************************************************
+// 
+// processing:
+//   i. initialize (process sr0k010)
+//      a. check entry security
+//      b. clear work records, maps
+//      c. pick up warehouse if passed from outside application
+//      d. flow - to converse left inq. map (sr0k040)
+// 
+//  ii. build page (process sr0k020)
+//      a. clear maps
+//      b. carry forward whse/beginning sched. nbr
+//      c. set browse start at whse and schedule with current
+//         pages index.
+//      d. for each slot on map, if schedule data available,
+//         move data to both maps.
+//      e. read next schedule following last filled map slot.
+//         move schedule to next page start key.  if no more
+//         schedules available, flag next key as last.
+//      f. jump to sr0k040 (converse left page) or sr0k050
+//         (converse right page) depending on flag
+// 
+// iii. converse left page (sr0k040)
+//      a. no before process.
+//      b. clear msg, flag fields.  set left page flag.
+//      c. check pf keys for xfer request.
+//      d. validate whse
+//      e. if whse or next schedule field changed, set flag
+//      f. flow:
+//         1. pa2 (reset) - sr0k010 (init)
+//         2. errors/msg's - sr0k040 (redisplay)
+//         3. changed whse/next sched.
+//            a) clear start page key table
+//            b) set page index to 1
+//            c) sr0k020 (build new page)
+//         4. pf7 (page back):
+//            a) decrement page key index.  if index now zero,
+//               set to 1 and send "can't page back past start"
+//               message.  jump to sr0k040 (redisplay)
+//            b) if index not 0, jump to sr0k020 (build page)
+//         5. pf8 (page forward):
+//            a) increment page key index. if index greater
+//               then 50, set "past page fwd limit - enter new
+//               beginning batch" msg. jump to sr0k040 (redisp)
+//            b) if key for current index flagged as end of
+//               page, decrement index, set "last page" msg,
+//               jump to sr0k040 (redisplay)
+//            c) if a) or b) not encountered, jump to sr0k020
+//               (build new page)
+//         6. pf10 - redisplay left page - sr0k040
+//         7. pf11 - display right page - sr0k050
+//         8. other - redisplay - sr0k040
+// 
+//  iv. converse right page (sr0k050)
+//      a. no before process.
+//      b. clear msg, flag fields.  set right page flag.
+//      c. check pf keys for xfer request.
+//      d. validate whse
+//      e. if whse or next schedule field changed, set flag
+//      f. flow:
+//         1. pa2 (reset) - sr0k010 (init)
+//         2. errors/msg's - sr0k050 (redisplay)
+//         3. changed whse/next sched.
+//            a) clear start page key table
+//            b) set page index to 1
+//            c) sr0k020 (build new page)
+//         4. pf7 (page back):
+//            a) decrement page key index.  if index now zero,
+//               set to 1 and send "can't page back past start"
+//               message.  jump to sr0k050 (redisplay)
+//            b) if index not 0, jump to sr0k020 (build page)
+//         5. pf8 (page forward):
+//            a) increment page key index. if index greater
+//               then 50, set "past page fwd limit - enter new
+//               beginning batch" msg. jump to sr0k050 (redisp)
+//            b) if key for current index flagged as end of
+//               page, decrement index, set "last page" msg,
+//               jump to sr0k050 (redisplay)
+//            c) if a) or b) not encountered, jump to sr0k020
+//               (build new page)
+//         6. pf10 - display left page - sr0k040
+//         7. pf11 - redisplay right page - sr0k050
+//         8. other - redisplay - sr0k050
+// 
+// 
+// *********************
+Program SR0K type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "SR00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  SQLCA SQLCA; // record
+  SR0KW01 SR0KW01; // record
+  SR0KW02 SR0KW02; // record
+  SR1REC SR1REC; // record
+  SR2REC SR2REC; // record
+  SRWREC SRWREC; // record
+  TA1REC TA1REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use SR0KT {deleteAfterUse = yes}; // table
+  use SR0KM.SR0KM040,  // forms
+      SR0KM.SR0KM050
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    SR0K010: SR0K010();
+
+     /* ------------- sr0k010 flow ---------------------*/
+
+    goto SR0K040; /* to converse left page*/
+
+    SR0K020: SR0K020();
+
+     /* ----------------- sr0m020 flow -----------------*/
+
+    if (SR0KW01.SR0KWLRF == "L") /* left/right flag is left?*/
+      goto SR0K040; /* display left map*/
+    else
+      goto SR0K050; /* display right map*/
+    end
+
+
+    SR0K040: SR0K040();
+
+     /* ------------  sr0k040 flow ---------------*/
+
+    if (converseVar.eventKey is pa2) /* reset?*/
+      SRWREC.SRWXWHCD = " "; /* clear whse from commarea*/
+      COMMAREA.XWHCD = " ";
+      COMMAREA.CAUSERA = SRWREC.SRWGRP;
+      goto SR0K010; /* to init inquiry on batch*/
+    end
+
+
+       /* if errors, redisplay map*/
+    SR0KM040.SR0KMMSG = SRWREC.SRWMSG; /* pfkey errors*/
+    if (converseVar.validationMsgNum != 0
+     || SR0KM040.SR0KMMSG != " ")
+      set SR0KM040 alarm;
+      goto SR0K040; /* edit errors - redisplay*/
+    end
+
+
+    if (SR0KW01.SR0KWNBF == "Y") /* new beginning batch?*/
+      set SR0KW02 empty;
+      SR0KW02.SR0KWBTB[1] = SR0KW01.SR0KWBSC;
+      SR0KW02.SR0KWBIX = 1; /* reset batch page index*/
+      goto SR0K020;
+    end
+
+
+    if (converseVar.eventKey is enter) /* enter with data present*/
+      goto SR0K040; /* redisplay*/
+    end
+
+
+    if (converseVar.eventKey is pf7) /* page back batches*/
+      SR0KW02.SR0KWBIX = SR0KW02.SR0KWBIX - 1;
+      if (SR0KW02.SR0KWBIX == 0)
+        converseLib.validationFailed(99); /* ; CANNOT PAGE BACK PAST 1ST REQ PAGE*/
+        SR0KW02.SR0KWBIX = 1;
+        set SR0KM040 alarm;
+        goto SR0K040; /* redisplay*/
+      end
+      goto SR0K020; /* load new page*/
+    end
+
+
+    if (converseVar.eventKey is pf8) /* page frwd batches*/
+      SR0KW02.SR0KWBIX = SR0KW02.SR0KWBIX + 1;
+      if (SR0KW02.SR0KWBIX == 50)
+        converseLib.validationFailed(100); /* PAST PAGE FWD LIMIT - ENT NEW SCHED*/
+        SR0KW02.SR0KWBIX = 50;
+        set SR0KM040 alarm;
+        goto SR0K040; /* redisplay*/
+      end
+      if (SR0KW02.SR0KWBTB[SR0KWBIX] == 99999) /* no more pages?*/
+        SR0KW02.SR0KWBIX = SR0KW02.SR0KWBIX - 1;
+        converseLib.validationFailed(98); /* LAST PAGE*/
+        goto SR0K040; /* redisplay*/
+      end
+      goto SR0K020; /* load new page*/
+    end
+
+
+    if (converseVar.eventKey is pf10)
+      goto SR0K040; /* to redisplay left map*/
+    end
+
+
+    if (converseVar.eventKey is pf11)
+      goto SR0K050; /* to display right map*/
+    end
+
+
+    SR0KM040.SR0KMMSG = "YOU SCREWED UP";
+    goto SR0K040;
+
+    SR0K050: SR0K050();
+
+     /* ------------  sr0k050 flow ---------------*/
+
+    if (converseVar.eventKey is pa2) /* reset?*/
+      SRWREC.SRWXWHCD = " "; /* clear whse from commarea*/
+      COMMAREA.XWHCD = " ";
+      COMMAREA.CAUSERA = SRWREC.SRWGRP;
+      goto SR0K010; /* to init inquiry on batch*/
+    end
+
+
+       /* if errors, redisplay map*/
+    SR0KM050.SR0KMMSG = SRWREC.SRWMSG; /* pfkey errors*/
+    if (converseVar.validationMsgNum != 0
+     || SR0KM050.SR0KMMSG != " ")
+      set SR0KM050 alarm;
+      goto SR0K050; /* edit errors - redisplay*/
+    end
+
+
+    if (SR0KW01.SR0KWNBF == "Y") /* new beginning batch?*/
+      set SR0KW02 empty;
+      SR0KW02.SR0KWBTB[1] = SR0KW01.SR0KWBSC;
+      SR0KW02.SR0KWBIX = 1; /* reset batch page index*/
+      goto SR0K020;
+    end
+
+
+    if (converseVar.eventKey is enter) /* enter with data present*/
+      goto SR0K050; /* redisplay*/
+    end
+
+
+    if (converseVar.eventKey is pf7) /* page back batches*/
+      SR0KW02.SR0KWBIX = SR0KW02.SR0KWBIX - 1;
+      if (SR0KW02.SR0KWBIX == 0)
+        converseLib.validationFailed(99); /* CANNOT PAGE BACK PAST 1ST REQ PAGE*/
+        SR0KW02.SR0KWBIX = 1;
+        set SR0KM050 alarm;
+        goto SR0K050; /* redisplay*/
+      end
+      goto SR0K020; /* load new page*/
+    end
+
+
+    if (converseVar.eventKey is pf8) /* page frwd batches*/
+      SR0KW02.SR0KWBIX = SR0KW02.SR0KWBIX + 1;
+      if (SR0KW02.SR0KWBIX == 50)
+        converseLib.validationFailed(100); /* PAST PAGE FWD LIMIT - ENT NEW SCHEd*/
+        SR0KW02.SR0KWBIX = 50;
+        set SR0KM050 alarm;
+        goto SR0K050; /* redisplay*/
+      end
+      if (SR0KW02.SR0KWBTB[SR0KWBIX] == 99999) /* no more pages?*/
+        SR0KW02.SR0KWBIX = SR0KW02.SR0KWBIX - 1;
+        converseLib.validationFailed(98); /* LAST PAGE*/
+        goto SR0K050; /* redisplay*/
+      end
+      goto SR0K020; /* load new page*/
+    end
+
+
+    if (converseVar.eventKey is pf10)
+      goto SR0K040; /* to redisplay left map*/
+    end
+
+
+    if (converseVar.eventKey is pf11)
+      goto SR0K050; /* to display right map*/
+    end
+
+
+    SR0KM050.SR0KMMSG = "YOU SCREWED UP";
+    goto SR0K050;
+
+  end // end main
+end // end SR0K
+
+// initialize inq. batch
+Function SR0K010()
+   /* --------------- start process sr0k010 ---------------------*/
+
+  XSENTRY(); /* entry security*/
+
+  XSSEGTR(); /* set segmented transaction id*/
+
+  set SR0KW01 empty; /* clear misc work fields*/
+  set SR0KW02 empty; /* clear batches array*/
+  set SR0KM040 initial; /* clear map fields*/
+  set SR0KM050 initial; /* clear map fields*/
+  SR0KM040.SR0KMDT = VGVar.currentShortGregorianDate; /* move system date to map*/
+  SR0KM050.SR0KMDT = VGVar.currentShortGregorianDate; /* move system date to map*/
+
+     /* look for whse passed from outside applications*/
+  SRWREC.SRWGRP = COMMAREA.CAUSERA; /* user commarea to work*/
+  SR0KW01.SR0KW2CH = COMMAREA.CAFROMAP; /* if entered from*/
+  if (SR0KW01.SR0KW2CH != "SR") /* outside shiprec system,*/
+    SRWREC.SRWXWHCD = COMMAREA.XWHCD; /* use commarea.xwhcd*/
+  end
+
+    /* if whse passed in commarea, move to map and validate*/
+  if (SRWREC.SRWXWHCD != " ")
+    SR0KM040.SR0KMXWH = SRWREC.SRWXWHCD;
+    SR0KM050.SR0KMXWH = SRWREC.SRWXWHCD;
+    SR0KS05(); /* validate whse*/
+  else
+    set SR0KM040.SR0KMXWH cursor;
+  end
+
+   /* ---------------   end process sr0k010 ---------------------*/
+
+end // end SR0K010
+
+// select/load page
+Function SR0K020()
+   /* --------------- start process sr0k020 ---------------------*/
+
+     /* select next set of batches, move to map*/
+
+    /* clear maps*/
+  set SR0KM040 initial;
+  set SR0KM050 initial;
+  SR0KM040.SR0KMDT = VGVar.currentShortGregorianDate;
+  SR0KM050.SR0KMDT = VGVar.currentShortGregorianDate;
+  SR0KM040.SR0KMXWH = SRWREC.SRWXWHCD;
+  SR0KM050.SR0KMXWH = SRWREC.SRWXWHCD;
+  SR0KM040.SR0KMBSC = SR0KW01.SR0KWBSC;
+  SR0KM050.SR0KMBSC = SR0KW01.SR0KWBSC;
+
+  SR1REC.XWHCD = SR0KM040.SR0KMXWH; /* set ss start key*/
+  SR1REC.PK1PKSCH = SR0KW02.SR0KWBTB[SR0KWBIX];
+
+  SR0KS07(); /* select set of batches*/
+
+  SR0KS10(); /* read first batch*/
+
+
+  SR0KW01.SR0KWIX1 = 1; /* map pointer*/
+  while (SQLCA.VAGen_SQLCODE == 0 /* batch row found*/
+   && SR0KW01.SR0KWIX1 <= 10)
+
+    SR0KM040.SR0KMSCH[SR0KWIX1] = SR1REC.PK1PKSCH; /* sched.*/
+    SR0KM050.SR0KMSCH[SR0KWIX1] = SR1REC.PK1PKSCH;
+    SR0KM040.SR0KMSDT[SR0KWIX1] = SR1REC.SR1SHPDT; /* ship dt*/
+    if (SR1REC.SR1BTST in SR0KT.SR0KTST)
+      SR0KM040.SR0KMST[SR0KWIX1] = SR0KT.SR0KTDSC[sysVar.arrayIndex];
+    end
+    SR0KM050.SR0KMPKST[SR0KWIX1] = SR1REC.SR1PKSFL; /* pick status*/
+    SR0KM050.SR0KMCDT[SR0KWIX1] = SR1REC.SR1DTCHG; /* chg dt*/
+    SR0KW01.SR0KWTM1 = SR1REC.SR1TMCHG;
+    SR0KW01.SR0KWHR2 = SR0KW01.SR0KWHR1;
+    SR0KW01.SR0KWMN2 = SR0KW01.SR0KWMN1;
+    SR0KW01.SR0KWCOL = ":";
+    SR0KM050.SR0KMCTM[SR0KWIX1] = SR0KW01.SR0KWTM2; /* chg time*/
+    SR0KM040.SR0KMOSC[SR0KWIX1] = SR1REC.SR1ORGSD; /* orig. sch*/
+    SR0KM040.SR0KMNOD[SR0KWIX1] = SR1REC.SR1NBORD; /* orders*/
+    SR0KM040.SR0KMNUN[SR0KWIX1] = SR1REC.SR1QTYSH; /* units*/
+    SR0KM040.SR0KMAMT[SR0KWIX1] = SR1REC.SR1DLRAM; /* amt*/
+    SR0KM050.SR0KMUSRID[SR0KWIX1] = SR1REC.XXXUSRID; /* userid*/
+    SR0KM050.SR0KMEDT[SR0KWIX1] = SR1REC.ZZZSDT; /* entry dt*/
+
+    /* DLVRUSA START*/
+    if (SR1REC.SR1BTST == "B") /* if schedule is balanced*/
+
+      SR0KW01.SR0KWCDT = SR0KM050.SR0KMCDT[SR0KWIX1];
+
+      if (SR0KM050.SR0KMDT == SR0KW01.SR0KWCDT) /* if balnced today*/
+        /* next sentence*/
+      else
+        SR2REC.XWHCD = SR0KM040.SR0KMXWH;
+        SR2REC.PK1PKSCH = SR1REC.PK1PKSCH;
+        SR2REC.OP1CUOID = -1; /* cust ord*/
+        SR2REC.OP1NORID = -1; /* nike ord*/
+        SR2REC.OP1NTMAL = -1; /* times alloc*/
+
+        SR0KS08(); /* select set of batches VSRORD01*/
+
+        while (SQLCA.VAGen_SQLCODE == 0)
+
+          SR0KS11(); /* fetch the record*/
+
+          if (SR2REC.SR2UIVCF == "Y")
+            SR0KM040.SR0KGISS[SR0KWIX1] = "*"; /* GOODS ISS FLG*/
+            SR0KM050.SR0KGISS[SR0KWIX1] = "*"; /* GOODS ISS FLG*/
+          end
+
+        end
+
+        SR0KS13(); /* close the cursor vsrord01*/
+
+      end
+
+    end
+
+    /* DLVRUSA END*/
+
+    SR0KW01.SR0KWIX1 = SR0KW01.SR0KWIX1 + 1; /* inc. map index*/
+
+    SR0KS10(); /* read next selected item*/
+
+
+  end /* end while batch rows found*/
+
+    /* set key for next page*/
+  SR0KW02.SR0KWBIX = SR0KW02.SR0KWBIX + 1;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    SR0KW02.SR0KWBTB[SR0KWBIX] = SR1REC.PK1PKSCH;
+  else
+    SR0KW02.SR0KWBTB[SR0KWBIX] = 99999;
+    converseLib.validationFailed(98); /* last page*/
+  end
+  SR0KW02.SR0KWBIX = SR0KW02.SR0KWBIX - 1; /* reset to current page*/
+
+  SR0KS12(); /* close item set*/
+
+
+   /* ---------------   end process sr0k020 ---------------------*/
+
+end // end SR0K020
+
+// converse left page
+Function SR0K040()
+   /* -------------- sr0k040 before stage ----------------*/
+
+    /* no processing*/
+
+  converse SR0KM040 ;
+   /* -------------- sr0k040 after stage -----------------*/
+
+  SRWREC.SRWMSG = " "; /* clear msg field*/
+  SR0KM040.SR0KMMSG = " "; /* clear msg field*/
+  SR0KW01.SR0KWNBF = "N"; /* clear new beginning batch flag*/
+  SR0KW01.SR0KWLRF = "L"; /* set left/right map flag to left*/
+
+  if (SR0KM040.SR0KMXWH != SRWREC.SRWXWHCD)
+    SR0KW01.SR0KWNBF = "Y"; /* new beginning batch flag*/
+  end
+
+  SRWREC.SRWXWHCD = SR0KM040.SR0KMXWH; /* set whse for commarea*/
+  COMMAREA.CAUSERA = SRWREC.SRWGRP;
+
+  if (converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8
+   || converseVar.eventKey is pf10
+   || converseVar.eventKey is pf11)
+     /* next sentence*/
+  else
+    XSSRS01(); /* check shiprec pf keys*/
+    if (converseVar.validationMsgNum != 0
+     || SRWREC.SRWMSG != " ")
+      exit stack;
+    end
+  end
+
+
+  SR0KS05(); /* verify valid whse*/
+
+
+  if (SR0KM040.SR0KMBSC != SR0KW01.SR0KWBSC /* changed beginning batch?*/
+   || SR0KM040.SR0KMBSC == 0)              
+    if (converseVar.eventKey is enter)
+      SR0KW01.SR0KWBSC = SR0KM040.SR0KMBSC;
+      SR0KM050.SR0KMBSC = SR0KM040.SR0KMBSC;
+      SR0KW01.SR0KWNBF = "Y"; /* new beginning batch flag*/
+    else
+      SR0KM040.SR0KMMSG = "MUST KEY ENTER";
+    end
+  end
+
+end // end SR0K040
+
+// converse right page
+Function SR0K050()
+   /* -------------- sr0k050 before stage ----------------*/
+
+    /* no processing*/
+
+  converse SR0KM050 ;
+   /* -------------- sr0k050 after stage -----------------*/
+
+  SRWREC.SRWMSG = " "; /* clear msg field*/
+  SR0KM050.SR0KMMSG = " "; /* clear msg field*/
+  SR0KW01.SR0KWNBF = "N"; /* clear new beginning batch flag*/
+  SR0KW01.SR0KWLRF = "R"; /* set left/right map flag to right*/
+
+  SRWREC.SRWXWHCD = SR0KM050.SR0KMXWH; /* set whse for commarea*/
+  COMMAREA.CAUSERA = SRWREC.SRWGRP;
+
+  if (converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8
+   || converseVar.eventKey is pf10
+   || converseVar.eventKey is pf11)
+     /* next sentence*/
+  else
+    XSSRS01(); /* check shiprec pf keys*/
+    if (converseVar.validationMsgNum != 0
+     || SRWREC.SRWMSG != " ")
+      exit stack;
+    end
+  end
+
+
+  SR0KS05(); /* verify valid whse*/
+
+
+  if (SR0KM050.SR0KMBSC != SR0KW01.SR0KWBSC) /* changed beginning batch?*/
+    if (converseVar.eventKey is enter)
+      SR0KW01.SR0KWBSC = SR0KM050.SR0KMBSC;
+      SR0KM040.SR0KMBSC = SR0KM050.SR0KMBSC;
+      SR0KW01.SR0KWNBF = "Y"; /* set new beginning batch flag*/
+    else
+      SR0KM050.SR0KMMSG = "MUST KEY ENTER";
+    end
+  end
+
+
+end // end SR0K050
+
+// validate whse
+Function SR0KS05()
+   /* ------------- start stmt grp sr0ks05 ---------------*/
+
+      /* look up warehouse in csp corp whse table*/
+        /* found/active - move whse name to map*/
+        /* notfnd/inactive - brt, error msg*/
+
+  set SR0KM040.SR0KMXWH initialAttributes;
+  if (SR0KM040.SR0KMXWH != " ")
+    if (SR0KM040.SR0KMXWH in XWHTBL.XWHCD)
+      if (XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+        /* next sentence*/
+      else
+        set SR0KM040.SR0KMXWH cursor, modified, bold;
+        converseLib.validationFailed(2); /* warehouse code inactive*/
+      end
+    else
+      set SR0KM040.SR0KMXWH cursor, modified, bold;
+      converseLib.validationFailed(1); /* warehouse code invalid*/
+    end
+  else
+    set SR0KM040.SR0KMXWH cursor, modified, bold;
+    converseLib.validationFailed(17); /* warehouse code required*/
+  end
+
+
+   /* -------------   end stmt grp sr0hs05 ---------------*/
+end // end SR0KS05
+
+// select batch set
+Function SR0KS07()
+   /* ------------- start stmt grp sr0ks07 ---------------*/
+
+    /* select set of batches*/
+      /* whse = map whse*/
+      /* schedule >= map whse*/
+
+  call "IO0790" ("SS", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* ss dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0KW01.SR0KWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0KW01.SR0KWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0KM040";
+    TA1REC.TA1LOC = "SR0KS07";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+   /* -------------   end stmt grp sr0ks07 ---------------*/
+end // end SR0KS07
+
+// select order set
+Function SR0KS08()
+   /* -----------  start stmt grp sr0ks08  ----------------*/
+
+       /* select set of orders within schedule*/
+
+
+  call "IO0800" ("S2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0KW01.SR0KWSQL = SQLCA.SQLCAREC; /* save error sq*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0KW01.SR0KWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0KM040";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0KS08";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0Ks08  -------------------*/
+end // end SR0KS08
+
+// select next batch record
+Function SR0KS10()
+   /* ------------- start stmt grp sr0ks10 ---------------*/
+
+    /* readnext  batch record*/
+
+  call "IO0790" ("SN", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* sn dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    SR0KW01.SR0KWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0KW01.SR0KWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0KM040";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0KS10";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+   /* -------------   end stmt grp sr0ks10 ---------------*/
+end // end SR0KS10
+
+// select NEXT ORDER
+Function SR0KS11()
+   /* -----------  start stmt grp sr0ks11  ----------------*/
+
+       /* READ NEXT BATCH RECORD*/
+
+
+  call "IO0800" ("N2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    SR0KW01.SR0KWSQL = SQLCA.SQLCAREC; /* save error sq*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0KW01.SR0KWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0KM040";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0KS11";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0Ks11  -------------------*/
+end // end SR0KS11
+
+// close batch set
+Function SR0KS12()
+   /* ------------- start stmt grp sr0ks12 ---------------*/
+
+    /* close set of batches*/
+
+  call "IO0790" ("CS", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* cs dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0KW01.SR0KWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0KW01.SR0KWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0KM040";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0KS40";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+   /* -------------   end stmt grp sr0ks12 ---------------*/
+end // end SR0KS12
+
+// select order set
+Function SR0KS13()
+   /* -----------  start stmt grp sr0kS13  ----------------*/
+
+       /* CLOSE SET OF BATCHES*/
+
+
+  call "IO0800" ("C2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* close dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0KW01.SR0KWSQL = SQLCA.SQLCAREC; /* save error sq*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0KW01.SR0KWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0KM040";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0KS13";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0KS13  -------------------*/
+end // end SR0KS13
+
+//*** RECORD=SR0KW01 ****
+// ********** inquiry on batches misc fields work rec *********
+// 
+// ***********************
+Record SR0KW01 type basicRecord
+  5 SR0KWIX1 SR0KWIX1 ; 
+  5 SR0KW2CH SR0KW2CH ; 
+  5 SR0KWWRK SR0KWWRK ; 
+  5 SR0KWBSC SR0KWBSC ; 
+  5 SR0KWNBF SR0KWNBF ; 
+  5 SR0KWLRF SR0KWLRF ; 
+  5 SR0KWTM1 SR0KWTM1 ; 
+    10 SR0KWHR1 SR0KWHR1 ; 
+    10 SR0KWMN1 SR0KWMN1 ; 
+  5 SR0KWTM2 SR0KWTM2 ; 
+    10 SR0KWHR2 SR0KWHR2 ; 
+    10 SR0KWCOL SR0KWCOL ; 
+    10 SR0KWMN2 SR0KWMN2 ; 
+  5 SR0KWSQL SR0KWSQL ; 
+  5 SR0KWCDT SR0KWCDT ; 
+end // end SR0KW01
+
+//*** RECORD=SR0KW02 ****
+// ** inquiry batch storage block array and supporting fields *
+// 
+// ***********************
+Record SR0KW02 type basicRecord
+  10 SR0KWBIX SR0KWBIX ; 
+  10 SR0KWBTB SR0KWBTB [50] ; 
+end // end SR0KW02
+
+// 2 char work field
+DataItem SR0KW2CH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// batch index
+DataItem SR0KWBIX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work begin schedule
+DataItem SR0KWBSC num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// batch keys
+DataItem SR0KWBTB num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work area for chng dt
+DataItem SR0KWCDT num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   colon
+DataItem SR0KWCOL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   hour
+DataItem SR0KWHR1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   hour
+DataItem SR0KWHR2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work index 1
+DataItem SR0KWIX1 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// left/right map flag
+DataItem SR0KWLRF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   minutes
+DataItem SR0KWMN1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   minutes
+DataItem SR0KWMN2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// new begin sched flag
+DataItem SR0KWNBF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// save area for sqlca
+DataItem SR0KWSQL char(136)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work time 1
+DataItem SR0KWTM1 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work time 2
+DataItem SR0KWTM2 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work qty
+DataItem SR0KWWRK num(5)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

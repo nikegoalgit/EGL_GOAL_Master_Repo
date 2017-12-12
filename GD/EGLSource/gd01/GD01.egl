@@ -1,0 +1,1661 @@
+package gd01;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import gd.common.*;
+import ta.common.*;
+//*** PROGRAM=GD01 ****
+// Nike On-Line Help Menu.
+// 
+// OVERVIEW:
+//           The text display application displays text for
+//  a specific help option.  The text is stored on a VSAM file
+//  and accessed by a 13 byte key.  The key of the VSAM file
+//  consists of an eight byte alpha portion and a five byte
+//  numeric sequence number.  The alpha portion of the key is
+//  determined by the second column of the Transaction Link
+//  Table (TLT).  The alpha portion of the key is by conven-
+//  tion the member name from the PDS where the data is main-
+//  tained in TSO.  The first record of the member is a member
+//  identification record, which contains the member name, and
+//  a heading for the member.  After loading the data into the
+//  VSAM file, the data contained in a member is refered to as
+//  a chapter.  When the VSAM file is loaded, the member name
+//  from the member ID record is used along with a the sequence
+//  number to produce the key.  The first sequence number for
+//  each chapter starts at 00000, and is incremented by one for
+//  each record in the chapter.
+// 
+//       The application reads the first record for the selec-
+//  ted option from the VSAM file, and builds the heading.  The
+//  next 18 records are then read, or if a find string has been
+//  passed, the file is searched for the string.  The user may
+//  scroll through the data with PF7 and PF8, or may enter a
+//  string in the find field located at the bottom of the
+//  screen. The find option searches the first 10 bytes of each
+//  record in the current chapter (that which was a member when
+//  the data was in a PDS) for the specified string. When it is
+//  found, the record, and the next 17 records are read and
+//  displayed of the screen.
+// 
+// ------------------------------------------------------------
+// PRINT VIA PF9 PROCESSING added 4/88            -- jwood
+// 
+// JCL statements are formatted and submitted through the in-
+// ternal reader transient data queue (INTR).  The job executes
+// in batch and all output is routed to the remote destination
+// specified throught this application...
+// 
+// The JCL for each Job is stored as a table (gd01t01).  There
+// are two formats available for a JCL statement.  They are
+// either fixed or variable format....
+// 
+// A fixed statement is identified in the table by a blank JCL
+// statement type (gd01ttyp).  These statements are written to
+// the internal reader directly, with no changes...
+// 
+// Variable statements are those which contain data that may
+// be changed each time the job is submitted.  They are ident-
+// ified by a non-blank statement type.  The type determines
+// the data that is to be substituted and the columns into
+// which it is to be placed, as follows:
+// 
+// GD01TTYP       JCL STATEMENT         VARIABLE     COLUMNS
+// ========       =============         ========     =======
+//   J              JOB                 GD01WUID      5-10
+//   N (TEST ONLY)  NOTIFY              GD01WUID     23-28
+//   O              OUTPUT              GD01WRMT     32-36
+//   "               "                  GD01WCPY     45
+//   P              PARAMS              GD01WJCL      1-80
+// 
+// The data in working storage (gd01w02) is substituted and
+// the statement is written to the internal reader...
+// 
+// The user may exit to any allowed application, via Pf key, or
+// fast path......
+// ------------------------------------------------------------
+// 
+//  Date Created: 04/04/86
+//        Author: Dan Loomis
+// 
+//  Maintenance History:
+// 
+//     Date      By Whom     Overveiw of Changes Made
+//   -------    --------   ----------------------------
+//   04-10-86    Rick C.    - Documentation
+//                            - Standards
+//                               - headings
+//                               - code
+//                               - names and format
+// 
+//   04-10-88    jwood      - added print via pf9 of
+//                             find codes to rmt prtrs
+//   11-11-88    jwood      - added xssegtr logic
+//   07-03-90    jwood      - added check to allow fe,fg,pg
+//                            help via ffsc lookup
+//   07-24-90    JWOOD      - REMOVED FE,FG,PG COBINE WITH
+//                            FFSC AS PER D.BEDIENT...
+//   04-05-93    vcowan     - chg xgdtbl to xgetbl(europe ver)
+// *********************
+Program GD01 type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  GD01W01 GD01W01; // record
+  GD01W02 GD01W02; // record
+  GD01W03 GD01W03; // record
+  GD01W99 GD01W99; // record
+  GD01W9C GD01W9C { redefines = GD01W99 } ; // record
+  GD01W9J GD01W9J { redefines = GD01W99 } ; // record
+  GD01W9N GD01W9N { redefines = GD01W99 } ; // record
+  GD01W9O GD01W9O { redefines = GD01W99 } ; // record
+  GD1REC GD1REC; // record
+  GD2REC GD2REC; // record
+  GD3REC GD3REC; // record
+  GDTREC GDTREC; // record
+  GDWREC GDWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  UT1REC UT1REC; // record
+  UT2REC UT2REC; // record
+  XC1REC XC1REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use GD01T01 {deleteAfterUse = yes}; // table
+  use XGETBL {deleteAfterUse = yes}; // table
+  use GD01M.GD01M001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    GD01000: GD01000();
+
+     /* ************************************************************/
+
+
+    if (GD01W01.GD01WPTH == "1")
+      goto GD01100;
+    else
+      goto GD01120;
+    end
+
+
+    GD01100: GD01100();
+    if (GDWREC.GDWTMREF == "Y" /* reconverse flag*/
+     || GDWREC.GDWTMRIO == "Y") /* terminal i/o*/
+      goto GD01300; /* converse scrn with error msg*/
+
+    else
+
+      if (GDWREC.GDWIFND != GD3REC.GD310B) /* find item passed to apl*/
+        GD01M001.GD01MFND = GDWREC.GDWIFND; /* put string in map fld*/
+        GDWREC.GDWIFND = " "; /* clear w/s find itm fld*/
+        GD1REC.GD1SEQ = GD1SEQ + 1; /* add 1 to rec seq numbr*/
+        GDWREC.GDWCURR = GD1REC.GD1SEQ; /* save position*/
+        GDWREC.GDWSCAN = 1; /* set scan indx to 1*/
+        goto GD01400; /* search tmr for string*/
+      else /* no find item passed*/
+        GDWREC.GDWSCAN = 1; /* set scan indx to 1*/
+        GD1REC.GD1SEQ = GD1SEQ + 1; /* add 1 to rec seq numbr*/
+        goto GD01200; /* no errors, get nxt 18*/
+      end /* find item present?*/
+    end
+
+
+
+    GD01120: GD01120();
+    if (GDWREC.GDWTMREF == "Y" /* reconverse flag*/
+     || GDWREC.GDWTMRIO == "Y") /* terminal i/o*/
+      goto GD01300; /* converse scrn with error msg*/
+
+    else
+
+      if (GDWREC.GDWIFND != GD3REC.GD310B) /* find item passed to apl*/
+        GD01M001.GD01MFND = GDWREC.GDWIFND; /* put string in map fld*/
+        GDWREC.GDWIFND = " "; /* clear w/s find itm fld*/
+        GD1REC.GD1SEQ = GD1SEQ + 1; /* add 1 to rec seq numbr*/
+        GDWREC.GDWCURR = GD1REC.GD1SEQ; /* save position*/
+        GDWREC.GDWSCAN = 1; /* set scan indx to 1*/
+        goto GD01400; /* search tmr for string*/
+      else /* no find item passed*/
+        GDWREC.GDWSCAN = 1; /* set scan indx to 1*/
+        GD1REC.GD1SEQ = GD1SEQ + 1; /* add 1 to rec seq numbr*/
+        goto GD01200; /* no errors, get nxt 18*/
+      end /* find item present?*/
+    end
+
+
+
+    GD01200: GD01200();
+
+     /* ************************************************************/
+
+
+    if (GDWREC.GDWTMREF == "Y" /* Terminal End of File*/
+     || GDWREC.GDWTMRIO == "Y" /* Terminal I/O*/
+     || GDWREC.GDWEOC == "Y")  /* End of Chapter*/
+
+               /* Blank out remainder of previous screen*/
+
+      while (GDWREC.GDWSCAN <= 18)
+
+        GD01M001.GD01MTXT[GDWSCAN] = " ";
+        GDWREC.GDWSCAN = GDWREC.GDWSCAN + 1;
+
+      end
+
+      GDWREC.GDWSCAN = 1; /* reset scan counter for next pass.*/
+
+      goto GD01300; /* Converse screen with data which was read.*/
+
+    else /* No I/O error flags, or end of chapter flags.*/
+
+             /* The record key must be incremented because the*/
+             /* record is "set scan" each time process is entered.*/
+             /* I know this is a kludge, but you cannot control*/
+             /* an I/O process with a while construct, which leaves*/
+             /* this method.*/
+
+      if (GDWREC.GDWSCAN < 18) /* 18 records read yet?*/
+        GDWREC.GDWSCAN = GDWREC.GDWSCAN + 1; /* increment counter*/
+        GD1REC.GD1SEQ = GD1REC.GD1SEQ + 1; /* increment record.*/
+        goto GD01200; /* get next record.*/
+
+      else /* scan counter greater than 18.*/
+
+        GDWREC.GDWSCAN = 1; /* reset scan counter for next pass.*/
+        goto GD01300; /* converse screen with data.*/
+
+      end
+
+    end
+
+
+
+    GD01300: GD01300();
+
+     /* ************************************************************/
+
+
+    if (GDWREC.GDWRECON == "Y")
+      goto GD01300; /* message formatted, reconverse map.*/
+
+    else
+
+             /* If the process is invoked by the find function at*/
+         /* EOF, the sequence number of the record has been set to*/
+         /* zero for the next pass thru the find processing.  This*/
+         /* value is used as a flag to indicate that the find*/
+         /* function did invoke this process, and that the sequence*/
+         /* number of the record needs to be retreived from working*/
+         /* storage prior to calculating scroll amounts.  If the user*/
+         /* presses enter, the find function starts from where it*/
+         /* it left itself.*/
+
+
+           /* The current record is at the bottom line of the screen.*/
+         /* The current record-18 is the bottom line of the previous*/
+         /* screen.  The bottom line of the previous screen - 17 is*/
+         /* the top line of the previous screen.  Therefore, the*/
+         /* current record - (18 + 17) is the top line of the*/
+         /* previous screen.  If the sequence number is less than 35*/
+         /* then scroll to the first line of text.*/
+
+      if (GDWREC.GDWAIDS == "7") /* scroll back*/
+        GD01M001.GD01MFND = " ";
+
+          /* first record read which is out of chapter will have*/
+          /* sequence number of 0.  this confuses the scroll back*/
+          /* code, since gdwcurr was not set prior to scrolling.*/
+
+        if (GDWREC.GDWTMREF == "Y"
+         || GDWREC.GDWEOC == "Y")
+
+          if (GDWREC.GDWFEOD == "Y") /* scroll pressed when EOF during find.*/
+
+               /* restore key which was saved prior to find, and reset*/
+               /* the flag so that the sequence is only restored once.*/
+
+            GDWREC.GDWFEOD = " ";
+            GDWREC.GDWSEQ = GDWREC.GDWCURR; /* prior to find.*/
+            GD1REC.GD1RKEY = GDWREC.GDWTMKEY; /* get last valid key.*/
+
+            if (GD1REC.GD1SEQ < 35)
+              GD1REC.GD1SEQ = 1; /* scroll to top of file.*/
+
+            else
+
+              GD1REC.GD1SEQ = GD1REC.GD1SEQ - 35; /* back up to top line of*/
+
+            end /* previous screen.*/
+
+          else /* not end of data during find.*/
+
+            GD1REC.GD1RKEY = GDWREC.GDWTMKEY; /* get last valid key.*/
+
+            if (GD1REC.GD1SEQ < 18)
+              GD1REC.GD1SEQ = 1;
+                                     /* scroll to top of file.*/
+
+            else
+
+              GD1REC.GD1SEQ = GD1REC.GD1SEQ - 18; /* back up to top line of*/
+
+            end /* previous screen.*/
+
+          end /* if gdwsfeod eq y*/
+
+        else
+                                     /* not at end of data or end of chapter.*/
+
+          GD1REC.GD1RKEY = GDWREC.GDWTMKEY; /* get last valid key.*/
+
+          if (GD1REC.GD1SEQ < 35)
+            GD1REC.GD1SEQ = 1; /* scroll to top of file.*/
+
+          else
+            GD1REC.GD1SEQ = GD1REC.GD1SEQ - 35; /* back up to top line of*/
+
+          end /* previous screen.*/
+
+        end /* if end of data or end of chapter.*/
+
+        goto GD01200; /* read 18 records.*/
+
+      else /* not pf 7*/
+
+        if (GDWREC.GDWAIDS == "8")
+          GD01M001.GD01MFND = " ";
+
+          if (GDWREC.GDWFEOD == "Y") /* scroll pressed when EOF during find.*/
+
+              /* restore key which was saved prior to find, and reset*/
+              /* the flag so that the sequence is only restored once.*/
+
+            GDWREC.GDWFEOD = " ";
+            GDWREC.GDWSEQ = GDWREC.GDWCURR;
+
+          end
+
+          GD1REC.GD1RKEY = GDWREC.GDWTMKEY; /* get last valid key.*/
+          GD1REC.GD1SEQ = GD1REC.GD1SEQ + 1;
+
+            /* nothing to calculate, get the next 18 records.*/
+            /* record key must be incremented because position has*/
+
+          goto GD01200; /* been lost.  GD01200 sets position.*/
+
+        else /* not pf 8,  recon flag not set, must be a find string.*/
+
+              /* and not scroll pf key.  other keys transfer out of*/
+              /* application or set reconverse flag.*/
+            /* save current scroll position in case of user abort at EOF.*/
+
+          if (GDWREC.GDWFEOD != "Y") /* save only when starting find.*/
+            GDWREC.GDWCURR = GD1REC.GD1SEQ;
+
+          end /* gd1tmr.gd1seq ne 0*/
+
+          goto GD01400;
+
+        end /* if pf 8*/
+
+      end /* if pf 7*/
+
+    end /* if reconverse map*/
+
+
+
+    GD01400: GD01400();
+
+     /* ************************************************************/
+
+
+    if (GDWREC.GDWTMREF == "Y"
+     || GDWREC.GDWTMRIO == "Y"
+     || GDWREC.GDWEOC == "Y")
+
+      goto GD01300; /* converse screen with message.*/
+
+    else
+
+      if (GDWREC.GDWFIND == "F") /* record found, get 18 records from*/
+        goto GD01200; /* current record. process gd01200 sets*/
+                                     /* record position.*/
+
+      else
+
+        if (GDWREC.GDWFIND == "N")
+          goto GD01300; /* record not found and won't be.*/
+
+        else
+
+          goto GD01400;
+                                     /* record not found, but might still be.*/
+
+        end /* gdwfind eq n*/
+
+      end /* gdwfind eq f*/
+
+    end /* I/O error checking.*/
+
+
+
+
+  end // end main
+end // end GD01
+
+// mainline
+Function GD01000()
+
+
+     /* **********************************************************/
+     /* *   This process initializes working storage, then      **/
+     /* * determines how the application was enetered.  if entry**/
+     /* * was from gd00 or gd01, normal logic path is taken     **/
+     /* * after the user area from the commarea is saved.  if   **/
+     /* * entry was from another application, we will use a     **/
+     /* * different logic path to get the map heading info, then**/
+     /* * go directly to the find code entered via item fld...  **/
+     /* **********************************************************/
+
+   /* **********************************************************/
+  XSENTRY();
+   /* **********************************************************/
+
+   /* **********************************************************/
+  XSSEGTR();
+                                   /* 11/88 jw - set segmented trans id*/
+   /* **********************************************************/
+  GD01S01(); /* initialize recs & maps*/
+   /* ************************************************************/
+   /* ************************************************************/
+
+
+
+  if (COMMAREA.CAFROMAP != "GD00")
+    if (COMMAREA.CAFROMAP != "GD01")
+      GDWREC.GDWFMAPP = COMMAREA.CAFROMAP;
+    else
+      GDWREC.GDWRECGP = COMMAREA.CAUSERA;
+    end
+  else
+    GDWREC.GDWRECGP = COMMAREA.CAUSERA;
+  end
+
+  GD3REC.GD349B = " ";
+  GDWREC.GDWFLAGS = " ";
+
+  if (COMMAREA.CAITEM == GD3REC.GD320B) /* if item eq spaces*/
+    COMMAREA.CATOAP = "GD00"; /* go to gd00 first*/
+    XSEXIT();
+
+    XSPF4();
+  else /* if item ne spaces*/
+    GD01W01.GD01WITM = COMMAREA.CAITEM; /* look at item fld*/
+    if (GD01W01.GD01WI5 == " ") /* if 5th pos eq space*/
+      GD01W01.GD01WPTH = "1"; /* set for normal path*/
+      GDWREC.GDWITEM = COMMAREA.CAITEM;
+    else
+      GD01W01.GD01WPTH = "2"; /* else set for new path*/
+      GDWREC.GDWITEM = GD01W01.GD01W4CH;
+    end
+  end
+
+
+
+   /* ************************************************************/
+end // end GD01000
+
+// build heading and initialize
+Function GD01100()
+
+
+     /* **********************************************************/
+     /* *   This process reads the first record for a specific  **/
+     /* * pseudo tran id.  the data on this record contains the **/
+     /* * heading for pseudo tran id.  the heading is formatted **/
+     /* * and control is passed to the next process which will  **/
+     /* * get the next 18 records.  There is no need to set the **/
+     /* * record after the read, since the SCAN positioned the  **/
+     /* * file to the next record.                              **/
+     /* **********************************************************/
+
+
+            /* Break down the commarea item field into*/
+            /* a four byte pseudo tran id.  use this tran id*/
+            /* as a key to retreive the alpha portion of the*/
+            /* TMR key from the TLT.*/
+
+  if (GDWREC.GDWITID in XGETBL.XGETTRN)
+    GD1REC.GD1MEMB = XGETBL.XGETMEB[sysVar.arrayIndex];
+  end
+
+  if (sysVar.arrayIndex == 0)
+    GD3REC.GD3PEND1 = "DEST. TRAN. ID. INVALID...";
+    GD3REC.GD3PEND2 = "ENTER CORRECT ITEM FLD, OR";
+    GD3REC.GD3PEND3 = " PRESS PF2, PF3, PF4......";
+    GDWREC.GDWTMREF = "Y";
+    XSGD021();
+    exit stack;
+  else
+    GDWREC.GDWPTID = XGETBL.XGETTID[sysVar.arrayIndex];
+                                   /* save previous Tran id.*/
+    GD01W01.GD01WSKY = XGETBL.XGETMEB[sysVar.arrayIndex]; /* save curr key*/
+    GDWREC.GDWALPHA = XGETBL.XGETMEB[sysVar.arrayIndex]; /* save current alpha key.*/
+    GD1REC.GD1SEQ = 0; /* set sequence number of key to zero*/
+  end
+
+  set GD1REC position; /* tell CSP to do next scan from this point.*/
+
+
+
+   /* ************************************************************/
+  try
+    get next GD1REC ;
+  end
+   /* ************************************************************/
+
+
+
+  if (GD1REC is ioError) /* basic error intercept processing.*/
+
+    if (GD1REC is endOfFile) /* this can only happen if no data has been entered*/
+                      /* in the member of the PDS.*/
+
+              /* Format an error message and present on blank screen.*/
+
+      GDWREC.GDWTMREF = "Y";
+      GD3REC.GD3PEND1 = "END OF DATA REACHED.      ";
+      GD3REC.GD3PEND2 = "                          ";
+      GD3REC.GD3PEND3 = "                          ";
+
+      XSGD021(); /* move pending message into EZEMSG.*/
+      exit stack;
+
+    else
+
+           /* format error message and present on blank screen.*/
+
+      GDWREC.GDWTMRIO = "Y";
+      GD3REC.GD3PEND1 = "I/O ERROR READING TEXT FIL";
+      GD3REC.GD3PEND2 = "E.  UNABLE TO CONTINUE.   ";
+      GD3REC.GD3PEND3 = "                          ";
+      XSGD021();
+
+      exit stack;
+
+    end /* if eof.*/
+
+  end /* if err.*/
+
+  GD01W01.GD01WSKY = GD1REC.GD1RKEY; /* 4/88 SAVE ACCESS KEY*/
+
+  GD3REC.GD3LINE = GD1REC.GD1TEXT; /* break down heading record*/
+  GD3REC.GD3TTL = GD3REC.GD3RTTL; /* set up GD01 heading for this*/
+  GD3REC.GD3MAP = "GD01M001"; /* chapter.  Move mapname and*/
+  GD3REC.GD3PROC = "GD01200"; /* process into heading.*/
+
+  GD01M001.GD01MDT = VGVar.currentShortGregorianDate;
+  GD01M001.GD01MHED = GD3REC.GD3HEAD; /* move heading to map*/
+  GDWREC.GDWALPHA = GD1REC.GD1MEMB; /* save alpha portion of key*/
+
+  exit stack;
+
+
+
+
+   /* ************************************************************/
+end // end GD01100
+
+// build heading and initialize
+Function GD01120()
+
+
+     /* **********************************************************/
+     /* *   This process reads the first record for a specific  **/
+     /* * pseudo tran id.  the data on this record contains the **/
+     /* * heading for pseudo tran id.  the heading is formatted **/
+     /* * and control is passed to the next process which will  **/
+     /* * get the next 18 records.  There is no need to set the **/
+     /* * record after the read, since the SCAN positioned the  **/
+     /* * file to the next record.                              **/
+     /* **********************************************************/
+
+   /* **********************************************************/
+  XSENTRY();
+   /* **********************************************************/
+
+  GDWREC.GDWIFND = GD01W01.GD01WITM;
+   /* ============== REMOVED 07/24/90..... JWOOD*/
+   /* IF GD01W01.GD01WSYS EQ 'FE';*/
+    /* OR GD01W01.GD01WSYS EQ 'FG';*/
+    /* OR GD01W01.GD01WSYS EQ 'PG';*/
+    /* MOVE 'FF' TO GD01W01.GD01WSYS;*/
+  GD01W01.GD01WSCL = "SC";
+  GDWREC.GDWITID = GD01W01.GD01WITM;
+
+  if (GDWREC.GDWITID in XGETBL.XGETTRN)
+    GD1REC.GD1MEMB = XGETBL.XGETMEB[sysVar.arrayIndex];
+  end
+
+  if (sysVar.arrayIndex == 0) /* not in table*/
+    GD01W03.GD01WERL[1] = "FIND-CODE INVALID FOR DESTINATION CD ";
+    GD01W03.GD01WERL[2] = GDWREC.GDWIFND;
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1FYICD = "FYI";
+    TA1REC.TA1PGMNM = "GD01";
+    TA1LOCAT[1] = COMMAREA.CACURRAP;
+    TA1LOCAT[2] = COMMAREA.CAFROMAP;
+    TA1LOCAT[3] = COMMAREA.CATOAP;
+    TA1LOCAT[4] = GDWREC.GDWITID;
+    COMMAREA.CACURRAP = "GD01";
+    call "TA0020" (TA1REC, GD01W03) {isExternal = yes};
+    COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+    COMMAREA.CAITEM = " ";
+    XSEXIT();
+    XSGD040();
+    XSGD021();
+    COMMAREA.CATOAP = " ";
+    GDWREC.GDWTMREF = "Y";
+    exit stack;
+  else
+    GDWREC.GDWPTID = XGETBL.XGETTID[sysVar.arrayIndex];
+    GD01W01.GD01WSKY = XGETBL.XGETMEB[sysVar.arrayIndex];
+    GDWREC.GDWALPHA = XGETBL.XGETMEB[sysVar.arrayIndex];
+  end
+
+  GD1REC.GD1SEQ = 0; /* set sequence number of key to zero*/
+
+  set GD1REC position; /* tell CSP to do next scan from this point.*/
+
+
+
+   /* ************************************************************/
+  try
+    get next GD1REC ;
+  end
+   /* ************************************************************/
+
+
+
+  if (GD1REC is ioError) /* basic error intercept processing.*/
+
+    if (GD1REC is endOfFile) /* this can only happen if no data has been entered*/
+                      /* in the member of the PDS.*/
+
+              /* Format an error message and present on blank screen.*/
+
+      GDWREC.GDWTMREF = "Y";
+      GD3REC.GD3PEND1 = "END OF DATA REACHED.      ";
+      GD3REC.GD3PEND2 = "                          ";
+      GD3REC.GD3PEND3 = "                          ";
+
+      XSGD021(); /* move pending message into EZEMSG.*/
+      exit stack;
+
+    else
+
+      GD01W03.GD01WERL[1] = "**** I/O ERROR READING TEXT FILE ****";
+      GD01W03.GD01WERL[2] = "      --- UNABLE TO CONTINUE ---     ";
+      TA1REC.TA1TYPE = "APPL";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "GD01";
+      TA1LOCAT[1] = COMMAREA.CACURRAP;
+      TA1LOCAT[2] = COMMAREA.CAFROMAP;
+      TA1LOCAT[3] = COMMAREA.CATOAP;
+      TA1LOCAT[4] = " ";
+      COMMAREA.CACURRAP = "GD01";
+      call "TA0020" (TA1REC, GD01W03) {isExternal = yes};
+      COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+      XSEXIT();
+      XSGD040();
+      XSGD021();
+      COMMAREA.CATOAP = " ";
+      GDWREC.GDWTMREF = "Y";
+
+      exit stack;
+
+    end /* if eof.*/
+
+  end /* if err.*/
+
+  GD01W01.GD01WSKY = GD1REC.GD1RKEY; /* 4/88 JWOOD*/
+
+  GD3REC.GD3LINE = GD1REC.GD1TEXT; /* break down heading record*/
+  GD3REC.GD3TTL = GD3REC.GD3RTTL; /* set up GD01 heading for this*/
+  GD3REC.GD3MAP = "GD01M001"; /* chapter.  Move mapname and*/
+  GD3REC.GD3PROC = "GD01200"; /* process into heading.*/
+
+  GD01M001.GD01MDT = VGVar.currentShortGregorianDate;
+  GD01M001.GD01MHED = GD3REC.GD3HEAD; /* move heading to map*/
+  GDWREC.GDWALPHA = GD1REC.GD1MEMB; /* save alpha portion of key*/
+
+  exit stack;
+
+
+
+
+   /* ************************************************************/
+end // end GD01120
+
+// get next 18 records
+Function GD01200()
+
+
+     /* *********************************************************/
+     /* * The counter, SCAN is set to 1 prior to entry to this **/
+     /* * process, and incremented and tested in the flow stage**/
+     /* * of this process.  The correct record key must be set **/
+     /* * before branching to this process.  Remember that a   **/
+     /* * scan after a set gets the next record with akey EQUAL**/
+     /* * to or greater than the key which was set.  Both EOF  **/
+     /* * and alpha key variance must be checked. Either one   **/
+     /* * will indaicate an end of chapter.                    **/
+     /* *********************************************************/
+
+  set GD1REC position; /* set record position*/
+                                   /* Lost after converse.*/
+  GDWREC.GDWEOC = " "; /* reset end of chapter flag.*/
+
+
+
+   /* ************************************************************/
+  try
+    get next GD1REC ;
+  end
+   /* ************************************************************/
+
+
+
+  if (GD1REC is ioError)
+
+    if (GD1REC is endOfFile)
+
+        /* Format error message and present on blank screen.*/
+
+      GDWREC.GDWTMREF = "Y";
+      GD3REC.GD3PEND1 = "END OF CHAPTER REACHED.   ";
+      GD3REC.GD3PEND2 = "                          ";
+      GD3REC.GD3PEND3 = "                          ";
+      XSGD021();
+      exit stack;
+
+    else /* error and not eof.*/
+
+        /* format error message and present on blank screen.*/
+
+      GDWREC.GDWTMRIO = "Y";
+      GD3REC.GD3PEND1 = "I/O ERROR READING TEXT FIL";
+      GD3REC.GD3PEND2 = "E.  UNABLE TO CONTINUE.   ";
+      GD3REC.GD3PEND3 = "                          ";
+      XSGD021();
+
+      exit stack;
+
+    end /* if eof*/
+
+  end /* if err*/
+
+  if (GD1REC.GD1MEMB != GDWREC.GDWALPHA) /* has alpha key changed*/
+    GDWREC.GDWEOC = "Y"; /* end of chapter. logical eof.*/
+
+    GD3REC.GD3PEND1 = "END OF CHAPTER.           ";
+    GD3REC.GD3PEND2 = "                          ";
+    GD3REC.GD3PEND3 = "                          ";
+    XSGD021();
+    exit stack;
+
+  else /* same alpha key.*/
+
+    GD01M001.GD01MTXT[GDWSCAN] = GD1REC.GD1TEXT;
+    GDWREC.GDWSEQ = GD1REC.GD1SEQ; /* save last sequence no.*/
+    exit stack; /* get next record, increment counter.*/
+
+  end
+
+
+
+   /* ************************************************************/
+end // end GD01200
+
+// display text for user
+Function GD01300()
+
+
+     /* *********************************************************/
+     /* * During a find operation, this process may be executed**/
+     /* * to display a message that the string was not found   **/
+     /* * before end of file. The GDWFIND flag will not be set **/
+     /* * to any value in this case, so it will not hurt any-  **/
+     /* * thing for it to be reset here.  If the process is    **/
+     /* * invoked by the find process at EOF, the sequence     **/
+     /* * number of the record is set to zero for the next pass**/
+     /* * thru the find process. If the user cancels the find  **/
+     /* * operation by scrolling this zero value is used as a  **/
+     /* * flag to restore the sequence number which was saved  **/
+     /* * prior to the execution of the find process.          **/
+     /* *********************************************************/
+
+
+  GDWREC.GDWFIND = " "; /* reset find flag.*/
+  GDWREC.GDWRECON = " "; /* reset reconverse flag.*/
+  GDWREC.GDWAIDS = " "; /* reset pf key flag.*/
+  converseLib.clearScreen();
+  
+  set GD01M001.GD01MFND cursor;
+
+
+   /* ------------------------------------------------------------*/
+   /* Obtain the CICS Remote Printer Identification*/
+   /* ------------------------------------------------------------*/
+
+  if (GD01M001.GD01MRMT == "        ")
+
+    set XC1REC empty; /* Initialize subroutine param*/
+
+    call "XC0100" (XC1REC) {isNoRefresh = yes, isExternal = yes}; /* Obtain user identification*/
+
+    if (XC1REC.XC1RETCD != 0) /* Non-zero return code*/
+
+
+      GD3REC.GD3PEND1 = "DEFAULT RMT-PR-ID NOT OBTA";
+      GD3REC.GD3PEND2 = "INABLE. IF USING PF9, ENTE";
+      GD3REC.GD3PEND3 = "R THE RMT-PR-ID BELOW.....";
+
+      XSGD021();
+
+    end
+
+    GD01M001.GD01MRMT = XC1REC.XC1RMTPR;
+
+  end
+
+   /* ************************************************************/
+  converse GD01M001 ;
+   /* ************************************************************/
+
+
+
+       /* pf key flag is set for process linkage in flow stage.*/
+       /* pf keys 2, 3, and 4 should only reach flow stage in*/
+       /* exception situations.  A message can be displayed and*/
+       /* the map reconversed.  Enter key causes linkage to the*/
+       /* fast path field.  If abnormal return from xsexit, map*/
+       /* is reconversed with a message.  PF keys 7 and 8 cause*/
+       /* scrolling up and down.  Data in the find field will*/
+       /* cause the program to search for that data in the first*/
+       /* ten positions of each record.*/
+
+       /* PF9 added on 4/88 by jwood for picking up FIND CODE on*/
+       /* menu, then submitting batch job for routing print to*/
+       /* remote printers...*/
+
+
+  if (converseVar.eventKey is pf8) /* test most likely keys first.*/
+    GDWREC.GDWAIDS = "8";
+    exit stack;
+
+  end
+
+  if (converseVar.eventKey is pf7)
+    GDWREC.GDWAIDS = "7";
+    exit stack;
+
+  end
+
+  if (converseVar.eventKey is pf9)
+                                   /* * 4/88 jwood - new logic**/
+    GDWREC.GDWAIDS = "9"; /* **/
+    if (GD01M001.GD01MFND is modified /* **/
+     && GD01M001.GD01MFND > " ")      /* **/
+      set GD01W02 empty; /* **/
+      GD01350(); /* get user information*/
+      GD01W02.GD01WSWS = "N";
+      GD01W01.GD01WIXT = 1;
+      GD01351(); /* inque reader*/
+      while (GD01W02.GD01WSWS == "N")
+        GD01W99.GD01WJCL = GD01T01.GD01TJCL[GD01WIXT];
+        GD01W02.GD01WTYP = GD01T01.GD01TTYP[GD01WIXT];
+        GD01352(); /* submit jcl*/
+      end
+      GD01353(); /* de-que reader*/
+      GDWREC.GDWRECON = "Y"; /* *                test*/
+      GD3REC.GD3PEND1 = "PRINT REQUEST SUBMITTED..."; /* test*/
+      GD3REC.GD3PEND2 = GD01W02.GD01WRMT; /* test*/
+      GD3REC.GD3PEND3 = GD01M001.GD01MFND; /* test*/
+      XSGD021(); /* *                test*/
+      GD01M001.GD01MFND = GD3REC.GD310B;
+      exit stack; /* **/
+    else /* **/
+      GDWREC.GDWRECON = "Y";
+      GD3REC.GD3PEND1 = "PF9 NOT VALID WITHOUT A FI";
+      GD3REC.GD3PEND2 = "ND CODE IN THE \"FIND CODE\"";
+      GD3REC.GD3PEND3 = " FIELD.....               ";
+      XSGD021(); /* **/
+      exit stack; /* **/
+    end /* **/
+  end /* **/
+
+  if (converseVar.eventKey is enter)
+    GDWREC.GDWAIDS = "0";
+
+    if (GD01M001.GD01M2AP is modified
+     && GD01M001.GD01M2AP != GD3REC.GD304B)
+                                   /* and not speces.*/
+
+      COMMAREA.CAITEM = GD01M001.GD01MITM;
+      COMMAREA.CATOAP = GD01M001.GD01M2AP;
+      COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+
+      XSEXIT(); /* link to specified transaction.  If link fails*/
+                          /* format a message and move it to EZEMSG*/
+
+      XSGD040();
+      XSGD021();
+
+      COMMAREA.CATOAP = " ";
+      GDWREC.GDWRECON = "Y";
+
+      exit stack; /* transfer failed due to bad tran-id*/
+                                   /* reconverse map with message*/
+
+    else /* was not a fast path.*/
+
+      if (GD01M001.GD01MITM is modified /* was item entered.*/
+       && GD01M001.GD01MITM != GD3REC.GD320B)
+
+        COMMAREA.CAITEM = GD01M001.GD01MITM;
+        COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+
+        XSGD092(); /* determine desired application, and link.*/
+        XSGD040();
+                                   /* if link fails, format a message, and*/
+        XSGD021(); /* move it into the EZEMSG field of the map.*/
+
+        COMMAREA.CATOAP = " ";
+        GDWREC.GDWRECON = "Y";
+
+        exit stack; /* transfer failed due to bad tran-id*/
+                                /* reconverse map with message*/
+
+      else /* was not an item or fast path entry.*/
+
+        if (GD01M001.GD01MFND is modified
+         && GD01M001.GD01MFND != GD3REC.GD310B)
+
+                /* Enter pressed and reconverse flag not set.*/
+
+          exit stack; /* find string specified.*/
+
+        else /* nothing entered.*/
+
+          GDWREC.GDWRECON = "Y";
+
+          GD3REC.GD3PEND1 = "PLEASE ENTER CODE, PRESS E";
+          GD3REC.GD3PEND2 = "NTER OR PF KEY FOR NEXT AC";
+          GD3REC.GD3PEND3 = "TION...                   ";
+
+          XSGD021();
+
+          exit stack; /* reconverse map with message*/
+
+        end /* if gd01find is modified*/
+
+      end /* if gd01item is modified*/
+
+    end /* if gd01fp is modified*/
+
+  end /* was not enter.*/
+
+  if (converseVar.eventKey is pa2)
+
+    GDWREC.GDWAIDS = "Z";
+    GD01M001.VAGen_EZEMSG = " "; /* blank out message field*/
+    GD01M001.GD01MFND = " "; /* blank out find field*/
+    GDWREC.GDWRECON = "Y";
+    exit stack; /* reconverse map.*/
+
+  end /* was not PA2*/
+
+  if (converseVar.eventKey is pf2) /* return to orginal application.*/
+    GDWREC.GDWAIDS = "2";
+    COMMAREA.CATOAP = GDWREC.GDWFMAPP;
+    COMMAREA.CAITEM = " ";
+    COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+
+    XSEXIT(); /* either link or terminate appl.*/
+
+    GD01M001.VAGen_EZEMSG = COMMAREA.CAMSG;
+    COMMAREA.CATOAP = " ";
+    GDWREC.GDWRECON = "Y";
+
+    exit stack;
+
+  end /* not PF2.*/
+
+  if (converseVar.eventKey is pf3) /* return to next higher level.*/
+    GDWREC.GDWAIDS = "3";
+
+                  /* Set pf key flag for flow stage*/
+
+        /* pf3 and cannot be at highest level of goal doc. previous*/
+          /* transaction loaded into working storage by GD01100.*/
+
+    GDWREC.GDWITEM = " "; /* clear item.*/
+    GDWREC.GDWITID = GDWREC.GDWPTID; /* set up menu*/
+    COMMAREA.CAITEM = GDWREC.GDWITEM; /* pass in commarea*/
+    COMMAREA.CATOAP = "GD00"; /* transfer to menu prog.*/
+    COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+
+    XSEXIT();
+
+    GD01M001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed.*/
+    COMMAREA.CATOAP = " ";
+    GDWREC.GDWRECON = "Y";
+    exit stack;
+
+  end /* not pf3*/
+
+
+
+  if (converseVar.eventKey is pf4)
+    GDWREC.GDWAIDS = "4";
+    COMMAREA.CAITEM = " ";
+
+    XSPF4(); /* transfer to main goal menu.*/
+
+    GD01M001.VAGen_EZEMSG = COMMAREA.CAMSG;
+    COMMAREA.CATOAP = " ";
+    GDWREC.GDWRECON = "Y";
+
+    exit stack;
+
+  else
+
+    GD3REC.GD3PEND1 = "UNSUPPORTED PF KEY PRESSED";
+    GD3REC.GD3PEND2 = " - PLEASE TRY ANOTHER.    ";
+    GD3REC.GD3PEND3 = "                          ";
+    XSGD021();
+
+    GDWREC.GDWRECON = "Y";
+    exit stack;
+
+  end /* if ezeaid is pf4*/
+
+
+
+   /* ************************************************************/
+end // end GD01300
+
+// obtain user info & rmt pr id
+Function GD01350()
+   /* ------------------------------------------------------------*/
+   /* Obtain the CICS Logon User Identification.*/
+   /* ------------------------------------------------------------*/
+
+  VGVar.handleHardIOErrors = 1; /* Return all file errors*/
+  converseVar.commitOnConverse = 1; /* Commit on every converse*/
+
+  set UT1REC empty; /* Initialize subroutine parameters*/
+
+  call "UT0200" (UT1REC) {isNoRefresh = yes, isExternal = yes}; /* Obtain user identification*/
+
+  if (UT1REC.UT1RETCD == 1) /* Non-zero return code*/
+
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "GD01350 "; /* Process name*/
+    TA1REC.TA1LOC = "OBTAIN CICS USER IDENTIFICATION";
+    SQLCA.SQLCAREC = UT1REC.UT1GRPLV; /* Error information*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    GD3REC.GD3PEND1 = "SYSTEM ERROR OCCURRED     ";
+    GD3REC.GD3PEND2 = "CALL HOTLINE, REPORT ERROR";
+    GD3REC.GD3PEND3 = "...(USER-ID RETRIEVAL)....";
+
+    GDWREC.GDWRECON = "Y";
+
+    XSGD021();
+    exit stack;
+
+  end
+
+
+  GD01W02.GD01WUID = UT1REC.UT1USRID; /* User identification*/
+
+
+   /* ------------------------------------------------------------*/
+   /* Obtain the CICS Remote Printer Identification*/
+   /* ------------------------------------------------------------*/
+
+  if (GD01M001.GD01MRMT != "        ")
+    GD01W02.GD01WRMT = GD01M001.GD01MRMT;
+                                   /* move from map if present*/
+    return;
+  end
+
+  set XC1REC empty; /* Initialize subroutine param*/
+
+  call "XC0100" (XC1REC) {isNoRefresh = yes, isExternal = yes}; /* Obtain user identification*/
+
+  if (XC1REC.XC1RETCD != 0) /* Non-zero return code*/
+
+
+    GD3REC.GD3PEND1 = "DEFAULT RMT-PR-ID NOT OBTA";
+    GD3REC.GD3PEND2 = "INABLE. IF USING PF9 FUNCT";
+    GD3REC.GD3PEND3 = "ION, ENTER RMT-PR-ID BELOW";
+
+    GDWREC.GDWRECON = "Y";
+
+    XSGD021();
+    exit stack;
+
+  end
+
+  GD01W02.GD01WRMT = XC1REC.XC1RMTPR;
+
+end // end GD01350
+
+// jcl enque process
+Function GD01351()
+   /* ****** enque the internal reader  *********/
+
+  set UT2REC empty;
+
+  UT2REC.UT2FUNCT = "E"; /* set function*/
+  UT2REC.UT2RSCLN = 8; /* set resource id lngth*/
+  UT2REC.UT2RSCID = "INTR"; /* set resource id*/
+
+  call "UT0220" (UT2REC) {isNoRefresh = yes, isExternal = yes}; /* enque reader*/
+
+  if (UT2REC.UT2RETCD != 0) /* non-zero return code*/
+    GD3REC.GD3PEND1 = "PRINTER RESOURCE NOT AVAIL";
+    GD3REC.GD3PEND2 = "ABLE.... TRY AGAIN.....   ";
+    GD3REC.GD3PEND3 = "... OR CALL HOTLINE ....  ";
+    GDWREC.GDWRECON = "Y";
+    XSGD021();
+    exit stack;
+  end
+end // end GD01351
+
+// jcl submit process
+Function GD01352()
+   /* ******* jcl submit process *********/
+
+   /* ------------------------------------------------------------*/
+   /* Format the variable areas of the JCL statement.*/
+   /* Write Job Control Language to the Internal Reader queue.*/
+   /* If error occurred, report to the error diagnosis facility.*/
+   /* Indicate the job was submitted when end of file is written.*/
+   /* ------------------------------------------------------------*/
+
+  if (GD01W02.GD01WTYP == "J") /* JOB statement*/
+    GD01W9J.GD01WUID = GD01W02.GD01WUID; /* User identification*/
+  end
+
+  if (GD01W02.GD01WTYP == "N") /* NOTIFY statement*/
+    GD01W9N.GD01WUID = GD01W02.GD01WUID; /* User identification*/
+  end
+
+  if (GD01W02.GD01WTYP == "O") /* OUTPUT statement*/
+    GD01W9O.GD01WCPY = 1; /* Number of copies*/
+    GD01W9O.GD01WRMT = GD01W02.GD01WRMT; /* Print destination*/
+  end
+
+  if (GD01W02.GD01WTYP == "P") /* Parameter statement*/
+    GD01W02.GD01WSKY = GD01W01.GD01WSKY;
+    GD01W02.GD01WFND = GD01M001.GD01MFND;
+    GD01W99.GD01WJCL = GD01W02.GD01WJCL; /* Report parameters*/
+  end
+
+  if (GD01W02.GD01WTYP == "C") /* comments  statement*/
+    GD01W9C.GD01WSKY = GD01W01.GD01WSKY;
+    GD01W9C.GD01WFND = GD01M001.GD01MFND;
+  end
+
+
+  try
+    add GD01W99 ;
+  end
+  if (sysVar.errorCode != "00000000") /* Non-zero return code*/
+
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    TA1REC.TA1PGMNM = "GD01352"; /* Process name*/
+    TA1REC.TA1LOC = "WRITE JCL TO INTERNAL READER";
+    TA1REC.TA1MAP = sysVar.errorCode; /* Return code*/
+    SQLCA.SQLCAREC = GD01W99.GD01WJCL; /* Error information*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    GD3REC.GD3PEND1 = "SYSTEM ERROR DURING SUBMIT";
+    GD3REC.GD3PEND2 = " OF JCL OCCURRED.....     ";
+    GD3REC.GD3PEND3 = "... CALL HOTLINE....      ";
+    GDWREC.GDWRECON = "Y";
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+
+  if (GD01W99.GD01WJCL == "/*EOF") /* End of file*/
+
+    GD01W02.GD01WSWS = "Y"; /* Indicate job submitted*/
+  else
+    GD01W01.GD01WIXT = GD01W01.GD01WIXT + 1; /* Increment index*/
+
+  end
+
+end // end GD01352
+
+// jcl de-que process
+Function GD01353()
+   /* GET TF0B028*/
+   /* ------------------------------------------------------------*/
+   /* Deque the Internal Reader queue after job submission.*/
+   /* ------------------------------------------------------------*/
+
+  set UT2REC empty; /* Initialize subroutine parameters*/
+
+  UT2REC.UT2FUNCT = "D"; /* Subroutine function*/
+  UT2REC.UT2RSCLN = 8; /* Resource identification length*/
+  UT2REC.UT2RSCID = "INTR"; /* Resource identification*/
+
+  call "UT0220" (UT2REC) {isNoRefresh = yes, isExternal = yes}; /* Enque reader*/
+
+  if (UT2REC.UT2RETCD != 0) /* Non-zero return code*/
+
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "GD01353 "; /* Process name*/
+    TA1REC.TA1LOC = "DEQUE THE SYSTEM INTERNAL READER";
+    SQLCA.SQLCAREC = UT2REC.UT2GRPLV; /* Error information*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    GD3REC.GD3PEND1 = "SYSTEM ERROR ON DE-QUE OF ";
+    GD3REC.GD3PEND2 = "INTERNAL READER....CALL TH";
+    GD3REC.GD3PEND3 = "E HOTLINE, REPORT PROBLEM ";
+    GDWREC.GDWRECON = "Y";
+    XSGD021();
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+
+end // end GD01353
+
+// Find character string
+Function GD01400()
+
+
+     /* *********************************************************/
+     /* *  scan from current position, looking for a match     **/
+     /* *  with the contents of the find field of the map.     **/
+     /* *  if not found at end of file, reset and continue     **/
+     /* *  searching from top of member.                       **/
+     /* *********************************************************/
+
+
+  GDWREC.GDWTMREF = " "; /* reset error flags for next pass.*/
+  GDWREC.GDWTMRIO = " ";
+  GDWREC.GDWEOC = " ";
+  GDWREC.GDWFEOD = " ";
+
+  GD1REC.GD1SEQ = GD1REC.GD1SEQ + 1; /* increment record pointer.*/
+  set GD1REC position; /* scan from position just set.*/
+
+
+
+   /* ************************************************************/
+  try
+    get next GD1REC ;
+  end
+   /* ************************************************************/
+
+
+
+  if (GD1REC is ioError)
+
+    if (GD1REC is endOfFile)
+
+        /* format error message and present on blank screen.*/
+
+      GDWREC.GDWTMREF = "Y";
+      GD3REC.GD3PEND1 = "END OF DATA REACHED.  PRES";
+      GD3REC.GD3PEND2 = "S ENTER TO CONTINUE FROM T";
+      GD3REC.GD3PEND3 = "OP OF DATA.          (EOF)";
+
+      XSGD021();
+
+      GDWREC.GDWFEOD = "Y"; /* set find end of data;*/
+      GD1REC.GD1SEQ = 0; /* set file key to record 0, the*/
+
+       /* next pass in process will increment to 1 and set scan.*/
+
+      GD1REC.GD1MEMB = GDWREC.GDWALPHA; /* restore alpha*/
+      set GD01M001.GD01MFND modified;
+      exit stack;
+
+    else
+
+        /* format error message and present on blank screen.*/
+
+      GDWREC.GDWTMRIO = "Y";
+      GD3REC.GD3PEND1 = "I/O ERROR READING TEXT FIL";
+      GD3REC.GD3PEND2 = "E.  UNABLE TO CONTINUE.   ";
+      GD3REC.GD3PEND3 = "                          ";
+
+      XSGD021();
+      exit stack;
+
+    end /* if eof.*/
+
+  else /* no I/O errors.*/
+
+    if (GD1REC.GD1MEMB != GDWREC.GDWALPHA) /* new alpha key - EOC.*/
+
+      GDWREC.GDWEOC = "Y"; /* end of chapter. logical eof.*/
+      GD3REC.GD3PEND1 = "END OF DATA REACHED.  PRES";
+      GD3REC.GD3PEND2 = "S ENTER TO CONTINUE FROM T";
+      GD3REC.GD3PEND3 = "OP OF DATA.          (EOC)";
+
+      GDWREC.GDWFEOD = "Y"; /* set find end of data;*/
+      GD1REC.GD1SEQ = 0; /* set file key to record 0, the*/
+
+        /* next pass in process will increment to 1 and set scan.*/
+
+      GD1REC.GD1MEMB = GDWREC.GDWALPHA; /* restore alpha*/
+      set GD01M001.GD01MFND modified;
+      XSGD021();
+      exit stack;
+
+    else /* still in current alpha key, check first 10 bytes of record*/
+           /* for string.*/
+
+      GD3REC.GD3LINE = GD1REC.GD1TEXT;
+
+      if (GD3REC.GD3OBJ == GD01M001.GD01MFND)
+
+        set GD01M001.GD01MFND modified;
+        GDWREC.GDWFIND = "F"; /* set found flag.*/
+        exit stack; /* string found.*/
+
+      else /* string not matched, has entire chapter been read?*/
+
+        if (GD1REC.GD1SEQ == GDWREC.GDWCURR) /* entire chapter searched.*/
+
+            /* format error message and present on blank screen.*/
+
+          GDWREC.GDWFIND = "N"; /* set found flag to Not found.*/
+          GD3REC.GD3PEND1 = "FIND ITEM NOT FOUND IN THI";
+          GD3REC.GD3PEND2 = "S HELP OPTION.            ";
+          GD3REC.GD3PEND3 = "                          ";
+          XSGD021();
+          exit stack;
+
+        else /* string not matched, has entire chapter been read?*/
+
+          exit stack; /* no runs, no hits, no errors, continue.*/
+
+        end /* entire chapter searched.*/
+
+      end /* compare strings.*/
+
+    end /* current alpha key.*/
+
+  end /* File error checking.*/
+
+
+
+   /* ************************************************************/
+end // end GD01400
+
+// initialize routine
+Function GD01S01()
+  set GDTREC empty;
+  set GDWREC empty;
+  set GD1REC empty;
+  set GD3REC empty;
+  set GD01W01 empty;
+  set GD01W03 empty;
+end // end GD01S01
+
+// Move pending message to EZEMSG
+Function XSGD021()
+
+     /* *********************************************************/
+     /* *    This statement group does the following:          **/
+     /* * Move and clear pending message field, set ring bell. **/
+     /* *********************************************************/
+
+  GD01M001.VAGen_EZEMSG = GD3REC.GD3PEND;
+  GD3REC.GD3PEND = " ";
+  set GD01M001 alarm;
+
+  return;
+
+
+
+end // end XSGD021
+
+//*** RECORD=GD01W01 ****
+// working storage  record
+// ***********************
+Record GD01W01 type basicRecord
+  10 GD01WITM GD01WITM ; 
+    20 GD01W4CH GD01W4CH ; 
+      30 GD01WSYS GD01WSYS ; 
+      30 GD01WSCL GD01WSCL ; 
+    20 GD01WI5 GD01WI5 ; 
+    20 * char(15) ; 
+  10 GD01WPTH GD01WPTH ; 
+  10 GD01WSKY GD01WSKY ; 
+  10 GD01WIXT GD01WIXT ; 
+end // end GD01W01
+
+Record GD01W02 type basicRecord
+  10 GD01WRMT GD01WRMT ; 
+  10 GD01WTYP GD01WTYP ; 
+  10 GD01WSWS GD01WSWS ; 
+  10 GD01WJCL GD01WJCL ; 
+    15 GD01WUID GD01WUID ; 
+    15 GD01WSKY GD01WSKY ; 
+    15 GD01WFND GD01WFND ; 
+    15 * char(51) ; 
+end // end GD01W02
+
+//*** RECORD=GD01W03 ****
+// RECORD USED FOR PASSING INFO TO TA0020
+// ***********************
+Record GD01W03 type basicRecord
+  10 GD01WERL GD01WERL [2] ; 
+end // end GD01W03
+
+Record GD01W99 type serialRecord  {
+  fileName = "INTR"
+  }
+  10 GD01WJCL GD01WJCL ; 
+end // end GD01W99
+
+//*** RECORD=GD01W9C ****
+// this record is a redefinition of the jcl statement.  it is
+// used to define the columns to be used for inserting the out-
+// put remote printer id (gd01wrmt) and the number of copies to
+// print (gd01wcpy) into the jcl statement....
+// ***********************
+Record GD01W9C type basicRecord // VAGen Info - redefined GD01W99
+  10 * char(27) ; 
+  10 GD01WSKY GD01WSKY ; 
+  10 * char(14) ; 
+  10 GD01WFND GD01WFND ; 
+  10 * char(16) ; 
+end // end GD01W9C
+
+//*** RECORD=GD01W9J ****
+// this record is a redefinition of the JCL statement.  it is
+// used to define the columns to be used to insert the job name
+// user information (gd01wuid)...
+// ***********************
+Record GD01W9J type basicRecord // VAGen Info - redefined GD01W99
+  10 * char(4) ; 
+  10 GD01WUID GD01WUID ; 
+  10 * char(70) ; 
+end // end GD01W9J
+
+//*** RECORD=GD01W9N ****
+// this record redefines the JCL statement, and is used to
+// define the columns to be used to insert the notify user id
+// (gd01wuid)...
+// ***********************
+Record GD01W9N type basicRecord // VAGen Info - redefined GD01W99
+  10 * char(22) ; 
+  10 GD01WUID GD01WUID ; 
+  10 * char(52) ; 
+end // end GD01W9N
+
+//*** RECORD=GD01W9O ****
+// this record is a redefinition of the jcl statement.  it is
+// used to define the columns to be used for inserting the out-
+// put remote printer id (gd01wrmt) and the number of copies to
+// print (gd01wcpy) into the jcl statement....
+// ***********************
+Record GD01W9O type basicRecord // VAGen Info - redefined GD01W99
+  10 * char(33) ; 
+  10 GD01WCPY GD01WCPY ; 
+  10 * char(6) ; 
+  10 GD01WRMT GD01WRMT ; 
+  10 * char(32) ; 
+end // end GD01W9O
+
+//*** RECORD=GD1REC ****
+// Text Master Record.  The VSAM Text Master File consists of
+// 100 byte records defined by this record description.  the
+// file is updated by a batch program when the CICS region is
+// down.  The key field of this record is a 13 byte field
+// which contains the member name of the text master PDS and
+// a 5 digit sequence number.  The key is constructed in the
+// CSP environment from data in the Link Master File which
+// correlates transaction id's with member names.
+// The first sequence number of a member is 00000, and is an
+// identification record.
+// **********************
+Record GD1REC type indexedRecord  {
+  fileName = "GD1TMF", keyItem = GD1RKEY
+  }
+  10 GD1TEXT GD1TEXT ; 
+  10 * char(8) ; 
+  10 GD1RKEY GD1RKEY ; 
+    15 GD1MEMB GD1MEMB ; 
+    15 GD1SEQ GD1SEQ ; 
+  10 * char(7) ; 
+end // end GD1REC
+
+// first destin. tran
+DataItem GD01W4CH char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem GD01WCPY num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// TA0020 ERROR INFO
+DataItem GD01WERL char(68)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// find code save area
+DataItem GD01WFND char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 5th char of caitem
+DataItem GD01WI5 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// caitem w/s fld
+DataItem GD01WITM char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// index for table
+DataItem GD01WIXT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// jcl statement
+DataItem GD01WJCL char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 1=normal 2=special path
+DataItem GD01WPTH char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// default printer id
+DataItem GD01WRMT char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 'sc' lit hold area
+DataItem GD01WSCL char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// initial alpha key saved
+DataItem GD01WSKY char(13)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jcl submitted switch
+DataItem GD01WSWS char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// system id
+DataItem GD01WSYS char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jcl type
+DataItem GD01WTYP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// nike user identification
+DataItem GD01WUID char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// member name
+DataItem GD1MEMB char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// text master key (member name)
+DataItem GD1RKEY char(13)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// sequence within member
+DataItem GD1SEQ num(5)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// record of text
+DataItem GD1TEXT char(72)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

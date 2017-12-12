@@ -1,0 +1,1334 @@
+package sm0v;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import pv.common.*;
+import sm.common.*;
+import ta.common.*;
+import vv.common.*;
+//*** PROGRAM=SM0V ****
+// SM0V maintains rep vendor information.  This programs is
+// called form SM0I whenever a rep is assigned to an agency as
+// a contractor and receives a monthyly commission statement.
+// This program can also be accessed from SM0L or be fastpathed
+// into.  This application expects a passed rep id and retrieve
+// information from the rep-vendor table.  PF3 key or cancel
+// key returns control to the "from application".
+// 
+// ************************************************************
+// *                    MAINTENANCE HISTORY                   *
+// ************************************************************
+// 
+// Log #    Date     Name   Description
+// -----  --------  ------  -----------------------------------
+//   001   1/23/93  GCALKI  New program.
+//   981   8/31/93  DLEGG   Correct data exception for CSP 4.1.
+//                          SM0VS-SET-VEN-DATA.
+// *********************
+Program SM0V type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "SM00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  SM0VW01 SM0VW01; // record
+  SM0VW02 SM0VW02; // record
+  SM0VW03 SM0VW03; // record
+  SM4REC SM4REC; // record
+  SMWREC SMWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TAEREC TAEREC; // record
+  VREPVN01 VREPVN01; // record
+  VSMAUD01 VSMAUD01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use SM0VM.SM0VM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    SM0V-00000: SM0V-00000();
+    goto SM0V-10000;
+    SM0V-10000: SM0V-10000();
+    /* ***********************************************************************/
+    /* Flow to SM0V-10000 which will display the map.                       **/
+    /* ***********************************************************************/
+
+    goto SM0V-10000; /* converse the map*/
+
+  end // end main
+end // end SM0V
+
+// Initial Processing
+Function SM0V-00000()
+  /* ***********************************************************************/
+  /* *  MODULE: INITIAL PROCESSING                                        **/
+  /* * PURPOSE: Check security, set segmented transaction id and do       **/
+  /* *          application initialization.                               **/
+  /* ***********************************************************************/
+
+  XSENTRY(); /* check goal security*/
+
+  XSSEGTR(); /* set segmented transaction id*/
+
+  SM0VS-INITIALIZE(); /* initialize*/
+
+end // end SM0V-00000
+
+// Converse SM0V map
+Function SM0V-10000()
+   /*  */
+   /* CONVERSE SM0VM001 MAP*/
+   /*  */
+
+  SM0VM001.SM0VM-CURR-DATE = VGVar.currentShortGregorianDate;
+
+  converse SM0VM001 ;
+
+  SM0VS-RESET-MAP(); /* reset map attributes*/
+  SM0VW-DTL-ERR-FL = "N"; /* reset error flag*/
+  SM0VM001.CAMSG = " "; /* reset alt msg area*/
+
+  SM0VS-MAP-TO-CDTL(); /* move detail fields to workarea*/
+
+  if (converseVar.eventKey is enter) /* ENTER was pressed*/
+    if (SM0VW-ERR-FL == "N") /* processing valid rep-vendor*/
+      SM0VS-PROC-ENTER();
+    else
+      converseLib.validationFailed(0009); /* Invalid rep id*/
+    end
+  else
+    if (converseVar.eventKey is pf12 /* EDIT-ONLY key was pressed*/
+     && COMMAREA.CACHGFL == "Y"      /* userid can mod restricted items*/
+     && SM0VW-ERR-FL == "N")         /* processing valid rep-vendor*/
+      SM0VS-PROC-ENTER();
+    else
+      if (converseVar.eventKey is pa2) /* CANCEL key was pressed*/
+        if (SM0VW-ERR-FL == "N") /* processing valid rep-vendor*/
+          converseLib.validationFailed(0040); /* Updates cancelled*/
+          SM0VS-PROCESS-REP(); /* refresh agency info from the database*/
+        else
+          if (COMMAREA.CAFRMSYS == "SM") /* came from salesman*/
+            COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+          else
+            COMMAREA.CATOAP = "SM0H"; /* return to sales menu*/
+          end
+          COMMAREA.CAITEM = " ";
+          COMMAREA.CAUSERA = SMWREC.SMW-SUBSYSTEM-RECORD;
+          XSEXIT(); /* transfer module*/
+          SM0VM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error*/
+          SM0VW-DTL-ERR-FL = "Y";
+        end
+      else
+        if (converseVar.eventKey is pf1 /* Other valid PFkeys pressed*/
+         || converseVar.eventKey is pf3 
+         || converseVar.eventKey is pf4)
+          SM0VS-PROC-PFKEYS();
+        else
+          converseLib.validationFailed(0002); /* Invalid PF/PA key pressed*/
+          SM0VW-DTL-ERR-FL = "Y"; /* error*/
+        end
+      end
+    end
+  end
+
+
+end // end SM0V-10000
+
+Function SM0VS-ADD-VSMAUD()
+   /* **********************************************************************/
+   /* SM0VS-ADD-VSMAUD*/
+   /* This routine calls IO0480 to insert an SM audit record.*/
+   /* **********************************************************************/
+
+  set SQLCA empty;
+
+  call "IO0480" ("A ", SQLCA, VSMAUD01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* db2 error*/
+    set ERRSQLCA empty;
+    move SQLCA to ERRSQLCA withV60Compat;
+    TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DSLSMN  "; /* data base name*/
+    TA1REC.TA1TBLVU = "VSMAUD01"; /* table view name*/
+    TA1REC.TA1LOCAT[3] = "A       "; /* error location*/
+    TA1REC.TA1LOCAT[4] = "IO0480"; /* i/o mod*/
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* message formatter*/
+    COMMAREA.CAUSERA = " "; /* clear commarea*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    XSPF4(); /* pass to goal menu*/
+    exit program;
+  end
+
+end // end SM0VS-ADD-VSMAUD
+
+Function SM0VS-EDIT-SSN()
+   /* **********************************************************************/
+   /* process social security number*/
+   /* **********************************************************************/
+   /* required if not incorporated and federal tax id is not entered*/
+   /* **********************************************************************/
+
+   /* Set up char to num conversion parms*/
+
+  SMWREC.SMW-NUM-CHK-FUNC = "CHRTONUM";
+  SMWREC.SMW-NUM-CHK-PAD = "0"; /* display leading zeros*/
+
+  if (SM0VW02.SM0VW-XXX-SSN3 != " ") /* 4 digit id is filled*/
+    SMWREC.SMW-NUM-CHK-LEN = 4;
+    SMWREC.SMW-NUM-CHK-WORD = SM0VW02.SM0VW-XXX-SSN3;
+    XSSMS-NUM-CHK();
+    if (SMW-NUM-CHK-ERR == "Y")
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0036); /* field must be numeric*/
+      set SM0VM001.SM0VM-XXX-SSN3 cursor, bold;
+    else
+      SM0VW02.SM0VW-XXX-SSN3 = SMWREC.SMW-NUM-CHK-WORD;
+      SM0VM001.SM0VM-XXX-SSN3 = SM0VW02.SM0VW-XXX-SSN3;
+    end
+  else
+    SM0VW02.SM0VW-XXX-SSN3 = " ";
+    SM0VM001.SM0VM-XXX-SSN3 = SM0VW02.SM0VW-XXX-SSN3;
+    if (SM0VW02.SM0VW-XXX-SSN2 != " " /* 2 digit id filled*/
+     || SM0VW02.SM0VW-XXX-SSN1 != " ") /* 4 digit id filled*/
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0036); /* field must be numeric*/
+      set SM0VM001.SM0VM-XXX-SSN3 cursor, bold;
+    end
+  end
+
+  if (SM0VW02.SM0VW-XXX-SSN2 != " ") /* 2 digit id is filled*/
+    SMWREC.SMW-NUM-CHK-LEN = 2;
+    SMWREC.SMW-NUM-CHK-WORD = SM0VW02.SM0VW-XXX-SSN2;
+    XSSMS-NUM-CHK();
+    if (SMW-NUM-CHK-ERR == "Y")
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0036); /* field must be numeric*/
+      set SM0VM001.SM0VM-XXX-SSN2 cursor, bold;
+    else
+      SM0VW02.SM0VW-XXX-SSN2 = SMWREC.SMW-NUM-CHK-WORD;
+      SM0VM001.SM0VM-XXX-SSN2 = SM0VW02.SM0VW-XXX-SSN2;
+    end
+  else
+    SM0VW02.SM0VW-XXX-SSN2 = " ";
+    SM0VM001.SM0VM-XXX-SSN2 = SM0VW02.SM0VW-XXX-SSN2;
+    if (SM0VW02.SM0VW-XXX-SSN3 != " " /* 4 digit id filled*/
+     || SM0VW02.SM0VW-XXX-SSN1 != " ") /* 3 digit id filled*/
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0036); /* field must be numeric*/
+      set SM0VM001.SM0VM-XXX-SSN2 cursor, bold;
+    end
+  end
+
+  if (SM0VW02.SM0VW-XXX-SSN1 != " ") /* 3 digit id is filled*/
+    SMWREC.SMW-NUM-CHK-LEN = 3;
+    SMWREC.SMW-NUM-CHK-WORD = SM0VW02.SM0VW-XXX-SSN1;
+    XSSMS-NUM-CHK();
+    if (SMW-NUM-CHK-ERR == "Y")
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0036); /* field must be numeric*/
+      set SM0VM001.SM0VM-XXX-SSN1 cursor, bold;
+    else
+      SM0VW02.SM0VW-XXX-SSN1 = SMWREC.SMW-NUM-CHK-WORD;
+      SM0VM001.SM0VM-XXX-SSN1 = SM0VW02.SM0VW-XXX-SSN1;
+    end
+  else
+    SM0VW02.SM0VW-XXX-SSN1 = " ";
+    SM0VM001.SM0VM-XXX-SSN1 = SM0VW02.SM0VW-XXX-SSN1;
+    if (SM0VW02.SM0VW-XXX-SSN2 != " " /* 2 digit id filled*/
+     || SM0VW02.SM0VW-XXX-SSN3 != " ") /* 4 digit id filled*/
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0036); /* field must be numeric*/
+      set SM0VM001.SM0VM-XXX-SSN1 cursor, bold;
+    end
+  end
+
+  if (SM0VW02.SM0VW-XXX-FED-TAX-ID2 == " " /* tax id not entered*/
+   && SM0VW02.SM0VW-XXX-FED-TAX-ID1 == " " /* tax id not entered*/
+   && SM0VW02.SM0VW-XXX-SSN3 == " "        /* 4 digit not filled*/
+   && SM0VW02.SM0VW-XXX-SSN2 == " "        /* 2 digit not filled*/
+   && SM0VW02.SM0VW-XXX-SSN1 == " "        /* 3 digit not filled*/
+   && SM0VW-DTL-ERR-FL == "N"              /* no prior errors*/
+   && SM0VW02.SM0VW-SM-SREP-INC-FL == "N") /* vendor is not a corp*/
+    SM0VW-DTL-ERR-FL = "Y";
+    converseLib.validationFailed(0097); /* SSN or tax id required*/
+    set SM0VM001.SM0VM-XXX-SSN1 cursor, bold;
+    set SM0VM001.SM0VM-XXX-SSN2 bold;
+    set SM0VM001.SM0VM-XXX-SSN3 bold;
+    set SM0VM001.SM0VM-XXX-FED-TAX-ID1 bold;
+    set SM0VM001.SM0VM-XXX-FED-TAX-ID2 bold;
+  end
+
+end // end SM0VS-EDIT-SSN
+
+Function SM0VS-EDIT-TAXID()
+   /* **********************************************************************/
+   /* Edit federal tax id*/
+   /* **********************************************************************/
+
+   /* Set up char to num conversion parms*/
+
+  SMWREC.SMW-NUM-CHK-FUNC = "CHRTONUM";
+  SMWREC.SMW-NUM-CHK-PAD = "0"; /* display leading zeros*/
+
+  if (SM0VW02.SM0VW-XXX-FED-TAX-ID2 != " ") /* 7 digit id is filled*/
+    SMWREC.SMW-NUM-CHK-LEN = 7;
+    SMWREC.SMW-NUM-CHK-WORD = SM0VW02.SM0VW-XXX-FED-TAX-ID2;
+    XSSMS-NUM-CHK();
+    if (SMW-NUM-CHK-ERR == "Y")
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0036); /* field must be numeric*/
+      set SM0VM001.SM0VM-XXX-FED-TAX-ID2 cursor, bold;
+    else
+      SM0VW02.SM0VW-XXX-FED-TAX-ID2 = SMWREC.SMW-NUM-CHK-WORD;
+      SM0VM001.SM0VM-XXX-FED-TAX-ID2 = SM0VW02.SM0VW-XXX-FED-TAX-ID2;
+    end
+  else
+    SM0VW02.SM0VW-XXX-FED-TAX-ID2 = " ";
+    if (SM0VW02.SM0VW-XXX-FED-TAX-ID1 != " ") /* 2 digit id is filled*/
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0036); /* field must be numeric*/
+      set SM0VM001.SM0VM-XXX-FED-TAX-ID2 cursor, bold;
+    end
+  end
+
+  if (SM0VW02.SM0VW-XXX-FED-TAX-ID1 != " ") /* 2 digit id is filled*/
+    SMWREC.SMW-NUM-CHK-LEN = 2;
+    SMWREC.SMW-NUM-CHK-WORD = SM0VW02.SM0VW-XXX-FED-TAX-ID1;
+    XSSMS-NUM-CHK();
+    if (SMW-NUM-CHK-ERR == "Y")
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0036); /* field must be numeric*/
+      set SM0VM001.SM0VM-XXX-FED-TAX-ID1 cursor, bold;
+    else
+      SM0VW02.SM0VW-XXX-FED-TAX-ID1 = SMWREC.SMW-NUM-CHK-WORD;
+      SM0VM001.SM0VM-XXX-FED-TAX-ID1 = SM0VW02.SM0VW-XXX-FED-TAX-ID1;
+    end
+  else
+    SM0VW02.SM0VW-XXX-FED-TAX-ID1 = " ";
+    if (SM0VW02.SM0VW-XXX-FED-TAX-ID2 != " ") /* 2 digit id is filled*/
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0036); /* field must be numeric*/
+      set SM0VM001.SM0VM-XXX-FED-TAX-ID1 cursor, bold;
+    end
+  end
+
+
+end // end SM0VS-EDIT-TAXID
+
+Function SM0VS-FIND-VREPS0()
+   /* **********************************************************************/
+   /* SM0VS-FIND-VREPS0*/
+   /* This routine calls IO0020 to read a unique rep record.*/
+   /* If found, the rep found fl is set to 'Y' else, 'N'.*/
+   /* **********************************************************************/
+
+  set SQLCA empty;
+
+  call "IO0020" ("S ", SQLCA, SM4REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* row found*/
+    SM0VW-VREPS001-FOUND-FL = "Y";
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* row not found*/
+      SM0VW-VREPS001-FOUND-FL = "N";
+    else /* DB2 error*/
+      set ERRSQLCA empty;
+      move SQLCA to ERRSQLCA withV60Compat;
+      TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DSLSMN  "; /* data base name*/
+      TA1REC.TA1TBLVU = "VREPS001"; /* table view name*/
+      TA1REC.TA1LOCAT[3] = "S       "; /* error location*/
+      TA1REC.TA1LOCAT[4] = "IO0020"; /* i/o mod*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* message formatter*/
+      COMMAREA.CAUSERA = " "; /* clear commarea*/
+      XSPF4(); /* pass to goal menu*/
+      exit program;
+    end
+  end
+
+end // end SM0VS-FIND-VREPS0
+
+Function SM0VS-FIND-VREPVN()
+   /* **********************************************************************/
+   /* SM0VS-FIND-VREPVN*/
+   /* This routine calls IO6590 to read a unique Rep-Vendor row given*/
+   /* a rep id.*/
+   /* **********************************************************************/
+
+  set SQLCA empty;
+
+  call "IO6590" ("SA", SQLCA, VREPVN01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* row found*/
+    SM0VW-VREPVN01-FOUND-FL = "Y";
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* row not found*/
+      SM0VW-VREPVN01-FOUND-FL = "N";
+    else /* db2 error*/
+      set ERRSQLCA empty;
+      move SQLCA to ERRSQLCA withV60Compat;
+      TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DSLSMN  "; /* data base name*/
+      TA1REC.TA1TBLVU = "VREPVN01"; /* table view name*/
+      TA1REC.TA1LOCAT[3] = "SA      "; /* error location*/
+      TA1REC.TA1LOCAT[4] = "IO6590"; /* i/o mod*/
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* message formatter*/
+      COMMAREA.CAUSERA = " "; /* clear commarea*/
+      XSPF4(); /* pass to goal menu*/
+      exit program;
+    end
+  end
+
+end // end SM0VS-FIND-VREPVN
+
+Function SM0VS-GET-DTL-DESC()
+   /* **********************************************************************/
+   /* Edit SM0VM001 detail*/
+   /* **********************************************************************/
+
+   /* **********************************************************************/
+   /* process corporation indicator*/
+   /* **********************************************************************/
+
+  if (SM0VM001.SM-SREP-INC-FL != "Y"
+   && SM0VM001.SM-SREP-INC-FL != "N")
+    SM0VW-DTL-ERR-FL = "Y";
+    converseLib.validationFailed(0066); /* indicator must be y or n*/
+    set SM0VM001.SM-SREP-INC-FL cursor, bold;
+  end
+
+   /* **********************************************************************/
+   /* process federal tax id*/
+   /* **********************************************************************/
+
+  SM0VS-EDIT-TAXID(); /* edit federal tax id*/
+
+   /* **********************************************************************/
+   /* process social security number*/
+   /* **********************************************************************/
+
+  SM0VS-EDIT-SSN(); /* edit social security number*/
+
+
+end // end SM0VS-GET-DTL-DESC
+
+Function SM0VS-GET-TM-STAMP()
+   /* **********************************************************************/
+   /* Get current date and time*/
+   /* **********************************************************************/
+  set TA2REC empty; /* initialize TA0040 parm*/
+  TA2REC.TA2DTOPT = "GETDATE";
+
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (TA2REC.TA2RTNCD == 0)
+    SM0VW01.SM0VW-CURR-CCYYMMDD = TA2REC.TA2GRGGN;
+    SM0VW01.SM0VW-CURR-HHMMSS = TA2REC.TA2TIMEN;
+    SM0VW01.SM0VW-CURR-HHMM = TA2REC.TA2TIMHM;
+  else
+    set TAEREC empty;
+    TAEREC.TAEDESC1 = "TA0040 GET-DATE FAILED.";
+    TAEREC.TAEDESC2 = TA2REC.TA2ERMSG;
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "TA0040";
+    TA1REC.TA1LOC = "GET DATE";
+    TA1REC.TA1MAP = "SM0VM001";
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    XSPF4(); /* return to goal*/
+    exit program;
+  end
+
+end // end SM0VS-GET-TM-STAMP
+
+Function SM0VS-INIT-SCRN()
+
+  set SM0VW02 empty; /* initialize map data*/
+  set SM0VW03 empty; /* initialize map data*/
+
+  set SM0VM001 initial; /* init map*/
+
+end // end SM0VS-INIT-SCRN
+
+// Initialize
+Function SM0VS-INITIALIZE()
+  set SMWREC empty; /* subsystem record*/
+  set SM0VW01 empty; /* SM0V workarea*/
+  set SM0VW02 empty; /* SM0V curr-hdr*/
+  set SM0VW03 empty; /* SM0V prev-hdr*/
+
+  SM0VW01.SM0VW-VREPVN01-LENGTH = 073; /* vrepvn01 record length*/
+  sysVar.errorCode = "00000000";
+  converseVar.commitOnConverse = 1; /* commit on converse*/
+   /* initialize rep-vendor flag*/
+  SM0VW01.SM0VW-ERR-FL = "N";
+  if (COMMAREA.CAFRMSYS == COMMAREA.CACURSYS) /* from same system*/
+    SMWREC.SMW-SUBSYSTEM-RECORD = COMMAREA.CAUSERA;
+  end
+
+  /* ***********************************************************************/
+  /* * Check to see if we are being fastpathed into. If so, verify the    **/
+  /* * item passed was a numeric value.  If so, save it in working storge **/
+  /* ***********************************************************************/
+
+  if (COMMAREA.CAITEM != " ")
+    SMWREC.SMW-NUM-CHK-FUNC = "CHRTONUM";
+    SMWREC.SMW-NUM-CHK-PAD = " ";
+    SMWREC.SMW-NUM-CHK-LEN = 4;
+    SMWREC.SMW-NUM-CHK-WORD = COMMAREA.CAITEM;
+    XSSMS-NUM-CHK();
+    if (SMW-NUM-CHK-ERR == "Y")
+      SM0VW-ERR-FL = "Y";
+      converseLib.validationFailed(036);
+    else
+      SM0VW01.SM0VW-SM-SREP-ID = SMWREC.SMW-NUM-CHK-NBR;
+      SMWREC.SM-SREP-ID = SM0VW01.SM0VW-SM-SREP-ID; /* move to subsy*/
+      SM0VS-PROCESS-REP();
+    end
+  else
+
+  /* ***********************************************************************/
+  /* * If the rep id passed was numeric and not zero.  Check to see if    **/
+  /* * the rep is a vendor and save value in working storage.             **/
+  /* ***********************************************************************/
+
+    if (SMWREC.SM-SREP-ID != 0)
+      SM0VW01.SM0VW-SM-SREP-ID = SMWREC.SM-SREP-ID; /* move to hdr*/
+      SM0VS-PROCESS-REP();
+    else
+
+  /* ***********************************************************************/
+  /* * If the rep id passed was zero display an error message.            **/
+  /* ***********************************************************************/
+
+      SM0VW-ERR-FL = "Y"; /* bad rep error*/
+      converseLib.validationFailed(009); /* rep id not valid*/
+    end
+  end
+
+  SM0VS-RESET-MAP(); /* reset map*/
+
+end // end SM0VS-INITIALIZE
+
+Function SM0VS-LOAD-MAP()
+   /* **********************************************************************/
+   /* Set SM0VM001 and load for inquiry or update*/
+   /* **********************************************************************/
+
+  SM0VS-VEND-TO-PDTL(); /* save vrepvn01 info to prev dtl*/
+  SM0VS-PDTL-TO-MAP(); /* move save vendor info to SM0VM001*/
+  SM0VW02.SM0VW-CURR-REPVN-DTL = SM0VW03.SM0VW-PREV-REPVN-DTL; /* move saved dtl to curr dtl*/
+
+  SM0VS-RESET-MAP(); /* reset map based on new data*/
+
+end // end SM0VS-LOAD-MAP
+
+Function SM0VS-MAP-TO-CDTL()
+   /* **********************************************************************/
+   /* move MAP to CURR detail*/
+   /* **********************************************************************/
+
+  SM0VW02.SM0VW-XXX-SSN1 = SM0VM001.SM0VM-XXX-SSN1;
+  SM0VW02.SM0VW-XXX-SSN2 = SM0VM001.SM0VM-XXX-SSN2;
+  SM0VW02.SM0VW-XXX-SSN3 = SM0VM001.SM0VM-XXX-SSN3;
+
+  SM0VW02.SM0VW-XXX-FED-TAX-ID1 = SM0VM001.SM0VM-XXX-FED-TAX-ID1;
+  SM0VW02.SM0VW-XXX-FED-TAX-ID2 = SM0VM001.SM0VM-XXX-FED-TAX-ID2;
+
+  SM0VW02.SM0VW-SM-SREP-DBA-NM = SM0VM001.SM-SREP-DBA-NM;
+  SM0VW02.SM0VW-SM-SREP-INC-FL = SM0VM001.SM-SREP-INC-FL;
+
+  SM0VW02.SM0VW-ZZ-SDT = SM0VM001.ZZ-SDT;
+  SM0VW02.SM0VW-ZZ-CHNG-DT = SM0VM001.ZZ-CHNG-DT;
+
+end // end SM0VS-MAP-TO-CDTL
+
+Function SM0VS-PDTL-TO-MAP()
+   /* **********************************************************************/
+   /* move PREV-DTL to SM0VM001*/
+   /* **********************************************************************/
+
+  SM0VM001.SM0VM-XXX-SSN1 = SM0VW03.SM0VW-XXX-SSN1;
+  SM0VM001.SM0VM-XXX-SSN2 = SM0VW03.SM0VW-XXX-SSN2;
+  SM0VM001.SM0VM-XXX-SSN3 = SM0VW03.SM0VW-XXX-SSN3;
+
+  SM0VM001.SM0VM-XXX-FED-TAX-ID1 = SM0VW03.SM0VW-XXX-FED-TAX-ID1;
+  SM0VM001.SM0VM-XXX-FED-TAX-ID2 = SM0VW03.SM0VW-XXX-FED-TAX-ID2;
+
+  SM0VM001.SM-SREP-DBA-NM = SM0VW03.SM0VW-SM-SREP-DBA-NM;
+  SM0VM001.SM-SREP-INC-FL = SM0VW03.SM0VW-SM-SREP-INC-FL;
+
+  SM0VM001.ZZ-SDT = SM0VW03.ZZ-SDT;
+  SM0VM001.ZZ-CHNG-DT = SM0VW03.ZZ-CHNG-DT;
+
+end // end SM0VS-PDTL-TO-MAP
+
+Function SM0VS-PROC-DETAIL()
+   /* **********************************************************************/
+   /* Process SM0VM001 details*/
+   /* **********************************************************************/
+
+  SM0VS-GET-DTL-DESC(); /* get SM0VM001 dtl desc w/ edits*/
+
+  if (SM0VW-DTL-ERR-FL != "Y") /* no errors found editing detail*/
+    if (converseVar.eventKey is pf12) /* edit only*/
+
+      converseLib.validationFailed(0013); /* Press enter again to accept*/
+
+    else /* Enter was pressed*/
+
+      SM0VS-UPD-TBL-PROC(); /* Update tables process*/
+
+    end /* end PF12 or ENTER pressed*/
+  end /* end no errors from edit detail*/
+
+end // end SM0VS-PROC-DETAIL
+
+Function SM0VS-PROC-ENTER()
+   /* **********************************************************************/
+   /* Process ENTER*/
+   /* **********************************************************************/
+
+  if (SM0VW02.SM0VW-CURR-REPVN-DTL != SM0VW03.SM0VW-PREV-REPVN-DTL)
+    SM0VS-PROC-DETAIL(); /* Process agency detail info*/
+
+  else /* no detail change*/
+    if (COMMAREA.CACHGFL == "Y") /* userid can mod restricted items*/
+      SM0VW-DTL-ERR-FL = "Y";
+      converseLib.validationFailed(0012); /* No changes made*/
+    end
+  end
+
+
+end // end SM0VS-PROC-ENTER
+
+Function SM0VS-PROC-PFKEYS()
+   /* **********************************************************************/
+   /* Process valid PFkey was pressed*/
+   /* PF1, PF3, PF4*/
+   /* **********************************************************************/
+
+  if (SM0VW02.SM0VW-CURR-REPVN-DTL != SM0VW03.SM0VW-PREV-REPVN-DTL
+   && SM0VW01.SM0VW-ERR-FL == "N") /* Valid rep-vendor*/
+    converseLib.validationFailed(0068); /* Can't PFkey w/ changes*/
+    SM0VW-DTL-ERR-FL = "Y";
+    return;
+  end
+
+
+  if (converseVar.eventKey is pf1) /* HELP key is pressed*/
+    COMMAREA.CAUSERA = " ";
+    XSPF1(); /* transfer to help screen*/
+    SM0VM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error*/
+    SM0VW-DTL-ERR-FL = "Y";
+  end
+
+  if (converseVar.eventKey is pf3) /* RETURN key is pressed*/
+    if (COMMAREA.CAFRMSYS == "SM") /* came from salesman*/
+      COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+    else
+      COMMAREA.CATOAP = "SM0H"; /* return to sales menu*/
+    end
+    COMMAREA.CAITEM = " ";
+    COMMAREA.CAUSERA = SMWREC.SMW-SUBSYSTEM-RECORD;
+    XSEXIT(); /* transfer module*/
+    SM0VM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error*/
+    SM0VW-DTL-ERR-FL = "Y";
+  end
+
+  if (converseVar.eventKey is pf4) /* RETURN key is pressed*/
+    COMMAREA.CAITEM = " ";
+    COMMAREA.CAUSERA = " ";
+    XSPF4(); /* transfer to GOAL menu*/
+    SM0VM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error*/
+    SM0VW-DTL-ERR-FL = "Y";
+  end
+
+
+end // end SM0VS-PROC-PFKEYS
+
+Function SM0VS-PROCESS-REP()
+   /* **********************************************************************/
+   /* Get new vendor information*/
+   /* This routine reads the vrepvn01 table.  If the vendor was not*/
+   /* found, then an error message is issued.  If the vendor is found*/
+   /* the the vreps001 table is read.  If the rep is not found an error*/
+   /* message is issued.  If the rep is found the data is moved to the map*/
+   /* **********************************************************************/
+
+  SM0VS-INIT-SCRN(); /* reset map and information*/
+
+  VREPVN01.SM-SREP-ID = SM0VW01.SM0VW-SM-SREP-ID; /* rep to key*/
+  SM0VM001.SM0VM-SM-SREP-ID = SM0VW01.SM0VW-SM-SREP-ID; /* rep to map*/
+
+  SM4REC.SM4REPID = SM0VW01.SM0VW-SM-SREP-ID;
+
+  SM0VS-FIND-VREPS0(); /* call io0020 to read rep table*/
+
+  if (SM0VW-VREPS001-FOUND-FL == "N") /* rep record was not found*/
+    set SM0VM001.SM0VM-SM-SREP-ID bold;
+    SM0VW-ERR-FL = "Y"; /* invalid rep-vendor*/
+    converseLib.validationFailed(009); /* rep id is invalid*/
+  else /* move rep detail*/
+    SM0VM001.SM0VM-SM-SREP-ID = SM4REC.SM4REPID;
+    SM0VM001.XXX-LAST-NM = SM4REC.XXXLSTNM;
+    SM0VM001.XXX-FRST-NM = SM4REC.XXXFSTNM;
+    SM0VM001.XXX-MID-INIT = SM4REC.XXXMDINT;
+
+    SM0VS-FIND-VREPVN(); /* call io6590 to read the vendor table*/
+
+    if (SM0VW-VREPVN01-FOUND-FL == "N") /* vendor rec was not found*/
+      set SM0VM001.SM0VM-SM-SREP-ID bold;
+      SM0VW-ERR-FL = "Y"; /* invalid rep-vendor*/
+      converseLib.validationFailed(096); /* rep is not a vendor*/
+    else
+   /* move vendor id to the map*/
+      SM0VM001.PV-MSA-VEND-NBR = VREPVN01.PV-MSA-VEND-NBR;
+      SM0VS-LOAD-MAP(); /* load SM0VM001 for change*/
+    end
+  end
+
+end // end SM0VS-PROCESS-REP
+
+Function SM0VS-RESET-MAP()
+  /* ************************************************************************/
+  /* Reset map attributes depending on the userid authorization level*/
+  /* and whether a valid rep vendor is being used by the program.*/
+  /* ************************************************************************/
+
+  /* Protect map items depending on access leveland error flag*/
+
+  if (COMMAREA.CACHGFL == "Y" /* userid has change authority*/
+   && SM0VW01.SM0VW-ERR-FL == "N") /* valid rep-vendor passed*/
+    set SM0VM001.SM0VM-SM-SREP-ID initialAttributes; /* set map normal*/
+    set SM0VM001.PV-MSA-VEND-NBR initialAttributes;
+    set SM0VM001.XXX-LAST-NM initialAttributes;
+    set SM0VM001.XXX-FRST-NM initialAttributes;
+    set SM0VM001.XXX-MID-INIT initialAttributes;
+    set SM0VM001.SM-SREP-DBA-NM initialAttributes;
+    set SM0VM001.SM0VM-XXX-SSN1 initialAttributes;
+    set SM0VM001.SM0VM-XXX-SSN2 initialAttributes;
+    set SM0VM001.SM0VM-XXX-SSN3 initialAttributes;
+    set SM0VM001.SM0VM-XXX-FED-TAX-ID1 initialAttributes;
+    set SM0VM001.SM0VM-XXX-FED-TAX-ID2 initialAttributes;
+    set SM0VM001.SM-SREP-INC-FL initialAttributes;
+    set SM0VM001.SM0VM-PF12-LIT initialAttributes;
+  else /* userid can browse only*/
+    set SM0VM001.SM0VM-SM-SREP-ID cursor; /* set map normal*/
+    set SM0VM001.SM0VM-SM-SREP-ID bold, protect; /* set map normal*/
+    set SM0VM001.SM-SREP-DBA-NM skip;
+    set SM0VM001.SM0VM-XXX-SSN1 skip;
+    set SM0VM001.SM0VM-XXX-SSN2 skip;
+    set SM0VM001.SM0VM-XXX-SSN3 skip;
+    set SM0VM001.SM0VM-XXX-FED-TAX-ID1 skip;
+    set SM0VM001.SM0VM-XXX-FED-TAX-ID2 skip;
+    set SM0VM001.SM-SREP-INC-FL skip;
+    set SM0VM001.SM0VM-PF12-LIT invisible, skip;
+  end
+
+end // end SM0VS-RESET-MAP
+
+Function SM0VS-SET-AUD-REC()
+   /* **********************************************************************/
+   /* Setup common fields in the SM audit record*/
+   /* **********************************************************************/
+
+  set VSMAUD01 empty;
+
+  VSMAUD01.SM-SREP-ID = SM0VW01.SM0VW-SM-SREP-ID;
+  VSMAUD01.XXX-USER-ID = COMMAREA.CAUSERID;
+  VSMAUD01.ZZ-SDT = SM0VW01.SM0VW-CURR-CCYYMMDD;
+  VSMAUD01.ZZ-SETUP-HHMMSS = SM0VW01.SM0VW-CURR-HHMMSS;
+
+
+end // end SM0VS-SET-AUD-REC
+
+Function SM0VS-SET-VEN-DATA()
+   /* **********************************************************************/
+   /* move CURR-DTL to VREPVN01*/
+   /* **********************************************************************/
+
+  if (SM0VW02.SM0VW-XXX-SSN1 is numeric)
+    SM0VW01.SM0VW-EDIT-XXX-SSN1 = SM0VW02.SM0VW-XXX-SSN1;
+  else
+    SM0VW01.SM0VW-EDIT-XXX-SSN1 = "000";
+  end
+
+  if (SM0VW02.SM0VW-XXX-SSN2 is numeric)
+    SM0VW01.SM0VW-EDIT-XXX-SSN2 = SM0VW02.SM0VW-XXX-SSN2;
+  else
+    SM0VW01.SM0VW-EDIT-XXX-SSN2 = "00";
+  end
+
+  if (SM0VW02.SM0VW-XXX-SSN3 is numeric)
+    SM0VW01.SM0VW-EDIT-XXX-SSN3 = SM0VW02.SM0VW-XXX-SSN3;
+  else
+    SM0VW01.SM0VW-EDIT-XXX-SSN3 = "0000";
+  end
+
+  VREPVN01.XXX-SSN = SM0VW01.SM0VW-EDIT-XXX-SSN;
+
+  if (SM0VW02.SM0VW-XXX-FED-TAX-ID1 is numeric)
+    SM0VW01.SM0VW-EDIT-FED-TAX-ID1 = SM0VW02.SM0VW-XXX-FED-TAX-ID1;
+  else
+    SM0VW01.SM0VW-EDIT-FED-TAX-ID1 = "00";
+  end
+
+  if (SM0VW02.SM0VW-XXX-FED-TAX-ID2 is numeric)
+    SM0VW01.SM0VW-EDIT-FED-TAX-ID2 = SM0VW02.SM0VW-XXX-FED-TAX-ID2;
+  else
+    SM0VW01.SM0VW-EDIT-FED-TAX-ID2 = "0000000";
+  end
+
+  VREPVN01.XXX-FED-TAX-ID = SM0VW01.SM0VW-EDIT-FED-TAX-ID;
+
+  VREPVN01.SM-SREP-DBA-NM = SM0VW02.SM0VW-SM-SREP-DBA-NM;
+  VREPVN01.SM-SREP-INC-FL = SM0VW02.SM0VW-SM-SREP-INC-FL;
+
+   /* **********************************************************************/
+   /* modify change date and time (change count is handled by IOMOD)*/
+   /* **********************************************************************/
+
+  VREPVN01.ZZ-CHNG-DT = SM0VW01.SM0VW-CURR-CCYYMMDD;
+  VREPVN01.ZZ-CHNG-HHMM = SM0VW01.SM0VW-CURR-HHMM;
+
+end // end SM0VS-SET-VEN-DATA
+
+Function SM0VS-UPD-RPV-PROC()
+   /* **********************************************************************/
+   /* Update Agency id table process*/
+   /* **********************************************************************/
+
+  SM0VS-SET-AUD-REC(); /* init audit record*/
+  VSMAUD01.XXX-TBL-NM = "VREPVN01"; /* set table nm in the audit rec*/
+  VSMAUD01.SM-AUDIT-FILLER-LEN = SM0VW-VREPVN01-LENGTH;
+
+  VSMAUD01.SM-AUDIT-TYP-CD = "C";
+  VSMAUD01.SM-BFR-AFT-IND = "B";
+  VSMAUD01.SM-AUDIT-FILLER-TEXT = VREPVN01.VREPVN01-GROUP;
+  SM0VS-ADD-VSMAUD(); /* Add VsmAUD01*/
+
+  SM0VS-SET-VEN-DATA(); /* move changed data to VREPVN01*/
+  SM0VS-UPDT-VREPVN(); /* Update VREPVN01*/
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* record to update not found*/
+    SM0VW-DTL-ERR-FL = "Y";
+    converseLib.validationFailed(0073); /* rec was updated by another*/
+  end
+
+  VSMAUD01.SM-BFR-AFT-IND = "A";
+  VSMAUD01.SM-AUDIT-FILLER-TEXT = VREPVN01.VREPVN01-GROUP;
+
+  if (SM0VW-DTL-ERR-FL != "Y") /* no DB2 errors*/
+
+    SM0VS-ADD-VSMAUD(); /* Add VSMAUD01*/
+
+  end
+
+end // end SM0VS-UPD-RPV-PROC
+
+Function SM0VS-UPD-TBL-PROC()
+   /* **********************************************************************/
+   /* Update tables process*/
+   /* **********************************************************************/
+
+  SM0VS-GET-TM-STAMP(); /* get dt & tm stamp for update*/
+
+  if (SM0VW-CURR-REPVN-DTL != SM0VW-PREV-REPVN-DTL)
+    SM0VS-UPD-RPV-PROC(); /* update VREPVN01 process*/
+  end
+
+  if (SM0VW-DTL-ERR-FL != "Y") /* no errors found while updating*/
+    SM0VS-PROCESS-REP(); /* Reload map*/
+    converseLib.validationFailed(0074); /* Updates accepted*/
+  else
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* Rollback any updates done*/
+  end
+
+end // end SM0VS-UPD-TBL-PROC
+
+Function SM0VS-UPDT-VREPVN()
+   /* **********************************************************************/
+   /* SM0VS-UPDT-VREPVN*/
+   /* This routine calls IO6590 to update an agency row.*/
+   /* **********************************************************************/
+
+  set SQLCA empty;
+
+  call "IO6590" ("U ", SQLCA, VREPVN01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != 0 /* not found and*/
+   && SQLCA.VAGen_SQLCODE != 100) /* record not found*/
+    set ERRSQLCA empty;
+    move SQLCA to ERRSQLCA withV60Compat;
+    TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DSLSMN  "; /* data base name*/
+    TA1REC.TA1TBLVU = "VREPVN01"; /* table view name*/
+    TA1REC.TA1LOCAT[3] = "U       "; /* error location*/
+    TA1REC.TA1LOCAT[4] = "IO6590"; /* i/o mod*/
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* message formatter*/
+    COMMAREA.CAUSERA = " "; /* clear commarea*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    XSPF4(); /* pass to goal menu*/
+    exit program;
+  end
+
+end // end SM0VS-UPDT-VREPVN
+
+Function SM0VS-VEND-TO-PDTL()
+   /* **********************************************************************/
+   /* move VREPVN01 to PREV-DTL*/
+   /* **********************************************************************/
+
+   /* format ssn & tax id*/
+
+  if (VREPVN01.XXX-SSN > 0)
+    SM0VW01.SM0VW-EDIT-XXX-SSN = VREPVN01.XXX-SSN;
+    SM0VW03.SM0VW-XXX-SSN1 = SM0VW01.SM0VW-EDIT-XXX-SSN1;
+    SM0VW03.SM0VW-XXX-SSN2 = SM0VW01.SM0VW-EDIT-XXX-SSN2;
+    SM0VW03.SM0VW-XXX-SSN3 = SM0VW01.SM0VW-EDIT-XXX-SSN3;
+  end
+
+  if (VREPVN01.XXX-FED-TAX-ID > 0)
+    SM0VW01.SM0VW-EDIT-FED-TAX-ID = VREPVN01.XXX-FED-TAX-ID;
+    SM0VW03.SM0VW-XXX-FED-TAX-ID1 = SM0VW01.SM0VW-EDIT-FED-TAX-ID1;
+    SM0VW03.SM0VW-XXX-FED-TAX-ID2 = SM0VW01.SM0VW-EDIT-FED-TAX-ID2;
+  end
+
+  SM0VW03.SM0VW-SM-SREP-DBA-NM = VREPVN01.SM-SREP-DBA-NM;
+  SM0VW03.SM0VW-SM-SREP-INC-FL = VREPVN01.SM-SREP-INC-FL;
+
+  SM0VW03.ZZ-SDT = VREPVN01.ZZ-SDT;
+  SM0VW03.ZZ-CHNG-DT = VREPVN01.ZZ-CHNG-DT;
+
+end // end SM0VS-VEND-TO-PDTL
+
+//*** RECORD=SM0VW01 ****
+// Working storage record for application SM0V.
+// 
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    5/20/93  GCALKI    Created record.
+// 
+// ***********************
+Record SM0VW01 type basicRecord
+  10 * char(4) ; 
+    15 SM0VW-DTL-ERR-FL SM0VW-DTL-ERR-FL ; 
+    15 SM0VW-ERR-FL SM0VW-ERR-FL ; 
+    15 SM0VW-VREPS001-FOUND-FL SM0VW-VREPS001-FOUND-FL ; 
+    15 SM0VW-VREPVN01-FOUND-FL SM0VW-VREPVN01-FOUND-FL ; 
+  10 * char(8) ; 
+    15 SM0VW-SM-SREP-ID-NUM SM0VW-SM-SREP-ID-NUM ; 
+    15 SM0VW-SM-SREP-ID SM0VW-SM-SREP-ID ; 
+    15 SM0VW-VREPVN01-LENGTH SM0VW-VREPVN01-LENGTH ; 
+  10 * char(24) ; 
+    15 SM0VW-EDIT-CCYYMMDD SM0VW-EDIT-CCYYMMDD ; 
+      20 SM0VW-EDIT-CCYYMMDD-CENTURY SM0VW-EDIT-CCYYMMDD-CENTURY ; 
+      20 SM0VW-EDIT-CCYYMMDD-YEAR SM0VW-EDIT-CCYYMMDD-YEAR ; 
+      20 SM0VW-EDIT-CCYYMMDD-MONTH SM0VW-EDIT-CCYYMMDD-MONTH ; 
+      20 SM0VW-EDIT-CCYYMMDD-DAY SM0VW-EDIT-CCYYMMDD-DAY ; 
+    15 SM0VW-EDIT-MMDDYY-DISPLAY SM0VW-EDIT-MMDDYY-DISPLAY ; 
+      20 SM0VW-EDIT-MMDDYY-MONTH SM0VW-EDIT-MMDDYY-MONTH ; 
+      20 SM0VW-EDIT-MMDDYY-DASH1 SM0VW-EDIT-MMDDYY-DASH1 ; 
+      20 SM0VW-EDIT-MMDDYY-DAY SM0VW-EDIT-MMDDYY-DAY ; 
+      20 SM0VW-EDIT-MMDDYY-DASH2 SM0VW-EDIT-MMDDYY-DASH2 ; 
+      20 SM0VW-EDIT-MMDDYY-YEAR SM0VW-EDIT-MMDDYY-YEAR ; 
+    15 SM0VW-WORK-CHAR-DATE SM0VW-WORK-CHAR-DATE ; 
+      20 SM0VW-WORK-CHAR-DATE-MM-DD-YY SM0VW-WORK-CHAR-DATE-MM-DD-YY ; 
+        25 SM0VW-WORK-CHAR-DATE-MMDDYY SM0VW-WORK-CHAR-DATE-MMDDYY ; 
+        25 SM0VW-WORK-CHAR-DATE-BLANK SM0VW-WORK-CHAR-DATE-BLANK ; 
+  10 * char(14) ; 
+    15 SM0VW-WORK-CCYYMMDD SM0VW-WORK-CCYYMMDD ; 
+    15 SM0VW-CURR-CCYYMMDD SM0VW-CURR-CCYYMMDD ; 
+    15 SM0VW-CURR-HHMMSS SM0VW-CURR-HHMMSS ; 
+    15 SM0VW-CURR-HHMM SM0VW-CURR-HHMM ; 
+  10 * char(9) ; 
+    15 SM0VW-EDIT-XXX-SSN SM0VW-EDIT-XXX-SSN ; 
+      20 SM0VW-EDIT-XXX-SSN1 SM0VW-EDIT-XXX-SSN1 ; 
+      20 SM0VW-EDIT-XXX-SSN2 SM0VW-EDIT-XXX-SSN2 ; 
+      20 SM0VW-EDIT-XXX-SSN3 SM0VW-EDIT-XXX-SSN3 ; 
+  10 * char(9) ; 
+    15 SM0VW-EDIT-FED-TAX-ID SM0VW-EDIT-FED-TAX-ID ; 
+      20 SM0VW-EDIT-FED-TAX-ID1 SM0VW-EDIT-FED-TAX-ID1 ; 
+      20 SM0VW-EDIT-FED-TAX-ID2 SM0VW-EDIT-FED-TAX-ID2 ; 
+end // end SM0VW01
+
+//*** RECORD=SM0VW02 ****
+// Working storage record for application SM0V to hold current
+// Vendor details.
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    5/20/93  GCALKI    Created record.
+// ***********************
+Record SM0VW02 type basicRecord
+  5 SM0VW-CURR-REPVN-DTL SM0VW-CURR-REPVN-DTL ; 
+    10 SM0VW-SM-SREP-ID SM0VW-SM-SREP-ID ; 
+    10 SM0VW-XXX-SSN1 SM0VW-XXX-SSN1 ; 
+    10 SM0VW-XXX-SSN2 SM0VW-XXX-SSN2 ; 
+    10 SM0VW-XXX-SSN3 SM0VW-XXX-SSN3 ; 
+    10 SM0VW-XXX-FED-TAX-ID1 SM0VW-XXX-FED-TAX-ID1 ; 
+    10 SM0VW-XXX-FED-TAX-ID2 SM0VW-XXX-FED-TAX-ID2 ; 
+    10 SM0VW-SM-SREP-DBA-NM SM0VW-SM-SREP-DBA-NM ; 
+    10 SM0VW-SM-SREP-INC-FL SM0VW-SM-SREP-INC-FL ; 
+  5 SM0VW-CURR-DETAIL-READ-ONLY SM0VW-CURR-DETAIL-READ-ONLY ; 
+    10 SM0VW-ZZ-SDT SM0VW-ZZ-SDT ; 
+    10 SM0VW-ZZ-CHNG-DT SM0VW-ZZ-CHNG-DT ; 
+end // end SM0VW02
+
+//*** RECORD=SM0VW03 ****
+// Working storage record for application SM0V to hold previous
+// Vendor details.
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    5/20/93  GCALKI    Created record.
+// ***********************
+Record SM0VW03 type basicRecord
+  5 SM0VW-PREV-REPVN-DTL SM0VW-PREV-REPVN-DTL ; 
+    10 SM0VW-SM-SREP-ID SM0VW-SM-SREP-ID ; 
+    10 SM0VW-XXX-SSN1 SM0VW-XXX-SSN1 ; 
+    10 SM0VW-XXX-SSN2 SM0VW-XXX-SSN2 ; 
+    10 SM0VW-XXX-SSN3 SM0VW-XXX-SSN3 ; 
+    10 SM0VW-XXX-FED-TAX-ID1 SM0VW-XXX-FED-TAX-ID1 ; 
+    10 SM0VW-XXX-FED-TAX-ID2 SM0VW-XXX-FED-TAX-ID2 ; 
+    10 SM0VW-SM-SREP-DBA-NM SM0VW-SM-SREP-DBA-NM ; 
+    10 SM0VW-SM-SREP-INC-FL SM0VW-SM-SREP-INC-FL ; 
+  5 * char(1) ; // phone prefix
+  5 SM0VW-PREV-DTL-READ-ONLY SM0VW-PREV-DTL-READ-ONLY ; 
+    10 ZZ-SDT ZZ-SDT ; 
+    10 ZZ-CHNG-DT ZZ-CHNG-DT ; 
+end // end SM0VW03
+
+// SM0V curr date ccyymmdd
+DataItem SM0VW-CURR-CCYYMMDD int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SM0VW-CURR-DETAIL-READ-ONLY char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V curr time hhmm
+DataItem SM0VW-CURR-HHMM smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// SM0V curr time hhmmss
+DataItem SM0VW-CURR-HHMMSS int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SM0VW-CURR-REPVN-DTL char(61)  {
+  align = none, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-DTL-ERR-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-CCYYMMDD num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-CCYYMMDD-CENTURY char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-CCYYMMDD-DAY char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-CCYYMMDD-MONTH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-CCYYMMDD-YEAR char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-EDIT-FED-TAX-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-EDIT-FED-TAX-ID1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-EDIT-FED-TAX-ID2 char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-MMDDYY-DASH1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-MMDDYY-DASH2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-MMDDYY-DAY char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-MMDDYY-DISPLAY char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-MMDDYY-MONTH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-EDIT-MMDDYY-YEAR char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-EDIT-XXX-SSN num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-EDIT-XXX-SSN1 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-EDIT-XXX-SSN2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-EDIT-XXX-SSN3 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V error flag
+DataItem SM0VW-ERR-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0VW-PREV-DTL-READ-ONLY char(8)  {
+  align = none, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// previous rep/vendor detail
+DataItem SM0VW-PREV-REPVN-DTL char(61)  {
+  align = none, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V doing business as
+DataItem SM0VW-SM-SREP-DBA-NM char(40)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM_SREP_ID
+DataItem SM0VW-SM-SREP-ID smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM_SREP_ID
+DataItem SM0VW-SM-SREP-ID-NUM num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V incorportated flag
+DataItem SM0VW-SM-SREP-INC-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Adjustment found flag
+DataItem SM0VW-VREPS001-FOUND-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Adjustment found flag
+DataItem SM0VW-VREPVN01-FOUND-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// length of VSNADJ01
+DataItem SM0VW-VREPVN01-LENGTH smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-WORK-CCYYMMDD int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-WORK-CHAR-DATE char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-WORK-CHAR-DATE-BLANK char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-WORK-CHAR-DATE-MM-DD-YY char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V work date
+DataItem SM0VW-WORK-CHAR-DATE-MMDDYY char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V tax id first
+DataItem SM0VW-XXX-FED-TAX-ID1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V tax id second
+DataItem SM0VW-XXX-FED-TAX-ID2 char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V social security first
+DataItem SM0VW-XXX-SSN1 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V social security middle
+DataItem SM0VW-XXX-SSN2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SM0V social security last
+DataItem SM0VW-XXX-SSN3 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ZZ_CHNG_DT
+DataItem SM0VW-ZZ-CHNG-DT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ZZ_SDT
+DataItem SM0VW-ZZ-SDT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

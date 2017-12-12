@@ -1,0 +1,1493 @@
+package op0r;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import dg.common.*;
+import ku.common.*;
+import ob.common.*;
+import op.common.*;
+import pc.common.*;
+import pw.common.*;
+import sm.common.*;
+import sp.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+//*** PROGRAM=OP0R ****
+// ;***********************************************************
+// this application is designed to display a rush order/label
+// print request screen, validate the order numbers entered,
+// and submit batch jobs to print the order and/or labels.
+// ;
+// ;  when   who        what
+// ;-------- --------- ----------------------------------------
+// ;12/17/86 jsn       added fcb parm to output stmts
+// ;                   spec forms
+// ;09/29/88 dwalke    added if statements to s15 to prohibit
+// ;                   entry of any valid print and to check
+// ;                   wheather the site was active or not.
+// ;11/03/88 jwood     noncsp opt added to calls
+// ;02/20/89 jwood     segmented trans id set logic added
+// ;08/14/89 ssteph    added credit life status 30 to process
+// ;                   s10.
+// ;01/31/90 oricha    adjusted the load of jcl to refer to
+// ;                   the proper libraries.  s40, t01.
+//  02/21/90 oricha    added pop up window for printer
+//                     destinations. m001, xx0xm001,sxx,sx1
+//                     s15,010.
+//  08/07/90 jwood     changed op0rs10 to use xcscd as a char
+//                     field
+//  10/09/90 dviert    changed xrocd check for '99' to '9999'
+//                     since the field is being expanded from 2
+//                     positions to 4.
+//  02/14/91 tfox      regen for dbchgs.
+//  01/14/92 jhecke    changed to set op0rw01,op0rw02 to empty.
+//                     010.
+//  01/23/92 jjohn2    Fixed design error by creating a new
+//                     process OP0R001 that will do the "once
+//                     only" initializations.
+//  03/16/92 trober    correct loadlib concatenation bug in
+//                     op0rs45. (bug #747)
+//  05/15/92 jhecke    changed the length of op0rwdes from 5
+//                     to 8 characters to prevent truncation.
+//                     bug #781.
+//  05/28/92 jhecke    added code to dynamically figure out the
+//                     size of the dest field. bug #781
+//  11/10/92 jATHER    deleted the userid and password value
+//                     goalba --- jather
+//  04/01/94 gcalki    Log #1003 - Rename causera to
+//                     ca-user-workarea-4k so it can hold
+//                     opwrec which is now 3072 bytes. (ALL)
+// ************************************************************
+// *********************
+Program OP0R type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  OP0RW01 OP0RW01; // record
+  OP0RW02 OP0RW02; // record
+  OP1REC OP1REC; // record
+  OPWREC OPWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  XX0XW02 XX0XW02; // record
+  XZZREC XZZREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use OP0RT01 {deleteAfterUse = yes}; // table
+  use XSOTBL {deleteAfterUse = yes}; // table
+  use XROTBL {deleteAfterUse = yes}; // table
+  use OP0RM.OP0RM001,  // forms
+      OP0RM.XX0XM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OP0R001: OP0R001();
+    goto OP0R010;
+    OP0R010: OP0R010();
+
+
+     /* ******************** op0r010 flow **************************/
+
+
+    if (converseVar.eventKey is pa2)
+      goto OP0R010; /* cancel request, reset screen*/
+    end
+
+    if (OP0RM001.VAGen_EZEMSG != " "
+     || OP0RM001.OPMMSG != " "
+     || converseVar.validationMsgNum != 0)
+      goto OP0R010; /* redisplay with message*/
+    end
+
+    goto OP0R010; /* redisplay*/
+
+     /* ******************** end op0p010 flow **********************/
+  end // end main
+end // end OP0R
+
+// application initialization
+Function OP0R001()
+   /* ***************  process op0r010 start  *******************/
+      /* this process is designed to allow the user to enter*/
+      /* order and suborder numbers which need to be printed*/
+   /* ***********************************************************/
+
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+
+     /* check entry security*/
+
+  XSENTRY();
+
+   /* ****************************************************/
+   /* *** set segmented trans id                      ****/
+   /* ****************************************************/
+
+  CAEZSAP = sysVar.transactionID;
+  CAEZSG12 = "OP";
+  CAEZSG4 = "R";
+  sysVar.transactionID = CAEZSAP;
+
+   /* *************************************************************/
+     /* set up opwrec and clear db2 records*/
+
+  OPWREC.OPWSGRP = COMMAREA.CA-USER-WORKAREA-4K;
+  set OP1REC empty;
+  set XZZREC empty;
+  set OP0RW01 empty;
+  set OP0RW02 empty;
+
+     /* set revision number*/
+
+  OP0RM001.OPMRVN = 01;
+
+     /* move current date*/
+
+  OP0RM001.OPMDT = VGVar.currentShortGregorianDate;
+
+     /* move requested by*/
+
+  OP0RM001.CAUSERID = COMMAREA.CAUSERID;
+
+  if (OP0RM001.OP0RMXRO == " ")
+     /* MOVE 571 TO EZEMNO;*/
+    OP0RM001.VAGen_EZEMSG = "TYPE ? IN PRINT DEST FIELD FOR DESTINATIONS";
+  end
+
+  OP0RW01.OP0RWSFL = "N"; /* w/s not set up yet*/
+
+end // end OP0R001
+
+// converse inquiry map
+Function OP0R010()
+
+  if (OP0RW01.OP0RWSFL != "Y") /* scroll table not set up*/
+      /* set screen defaults*/
+    OP0RW01.OP0RWSB2 = 1; /* top of screen*/
+    while (OP0RWSB2 < 11)
+      if (COMMAREA.XDVCD == "03")
+        OP0RM001.OP0RWNBL[OP0RWSB2] = 1;
+      else
+        OP0RM001.OP0RWNBL[OP0RWSB2] = 0;
+      end
+      OP0RM001.OP0RWLBO[OP0RWSB2] = "N";
+      OP0RWSB2 = OP0RWSB2 + 1;
+    end /* while*/
+      /* set screen and scroll subscript*/
+    OP0RWSB1 = 1;
+    OP0RWSB2 = 1;
+  else /* scroll table has been used*/
+      /* move scroll data to screen*/
+    OP0RW01.OP0RWSB2 = 1; /* top of screen*/
+    while (OP0RWSB2 < 11)
+      if (OP0RW01.OP0RWSCN[OP0RWSB1] > 0) /* use table*/
+        OP0RM001.OP1CUOID[OP0RWSB2] = OP0RW01.OP0RWSCN[OP0RWSB1];
+        OP0RM001.OP1NORID[OP0RWSB2] = OP0RW01.OP0RWSNN[OP0RWSB1];
+        OP0RM001.OP0RWNBL[OP0RWSB2] = OP0RW01.OP0RWSNL[OP0RWSB1];
+        OP0RM001.OP0RWLBO[OP0RWSB2] = OP0RW01.OP0RWSLO[OP0RWSB1];
+      else /* use defaults*/
+        OP0RM001.OP1CUOID[OP0RWSB2] = 0;
+        OP0RM001.OP1NORID[OP0RWSB2] = 0;
+        if (COMMAREA.XDVCD == "03")
+          OP0RM001.OP0RWNBL[OP0RWSB2] = 1;
+        else
+          OP0RM001.OP0RWNBL[OP0RWSB2] = 0;
+        end
+        OP0RM001.OP0RWLBO[OP0RWSB2] = "N";
+      end /* if*/
+      OP0RWSB2 = OP0RWSB2 + 1;
+      OP0RWSB1 = OP0RWSB1 + 1;
+    end /* while*/
+    OP0RWSB1 = OP0RWSB1 - 10; /* set back to first on screen*/
+  end /* if*/
+
+
+     /* force segmented mode*/
+
+  converseVar.segmentedMode = 1;
+
+
+  converse OP0RM001 ;
+
+
+   /* ***************  op0r010 - after stage  *******************/
+
+
+     /* clear message fields*/
+
+  OP0RM001.OPMMSG = " ";
+  OP0RW01.OP0RWMSG = " ";
+
+     /* set up fast path fields*/
+
+  COMMAREA.CATOAP = OP0RM001.CATOAP;
+  COMMAREA.CAITEM = OP0RM001.CAITEM;
+
+
+  OP0RS99(); /* check for valid pf keys/fastpath request*/
+
+  if (OP0RW01.OP0RWMSG != " ")
+    OP0RM001.OPMMSG = OP0RW01.OP0RWMSG;
+    exit stack;
+  end
+
+  if (OP0RM001.OP0RMXRO == "?")
+    OP0RSX1(); /* process pop-up window*/
+    set OP0RM001.OP0RMXRO initialAttributes;
+    exit stack;
+  end
+
+    /* edit screen*/
+
+  OP0RW01.OP0RWSB2 = 10; /* set screen subscript to bottom*/
+  while (OP0RW01.OP0RWSB2 > 0)
+    OP0RS05(); /* edit label only flag*/
+    OP0RS10(); /* edit order number*/
+    OP0RWSB2 = OP0RWSB2 - 1;
+  end
+
+
+  OP0RS15(); /* edit destination*/
+
+
+  OP0RS20(); /* move screen data to scrolling table*/
+
+
+  if (OP0RW01.OP0RWMSG != " ") /* edit error exists*/
+    OP0RM001.OPMMSG = OP0RW01.OP0RWMSG;
+    exit stack;
+  end
+
+
+  if (converseVar.eventKey is pf7) /* scroll back*/
+    OP0RS25();
+  end
+
+
+  if (converseVar.eventKey is pf8) /* scroll forward*/
+    OP0RS30();
+  end
+
+  if (converseVar.eventKey is pf12 /* edit only requested*/
+   && OP0RW01.OP0RWMSG == " ")    
+    OP0RW01.OP0RWMSG = "EDITS GOOD - PRESS ENTER TO PRINT";
+  end
+
+  if (converseVar.eventKey is enter) /* submit print*/
+    OP0RS35(); /* get next sequential job number*/
+    OP0RS40(); /* submit label print job*/
+    OP0RS45(); /* submit order print job*/
+    OP0RS50(); /* update sequential job number*/
+    OP0RS55(); /* clear scroll table reset scroll flag*/
+  end
+
+  if (OP0RW01.OP0RWMSG == " ")
+    OP0RW01.OP0RWMSG = "NO PRINT REQUEST PROCESSED";
+  end
+
+  OP0RM001.OPMMSG = OP0RW01.OP0RWMSG;
+  exit stack;
+
+
+
+   /* ***************  process op0r010 end  *********************/
+
+
+end // end OP0R010
+
+// converse pop up window
+Function OP0R020()
+   /* ------------------------------------------------------------*/
+
+              /* CONVERSE POP UP WINDOW*/
+
+      /* 1) If no errors, clear the map and set up for*/
+         /* scrolling.  If PF7, PF8, or first time through,*/
+         /* scroll the table.*/
+      /* 2) Converse the map.*/
+      /* 3) Reset selection fields to normal after converse.*/
+      /* 4) Check for PFkey and scroll errors.*/
+      /* 5) If ENTER pressed, check for any user selections.*/
+
+   /* ------------------------------------------------------------*/
+
+   /* **********************************************************/
+   /* ***  If no errors clear page and set up for scrolling ****/
+   /* **********************************************************/
+
+  if (XX0XW02.XX0XWERR == "N") /* If error flag not yes*/
+
+     /* **********************************************************/
+     /* *** Make sure table count is set for next page.       ****/
+     /* *** Clear map and set up header for new scroll screen.****/
+     /* **********************************************************/
+
+    if (XX0XW02.XX0XWFFL == "N") /* if not the first time through*/
+      XX0XW02.XX0XWCT1 = XX0XW02.XX0XWINX[10] + 1; /* set up scroll pf8*/
+    end
+
+    set XX0XM001 initial; /* Clear map output area*/
+    XX0XM001.XX0XMHDR = XX0XW02.XX0XWHDR; /* Place heading on map*/
+    XX0XM001.XX0XMTR1 = "              SELECT & ENTER          ";
+    XX0XM001.XX0XMTR2 = "   PF7:BACK                   PF8:FRWD";
+
+     /* *********************************************************/
+     /* ***      If PF8 was pressed then scroll forward      ****/
+     /* *********************************************************/
+
+    if (converseVar.eventKey is pf8 /* If PF8 pressed*/
+     || XX0XW02.XX0XWFFL == "Y")    /* Or it is the first time thru*/
+      XX0XW02.XX0XWCT2 = 1; /* Set up screen index*/
+      while (XX0XW02.XX0XWCT2 <= 10 /* Until end of screen lines*/
+       && XROTBL.XROCD[XX0XWCT1] != "9999") /* Or end of data*/
+
+        if (XROTBL.XXXSTAT[XX0XWCT1] == "A") /* If active status on code*/
+          if (XROTBL.XROSOFL[XX0XWCT1] == "Y"
+           || XROTBL.XROWHFL[XX0XWCT1] == "Y")
+            XX0XM001.XX0XMCD[XX0XWCT2] = XROTBL.XROCD[XX0XWCT1];
+            XX0XM001.XX0XMDES[XX0XWCT2] = XROTBL.XRODESC[XX0XWCT1];
+            XX0XW02.XX0XWINX[XX0XWCT2] = XX0XW02.XX0XWCT1; /* Save array*/
+            if (XX0XW02.XX0XWFFL == "Y") /* If first time thru*/
+              XX0XW02.XX0XWSIX = XX0XW02.XX0XWCT1; /* Save last index*/
+            end
+            set XX0XM001.XX0XMSEL[XX0XWCT2] normal;
+                                   /* Set selects to normal*/
+            XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 + 1; /* Increment screen index*/
+          end
+        end
+        XX0XW02.XX0XWCT1 = XX0XW02.XX0XWCT1 + 1; /* Increment table index*/
+      end
+      XX0XW02.XX0XWFFL = "N"; /* Set first time flag to no*/
+    end
+
+     /* ******************************************************/
+     /* ***    If PF7 was pressed then scroll backward    ****/
+     /* ******************************************************/
+
+    if (converseVar.eventKey is pf7) /* If PF7 pressed*/
+      XX0XW02.XX0XWCT1 = XX0XW02.XX0XWINX[1] - 1; /* Set up table index*/
+      XX0XW02.XX0XWCT2 = 10; /* Set up screen index*/
+      while (XX0XW02.XX0XWCT2 >= 1) /* Load from the bottom up*/
+        if (XROTBL.XXXSTAT[XX0XWCT1] == "A") /* If the status is active*/
+          if (XROTBL.XROSOFL[XX0XWCT1] == "Y"
+           || XROTBL.XROWHFL[XX0XWCT1] == "Y")
+            XX0XM001.XX0XMCD[XX0XWCT2] = XROTBL.XROCD[XX0XWCT1];
+            XX0XM001.XX0XMDES[XX0XWCT2] = XROTBL.XRODESC[XX0XWCT1];
+            XX0XW02.XX0XWINX[XX0XWCT2] = XX0XW02.XX0XWCT1; /* Save array*/
+            set XX0XM001.XX0XMSEL[XX0XWCT2] normal; /* Set select visible*/
+            XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 - 1; /* Decrement screen index*/
+          end
+        end
+        XX0XW02.XX0XWCT1 = XX0XW02.XX0XWCT1 - 1; /* Decrement table index*/
+      end
+      if (XX0XW02.XX0XWCT1 < 1) /* If the table index was decremented*/
+        XX0XW02.XX0XWCT1 = 1;
+                                   /* to zero, set it up to 1 (valid value)*/
+      end
+    end
+  end
+
+
+  converse XX0XM001 ;
+
+  XX0XW02.XX0XWERR = "N"; /* Reset error flag*/
+
+     /* *********************************************************/
+     /* ******  Reset selection fields after converse     *******/
+     /* *********************************************************/
+
+  XX0XW02.XX0XWCT2 = 1; /* Screen index*/
+  while (XX0XW02.XX0XWCT2 <= 10 /* Set all fields with data to normal*/
+   && XX0XM001.XX0XMCD[XX0XWCT2] != " ")
+    set XX0XM001.XX0XMSEL[XX0XWCT2] normal;
+    XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 + 1;
+  end
+
+    /* *********************************************************/
+    /* ******  Check for PFkey errors and scroll errors  *******/
+    /* *********************************************************/
+
+  if (converseVar.eventKey is pf8 /* If PF8 pressed*/
+   && XROTBL.XROCD[XX0XWCT1] == "9999") /* And end of table*/
+    XX0XW02.XX0XWERR = "Y"; /* Set error flag*/
+  else
+    if (converseVar.eventKey is pf7 /* If PF7 pressed*/
+     && XX0XW02.XX0XWINX[1] <= XX0XW02.XX0XWSIX)
+      XX0XW02.XX0XWERR = "Y"; /* Set error flag*/
+    else
+      if (converseVar.eventKey is enter) /* If enter pressed*/
+        XX0XW02.XX0XWEND = "Y"; /* Set end flag*/
+
+         /* *********************************************************/
+         /* ******          Check for user selection          *******/
+         /* *********************************************************/
+
+        XX0XW02.XX0XWCT2 = 1; /* Screen index*/
+        while (XX0XW02.XX0XWCT2 <= 10) /* Until end of screen data*/
+          if (XX0XM001.XX0XMSEL[XX0XWCT2] == "S") /* Check for selection*/
+            XX0XW02.XX0XWPIX = XX0XW02.XX0XWINX[XX0XWCT2];
+            XX0XW02.XX0XWCT2 = 11; /* End loop*/
+          end
+          XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 + 1;
+        end
+      else
+        if (converseVar.eventKey not pf7 /* invalid pf key*/
+         && converseVar.eventKey not pf8 
+         && converseVar.eventKey not enter)
+          XX0XW02.XX0XWERR = "Y"; /* set error flag*/
+        end
+      end
+    end
+  end
+
+
+end // end OP0R020
+
+// edit label only flag
+Function OP0RS05()
+
+
+
+    /* ********** start stmt grp op0rs05 ******************/
+
+
+
+  if (OP0RM001.OP1CUOID[OP0RWSB2] > 0)
+    if (OP0RM001.OP0RWLBO[OP0RWSB2] == "Y"
+     || OP0RM001.OP0RWLBO[OP0RWSB2] == "N")
+      set OP0RM001.OP0RWLBO[OP0RWSB2] initialAttributes;
+    else
+      set OP0RM001.OP0RWLBO[OP0RWSB2] cursor, modified, bold;
+      OP0RW01.OP0RWMSG = "MUST BE Y OR N";
+    end
+  else
+    set OP0RM001.OP0RWLBO[OP0RWSB2] initialAttributes;
+  end
+
+
+    /* ***********   end of stmt grp op0rs05  *************/
+
+
+end // end OP0RS05
+
+// edit order number
+Function OP0RS10()
+
+
+
+    /* ********** start stmt grp op0rs10 ******************/
+
+
+
+  if (OP0RM001.OP1CUOID[OP0RWSB2] > 0)
+    OP0RW01.OP0RWPRT = OP0RM001.OP1CUOID[OP0RWSB2];
+    OP1REC.OP1PARTN = OP0RW01.OP1PARTN;
+    OP1REC.OP1CUOID = OP0RM001.OP1CUOID[OP0RWSB2];
+    OP1REC.OP1NORID = OP0RM001.OP1NORID[OP0RWSB2];
+    SQLCA.VAGen_SQLCODE = 0;
+    call "IO0430" ("S ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 0)
+      if (OP1REC.XOSCD != "IP" /* not in process*/
+       && OP1REC.XOSCD != "XL" /* not cancelled*/
+       && OP1REC.XOSCD != "SH" /* not shipped*/
+       && OP1REC.XCSCD != "10" /* not referred to credit*/
+       && OP1REC.XCSCD != "11" /* not check in the mail*/
+       && OP1REC.XCSCD != "12" /* not referred to credit/expire*/
+       && OP1REC.XCSCD != "20" /* not on credit hold*/
+       && OP1REC.XCSCD != "30" /* not a failed recheck*/
+       && OP1REC.XCSCD != "80") /* not a resell*/
+        set OP0RM001.OP1CUOID[OP0RWSB2] initialAttributes;
+        set OP0RM001.OP1NORID[OP0RWSB2] initialAttributes;
+      else
+        set OP0RM001.OP1CUOID[OP0RWSB2] cursor, modified, bold;
+        set OP0RM001.OP1NORID[OP0RWSB2] modified, bold;
+        OP0RW01.OP0RWMSG = "INVALID ORDER STATUS";
+      end
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        set OP0RM001.OP1CUOID[OP0RWSB2] cursor, modified, bold;
+        set OP0RM001.OP1NORID[OP0RWSB2] modified, bold;
+        OP0RW01.OP0RWMSG = "ORDER NOT FOUND";
+      else
+        TA1REC.TA1TYPE = "DB2";
+        TA1REC.TA1FUNC = "ABND";
+        TA1REC.TA1PGMNM = "OP0R";
+        TA1REC.TA1LOC = "SELECT UNIQUE ORDER HEADER";
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+      end
+    end
+  else
+    set OP0RM001.OP1CUOID[OP0RWSB2] initialAttributes;
+    set OP0RM001.OP1NORID[OP0RWSB2] initialAttributes;
+  end
+
+
+    /* ***********   end of stmt grp op0rs10  *************/
+
+
+end // end OP0RS10
+
+// edit print destination
+Function OP0RS15()
+
+
+
+    /* ********** start stmt grp op0rs15 ******************/
+
+
+
+  if (OP0RM001.OP0RMXRO in XROTBL.XROCD)
+    if (XROTBL.XROWHFL[sysVar.arrayIndex] == "Y"
+     || XROTBL.XROSOFL[sysVar.arrayIndex] == "Y")
+      if (XROTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+        OP0RM001.XRODESC = XROTBL.XRODESC[sysVar.arrayIndex];
+        set OP0RM001.OP0RMXRO initialAttributes;
+      else
+        set OP0RM001.OP0RMXRO cursor, modified, bold;
+        OP0RW01.OP0RWMSG = "INVALID PRINT DESTINATION";
+      end
+    else
+      set OP0RM001.OP0RMXRO cursor, modified, bold;
+      OP0RW01.OP0RWMSG = "INVALID PRINT DESTINATION";
+    end
+  else
+    set OP0RM001.OP0RMXRO cursor, modified, bold;
+    OP0RW01.OP0RWMSG = "INVALID PRINT DESTINATION";
+  end
+
+
+    /* ***********   end of stmt grp op0rs15  *************/
+
+
+end // end OP0RS15
+
+// move screen data to scrolling
+Function OP0RS20()
+
+
+
+    /* ********** start stmt grp op0rs20 ******************/
+
+
+  OP0RW01.OP0RWSB2 = 1;
+  while (OP0RW01.OP0RWSB2 < 11)
+    OP0RW01.OP0RWSCN[OP0RWSB1] = OP0RM001.OP1CUOID[OP0RWSB2];
+    OP0RW01.OP0RWSNN[OP0RWSB1] = OP0RM001.OP1NORID[OP0RWSB2];
+    OP0RW01.OP0RWSNL[OP0RWSB1] = OP0RM001.OP0RWNBL[OP0RWSB2];
+    OP0RW01.OP0RWSLO[OP0RWSB1] = OP0RM001.OP0RWLBO[OP0RWSB2];
+    OP0RWSB1 = OP0RWSB1 + 1; /* scroll subscript*/
+    OP0RWSB2 = OP0RWSB2 + 1; /* screen subscript*/
+  end
+
+  OP0RWSB1 = OP0RWSB1 - 10; /* set back to first on screen*/
+  OP0RW01.OP0RWSFL = "Y"; /* set scroll flag*/
+
+    /* ***********   end of stmt grp op0rs20  *************/
+
+
+end // end OP0RS20
+
+// set up for pf7 - page back
+Function OP0RS25()
+
+
+
+    /* ********** start stmt grp op0rs25 ******************/
+
+
+  OP0RWSB1 = OP0RWSB1 - 10;
+
+  if (OP0RWSB1 < 1)
+    OP0RWSB1 = 1;
+    OP0RW01.OP0RWMSG = "FIRST PAGE";
+    return;
+  end
+
+  OP0RW01.OP0RWMSG = "PAGE BACK PERFORMED";
+
+
+    /* ***********   end of stmt grp op0rs25  *************/
+
+
+end // end OP0RS25
+
+// set up for pf8 - page forward
+Function OP0RS30()
+
+
+
+    /* ********** start stmt grp op0rs30 ******************/
+
+
+  OP0RWSB1 = OP0RWSB1 + 10;
+
+  if (OP0RWSB1 > 200)
+    OP0RWSB1 = 191;
+    OP0RW01.OP0RWMSG = "LAST PAGE";
+    return;
+  end
+
+  OP0RW01.OP0RWMSG = "PAGE FORWARD PERFORMED";
+
+
+    /* ***********   end of stmt grp op0rs30  *************/
+
+
+end // end OP0RS30
+
+// get next sequential job number
+Function OP0RS35()
+
+
+
+    /* ********** start stmt grp op0rs35 ******************/
+
+
+
+  XZZREC.XZZQRYID = "OP0R";
+  XZZREC.XZZQRYRN = 0;
+  XZZREC.XZZQRYLN = 0;
+  SQLCA.VAGen_SQLCODE = 0;
+  call "IO1000" ("S ", SQLCA, XZZREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OP0RW01.OP0RWJSQ = XZZREC.XZZSINT1; /* move seq number*/
+    OP0RW01.OP0RWJSQ = OP0RW01.OP0RWJSQ + 1; /* add one*/
+    if (OP0RW01.OP0RWJSQ == 100)
+      OP0RW01.OP0RWJSQ = 0;
+    end
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "OP0R";
+    TA1REC.TA1LOC = "SELECT UNIQUE PARM TABLE";
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+  end
+
+
+
+
+    /* ***********   end of stmt grp op0rs35  *************/
+
+
+end // end OP0RS35
+
+// submit label print job
+Function OP0RS40()
+
+
+
+    /* ********** start stmt grp op0rs40 ******************/
+
+
+    /* move sales office job code*/
+
+  if (COMMAREA.XSOCD in XSOTBL.XSOCD)
+    OP0RW01.OP0RWJCD = XSOTBL.XSOJBSCD[sysVar.arrayIndex];
+  else
+    OP0RW01.OP0RWMSG = "OFFICE CODE NOT FOUND";
+    exit stack;
+  end
+
+   /* the next line of code needs to be uncommented for testing*/
+     /* MOVE 'F' TO OP0RW01.OP0RWJCD;*/
+
+    /* move print destination*/
+
+  if (OP0RM001.OP0RMXRO in XROTBL.XROCD)
+   /* next sentence;*/
+  else
+    OP0RW01.OP0RWMSG = "INVALID PRINT DESTINATION";
+    exit stack;
+  end
+
+
+  OP0RWSB3 = 1;
+  OP0RW01.OP0RWJSL = "//";
+  OP0RW01.OP0RWJNM = "OP121";
+  OP0RW01.OP0RWJST = "     JOB  (DP,MUR1),LABELS,";
+  OP0RWLIN[OP0RWSB3] = OP0RW01.OP0RWJLN;
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = "//             CLASS=P,";
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = "//             MSGCLASS=J ";
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RW01.OP0RWOUS = "/*OUTPUT OP51 DEST=";
+
+   /* the following 2 lines must be uncommented to test*/
+     /* MOVE '/*JOBPARM PROCLIB=TEST' TO OP0RWLIN(OP0RWSB3);*/
+     /* OP0RWSB3 = OP0RWSB3 + 1;*/
+
+  OP0RS4L(); /* build the rest of output line*/
+  OP0RW01.OP0RWDES = OP0RW01.OP0RWDST;
+  OP0RWLIN[OP0RWSB3] = OP0RW01.OP0RWOUP;
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = OP0RT01.OP0RWLN1;
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = OP0RT01.OP0RWLN2;
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = OP0RT01.OP0RWLN3;
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = OP0RT01.OP0RWLN4;
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = "//P0010      EXEC OP1211";
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = "//P0010.DATAIN  DD *";
+
+  OP0RWSB3 = OP0RWSB3 + 1;
+
+  OP0RWSB1 = 1; /* scroll table subscript*/
+  while (OP0RWSB1 < 901)
+    if (OP0RW01.OP0RWSCN[OP0RWSB1] > 0
+     && OP0RWSNL[OP0RWSB1] > 0) /* labels requested*/
+      OP0RW01.OP0RWLCN = OP0RW01.OP0RWSCN[OP0RWSB1];
+      OP0RW01.OP0RWLNN = OP0RW01.OP0RWSNN[OP0RWSB1];
+      OP0RW01.OP0RWLRB = OP0RM001.CAUSERID;
+      OP0RW01.OP0RWLNL = OP0RW01.OP0RWSNL[OP0RWSB1];
+      OP0RW01.OP0RWLSN = OP0RM001.OP0RWLSN;
+      OP0RW01.OP0RWLIN[OP0RWSB3] = OP0RW01.OP0RWLPM; /* to jcl line*/
+      OP0RWSB3 = OP0RWSB3 + 1;
+    end
+    OP0RWSB1 = OP0RWSB1 + 1;
+  end /* while*/
+  OP0RWLIN[OP0RWSB3] = "/*";
+
+  OP0RWSB3 = 1;
+  while (OP0RWLIN[OP0RWSB3] > " ")
+    OP0RWPLN[OP0RWSB3] = OP0RWLIN[OP0RWSB3];
+    OP0RWSB3 = OP0RWSB3 + 1;
+  end /* while*/
+
+  if (OP0RW01.OP0RWLCN > 0) /* at least one label requested*/
+    OP0RWPRN = 0;
+    OP0RWCNT = OP0RWSB3 - 1;
+    call "TA0070" (OP0RW02) {isNoRefresh = yes, isExternal = yes};
+    if (OP0RWPRN > 0)
+      OP0RW01.OP0RWMSG = "PRINT REQUEST FAILED";
+    else
+      OP0RW01.OP0RWVMS = OP0RW01.OP0RWJOB; /* variable part of msg*/
+      OP0RW01.OP0RWRMS = " PRINT REQUEST SUBMITTED"; /* rest of msg*/
+    end
+  end
+
+
+    /* ***********   end of stmt grp op0rs40  *************/
+
+
+end // end OP0RS40
+
+// submit order print job
+Function OP0RS45()
+
+
+
+    /* ********** start stmt grp op0rs45 ******************/
+
+    /* move sale office job code*/
+
+  if (COMMAREA.XSOCD in XSOTBL.XSOCD)
+    OP0RW01.OP0RWJCD = XSOTBL.XSOJBSCD[sysVar.arrayIndex];
+  else
+    OP0RW01.OP0RWMSG = "OFFICE CODE NOT FOUND";
+    exit stack;
+  end
+
+   /* the following line of code must be uncommented to test*/
+        /* MOVE 'C' TO OP0RW01.OP0RWJCD;*/
+
+    /* move print destination*/
+
+  if (OP0RM001.OP0RMXRO in XROTBL.XROCD)
+    OP0RW01.OP0RWDES = XROTBL.XROPDEST[sysVar.arrayIndex];
+  else
+    OP0RW01.OP0RWMSG = "INVALID PRINT DESTINATION";
+    exit stack;
+  end
+
+
+  OP0RWSB3 = 1;
+  OP0RW01.OP0RWJSL = "//";
+  OP0RW01.OP0RWJNM = "OP120";
+  OP0RW01.OP0RWJST = "     JOB  (DP,MUR1),ORDERS,";
+  OP0RWLIN[OP0RWSB3] = OP0RW01.OP0RWJLN;
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = "//             CLASS=P,";
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = "//             MSGCLASS=J ";
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RW01.OP0RWOUS = "/*OUTPUT OP50 DEST=";
+
+   /* the following 2 lines of code must be uncommented to test*/
+     /* MOVE '/*JOBPARM PROCLIB=TEST' TO OP0RW01.OP0RWLIN(OP0RWSB3);*/
+     /* OP0RWSB3 = OP0RWSB3 + 1;*/
+
+  OP0RS4O(); /* build the rest of output line*/
+  OP0RW01.OP0RWDES = OP0RW01.OP0RWDST;
+  OP0RWLIN[OP0RWSB3] = OP0RW01.OP0RWOUP;
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = OP0RT01.OP0RWLN1; /* line 1 of table*/
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = OP0RT01.OP0RWLN2; /* line 2 of table*/
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = OP0RT01.OP0RWLN3; /* line 3 of table*/
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = OP0RT01.OP0RWLN4; /* line 4 of table*/
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = "//P0010      EXEC OP1201";
+  OP0RWSB3 = OP0RWSB3 + 1;
+  OP0RWLIN[OP0RWSB3] = "//P0010.DATAIN  DD *";
+
+  OP0RWSB3 = OP0RWSB3 + 1;
+
+  OP0RWSB1 = 1;
+  while (OP0RWSB1 < 901)
+    if (OP0RW01.OP0RWSCN[OP0RWSB1] > 0
+     && OP0RW01.OP0RWSLO[OP0RWSB1] == "N") /* not labels only*/
+      OP0RW01.OP0RWOCN = OP0RW01.OP0RWSCN[OP0RWSB1];
+      OP0RW01.OP0RWONN = OP0RW01.OP0RWSNN[OP0RWSB1];
+      OP0RW01.OP0RWORB = OP0RM001.CAUSERID;
+      OP0RWLIN[OP0RWSB3] = OP0RW01.OP0RWOPM; /* to jcl line*/
+      OP0RWSB3 = OP0RWSB3 + 1;
+    end
+    OP0RWSB1 = OP0RWSB1 + 1;
+  end /* while*/
+  OP0RWLIN[OP0RWSB3] = "/*";
+
+  OP0RWSB3 = 1;
+  while (OP0RWLIN[OP0RWSB3] > " ")
+    OP0RWPLN[OP0RWSB3] = OP0RWLIN[OP0RWSB3];
+    OP0RWSB3 = OP0RWSB3 + 1;
+  end /* while*/
+
+  if (OP0RW01.OP0RWOCN > 0) /* at least one order requested*/
+    OP0RWPRN = 0;
+    OP0RWCNT = OP0RWSB3 - 1;
+    call "TA0070" (OP0RW02) {isNoRefresh = yes, isExternal = yes};
+    if (OP0RWPRN > 0)
+      OP0RW01.OP0RWMSG = "PRINT REQUEST FAILED";
+    else
+      OP0RW01.OP0RWVMS = OP0RW01.OP0RWJOB; /* variable part of msg*/
+      OP0RW01.OP0RWRMS = " PRINT REQUEST SUBMITTED"; /* rest of msg*/
+    end
+  end
+
+
+    /* ***********   end of stmt grp op0rs45  *************/
+
+
+end // end OP0RS45
+
+// dynamic dest field build
+Function OP0RS4L()
+
+
+
+    /* ********** start stmt grp op0rs4l ******************/
+
+    /* move print destination line*/
+
+  OP0RWSB4 = 1;
+  OP0RW01.OP0RWDST = XROTBL.XROPDEST[sysVar.arrayIndex];
+
+   /* the object of this statement group is to produce the following line*/
+    /* remote#,FORMS=OP51,FCB=6L18*/
+   /* it is built byte by byte because the remote# is variable length*/
+
+  while (OP0RWSB4 < 61)
+    if (OP0RW01.OP0RWDS1[OP0RWSB4] > " ") /* is this byte valued?*/
+      OP0RWSB4 = OP0RWSB4 + 1; /* yes, go on*/
+    else
+      OP0RW01.OP0RWDS1[OP0RWSB4] = ","; /* no,build rest of line*/
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "F";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "O";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "R";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "M";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "S";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "=";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "O";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "P";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "5";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "1";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = ",";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "F";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "C";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "B";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "=";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "6";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "L";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "1";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "8";
+      OP0RWSB4 = OP0RWSB4 + 60;
+    end
+  end
+end // end OP0RS4L
+
+// dynamic dest field build
+Function OP0RS4O()
+
+
+
+    /* ********** start stmt grp op0rs4o ******************/
+    /* move print destination*/
+
+  OP0RWSB4 = 1;
+  OP0RW01.OP0RWDST = XROTBL.XROPDEST[sysVar.arrayIndex];
+
+   /* the object of this statement group is to produce the following line*/
+   /* remote#,FORMS=OP50,FCB=6L51*/
+   /* it is built byte by byte because the remote# is variable length*/
+
+  while (OP0RWSB4 < 61)
+    if (OP0RW01.OP0RWDS1[OP0RWSB4] > " ") /* is this byte valued?*/
+      OP0RWSB4 = OP0RWSB4 + 1; /* yes, go on*/
+    else
+      OP0RW01.OP0RWDS1[OP0RWSB4] = ","; /* no,build rest of line*/
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "F";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "O";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "R";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "M";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "S";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "=";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "O";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "P";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "5";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "0";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = ",";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "F";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "C";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "B";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "=";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "6";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "L";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "5";
+      OP0RWSB4 = OP0RWSB4 + 1;
+      OP0RW01.OP0RWDS1[OP0RWSB4] = "1";
+      OP0RWSB4 = OP0RWSB4 + 60;
+    end
+  end
+end // end OP0RS4O
+
+// update next sequential job num
+Function OP0RS50()
+
+
+
+    /* ********** start stmt grp op0rs50 ******************/
+
+
+
+  XZZREC.XZZQRYID = "OP0R";
+  XZZREC.XZZQRYRN = 0;
+  XZZREC.XZZQRYLN = 0;
+  SQLCA.VAGen_SQLCODE = 0;
+  call "IO1000" ("D ", SQLCA, XZZREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "OP0R";
+    TA1REC.TA1LOC = "DELETE PARM TABLE";
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  set XZZREC empty;
+  XZZREC.XZZQRYID = "OP0R";
+  XZZREC.XZZQRYRN = 0;
+  XZZREC.XZZQRYLN = 0;
+  XZZREC.XZZSINT1 = OP0RW01.OP0RWJSQ; /* seq job number*/
+  SQLCA.VAGen_SQLCODE = 0;
+  call "IO1000" ("A ", SQLCA, XZZREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "OP0R";
+    TA1REC.TA1LOC = "ADD PARM TABLE";
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+  end
+
+
+
+
+    /* ***********   end of stmt grp op0rs50  *************/
+
+
+end // end OP0RS50
+
+// clear scroll table, reset flag
+Function OP0RS55()
+
+
+    /* ********** start stmt grp op0rs55 ******************/
+
+
+  OP0RWSB1 = 1; /* top of scroll table*/
+
+  while (OP0RWSB1 < 901)
+    OP0RW01.OP0RWSCN[OP0RWSB1] = 0;
+    OP0RW01.OP0RWSNN[OP0RWSB1] = 0;
+    OP0RW01.OP0RWSNL[OP0RWSB1] = 0;
+    OP0RW01.OP0RWSLO[OP0RWSB1] = " ";
+    OP0RWSB1 = OP0RWSB1 + 1;
+  end
+
+  OP0RW01.OP0RWLCN = 0; /* zero out label parm*/
+  OP0RW01.OP0RWOCN = 0; /* zero out order parm*/
+  OP0RW01.OP0RWSFL = "N"; /* reset scroll flag*/
+  OP0RWSB1 = 1; /* top of scroll table*/
+  set OP0RM001 initial; /* clear screen*/
+
+
+    /* ***********   end of stmt grp op0rs55  *************/
+
+
+end // end OP0RS55
+
+// check normal pf keys/fastpath
+Function OP0RS99()
+    /* ********** start stmt grp op0rs99 ******************/
+
+
+
+  if (converseVar.eventKey is enter /* enter - check fastpath*/
+   || converseVar.eventKey is pf7   
+   || converseVar.eventKey is pf8   
+   || converseVar.eventKey is pf12)
+    if (OP0RM001.CATOAP != " ")
+      COMMAREA.CATOAP = OP0RM001.CATOAP;
+      COMMAREA.CAITEM = OP0RM001.CAITEM;
+      XSEXIT();
+      OP0RM001.OPMMSG = COMMAREA.CAMSG;
+    end
+  else
+    if (converseVar.eventKey is pa2) /* pa2 - reset map*/
+      set OP0RM001 initial;
+      exit stack;
+    else
+      if (converseVar.eventKey is pf1) /* pf1 - help (not yet active)*/
+        XSPF1();
+        OP0RM001.OPMMSG = COMMAREA.CAMSG; /* security msg*/
+        return;
+      else
+        if (converseVar.eventKey is pf3) /* pf3 - return to last menu*/
+          COMMAREA.CATOAP = "OP0M";
+          XSEXIT();
+        else
+          if (converseVar.eventKey is pf4) /* pf4 - return to main menu*/
+            XSPF4();
+            OP0RM001.OPMMSG = COMMAREA.CAMSG; /* security msg*/
+            return;
+          else
+            OP0RM001.OPMMSG = "INVALID ENTRY KEY";
+            exit stack;
+          end
+        end
+      end
+    end
+  end
+
+
+    /* ***********   end of stmt grp op0rs99  *************/
+
+
+end // end OP0RS99
+
+// process pop-up window
+Function OP0RSX1()
+  XPXX001();
+  XX0XW02.XX0XWHDR = "   PRINT DESTINATIONS   "; /* heading*/
+
+  while (XX0XW02.XX0XWEND == "N")
+    OP0R020(); /* process window*/
+
+    if (XX0XW02.XX0XWPIX > +0)
+      OP0RM001.OP0RMXRO = XROTBL.XROCD[XX0XWPIX];
+      OP0RM001.XRODESC = XROTBL.XRODESC[XX0XWPIX];
+    else
+      OP0RM001.OP0RMXRO = " ";
+    end
+  end
+
+  converseLib.clearScreen();
+
+
+
+end // end OP0RSX1
+
+//*** RECORD=OP0RW01 ****
+// this is the work record for application op0r
+// ***********************
+Record OP0RW01 type basicRecord
+  10 OP0RWMSG OP0RWMSG ; 
+    15 OP0RWVMS OP0RWVMS ; 
+    15 OP0RWRMS OP0RWRMS ; 
+  10 OP0RWLIN OP0RWLIN [250] ; 
+  10 OP0RWJLN OP0RWJLN ; 
+    15 OP0RWJSL OP0RWJSL ; 
+    15 OP0RWJOB OP0RWJOB ; 
+      20 OP0RWJNM OP0RWJNM ; 
+      20 OP0RWJCD OP0RWJCD ; 
+      20 OP0RWJSQ OP0RWJSQ ; 
+    15 OP0RWJST OP0RWJST ; 
+  10 OP0RWOUP OP0RWOUP ; 
+    15 OP0RWOUS OP0RWOUS ; 
+    15 OP0RWDES OP0RWDES ; 
+  10 OP0RWLPM OP0RWLPM ; 
+    15 OP0RWLCN OP0RWLCN ; 
+    15 OP0RWLNN OP0RWLNN ; 
+    15 * char(1) ; 
+    15 OP0RWLRB OP0RWLRB ; 
+    15 * char(1) ; 
+    15 OP0RWLNL OP0RWLNL ; 
+    15 * char(1) ; 
+    15 OP0RWLSN OP0RWLSN ; 
+  10 OP0RWOPM OP0RWOPM ; 
+    15 OP0RWOCN OP0RWOCN ; 
+    15 OP0RWONN OP0RWONN ; 
+    15 * char(1) ; 
+    15 OP0RWORB OP0RWORB ; 
+  10 OP0RWPRT OP0RWPRT ; 
+    15 * char(7) ; 
+    15 OP1PARTN OP1PARTN ; 
+  10 OP0RWSFL OP0RWSFL ; 
+  10 OP0RWSDA OP0RWSDA [900] ; 
+    15 OP0RWSCN OP0RWSCN ; 
+    15 OP0RWSNN OP0RWSNN ; 
+    15 OP0RWSNL OP0RWSNL ; 
+    15 OP0RWSLO OP0RWSLO ; 
+  10 OP0RWSB1 OP0RWSB1 ; 
+  10 OP0RWSB2 OP0RWSB2 ; 
+  10 OP0RWSB3 OP0RWSB3 ; 
+  10 OP0RWSB4 OP0RWSB4 ; 
+  10 OP0RWDST OP0RWDST ; 
+    15 OP0RWDS1 OP0RWDS1 [61] ; 
+end // end OP0RW01
+
+//*** RECORD=OP0RW02 ****
+// this record contains jcl statements passed to ta0070
+// ***********************
+Record OP0RW02 type basicRecord
+  10 OP0RWPRN OP0RWPRN ; 
+  10 OP0RWCNT OP0RWCNT ; 
+  10 OP0RWPLN OP0RWPLN [250] ; 
+end // end OP0RW02
+
+DataItem OP0RWCNT num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// output destination
+DataItem OP0RWDES char(61)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// byte for byte dest field build
+DataItem OP0RWDS1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// dynamic dest field
+DataItem OP0RWDST char(61)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jobname office code
+DataItem OP0RWJCD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// job line of jcl
+DataItem OP0RWJLN char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jobname (partial)
+DataItem OP0RWJNM char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jobname (complete)
+DataItem OP0RWJOB char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jobcard slashes
+DataItem OP0RWJSL char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jobname sequence number
+DataItem OP0RWJSQ num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// the rest of the job card
+DataItem OP0RWJST char(70)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// label customer order number
+DataItem OP0RWLCN num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group level jcl line
+DataItem OP0RWLIN char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// label number of labels
+DataItem OP0RWLNL num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// label nike order number
+DataItem OP0RWLNN num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// label print parm card
+DataItem OP0RWLPM char(33)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// label requested by
+DataItem OP0RWLRB char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// label shipper number
+DataItem OP0RWLSN char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work message field
+DataItem OP0RWMSG char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// order customer order number
+DataItem OP0RWOCN num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// order nike order number
+DataItem OP0RWONN num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// order print parm card
+DataItem OP0RWOPM char(19)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// order requested by
+DataItem OP0RWORB char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jes2 output line of jcl
+DataItem OP0RWOUP char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jes2 output statement
+DataItem OP0RWOUS char(19)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OP0RWPLN char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OP0RWPRN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group level redef of cuoid
+DataItem OP0RWPRT char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// rest of message
+DataItem OP0RWRMS char(72)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// scrolling subscript
+DataItem OP0RWSB1 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// screen subscript (1-10)
+DataItem OP0RWSB2 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// jcl line subscript (1-250)
+DataItem OP0RWSB3 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// dest field subscript (1-61)
+DataItem OP0RWSB4 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// scrolling cust ord number
+DataItem OP0RWSCN num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// scrolling data
+DataItem OP0RWSDA char(13)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// scroll flag
+DataItem OP0RWSFL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// scrolling labels only flag
+DataItem OP0RWSLO char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// scrolling number of labels
+DataItem OP0RWSNL num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// scrolling nike number
+DataItem OP0RWSNN num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// variable message field
+DataItem OP0RWVMS char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

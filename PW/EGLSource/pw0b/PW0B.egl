@@ -1,0 +1,2550 @@
+package pw0b;
+import corpcom1.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import in1.common.*;
+import pk.common.*;
+import pw.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+//*** PROGRAM=PW0B ****
+// 
+//  ************** pw0b: carrier/spur confirmation      *******
+//  **************                                      *******
+// 
+// 
+// program description.
+//     This online application provides the users at
+//   Wilsonville the ability to assign shipping spurs and
+//   carrier availibility to carriers.  It also allows
+//   maintenance to other Wilsonville-specific data needed
+//   for batching.  This program will access 'non-planning'
+//   entries in the tables used.
+// 
+// 
+// 
+// 
+// 
+// 
+// 
+//   maintenance history:
+// 
+//    date      name      description
+//  --------  ---------  --------------------------------------
+//  10-15-87  PRM        created
+//  02/15/88  SPOPA      Verify the same day schedule number
+//                       to be not less than the same day
+//                       schedule number in the Spur Warehouse
+//                       Control Table and less than the
+//                       PK_NXT_SHP_SCHED in the Picking
+//                       Control Table.
+//  12-07-88  jwood      added NONCSP option to calls
+//  12-07-88  jwood      added XSSEGTR logic
+//  05-24-89  m walto    allow default pack & hold spur to
+//                       equal reject spur
+//  06-13-89  m walto    check schedule available range when
+//                       add or change a record (PW0A059)
+//  06-22-89  jcampb     fix schedule available range when
+//                       add or change a record (PW0A059)
+//                       to include packhold flag.
+//  03-19-91  BHARRI     Restrict warehouse 51 from PW0B020
+//  04-07-92  SHENDE     Temporary change to transfer whse 02 &
+//                       04 (PF3) back to PW0V.
+//  04-27-92  SHENDE     Allow whse 4 to PF3 back to PW0V
+//  05-07-92  SHENDE     Take out temp fix for whse '04'.
+//  05-11-93  kande1     Restrict whse 02,04,07 from pw0b020
+//  10-25-95  pstroe     Added hard coded warehouse logic for
+//                       Canada.
+// Y2KFIX  02/18/98  DKENNY  Y2K MODIFICATIONS MADE TO:
+//                           PW0B084, PW0B094
+// *********************
+Program PW0B type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "PK00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  PKDREC PKDREC; // record
+  PKWREC PKWREC; // record
+  PW0BW01 PW0BW01; // record
+  PW0BW02 PW0BW02; // record
+  PWCREC PWCREC; // record
+  PWDREC PWDREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TF1REC TF1REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use PW0BM.PW0BM030 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    PW0B005: PW0B005();
+
+    goto PW0B010;
+
+
+
+    PW0B010: PW0B010();
+
+    goto PW0B010;
+
+
+  end // end main
+end // end PW0B
+
+// main process
+Function PW0B005()
+
+   /* ----------------------------------------------------------*/
+   /* initialization process....*/
+   /* ----------------------------------------------------------*/
+
+
+
+
+
+
+  set PKWREC empty; /* clear work records*/
+  set PW0BW01 empty;
+  set PW0BW02 empty;
+  set SQLCA empty;
+
+
+  XPPK001(); /* app initial.*/
+  PW0BM030.XWHCD = PKWREC.XWHCD;
+  PW0B007(); /* get pk-nxt-shp-sched*/
+  if (converseVar.validationMsgNum == 2 /* invalid  warehouse*/
+   || converseVar.validationMsgNum == 3 /* inactive warehouse*/
+   || converseVar.validationMsgNum == 4) /* warehouse required*/
+    set PW0BM030.XWHCD cursor, modified, bold; /* hilite warehouse*/
+    PKWREC.XWHCD = " "; /* warehouse*/
+  end
+  if (converseVar.validationMsgNum == 0) /* valid warehouse*/
+    PW0BM030.XWHCD = PKWREC.XWHCD;
+    PW0B021(); /* Format map heading area*/
+    PW0BW01.PW0BWTOP = 1; /* set top of page subscript*/
+    PW0B022(); /* ss carrier avail rows*/
+    if (converseVar.validationMsgNum == 0) /* no database errors*/
+      PW0B024(); /* ss wilsonville controls rows*/
+      if (converseVar.validationMsgNum == 0) /* no database errors*/
+        PW0B023(); /* format screen*/
+      end
+    end
+  end
+
+
+
+
+
+  COMMAREA.CAFROMAP = COMMAREA.CACURRAP; /* save current application*/
+
+
+
+
+
+  PKWREC.PKWINDEX = 0;
+  PKWREC.PKWCNTRL = " ";
+
+
+
+
+end // end PW0B005
+
+// get pk-nxt-shp-sched
+Function PW0B007()
+   /* ---------------  pw0b007   ---------------------------------*/
+   /* ----- get pk-nxt-shp-sched*/
+
+
+  PW0BM030.XXXERRID = "PW0B007";
+
+
+
+
+
+  set PKDREC empty;
+  PKDREC.XWHCD = PW0BM030.XWHCD;
+
+  call "IO1890" ("S ", SQLCA, PKDREC) {isNoRefresh = yes, isExternal = yes}; /* select unique on*/
+                                 /* picking control table*/
+  if (SQLCA.VAGen_SQLCODE == 0) /* 1 row was found*/
+    /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(28); /* contention for data base resorce*/
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        converseLib.validationFailed(2); /* invalid warehouse*/
+      else
+        converseLib.validationFailed(29); /* fatal error*/
+        TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+        TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+        TA1REC.TA1PGMNM = "PW0B007 "; /* Process name*/
+        TA1REC.TA1LOC = "SELECT UNIQUE            ";
+        TA1REC.TA1MAP = "PW0BM030"; /* Map name*/
+        TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+        TA1REC.TA1TBLVU = "VPKCTL01"; /* Table view name*/
+        COMMAREA.CAFROMAP = "PW0B";
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+      end
+    end
+  end
+
+
+
+
+
+
+
+
+   /* -------------  end process pw0b007  --------------------*/
+end // end PW0B007
+
+// carrier/spur confirmation
+Function PW0B010()
+
+
+  PW0B020(); /* format output*/
+
+
+
+  PW0B030(); /* converse map*/
+
+
+
+
+   /* *********************************************/
+   /* ** if table overflow has occured           **/
+   /* **     go back to main selection menu      **/
+   /* *********************************************/
+  if (PW0BW01.PW0BWFL1 == "Y") /* table overflow flag*/
+    converseLib.validationFailed(24);
+    PW0B030(); /* converse map*/
+    COMMAREA.CATOAP = "PK07"; /* selection menu*/
+    PKWREC.XWHCD = PW0BM030.XWHCD; /* Save in work area*/
+    COMMAREA.CAUSERA = PKWREC.PKWGRPLV; /* COMMAREA user area*/
+    XSEXIT(); /* Invoke selected application*/
+    PW0BM030.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    exit stack; /* ; Exit to redisplay map*/
+  end
+
+
+
+
+
+  if (PKWREC.XWHCD == " " /* receiving warehouse from map*/
+   && converseVar.eventKey not pf3)
+    exit stack;
+  end
+
+
+
+
+
+  PW0BW01.PW0BWUPD = "N"; /* database update flag.*/
+
+  PW0B040(); /* validate pfkeys keys*/
+
+
+
+
+  if (converseVar.validationMsgNum == 0
+   && converseVar.eventKey is enter)
+    PW0B045(); /* check for fastpath*/
+  end
+
+
+
+
+  if (converseVar.validationMsgNum == 0)
+    PW0B050(); /* validate inputs*/
+  end
+
+
+  if (converseVar.validationMsgNum == 254) /* warning message, default p&h spur =*/
+                                   /* reject spur*/
+    PW0B030(); /* converse map to display message*/
+    if (PW0BM030.PWDDFPHS != PW0BM030.PWDRJTSS) /* if spurs not =*/
+      PW0B050(); /* check new spur for errors*/
+    end
+  end
+
+
+  if (converseVar.validationMsgNum == 0) /* ; no errors*/
+    if (PKWREC.XWHCD == PW0BM030.XWHCD)
+      if (converseVar.eventKey is pf12)
+            /* no more processing*/
+      else
+        if (PW0BW01.PW0BWED1 == "N" /* data modified*/
+         && PW0BW01.PW0BWED2 == "N") /* data modified*/
+          /* no more processing*/
+        else
+          if (PW0BW01.PW0BWED1 == "Y") /* edits-all-ok-flag*/
+            PW0B080(); /* update databases*/
+          end
+          if (PW0BW01.PW0BWED2 == "Y") /* edits-all-ok-flag*/
+            PW0B090(); /* update databases*/
+          end
+        end
+      end
+    end
+  end
+
+
+
+end // end PW0B010
+
+// Format the output display
+Function PW0B020()
+
+
+   /* ------------------------------------------------------------*/
+   /* first time through or a change in warehouse, the map is*/
+   /* reformatted with new data.*/
+   /* warehouse is highlited if invalid.*/
+   /* ------------------------------------------------------------*/
+
+
+
+
+
+     /* ***********************************/
+     /* *  if changed warehouse          **/
+     /* *      get warehouse abbrev.     **/
+     /* *      if lookup not successful  **/
+     /* *         get out                **/
+     /* *      else                      **/
+     /* *         load new warehouse's   **/
+     /* *         data into map and array**/
+     /* ***********************************/
+  if (PW0BM030.XWHCD == "51" /* If warehouse 51*/
+   || PW0BM030.XWHCD == "02" /* or warehouse 02*/
+   || PW0BM030.XWHCD == "04" /* or warehouse 04*/
+   || PW0BM030.XWHCD == "07" /* or warehouse 07*/
+   || PW0BM030.XWHCD == "42") /* or Canada whse*/
+    set PW0BM030.XWHCD cursor, modified, bold; /* highlight warehouse*/
+    PKWREC.XWHCD = " "; /* init warehouse field*/
+    converseLib.validationFailed(370); /* 'application unavailable'*/
+    return; /* return*/
+  end
+                                   /* end if*/
+
+  if (PKWREC.XWHCD != PW0BM030.XWHCD) /* change in warehouse*/
+    set PW0BW01 empty;
+    PKWREC.XWHCD = PW0BM030.XWHCD; /* warehouse*/
+    XPPK002(); /* validate warehouse*/
+    PW0B007(); /* get pk-nxt-shp-sched*/
+    if (converseVar.validationMsgNum == 2 /* invalid  warehouse*/
+     || converseVar.validationMsgNum == 3 /* inactive warehouse*/
+     || converseVar.validationMsgNum == 4) /* warehouse required*/
+      set PW0BM030.XWHCD cursor, modified, bold; /* hilite warehouse*/
+      PKWREC.XWHCD = " "; /* warehouse*/
+      return;
+    end
+    set PW0BM030.XWHCD normal;
+    if (converseVar.validationMsgNum == 0) /* valid warehouse*/
+      PW0B021(); /* Format map heading area*/
+      PW0BW01.PW0BWTOP = 1; /* set top of page subscript*/
+      PW0B022(); /* ss carrier avail rows*/
+      if (converseVar.validationMsgNum == 0) /* no database errors*/
+        PW0B024(); /* ss wilsonville controls rows*/
+        if (converseVar.validationMsgNum == 0) /* no database errors*/
+          PW0B023(); /* format screen*/
+        end
+      end
+    end
+  end
+
+     /* ***********************************/
+     /* *   * database was updated.      **/
+     /* *   * refresh the array,         **/
+     /* *   * the map, set ezemno        **/
+     /* *   * to 'updated' and get out   **/
+     /* ***********************************/
+  if (PW0BW01.PW0BWUPD == "Y") /* database updated*/
+    move PW0BW02 to PW0BW01 withV60Compat; /* initialize data base save area*/
+    PW0B022(); /* ss carrier avail*/
+    PW0B024(); /* ss wilsonville controls*/
+    PW0B021(); /* format headings*/
+    PW0B023(); /* format screen*/
+    if (converseVar.eventKey not pa2)
+      converseLib.validationFailed(32);
+    end
+    return;
+  end
+
+
+
+
+     /* ***********************************/
+     /* *   * only paging is required *  **/
+     /* *   *                            **/
+     /* *   * if at the beginning or end **/
+     /* *   * of the map, is's an error. **/
+     /* *   * subtract 13 from variable  **/
+     /* *   * holding top of map value   **/
+     /* *   * when page backward is      **/
+     /* *   * requested.                 **/
+     /* *   * add 13 to variable         **/
+     /* *   * holding top of map value   **/
+     /* *   * when page forward is       **/
+     /* *   * requested.                 **/
+     /* ***********************************/
+
+  if (converseVar.eventKey is pf7) /* page backward*/
+    if (PW0BW01.PW0BWTOP == 1)
+      converseLib.validationFailed(37);
+    end
+    if (PW0BW01.PW0BWTOP != 1)
+      PW0BW01.PW0BWTOP = PW0BW01.PW0BWTOP - 11; /* set top of page*/
+      PW0B021(); /* format map heading*/
+      PW0B023(); /* format screen*/
+    end
+  end
+
+  if (converseVar.eventKey is pf8) /* page forward*/
+    PW0BW01.PW0BWTOP = PW0BW01.PW0BWTOP + 11; /* set top of page*/
+    if (PW0BW01.PW0BWTOP <= PW0BW01.PW0BWMAX)
+      PW0B021(); /* format map heading*/
+      PW0B023(); /* format screen*/
+    end
+    if (PW0BW01.PW0BWTOP > PW0BW01.PW0BWMAX)
+      PW0BW01.PW0BWTOP = PW0BW01.PW0BWTOP - 11; /* reset top of page*/
+      converseLib.validationFailed(38); /* no more pages to display*/
+    end
+  end
+
+
+
+
+  if (converseVar.validationMsgNum == 2 /* invalid  warehouse*/
+   || converseVar.validationMsgNum == 3 /* inactive warehouse*/
+   || converseVar.validationMsgNum == 4) /* warehouse required*/
+    set PW0BM030.XWHCD cursor, modified, bold; /* hilite warehouse*/
+  end
+
+
+
+
+
+end // end PW0B020
+
+// format map heading
+Function PW0B021()
+   /* ---------------------------------------------------*/
+      /* format map headings...........*/
+   /* ---------------------------------------------------*/
+
+
+  set PW0BM030 initial; /* clear map area*/
+  set PWCREC empty; /* empty carrier availability rec*/
+  set PWDREC empty; /* empty wilsonville controls rec*/
+
+  PW0BM030.XXXERRID = "PW0B021"; /* format location*/
+  PW0BM030.XXXCURDT = VGVar.currentShortGregorianDate; /* date to map*/
+  PW0BM030.XWHCD = PKWREC.XWHCD; /* warehouse code*/
+  PW0BM030.XWHABRV = PKWREC.XWHABRV; /* warehouse abbrev.*/
+  PW0BM030.XXXRVNBR = "01"; /* Revision number*/
+  converseLib.validationFailed(0); /* reset any error*/
+
+
+
+end // end PW0B021
+
+// obtain set carrier avail
+Function PW0B022()
+   /* ----------------------------------------------------*/
+     /* load working storage with carrier available rows*/
+
+   /* ----------------------------------------------------*/
+
+  set PWCREC empty; /* empty carrier availability rec*/
+
+  PWCREC.XWHCD = PKWREC.XWHCD;
+  PWCREC.PKURUNMD = " "; /* ; non-planned mode*/
+
+  call "IO2180" ("S1", SQLCA, PWCREC) {isNoRefresh = yes, isExternal = yes}; /* ss on carrier avail*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* ; unexpected return*/
+    if (SQLCA.VAGen_SQLCODE == -911)
+      TA1REC.TA1FUNC = "POST"; /* ; term. function*/
+      TA1REC.TA1LOC = "SELECT";
+      TA1REC.TA1TYPE = "DB2 "; /* ; type of error*/
+      TA1REC.TA1PGMNM = "PW0B022"; /* process name*/
+      TA1REC.TA1MAP = "PW0BM030"; /* map name*/
+      TA1REC.TA1DBASE = "DPICK   "; /* database name*/
+      TA1REC.TA1TBLVU = "VCARRA01"; /* table view name*/
+      call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+      converseLib.validationFailed(28); /* contention error*/
+    else
+      if (SQLCA.VAGen_SQLCODE != 100)
+        converseLib.validationFailed(29); /* ; indicate system error*/
+        TA1REC.TA1LOC = "SELECT";
+        TA1REC.TA1TYPE = "DB2 "; /* ; type of error*/
+        TA1REC.TA1PGMNM = "PW0B022"; /* process name*/
+        TA1REC.TA1MAP = "PW0BM030"; /* map name*/
+        TA1REC.TA1DBASE = "DPICK   "; /* database name*/
+        TA1REC.TA1TBLVU = "VCARRA01"; /* table view name*/
+        TA1REC.TA1FUNC = "RETN"; /* ; term. function*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+        return;
+      end
+    end
+  end
+
+
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* ; good return from s1 above*/
+    PW0BW01.PW0BWMAX = 0; /* ; records read in counter*/
+    while (SQLCA.VAGen_SQLCODE == 0 /* ; good return within loop*/
+     && PW0BW01.PW0BWMAX <= 700) /* ; table maximum*/
+      call "IO2180" ("N1", SQLCA, PWCREC) {isNoRefresh = yes, isExternal = yes}; /* fetch next record*/
+
+      if (SQLCA.VAGen_SQLCODE == 0) /* ; good fetch*/
+        PW0BW01.PW0BWMAX = PW0BW01.PW0BWMAX + 1; /* ;*/
+        PW0BW01.TF1CARCD[PW0BWMAX] = PWCREC.TF1CARCD; /* ;*/
+        PW0BW01.PW0BWCCR = PWCREC.TF1CARCD;
+        PW0B026(); /* get carrier abbreviation*/
+        PW0BW01.TF1CARNM[PW0BWMAX] = PW0BW01.PW0BWACR;
+        set SQLCA empty;
+        PW0BW01.PKVSSPNB[PW0BWMAX] = PWCREC.PKVSSPNB;
+        PW0BW01.PWCCAVFR[PW0BWMAX] = PWCREC.PWCCAVFR;
+        PW0BW01.PWCCAVTR[PW0BWMAX] = PWCREC.PWCCAVTR;
+        PW0BW01.PWCHLDFL[PW0BWMAX] = PWCREC.PWCHLDFL;
+        PW0BW01.PW0BWCCT[PW0BWMAX] = PWCREC.ZZZCHGCT;
+      else
+        if (SQLCA.VAGen_SQLCODE == -911)
+          TA1REC.TA1FUNC = "POST"; /* ; term. function*/
+          TA1REC.TA1LOC = "SELECT NEXT";
+          TA1REC.TA1PGMNM = "PW0B022"; /* process name*/
+          TA1REC.TA1MAP = "PW0BM030"; /* map name*/
+          TA1REC.TA1DBASE = "DPICK   "; /* database name*/
+          TA1REC.TA1TBLVU = "VCARRA01"; /* table view name*/
+          call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+          converseLib.validationFailed(28); /* contention error*/
+        else
+          if (SQLCA.VAGen_SQLCODE != 100) /* ; not end of data*/
+            converseLib.validationFailed(29); /* ; indicate system error*/
+            TA1REC.TA1FUNC = "RETN"; /* ; term. function*/
+            TA1REC.TA1LOC = "SELECT NEXT";
+            TA1REC.TA1TYPE = "DB2 "; /* ; type of error*/
+            TA1REC.TA1PGMNM = "PW0B022"; /* process name*/
+            TA1REC.TA1MAP = "PW0BM030"; /* map name*/
+            TA1REC.TA1DBASE = "DPICK   "; /* database name*/
+            TA1REC.TA1TBLVU = "VCARRA01"; /* table view name*/
+            call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+            return;
+          end
+        end
+      end
+    end
+  end
+
+
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* ; good return from s1 above*/
+   && PW0BW01.PW0BWMAX > 700)  /* ; table maximum was reached*/
+    converseLib.validationFailed(24); /* overflow*/
+    PW0BW01.PW0BWFL1 = "Y"; /* table overflow flag*/
+    return;
+  end
+
+
+
+end // end PW0B022
+
+// load map page
+Function PW0B023()
+   /* ----------------------------------------------------*/
+     /* format map.....*/
+      /* pk0lwtop - location in ws. array of the top of screen*/
+      /* pk0lwndx - this keeps track of location in working*/
+                 /* storage array for moving to map*/
+      /* pk0lwnx2 - locates position in map - pk0lm030*/
+      /* pk0lwmax - end of valid data in working storage array*/
+   /* ----------------------------------------------------*/
+
+
+
+  PW0BM030.PWDNBRSS = PW0BW01.PWDNBRSS;
+  PW0BM030.PWDRJTSS = PW0BW01.PWDRJTSS;
+  PW0BM030.PWDDFPHS = PW0BW01.PWDDFPHS;
+  PW0BM030.PWDNBRSH = PW0BW01.PWDNBRSH;
+  PW0BM030.PWDMIPSH = PW0BW01.PWDMIPSH;
+  PW0BM030.PWDSMDYS = PW0BW01.PWDSMDYS;
+
+  PW0BW01.PW0BWNDX = PW0BW01.PW0BWTOP; /* hold current top of page*/
+
+  PW0BW01.PW0BWNX2 = 1; /* map display subscript*/
+
+  while (PW0BW01.PW0BWNX2 <= 11) /* only 11 displayed*/
+    if (PW0BW01.PW0BWNDX <= PW0BW01.PW0BWMAX) /* place in ws < data end*/
+      PW0BM030.TF1CARCD[PW0BWNX2] = PW0BW01.TF1CARCD[PW0BWNDX];
+      PW0BM030.TF1CARNM[PW0BWNX2] = PW0BW01.TF1CARNM[PW0BWNDX];
+      PW0BM030.PKVSSPNB[PW0BWNX2] = PW0BW01.PKVSSPNB[PW0BWNDX];
+      PW0BM030.PWCCAVFR[PW0BWNX2] = PW0BW01.PWCCAVFR[PW0BWNDX];
+      PW0BM030.PWCCAVTR[PW0BWNX2] = PW0BW01.PWCCAVTR[PW0BWNDX];
+      PW0BM030.PWCHLDFL[PW0BWNX2] = PW0BW01.PWCHLDFL[PW0BWNDX];
+    end
+    PW0BW01.PW0BWNX2 = PW0BW01.PW0BWNX2 + 1; /* set-up map subscript*/
+    PW0BW01.PW0BWNDX = PW0BW01.PW0BWNDX + 1; /* set-up place in work.stor.*/
+  end
+
+
+  set PW0BM030.PW0BMACT cursor;
+end // end PW0B023
+
+// obtain set spur whse controls
+Function PW0B024()
+   /* ----------------------------------------------------*/
+     /* load  working storage with wilsonville controls*/
+
+   /* ----------------------------------------------------*/
+
+
+  set PWDREC empty;
+  PWDREC.XWHCD = PKWREC.XWHCD;
+  PWDREC.PKURUNMD = " "; /* planned mode*/
+
+  call "IO2190" ("S ", SQLCA, PWDREC) {isNoRefresh = yes, isExternal = yes}; /* s wilsonville cntrl*/
+  if (SQLCA.VAGen_SQLCODE == 0) /* record found*/
+    PW0BW01.PWDNBRSS = PWDREC.PWDNBRSS;
+    PW0BW01.PWDRJTSS = PWDREC.PWDRJTSS;
+    PW0BW01.PWDDFPHS = PWDREC.PWDDFPHS;
+    PW0BW01.PWDNBRSH = PWDREC.PWDNBRSH;
+    PW0BW01.PWDMIPSH = PWDREC.PWDMIPSH;
+    PW0BW01.PWDSMDYS = PWDREC.PWDSMDYS;
+    PW0BW01.PW0BWDCT = PWDREC.ZZZCHGCT;
+    PW0BW01.PW0BWDWH = PWDREC.XWHCD;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* no records found*/
+      /* next sentence*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        TA1REC.TA1FUNC = "POST"; /* ; term. function*/
+        TA1REC.TA1TYPE = "DB2 "; /* ; type of error*/
+        TA1REC.TA1PGMNM = "PW0B024"; /* process name*/
+        TA1REC.TA1MAP = "PW0BM030"; /* map name*/
+        TA1REC.TA1DBASE = "DPICK   "; /* database name*/
+        TA1REC.TA1LOC = "SELECT SET                  ";
+        TA1REC.TA1TBLVU = "VWVCTL01"; /* table view name*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+        converseLib.validationFailed(28); /* contention error*/
+      else
+        TA1REC.TA1TYPE = "DB2 "; /* ; type of error*/
+        TA1REC.TA1PGMNM = "PW0B024"; /* process name*/
+        TA1REC.TA1MAP = "PW0BM030"; /* map name*/
+        TA1REC.TA1DBASE = "DPICK   "; /* database name*/
+        TA1REC.TA1LOC = "SELECT SET                  ";
+        TA1REC.TA1TBLVU = "VWVCTL01"; /* table view name*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+        converseLib.validationFailed(29); /* fatal error*/
+        return;
+      end
+    end
+  end
+
+end // end PW0B024
+
+// get carrier description
+Function PW0B026()
+   /* ---------------  pw0a026   ---------------------------------*/
+   /* ----- get carrier description*/
+
+
+  PW0BM030.XXXERRID = "PW0B026";
+
+
+
+
+
+  set TF1REC empty;
+  TF1REC.TF1CARCD = PW0BW01.PW0BWCCR;
+
+  call "IO0860" ("S ", SQLCA, TF1REC) {isNoRefresh = yes, isExternal = yes}; /* select unique on*/
+                                 /* traffic carrier table*/
+  if (SQLCA.VAGen_SQLCODE == 0) /* 1 row was found*/
+    PW0BW01.PW0BWACR = TF1REC.TF1CARNM;
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(28); /* contention for data base resorce*/
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        PW0BW01.PW0BWACR = "UNKNOWN ";
+      else
+        converseLib.validationFailed(29); /* fatal error*/
+        TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+        TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+        TA1REC.TA1PGMNM = "PW0B026 "; /* Process name*/
+        TA1REC.TA1LOC = "SELECT UNIQUE            ";
+        TA1REC.TA1MAP = "PW0BM030"; /* Map name*/
+        TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+        TA1REC.TA1TBLVU = "VCARR001"; /* Table view name*/
+        COMMAREA.CAFROMAP = "PW0B";
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+      end
+    end
+  end
+
+
+
+
+
+
+
+
+   /* -------------  end process pw0b026  --------------------*/
+end // end PW0B026
+
+// converse map
+Function PW0B030()
+
+
+  converse PW0BM030 ;
+end // end PW0B030
+
+// validate pf keys
+Function PW0B040()
+
+  converseLib.validationFailed(0); /* reset error message field*/
+
+
+
+   /* ------------------------------------------------------------*/
+   /* stop indiscriminate button pressing......*/
+   /* ------------------------------------------------------------*/
+  if (converseVar.eventKey is pf3  /* send to select menu- pk07*/
+   || converseVar.eventKey is pf16 /* pk0z 'sp&p inq' transfer*/
+   || converseVar.eventKey is pf19 /* pk0s 'plan' transfer*/
+   || converseVar.eventKey is pf20) /* pk0a 'pick' transfer*/
+
+    PW0B041(); /* Transfer to another application*/
+
+  else
+
+    if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+      XSPF1(); /* Exit to the HELP facility*/
+
+      PW0BM030.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+      exit stack; /* Exit to redisplay map*/
+    end
+
+
+    if (converseVar.eventKey is pf4) /* PF4 was pressed*/
+      XSPF4(); /* Exit to system main menu*/
+
+      PW0BM030.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+      exit stack; /* Exit to redisplay map*/
+    end
+
+    if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+      PW0BW01.PW0BWUPD = "Y"; /* flag for reloading map*/
+      exit stack;
+    end
+
+    if (converseVar.eventKey is pf7  /* scroll backwards*/
+     || converseVar.eventKey is pf8  /* scroll forward*/
+     || converseVar.eventKey is pf12 /* test the water for errors*/
+     || converseVar.eventKey is enter) /* enter..*/
+       /* their choice of buttons was valid*/
+    else
+      converseLib.validationFailed(12); /* invalid pk key..*/
+
+    end
+  end
+
+
+
+end // end PW0B040
+
+// Exit to another application
+Function PW0B041()
+   /* ------------------------------------------------------------*/
+   /* Set the "TO" application according to the PF key pressed.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf3) /* ; PF3 was pressed*/
+
+   /* ============= temp chng until 5/15/92 ======================*/
+   /*  */
+   /* Allow whse 2 to return to pw0v from 4/24/92 until sept.*/
+   /* ------------------------------------------------------------*/
+    if (PW0BM030.XWHCD == "02")
+
+      COMMAREA.CATOAP = "PW0V";
+    else
+      COMMAREA.CATOAP = "PK07"; /* select menu*/
+    end
+  end
+
+  if (converseVar.eventKey is pf16) /* ; PF16 was pressed*/
+    COMMAREA.CATOAP = "PK0Z"; /* sales program & product inq*/
+  end
+
+  if (converseVar.eventKey is pf19) /* ; PF19 was pressed*/
+    COMMAREA.CATOAP = "PK0S"; /* planning Menu*/
+  end
+
+  if (converseVar.eventKey is pf20) /* ; PF20 was pressed*/
+    COMMAREA.CATOAP = "PK0A"; /* Master Menu*/
+  end
+
+  PKWREC.XWHCD = PW0BM030.XWHCD; /* Save in work area*/
+
+  PKWREC.PKWINDEX = 0;
+  PKWREC.PKWCNTRL = " ";
+  PKWREC.PKWFRMDT = 0;
+  PKWREC.PKWTODT = 0;
+  COMMAREA.CAUSERA = PKWREC.PKWGRPLV; /* COMMAREA user area*/
+  COMMAREA.CAFROMAP = "PW0A"; /* COMMAREA from application*/
+
+  XSEXIT(); /* Invoke selected application*/
+
+  PW0BM030.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+
+  exit stack; /* ; Exit to redisplay map*/
+
+
+
+end // end PW0B041
+
+// Execute FAST PATH request
+Function PW0B045()
+   /* ------------------------------------------------------------*/
+   /* Transfer to requested application via FAST PATH.*/
+   /* If transfer failed, display returned error message.*/
+   /* ------------------------------------------------------------*/
+
+
+
+  if (PW0BM030.CATOAP is modified)
+    if (PW0BM030.CATOAP == COMMAREA.CACURRAP) /* TO appl. same as current*/
+
+      set PW0BM030.CATOAP cursor, bold; /* Highlight TO application*/
+      converseLib.validationFailed(1); /* Indicate invalid request*/
+      PW0BM030.XXXERRID = "PW0A045 "; /* Process name*/
+
+      return; /* Return to previous process*/
+
+    end
+
+    PKWREC.XWHCD = PW0BM030.XWHCD; /* Warehouse code*/
+
+    COMMAREA.CATOAP = PW0BM030.CATOAP; /* TO application*/
+    COMMAREA.CAITEM = PW0BM030.PW0BMOPT; /* Application data*/
+
+    PKWREC.XWHCD = PW0BM030.XWHCD; /* Save in work area*/
+    PKWREC.PKWINDEX = 0;
+    PKWREC.PKWCNTRL = " ";
+    PKWREC.PKWFRMAP = "PW0A"; /* pkwrec from application*/
+    COMMAREA.CAUSERA = PKWREC.PKWGRPLV; /* COMMAREA user area*/
+    COMMAREA.CAFROMAP = "PW0A"; /* COMMAREA from application*/
+
+    XSEXIT(); /* Transfer to requested application*/
+
+    set PW0BM030.CATOAP cursor, modified, bold; /* Highlight to application*/
+    PW0BM030.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    converseLib.validationFailed(1); /* Indicate invalid request*/
+    PW0BM030.XXXERRID = "PW0A045 "; /* Process name*/
+  end
+
+
+
+
+
+end // end PW0B045
+
+// validate inputs
+Function PW0B050()
+
+    /* ---------------------------------------------*/
+   /* -  - start validation of input data      -  -*/
+    /* ---------------------------------------------*/
+
+
+  PW0BW01.PW0BWED1 = "N"; /* reset carrier avail mod fl*/
+  PW0BW01.PW0BWED2 = "N"; /* reset spur whse cntrl mod fl*/
+
+
+  PW0B051(); /* reset mdt's*/
+
+  if (PW0BW01.PW0BWED2 == "Y") /* spur whse cntrl items modified*/
+    PW0B053();
+  end
+
+
+  if (converseVar.validationMsgNum == 0) /* no errors from pw0a051*/
+
+    if (PW0BW01.PW0BWED1 == "Y" /* carrier avail mod fl*/
+     || PW0BW01.PW0BWED2 == "Y") /* spur whse cntrl mod fl*/
+      if (PW0BM030.XWHCD != PKWREC.XWHCD) /* change in warehouse*/
+        PW0BM030.XWHCD = PKWREC.XWHCD; /* restore warehouse*/
+        set PW0BM030.XWHCD cursor, modified, bold;
+        converseLib.validationFailed(23); /* can not modify & change warehouse*/
+      else
+        if (converseVar.eventKey is enter /* ;*/
+         || converseVar.eventKey is pf12) /* ;*/
+          PW0B057(); /* edit entered data*/
+        else
+          if (converseVar.eventKey is pf7 /* scroll requested*/
+           || converseVar.eventKey is pf8) /* scroll requested*/
+            converseLib.validationFailed(39); /* can not edit screen & scroll*/
+            return; /* return to pk0l010*/
+          end
+        end
+      end
+    else
+      if (converseVar.eventKey is pf7 /* scroll requested*/
+       || converseVar.eventKey is pf8) /* scroll requested*/
+        exit stack; /* bypass processing- format screen*/
+      end
+    end
+  end
+
+
+
+end // end PW0B050
+
+// reset mdt's
+Function PW0B051()
+
+     /* --------------------------------------------------*/
+     /* -   - reset mdt's to fields actually modified -  -*/
+     /* --------------------------------------------------*/
+
+
+
+  PW0BW01.PW0BWNX2 = 11;
+  while (PW0BW01.PW0BWNX2 >= 1)
+    PW0BW01.PW0BWNDX = PW0BW01.PW0BWTOP + PW0BW01.PW0BWNX2 - 1;
+
+
+     /* **********************************************/
+     /* * field by field test for changes           **/
+     /* **********************************************/
+    if (PW0BM030.TF1CARCD[PW0BWNX2] != PW0BW01.TF1CARCD[PW0BWNDX])
+      set PW0BM030.TF1CARCD[PW0BWNX2] modified;
+      PW0BW01.PW0BWED1 = "Y"; /* carrier modified flag*/
+    else
+      set PW0BM030.TF1CARCD[PW0BWNX2] initialAttributes;
+    end
+
+
+    if (PW0BM030.PWCCAVFR[PW0BWNX2] != PW0BW01.PWCCAVFR[PW0BWNDX]
+     || PW0BM030.PWCCAVFR[PW0BWNX2] is modified)
+      set PW0BM030.PWCCAVFR[PW0BWNX2] modified;
+      PW0BW01.PW0BWED1 = "Y"; /* carrier modified flag*/
+    else
+      set PW0BM030.PWCCAVFR[PW0BWNX2] initialAttributes;
+    end
+
+
+
+    if (PW0BM030.PWCCAVTR[PW0BWNX2] != PW0BW01.PWCCAVTR[PW0BWNDX]
+     || PW0BM030.PWCCAVTR[PW0BWNX2] is modified)
+      set PW0BM030.PWCCAVTR[PW0BWNX2] modified;
+      PW0BW01.PW0BWED1 = "Y"; /* carrier modified flag*/
+    else
+      set PW0BM030.PWCCAVTR[PW0BWNX2] initialAttributes;
+    end
+
+    if (PW0BM030.PKVSSPNB[PW0BWNX2] != PW0BW01.PKVSSPNB[PW0BWNDX]
+     || PW0BM030.PKVSSPNB[PW0BWNX2] is modified)
+      set PW0BM030.PKVSSPNB[PW0BWNX2] modified;
+      PW0BW01.PW0BWED1 = "Y"; /* carrier modified flag*/
+    else
+      set PW0BM030.PKVSSPNB[PW0BWNX2] initialAttributes;
+    end
+
+
+    if (PW0BM030.PWCHLDFL[PW0BWNX2] != PW0BW01.PWCHLDFL[PW0BWNDX]
+     || PW0BM030.PWCHLDFL[PW0BWNX2] is modified)
+      set PW0BM030.PWCHLDFL[PW0BWNX2] modified;
+      PW0BW01.PW0BWED1 = "Y"; /* carrier modified flag*/
+    else
+      set PW0BM030.PWCHLDFL[PW0BWNX2] initialAttributes;
+    end
+
+    if (PW0BM030.PW0BMACT[PW0BWNX2] != " "
+     || PW0BM030.PW0BMACT[PW0BWNX2] is modified)
+      set PW0BM030.PW0BMACT[PW0BWNX2] modified;
+      PW0BW01.PW0BWED1 = "Y"; /* carrier modified flag*/
+    else
+      set PW0BM030.PW0BMACT[PW0BWNX2] initialAttributes;
+    end
+
+
+    PW0BW01.PW0BWNX2 = PW0BW01.PW0BWNX2 - 1;
+  end
+
+
+
+
+
+  if (PW0BM030.PWDNBRSS != PW0BW01.PWDNBRSS
+   || PW0BM030.PWDNBRSS is modified)
+    set PW0BM030.PWDNBRSS modified;
+    PW0BW01.PW0BWED2 = "Y"; /* wilsonville cntrl mod. fl*/
+  else
+    set PW0BM030.PWDNBRSS initialAttributes;
+  end
+
+
+
+
+
+  if (PW0BM030.PWDRJTSS != PW0BW01.PWDRJTSS
+   || PW0BM030.PWDRJTSS is modified)
+    set PW0BM030.PWDRJTSS modified;
+    PW0BW01.PW0BWED2 = "Y"; /* wilsonville cntrl mod. fl*/
+  else
+    set PW0BM030.PWDRJTSS initialAttributes;
+  end
+
+  if (PW0BM030.PWDDFPHS != PW0BW01.PWDDFPHS
+   || PW0BM030.PWDDFPHS is modified)
+    set PW0BM030.PWDDFPHS modified;
+    PW0BW01.PW0BWED2 = "Y"; /* wilsonville cntrl mod. fl*/
+  else
+    set PW0BM030.PWDDFPHS initialAttributes;
+  end
+
+
+  if (PW0BM030.PWDNBRSH != PW0BW01.PWDNBRSH
+   || PW0BM030.PWDNBRSH is modified)
+    set PW0BM030.PWDNBRSH modified;
+    PW0BW01.PW0BWED2 = "Y"; /* wilsonville cntrl mod. fl*/
+  else
+    set PW0BM030.PWDNBRSH initialAttributes;
+  end
+
+
+  if (PW0BM030.PWDMIPSH != PW0BW01.PWDMIPSH
+   || PW0BM030.PWDMIPSH is modified)
+    set PW0BM030.PWDMIPSH modified;
+    PW0BW01.PW0BWED2 = "Y"; /* wilsonville cntrl mod. fl*/
+  else
+    set PW0BM030.PWDMIPSH initialAttributes;
+  end
+
+
+  if (PW0BM030.PWDSMDYS != PW0BW01.PWDSMDYS
+   || PW0BM030.PWDSMDYS is modified)
+    set PW0BM030.PWDSMDYS modified;
+    PW0BW01.PW0BWED2 = "Y"; /* wilsonville cntrl mod. fl*/
+  else
+    set PW0BM030.PWDSMDYS initialAttributes;
+  end
+
+
+  if (PW0BM030.CATOAP is modified
+   || PW0BM030.CATOAP != " ")
+    set PW0BM030.CATOAP modified;
+  end
+
+
+end // end PW0B051
+
+// edit spur whse cntrl items
+Function PW0B053()
+
+       /* ------------------------------------------*/
+       /* -  edit spur warehouse control table items*/
+       /* ------------------------------------------*/
+
+
+
+   /* ----- if no record was initially read in,*/
+   /* -----    it's an error.*/
+
+  if (PW0BW01.PW0BWDWH == "  ")
+    PW0BM030.PWDNBRSS = PW0BW01.PWDNBRSS;
+    PW0BM030.PWDRJTSS = PW0BW01.PWDRJTSS;
+    PW0BM030.PWDDFPHS = PW0BW01.PWDDFPHS;
+    PW0BM030.PWDNBRSH = PW0BW01.PWDNBRSH;
+    PW0BM030.PWDMIPSH = PW0BW01.PWDMIPSH;
+    set PW0BM030.PWDNBRSS normal;
+    set PW0BM030.PWDRJTSS normal;
+    set PW0BM030.PWDDFPHS normal;
+    set PW0BM030.PWDNBRSH normal;
+    set PW0BM030.PWDMIPSH normal;
+    converseLib.validationFailed(264); /* no wilsonville control record found*/
+    return;
+  end
+
+
+  if (PW0BM030.PWDRJTSS is modified) /* reject spur*/
+    if (PW0BM030.PWDRJTSS == PW0BM030.PWDDFPHS)
+      set PW0BM030.PWDRJTSS cursor, modified, bold;
+      converseLib.validationFailed(254); /* warning: reject spur equals pack & hold spur*/
+    end
+  end
+
+
+  if (PW0BM030.PWDDFPHS is modified) /* default pack & hold spur*/
+    if (PW0BM030.PWDDFPHS == PW0BM030.PWDRJTSS)
+      set PW0BM030.PWDDFPHS cursor, modified, bold;
+      converseLib.validationFailed(254); /* warning: pack & hold spur equals reject spur*/
+    end
+  end
+
+
+  if (PW0BM030.PWDSMDYS >= 1 /* Same day not less than 1*/
+   && PW0BM030.PWDSMDYS < 99) /* and same day less than 99*/
+
+    if (PKDREC.PKDNSSCH < PW0BW01.PWDSMDYS) /* Schedule roll over*/
+
+      if (PW0BM030.PWDSMDYS >= PW0BW01.PWDSMDYS /* Not less than same day*/
+       || PW0BM030.PWDSMDYS < PKDREC.PKDNSSCH)  /* and less than next*/
+
+        /* Next sentence*/
+
+      else
+
+        set PW0BM030.PWDSMDYS cursor, modified, bold; /* Highlight*/
+        converseLib.validationFailed(268); /* Indicate same day schedule invalid*/
+
+      end
+
+    else
+
+      if (PW0BM030.PWDSMDYS < PW0BW01.PWDSMDYS /* Less than same day*/
+       || PW0BM030.PWDSMDYS >= PKDREC.PKDNSSCH) /* or not less than next*/
+
+        set PW0BM030.PWDSMDYS cursor, modified, bold; /* Highlight*/
+        converseLib.validationFailed(268); /* Indicate same day schedule invalid*/
+
+      end
+
+    end
+
+  else
+
+    set PW0BM030.PWDSMDYS cursor, modified, bold; /* Highlight*/
+    converseLib.validationFailed(268); /* Indicate same day schedule invalid*/
+
+  end
+
+
+
+  if (PW0BM030.PWDRJTSS is modified)
+    PW0BW01.PW0BWSPR = PW0BM030.PWDRJTSS;
+    PW0BW01.PW0BWFL2 = "N"; /* spur had errors flag*/
+    PW0B054(); /* validate spur*/
+    if (PW0BW01.PW0BWFL2 == "Y") /* spur had errors flag*/
+      set PW0BM030.PWDRJTSS cursor, modified, bold;
+      converseLib.validationFailed(267); /* reject spur invalid*/
+    end
+
+
+    PW0BW01.PW0BWNX2 = 11;
+    while (PW0BW01.PW0BWNX2 >= 1)
+
+      if (PW0BM030.PKVSSPNB[PW0BWNX2] == PW0BM030.PWDRJTSS)
+        set PW0BM030.PWDRJTSS cursor, modified, bold;
+        converseLib.validationFailed(267); /* reject spur invalid*/
+      end
+      PW0BW01.PW0BWNX2 = PW0BW01.PW0BWNX2 - 1;
+    end
+
+    PW0BW01.PW0BWNDX = 1;
+    while (PW0BW01.PW0BWNDX <= PW0BW01.PW0BWMAX)
+
+      if (PW0BW01.PKVSSPNB[PW0BWNDX] == PW0BM030.PWDRJTSS)
+        set PW0BM030.PWDRJTSS cursor, modified, bold;
+        converseLib.validationFailed(267); /* reject spur invalid*/
+      end
+      PW0BW01.PW0BWNDX = PW0BW01.PW0BWNDX + 1;
+    end
+
+  end
+
+
+
+
+
+
+
+  if (PW0BM030.PWDMIPSH is modified
+   && PW0BM030.PWDMIPSH <= 0)
+    set PW0BM030.PWDMIPSH cursor, modified, bold;
+    converseLib.validationFailed(252); /* minutes per schedule invalid*/
+  end
+
+
+
+
+
+  if (PW0BM030.PWDDFPHS is modified)
+    PW0BW01.PW0BWSPR = PW0BM030.PWDDFPHS;
+    PW0BW01.PW0BWFL2 = "N"; /* spur had errors flag*/
+    PW0B054(); /* validate spur*/
+    if (PW0BW01.PW0BWFL2 == "Y") /* spur had errors flag*/
+      set PW0BM030.PWDDFPHS cursor, modified, bold;
+      converseLib.validationFailed(265); /* default pack & hold spur invalid*/
+    end
+  end
+
+
+
+
+  PW0BW01.PW0BWNX2 = 11;
+  while (PW0BW01.PW0BWNX2 >= 1)
+
+    if (PW0BM030.PKVSSPNB[PW0BWNX2] == PW0BM030.PWDDFPHS)
+      set PW0BM030.PWDDFPHS cursor, modified, bold;
+      converseLib.validationFailed(265); /* default pack & hold spur invalid*/
+    end
+    PW0BW01.PW0BWNX2 = PW0BW01.PW0BWNX2 - 1;
+  end
+
+  PW0BW01.PW0BWNDX = 1;
+  while (PW0BW01.PW0BWNDX <= PW0BW01.PW0BWMAX)
+
+    if (PW0BW01.PKVSSPNB[PW0BWNDX] == PW0BM030.PWDDFPHS)
+      set PW0BM030.PWDDFPHS cursor, modified, bold;
+      converseLib.validationFailed(265); /* default pack & hold spur invalid*/
+    end
+    PW0BW01.PW0BWNDX = PW0BW01.PW0BWNDX + 1;
+  end
+
+
+
+
+
+
+
+  if (PW0BM030.PWDNBRSH is modified
+   && PW0BM030.PWDNBRSH <= 0)
+    set PW0BM030.PWDNBRSH cursor, modified, bold;
+    converseLib.validationFailed(251); /* number of schedules invalid*/
+  end
+
+
+  PW0BW01.PW0BWNX2 = 11;
+  while (PW0BW01.PW0BWNX2 >= 1)
+
+    if (PW0BM030.PWCCAVFR[PW0BWNX2] > PW0BM030.PWDNBRSH)
+      set PW0BM030.PWDNBRSH cursor, modified, bold;
+      converseLib.validationFailed(251); /* number of schedules invalid*/
+    end
+
+    if (PW0BM030.PWCCAVTR[PW0BWNX2] > PW0BM030.PWDNBRSH)
+      set PW0BM030.PWDNBRSH cursor, modified, bold;
+      converseLib.validationFailed(251); /* number of schedules invalid*/
+    end
+    PW0BW01.PW0BWNX2 = PW0BW01.PW0BWNX2 - 1;
+  end
+
+  PW0BW01.PW0BWNDX = 1;
+  while (PW0BW01.PW0BWNDX <= PW0BW01.PW0BWMAX)
+
+    if (PW0BW01.PWCCAVFR[PW0BWNDX] > PW0BM030.PWDNBRSH)
+      set PW0BM030.PWDNBRSH cursor, modified, bold;
+      converseLib.validationFailed(251); /* number of schedules invalid*/
+    end
+
+    if (PW0BW01.PWCCAVTR[PW0BWNDX] > PW0BM030.PWDNBRSH)
+      set PW0BM030.PWDNBRSH cursor, modified, bold;
+      converseLib.validationFailed(251); /* number of schedules invalid*/
+    end
+    PW0BW01.PW0BWNDX = PW0BW01.PW0BWNDX + 1;
+  end
+
+
+
+
+
+
+
+
+
+  if (PW0BM030.PWDNBRSS is modified
+   && PW0BM030.PWDNBRSS <= 0)
+    set PW0BM030.PWDNBRSS cursor, modified, bold;
+    converseLib.validationFailed(253); /* number of spurs invalid*/
+  end
+
+
+end // end PW0B053
+
+// edit spur number
+Function PW0B054()
+
+       /* --------------------------------------*/
+       /* -  edit spur number*/
+       /* --------------------------------------*/
+
+
+
+
+  if (PW0BW01.PW0BWSPR < 1
+   || PW0BW01.PW0BWSPR > 99)
+    PW0BW01.PW0BWFL2 = "Y";
+  end
+
+
+end // end PW0B054
+
+// edit map line
+Function PW0B057()
+   /* ------------------------------------------------------*/
+   /* * edit map lines from the bottom up*/
+       /* * pk0lwnx2 - position on map display*/
+       /* * pk0lwndx - position of same data within ws. array*/
+       /* * pk0lwtop - position in ws. array of record*/
+                    /* at the top of the screen.*/
+   /* ------------------------------------------------------*/
+
+
+  PW0BW01.PW0BWNX2 = 11;
+  while (PW0BW01.PW0BWNX2 >= 1)
+    if (PW0BM030.TF1CARCD[PW0BWNX2] is modified
+     || PW0BM030.PWCCAVFR[PW0BWNX2] is modified
+     || PW0BM030.PWCCAVTR[PW0BWNX2] is modified
+     || PW0BM030.PKVSSPNB[PW0BWNX2] is modified
+     || PW0BM030.PWCHLDFL[PW0BWNX2] is modified
+     || PW0BM030.PW0BMACT[PW0BWNX2] is modified)
+
+         /* ***** find position of this record in w.s. array ****/
+
+      PW0BW01.PW0BWNDX = PW0BW01.PW0BWTOP + PW0BW01.PW0BWNX2 - 1;
+
+      PW0B058(); /* edit line*/
+
+    end
+
+    PW0BW01.PW0BWNX2 = PW0BW01.PW0BWNX2 - 1;
+  end
+
+
+
+
+
+end // end PW0B057
+
+// edit entered fields
+Function PW0B058()
+
+       /* --------------------------------------*/
+       /* -  edit line items                   -*/
+       /* --------------------------------------*/
+
+   /* -----  on an add or change*/
+   /* -----      verify that pack & hold only flag is correct*/
+   /* -----      (defaults to 'n')*/
+  if (PW0BM030.PW0BMACT[PW0BWNX2] == "A"
+   || PW0BM030.PW0BMACT[PW0BWNX2] == "C")
+    if (PW0BM030.PWCHLDFL[PW0BWNX2] != "Y"
+     && PW0BM030.PWCHLDFL[PW0BWNX2] != "N")
+      if (PW0BM030.PWCHLDFL[PW0BWNX2] == " ")
+        PW0BM030.PWCHLDFL[PW0BWNX2] = "N";
+      else
+        set PW0BM030.PWCHLDFL[PW0BWNX2] cursor, modified, bold;
+        converseLib.validationFailed(255);
+      end
+    end
+  end
+
+
+
+
+
+   /* -----  on an add or change*/
+   /* -----      verify availibale thru*/
+  if (converseVar.validationMsgNum == 0)
+    if (PW0BM030.PW0BMACT[PW0BWNX2] == "A"
+     || PW0BM030.PW0BMACT[PW0BWNX2] == "C")
+      if (PW0BM030.PWCCAVTR[PW0BWNX2] < 1
+       || PW0BM030.PWCCAVTR[PW0BWNX2] < PW0BM030.PWCCAVFR[PW0BWNX2]
+       || PW0BM030.PWCCAVTR[PW0BWNX2] > PW0BM030.PWDNBRSH)
+        set PW0BM030.PWCCAVTR[PW0BWNX2] cursor, modified, bold;
+        converseLib.validationFailed(261); /* invalid*/
+      end
+    end
+  end
+
+
+
+
+
+
+
+   /* -----  on an add or change*/
+   /* -----      verify availibale from*/
+  if (converseVar.validationMsgNum == 0)
+    if (PW0BM030.PW0BMACT[PW0BWNX2] == "A"
+     || PW0BM030.PW0BMACT[PW0BWNX2] == "C")
+      if (PW0BM030.PWCCAVFR[PW0BWNX2] < 1
+       || PW0BM030.PWCCAVFR[PW0BWNX2] > PW0BM030.PWDNBRSH)
+        set PW0BM030.PWCCAVFR[PW0BWNX2] cursor, modified, bold;
+        converseLib.validationFailed(260); /* invalid*/
+      end
+    end
+  end
+
+
+
+
+
+
+   /* -----  on an add or change*/
+   /* -----      check for valid carrier (get description)*/
+  if (converseVar.validationMsgNum == 0)
+    if (PW0BM030.PW0BMACT[PW0BWNX2] == "A"
+     || PW0BM030.PW0BMACT[PW0BWNX2] == "C")
+      PW0BW01.PW0BWCCR = PW0BM030.TF1CARCD[PW0BWNX2];
+      PW0B026(); /* get carrier abbreviation*/
+      if (SQLCA.VAGen_SQLCODE == 0) /* a row not found*/
+        PW0BM030.TF1CARNM[PW0BWNX2] = PW0BW01.PW0BWACR;
+        if (PW0BM030.XWHCD != TF1REC.XWHCD[1]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[2]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[3]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[4]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[5]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[6]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[7]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[8]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[9]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[10]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[11]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[12]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[13]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[14]
+         && PW0BM030.XWHCD != TF1REC.XWHCD[15])
+          set PW0BM030.TF1CARCD[PW0BWNX2] cursor, modified, bold;
+          converseLib.validationFailed(149);
+        end
+      end
+      if (SQLCA.VAGen_SQLCODE != 0) /* a row was not found*/
+        set PW0BM030.TF1CARCD[PW0BWNX2] cursor, modified, bold;
+        converseLib.validationFailed(77);
+      end
+    end
+  end
+
+
+
+
+
+
+
+
+   /* -----  on an add or change*/
+   /* -----      verify spur*/
+  if (converseVar.validationMsgNum == 0)
+    if (PW0BM030.PW0BMACT[PW0BWNX2] == "A"
+     || PW0BM030.PW0BMACT[PW0BWNX2] == "C")
+      if (PW0BM030.PKVSSPNB[PW0BWNX2] is modified)
+        PW0BW01.PW0BWSPR = PW0BM030.PKVSSPNB[PW0BWNX2];
+        PW0BW01.PW0BWFL2 = "N"; /* spur had errors flag*/
+        PW0B054(); /* validate spur*/
+        if (PW0BW01.PW0BWFL2 == "Y") /* spur had errors flag*/
+          set PW0BM030.PKVSSPNB[PW0BWNX2] cursor, modified, bold;
+          converseLib.validationFailed(250); /* invalid spur*/
+        end
+        if (PW0BM030.PKVSSPNB[PW0BWNX2] == PW0BM030.PWDDFPHS
+         || PW0BM030.PKVSSPNB[PW0BWNX2] == PW0BM030.PWDRJTSS
+         || PW0BM030.PKVSSPNB[PW0BWNX2] > PW0BM030.PWDNBRSS)
+          set PW0BM030.PKVSSPNB[PW0BWNX2] cursor, modified, bold;
+          converseLib.validationFailed(250); /* invalid spur*/
+        end
+      end
+    end
+  end
+
+
+
+
+   /* -----  on an add or change*/
+   /* -----      check for duplicates*/
+  if (converseVar.validationMsgNum == 0)
+    if (PW0BM030.PW0BMACT[PW0BWNX2] == "A"
+     || PW0BM030.PW0BMACT[PW0BWNX2] == "C")
+      PW0B059(); /* check for duplicates*/
+    end
+  end
+
+
+
+
+
+   /* -----  verify action field*/
+  if (converseVar.validationMsgNum == 0)
+    if (PW0BM030.PW0BMACT[PW0BWNX2] == "A"
+     || PW0BM030.PW0BMACT[PW0BWNX2] == "C"
+     || PW0BM030.PW0BMACT[PW0BWNX2] == "D"
+     || PW0BM030.PW0BMACT[PW0BWNX2] == " ")
+      /* next sentence*/
+    else
+      set PW0BM030.PW0BMACT[PW0BWNX2] cursor, modified, bold;
+      converseLib.validationFailed(35);
+    end
+  end
+
+
+
+
+   /* -----  if fields have changed*/
+   /* -----  and action field is not equal to add or change*/
+   /* -----      it's an error.*/
+  if (converseVar.validationMsgNum == 0)
+    if (PW0BM030.PWCCAVFR[PW0BWNX2] is modified
+     || PW0BM030.PWCCAVTR[PW0BWNX2] is modified
+     || PW0BM030.PKVSSPNB[PW0BWNX2] is modified
+     || PW0BM030.PWCHLDFL[PW0BWNX2] is modified
+     || PW0BM030.TF1CARCD[PW0BWNX2] is modified)
+      if (PW0BM030.PW0BMACT[PW0BWNX2] != "A"
+       && PW0BM030.PW0BMACT[PW0BWNX2] != "C")
+        PW0BM030.PWCCAVFR[PW0BWNX2] = PW0BW01.PWCCAVFR[PW0BWNDX];
+        PW0BM030.PWCCAVTR[PW0BWNX2] = PW0BW01.PWCCAVTR[PW0BWNDX];
+        PW0BM030.PKVSSPNB[PW0BWNX2] = PW0BW01.PKVSSPNB[PW0BWNDX];
+        PW0BM030.PWCHLDFL[PW0BWNX2] = PW0BW01.PWCHLDFL[PW0BWNDX];
+        PW0BM030.TF1CARCD[PW0BWNX2] = PW0BW01.TF1CARCD[PW0BWNDX];
+        set PW0BM030.PWCCAVFR[PW0BWNX2] normal;
+        set PW0BM030.PWCCAVTR[PW0BWNX2] normal;
+        set PW0BM030.PKVSSPNB[PW0BWNX2] normal;
+        set PW0BM030.PWCHLDFL[PW0BWNX2] normal;
+        set PW0BM030.TF1CARCD[PW0BWNX2] normal;
+        set PW0BM030.PW0BMACT[PW0BWNX2] cursor, modified, bold;
+        converseLib.validationFailed(43); /* fields modified, action field for*/
+                                   /* add/change req*/
+
+
+      end
+    end
+  end
+
+
+
+
+
+
+
+
+end // end PW0B058
+
+// check for duplicates
+Function PW0B059()
+
+       /* --------------------------------------*/
+       /* -       check for duplicates         -*/
+       /* --------------------------------------*/
+
+
+
+
+
+
+   /* ----- pw0bwnx2 is index for added or changed record*/
+   /* -----   values 1 to 11*/
+   /* ----- pw0bwnx3 is index for existing records*/
+   /* -----   values 1 to end*/
+   /* ----- pw0bwndx is index for existing records*/
+   /* -----   values 1 to end*/
+
+
+   /* ----- if record added or changed has spur, carrier*/
+   /* ----- and schedule available range 'from & thru'*/
+   /* ----- that duplicate other records that exist*/
+   /* ----- (on any page), it is an error*/
+
+
+  PW0BW01.PW0BWNX3 = 1;
+  while (PW0BW01.PW0BWNX3 <= PW0BW01.PW0BWMAX)
+    PW0BW01.PW0BWFLG = "N"; /* check schedule available range*/
+    PW0BW01.PW0BWEMF = "N"; /* error message flag*/
+
+
+     /* ----- check if record added or changed*/
+     /* ----- duplicates an existing record*/
+
+
+    if (PW0BW01.PW0BWNX3 == PW0BW01.PW0BWNDX
+     && PW0BM030.PW0BMACT[PW0BWNX2] == "C")
+       /* dont want to look at self when changing info*/
+    else
+      if (PW0BM030.TF1CARCD[PW0BWNX2] == PW0BW01.TF1CARCD[PW0BWNX3])
+        if (PW0BM030.PWCHLDFL[PW0BWNX2] == PW0BW01.PWCHLDFL[PW0BWNX3])
+          if (PW0BM030.PKVSSPNB[PW0BWNX2] == PW0BW01.PKVSSPNB[PW0BWNX3])
+            if (PW0BM030.PWCCAVFR[PW0BWNX2] == PW0BW01.PWCCAVFR[PW0BWNX3]
+             && PW0BM030.PWCCAVTR[PW0BWNX2] == PW0BW01.PWCCAVTR[PW0BWNX3])
+              PW0BW01.PW0BWEMF = "Y"; /* error message flag*/
+              converseLib.validationFailed(263);
+               /* record added or changed already exists*/
+            else
+              PW0BW01.PW0BWFLG = "Y";
+               /* check schedule available range*/
+            end
+          else /* new spur number not equal existing spur number*/
+            PW0BW01.PW0BWFLG = "Y"; /* check schedule available range*/
+          end
+        end
+      end
+
+
+       /* ----- check if schedule available 'from & thru'*/
+       /* ----- falls within the range of an existing record*/
+
+      if (PW0BW01.PW0BWFLG == "Y") /* check schedule available range*/
+
+          /* ; check schedule range (from)*/
+
+        PW0BW01.PW0BWHLD = PW0BW01.PWCCAVFR[PW0BWNX3];
+        while (PW0BW01.PW0BWHLD <= PW0BW01.PWCCAVTR[PW0BWNX3])
+          if (PW0BW01.PW0BWHLD == PW0BM030.PWCCAVFR[PW0BWNX2])
+            PW0BW01.PW0BWHLD = PW0BW01.PWCCAVTR[PW0BWNX3];
+            PW0BW01.PW0BWEMF = "Y"; /* error message flag*/
+            converseLib.validationFailed(282); /* record exists within schedule range*/
+                                   /* ; for carrier & spur, reenter*/
+          end
+          PW0BW01.PW0BWHLD = PW0BW01.PW0BWHLD + 1;
+        end
+        if (PW0BW01.PW0BWEMF != "Y") /* error message flag*/
+          PW0BW01.PW0BWHLD = PW0BM030.PWCCAVFR[PW0BWNX2];
+          while (PW0BW01.PW0BWHLD <= PW0BM030.PWCCAVTR[PW0BWNX2])
+            if (PW0BW01.PW0BWHLD == PW0BW01.PWCCAVFR[PW0BWNX3])
+              PW0BW01.PW0BWHLD = PW0BM030.PWCCAVTR[PW0BWNX2];
+              PW0BW01.PW0BWEMF = "Y"; /* error message flag*/
+              converseLib.validationFailed(282); /* record exists within schedule range*/
+                                     /* ; for carrier & spur, reenter*/
+            end
+            PW0BW01.PW0BWHLD = PW0BW01.PW0BWHLD + 1;
+          end
+        end
+
+          /* ; check schedule range (thru)*/
+
+        if (PW0BW01.PW0BWEMF != "Y") /* error message flag*/
+          PW0BW01.PW0BWHLD = PW0BW01.PWCCAVTR[PW0BWNX3];
+          while (PW0BW01.PW0BWHLD >= PW0BW01.PWCCAVFR[PW0BWNX3])
+            if (PW0BW01.PW0BWHLD == PW0BM030.PWCCAVTR[PW0BWNX2])
+              PW0BW01.PW0BWHLD = PW0BW01.PWCCAVFR[PW0BWNX3];
+              PW0BW01.PW0BWEMF = "Y"; /* error message flag*/
+              converseLib.validationFailed(282); /* record exists within schedule range*/
+                                   /* ; for carrier & spur, reenter*/
+            end
+            PW0BW01.PW0BWHLD = PW0BW01.PW0BWHLD - 1;
+          end
+          if (PW0BW01.PW0BWEMF != "Y") /* error message flag*/
+            PW0BW01.PW0BWHLD = PW0BM030.PWCCAVTR[PW0BWNX2];
+            while (PW0BW01.PW0BWHLD >= PW0BM030.PWCCAVFR[PW0BWNX2])
+              if (PW0BW01.PW0BWHLD == PW0BW01.PWCCAVTR[PW0BWNX3])
+                PW0BW01.PW0BWHLD = PW0BM030.PWCCAVFR[PW0BWNX2];
+                PW0BW01.PW0BWEMF = "Y"; /* error message flag*/
+                converseLib.validationFailed(282); /* record exists within schedule range*/
+                                     /* ; for carrier & spur, reenter*/
+              end
+              PW0BW01.PW0BWHLD = PW0BW01.PW0BWHLD - 1;
+            end
+          end
+        end
+      end
+
+
+
+
+      if (PW0BW01.PW0BWEMF == "Y") /* error message flag*/
+        set PW0BM030.TF1CARCD[PW0BWNX2] modified, bold;
+        set PW0BM030.PKVSSPNB[PW0BWNX2] cursor, modified, bold;
+        set PW0BM030.PWCCAVFR[PW0BWNX2] modified, bold;
+        set PW0BM030.PWCCAVTR[PW0BWNX2] modified, bold;
+        set PW0BM030.PWCHLDFL[PW0BWNX2] modified, bold;
+      end
+    end
+    PW0BW01.PW0BWNX3 = PW0BW01.PW0BWNX3 + 1;
+  end
+
+
+
+end // end PW0B059
+
+// update carr availibility tbl
+Function PW0B080()
+
+
+
+  PW0BW01.PW0BWNX2 = 1;
+  while (PW0BW01.PW0BWNX2 <= 11)
+    if (PW0BM030.PW0BMACT[PW0BWNX2] == "A")
+      PW0B081(); /* database add*/
+    end
+
+    if (PW0BM030.PW0BMACT[PW0BWNX2] == "C")
+      PW0B083(); /* database change*/
+    end
+
+    if (PW0BM030.PW0BMACT[PW0BWNX2] == "D")
+      PW0B082(); /* database delete*/
+    end
+
+
+
+    PW0BW01.PW0BWNX2 = PW0BW01.PW0BWNX2 + 1;
+  end
+
+
+
+end // end PW0B080
+
+// add carr availabliity row
+Function PW0B081()
+
+
+     /* **************  add  new record  *************/
+  PW0BM030.XXXERRID = "PW0B081";
+
+   /* ******************************************************/
+   /* *    first check to make sure the record has not    **/
+   /* *    been added by someone else.                    **/
+   /* ******************************************************/
+  set SQLCA empty;
+  set PWCREC empty;
+
+  PWCREC.XWHCD = PW0BM030.XWHCD;
+  PWCREC.PKURUNMD = " "; /* runmode*/
+  PWCREC.TF1CARCD = PW0BM030.TF1CARCD[PW0BWNX2];
+  PWCREC.PKVSSPNB = PW0BM030.PKVSSPNB[PW0BWNX2];
+  PWCREC.PWCCAVFR = PW0BM030.PWCCAVFR[PW0BWNX2];
+  PWCREC.PWCCAVTR = PW0BM030.PWCCAVTR[PW0BWNX2];
+  PWCREC.PWCHLDFL = PW0BM030.PWCHLDFL[PW0BWNX2];
+
+
+  call "IO2180" ("S ", SQLCA, PWCREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* not found, thats good*/
+    /* next sentece*/
+  else
+    if (SQLCA.VAGen_SQLCODE == +0)
+      set PW0BM030.TF1CARCD[PW0BWNX2] cursor, modified, bold;
+      PW0BW01.PW0BWUPD = "N"; /* d.b. updated flag*/
+      converseLib.validationFailed(105); /* data base updated by another appl.*/
+      exit stack;
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "POST";
+        TA1REC.TA1PGMNM = "PW0B";
+        TA1REC.TA1LOCAT = "SELECT";
+        TA1REC.TA1MAP = "PW0BM030";
+        TA1REC.TA1DBASE = "DPICK.";
+        TA1REC.TA1TBLVU = "VCARRA01"; /* table view*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+        set PW0BM030.TF1CARCD[PW0BWNX2] cursor, modified, bold;
+        converseLib.validationFailed(28); /* contention error*/
+        exit stack;
+      else
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "PW0B";
+        TA1REC.TA1LOCAT = "SELECT";
+        TA1REC.TA1MAP = "PW0BM030";
+        TA1REC.TA1DBASE = "DPICK.";
+        TA1REC.TA1TBLVU = "VCARRA01"; /* table view*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        converseLib.validationFailed(29);
+        exit stack;
+      end
+    end
+  end
+
+
+
+
+
+
+
+   /* ******************************************************/
+   /* *    now add the row.                               **/
+   /* ******************************************************/
+  set SQLCA empty;
+  set PWCREC empty;
+
+
+  PWCREC.XWHCD = PW0BM030.XWHCD;
+  PWCREC.PKURUNMD = " "; /* runmode*/
+  PWCREC.TF1CARCD = PW0BM030.TF1CARCD[PW0BWNX2];
+  PWCREC.PKVSSPNB = PW0BM030.PKVSSPNB[PW0BWNX2];
+  PWCREC.PWCCAVFR = PW0BM030.PWCCAVFR[PW0BWNX2];
+  PWCREC.PWCCAVTR = PW0BM030.PWCCAVTR[PW0BWNX2];
+  PWCREC.PWCHLDFL = PW0BM030.PWCHLDFL[PW0BWNX2];
+
+
+  PW0B084(); /* date/time*/
+
+  call "IO2180" ("A ", SQLCA, PWCREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == +0)
+    PW0BW01.PW0BWUPD = "Y"; /* d.b. updated flag*/
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "POST";
+      TA1REC.TA1PGMNM = "PW0B";
+      TA1REC.TA1LOCAT = "ADD   ";
+      TA1REC.TA1MAP = "PW0BM030";
+      TA1REC.TA1DBASE = "DPICK.";
+      TA1REC.TA1TBLVU = "VCARRA01"; /* table view*/
+      call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+      set PW0BM030.TF1CARCD[PW0BWNX2] cursor, modified, bold;
+      converseLib.validationFailed(28); /* contention error*/
+      exit stack;
+    else
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "PW0B";
+      TA1REC.TA1LOCAT = "ADD";
+      TA1REC.TA1MAP = "PK0BM030";
+      TA1REC.TA1DBASE = "DPICK.";
+      TA1REC.TA1TBLVU = "VCARRA01"; /* table view*/
+      call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      converseLib.validationFailed(29); /* fatal error*/
+      exit stack;
+    end
+  end
+
+
+
+end // end PW0B081
+
+// delete carr avail row
+Function PW0B082()
+
+
+
+
+     /* **************  delete a row               *****/
+
+  PW0BM030.XXXERRID = "PW0B082";
+  set PWCREC empty;
+  set SQLCA empty;
+
+
+  PWCREC.XWHCD = PW0BM030.XWHCD;
+  PWCREC.PKURUNMD = " "; /* runmode*/
+  PWCREC.TF1CARCD = PW0BM030.TF1CARCD[PW0BWNX2];
+  PWCREC.PKVSSPNB = PW0BM030.PKVSSPNB[PW0BWNX2];
+  PWCREC.PWCCAVFR = PW0BM030.PWCCAVFR[PW0BWNX2];
+  PWCREC.PWCCAVTR = PW0BM030.PWCCAVTR[PW0BWNX2];
+  PWCREC.PWCHLDFL = PW0BM030.PWCHLDFL[PW0BWNX2];
+
+  call "IO2180" ("D ", SQLCA, PWCREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == +0)
+    PW0BW01.PW0BWUPD = "Y"; /* d.b. updated flag*/
+    converseLib.validationFailed(32); /* update successful*/
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      converseLib.validationFailed(105); /* data base updated by another appl.*/
+      set PW0BM030.TF1CARCD[PW0BWNX2] cursor, modified, bold;
+      PW0BW01.PW0BWUPD = "N"; /* d.b. updated flag*/
+      exit stack;
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "POST";
+        TA1REC.TA1PGMNM = "PW0B";
+        TA1REC.TA1LOCAT = "DELETE ";
+        TA1REC.TA1MAP = "PW0BM030";
+        TA1REC.TA1DBASE = "DPICK.";
+        TA1REC.TA1TBLVU = "VCARRA01"; /* table view*/
+        TA1REC.TA1TBLKE = PW0BM030.XWHCD; /* table key*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+        converseLib.validationFailed(28);
+        exit stack;
+      else
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "PW0B";
+        TA1REC.TA1LOCAT = "DELETE ";
+        TA1REC.TA1MAP = "PW0BM030";
+        TA1REC.TA1DBASE = "DPICK.";
+        TA1REC.TA1TBLVU = "VCARRA01"; /* table view*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        converseLib.validationFailed(29); /* fatal error*/
+        exit stack;
+      end
+    end
+  end
+
+
+
+
+
+end // end PW0B082
+
+// change carr avail row
+Function PW0B083()
+
+
+     /* ********* change.*/
+     /* ********* actually a delete and an add*/
+
+
+  PW0BM030.XXXERRID = "PW0B083";
+  set SQLCA empty;
+  set PWCREC empty;
+
+
+  PW0BW01.PW0BWNDX = PW0BW01.PW0BWTOP + PW0BW01.PW0BWNX2 - 1;
+  PWCREC.XWHCD = PW0BM030.XWHCD;
+  PWCREC.PKURUNMD = " "; /* runmode*/
+  PWCREC.TF1CARCD = PW0BW01.TF1CARCD[PW0BWNDX];
+  PWCREC.PKVSSPNB = PW0BW01.PKVSSPNB[PW0BWNDX];
+  PWCREC.PWCCAVFR = PW0BW01.PWCCAVFR[PW0BWNDX];
+  PWCREC.PWCCAVTR = PW0BW01.PWCCAVTR[PW0BWNDX];
+  PWCREC.PWCHLDFL = PW0BW01.PWCHLDFL[PW0BWNDX];
+
+  call "IO2180" ("D ", SQLCA, PWCREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == +0)
+    /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      converseLib.validationFailed(105); /* data base updated by another appl.*/
+      set PW0BM030.TF1CARCD[PW0BWNX2] cursor, modified, bold;
+      PW0BW01.PW0BWUPD = "N"; /* d.b. updated flag*/
+      exit stack;
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "POST";
+        TA1REC.TA1PGMNM = "PW0B";
+        TA1REC.TA1LOCAT = "DELETE ";
+        TA1REC.TA1MAP = "PW0BM030";
+        TA1REC.TA1DBASE = "DPICK.";
+        TA1REC.TA1TBLVU = "VCARRA01"; /* table view*/
+        TA1REC.TA1TBLKE = PW0BM030.XWHCD; /* table key*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+        converseLib.validationFailed(28);
+        exit stack;
+      else
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "PW0B";
+        TA1REC.TA1LOCAT = "DELETE ";
+        TA1REC.TA1MAP = "PW0BM030";
+        TA1REC.TA1DBASE = "DPICK.";
+        TA1REC.TA1TBLVU = "VCARRA01"; /* table view*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        converseLib.validationFailed(29); /* fatal error*/
+        exit stack;
+      end
+    end
+  end
+
+
+
+
+
+
+  if (SQLCA.VAGen_SQLCODE == +0)
+
+    PWCREC.XWHCD = PW0BM030.XWHCD;
+    PWCREC.PKURUNMD = " "; /* runmode*/
+    PWCREC.TF1CARCD = PW0BM030.TF1CARCD[PW0BWNX2];
+    PWCREC.PKVSSPNB = PW0BM030.PKVSSPNB[PW0BWNX2];
+    PWCREC.PWCCAVFR = PW0BM030.PWCCAVFR[PW0BWNX2];
+    PWCREC.PWCCAVTR = PW0BM030.PWCCAVTR[PW0BWNX2];
+    PWCREC.PWCHLDFL = PW0BM030.PWCHLDFL[PW0BWNX2];
+    PWCREC.ZZZCHGCT = 0;
+
+
+
+    PW0B084(); /* date/time*/
+
+    call "IO2180" ("A ", SQLCA, PWCREC) {isNoRefresh = yes, isExternal = yes};
+
+    if (SQLCA.VAGen_SQLCODE == +0)
+      PW0BW01.PW0BWUPD = "Y"; /* d.b. updated flag*/
+      converseLib.validationFailed(32); /* update successful*/
+      return;
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        converseLib.validationFailed(105); /* data base updated by another appl.*/
+        PW0BW01.PW0BWUPD = "N"; /* d.b. updated flag*/
+        set PW0BM030.TF1CARCD[PW0BWNX2] cursor, modified, bold;
+        exit stack;
+      else
+        if (SQLCA.VAGen_SQLCODE == -911)
+          TA1REC.TA1TYPE = "DB2 ";
+          TA1REC.TA1FUNC = "POST";
+          TA1REC.TA1PGMNM = "PW0B";
+          TA1REC.TA1LOCAT = "CHANGE ";
+          TA1REC.TA1MAP = "PW0BM030";
+          TA1REC.TA1DBASE = "DPICK.";
+          TA1REC.TA1TBLVU = "VCARRA01"; /* table view*/
+          call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+          converseLib.validationFailed(28); /* contention error*/
+          exit stack;
+        else
+          TA1REC.TA1TYPE = "DB2 ";
+          TA1REC.TA1FUNC = "RETN";
+          TA1REC.TA1PGMNM = "PW0B";
+          TA1REC.TA1LOCAT = "CHANGE ";
+          TA1REC.TA1MAP = "PW0BM030";
+          TA1REC.TA1DBASE = "DPICK.";
+          TA1REC.TA1TBLVU = "VCARRA01"; /* table view*/
+          call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+          VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+          VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+          sysLib.rollback();
+          VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+          
+          converseLib.validationFailed(29); /* fatal error*/
+          exit stack;
+        end
+      end
+    end
+  end
+
+
+
+
+
+end // end PW0B083
+
+// get date & time for pwcrec
+Function PW0B084()
+
+
+
+  PW0BW01.PW0BWFDA = VGVar.currentShortGregorianDate; /* date*/
+
+  /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+  /*  */
+  /* MOVE '19' TO PW0BW01.PW0BWFCT;    /* centry*/
+  /*  */
+  /* ------------------------  Y2K OUT END  -------------------------*/
+
+  /* -----------------------  Y2K IN BEGIN  -------------------------*/
+  /*  */
+  if (PW0BW01.PW0BWFYY > 60) /* year > 60*/
+    PW0BW01.PW0BWFCT = "19"; /* century*/
+  else
+    PW0BW01.PW0BWFCT = "20"; /* century*/
+  end
+  /*  */
+  /* ------------------------  Y2K IN END  --------------------------*/
+
+  PWCREC.ZZZCHGDT = PW0BW01.PW0BWFDT; /* change date*/
+  PW0BW01.PW0BWTIM = VGVar.currentFormattedTime;
+  PW0BW01.PW0BWTHH = PW0BW01.PW0BWHH;
+  PW0BW01.PW0BWTMM = PW0BW01.PW0BWMI;
+  PWCREC.ZZZCHGTM = PW0BW01.PW0BWTI; /* change time*/
+
+
+
+end // end PW0B084
+
+// update spur whse cntrl tbl
+Function PW0B090()
+
+
+
+     /* *********  change wilsonville control table  *******/
+
+  PW0BM030.XXXERRID = "PW0B090";
+  set SQLCA empty;
+  set PWDREC empty;
+  PWDREC.XWHCD = PW0BM030.XWHCD;
+  PWDREC.PKURUNMD = " ";
+  PWDREC.PWDNBRSS = PW0BM030.PWDNBRSS;
+  PWDREC.PWDRJTSS = PW0BM030.PWDRJTSS;
+  PWDREC.PWDDFPHS = PW0BM030.PWDDFPHS;
+  PWDREC.PWDNBRSH = PW0BM030.PWDNBRSH;
+  PWDREC.PWDMIPSH = PW0BM030.PWDMIPSH;
+  PWDREC.PWDSMDYS = PW0BM030.PWDSMDYS;
+  PWDREC.ZZZCHGCT = PW0BW01.PW0BWDCT;
+
+  PW0B094(); /* get change date*/
+
+
+
+  call "IO2190" ("U ", SQLCA, PWDREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == +0)
+    PW0BW01.PW0BWUPD = "Y"; /* d.b. updated flag*/
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      converseLib.validationFailed(105); /* database updated by another appl.*/
+      set PW0BM030.PWDNBRSS cursor, modified, bold;
+      PW0BW01.PW0BWUPD = "N"; /* d.b. updated flag*/
+      exit stack;
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "POST";
+        TA1REC.TA1PGMNM = "PW0B";
+        TA1REC.TA1LOCAT = "CHANGE ";
+        TA1REC.TA1MAP = "PW0BM030";
+        TA1REC.TA1DBASE = "DPICK.";
+        TA1REC.TA1TBLVU = "VWVCTL01"; /* table view*/
+        TA1REC.TA1TBLKE = PW0BM030.XWHCD; /* table key*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+        converseLib.validationFailed(28); /* contention error*/
+        exit stack;
+      else
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "PW0B";
+        TA1REC.TA1LOCAT = "CHANGE ";
+        TA1REC.TA1MAP = "PW0BM030";
+        TA1REC.TA1DBASE = "DPICK.";
+        TA1REC.TA1TBLVU = "VWVCTL01"; /* table view*/
+        TA1REC.TA1TBLKE = PW0BM030.XWHCD; /* table key*/
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        converseLib.validationFailed(28); /* fatal error*/
+        exit stack;
+      end
+    end
+  end
+
+
+
+
+
+
+
+end // end PW0B090
+
+// get date & time for pwdrec
+Function PW0B094()
+
+
+
+  PW0BW01.PW0BWFDA = VGVar.currentShortGregorianDate; /* date*/
+
+  /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+  /*  */
+  /* MOVE '19' TO PW0BW01.PW0BWFCT;    /* centry*/
+  /*  */
+  /* ------------------------  Y2K OUT END  -------------------------*/
+
+  /* -----------------------  Y2K IN BEGIN  -------------------------*/
+  /*  */
+  if (PW0BW01.PW0BWFYY > 60) /* year > 60*/
+    PW0BW01.PW0BWFCT = "19"; /* century*/
+  else
+    PW0BW01.PW0BWFCT = "20"; /* century*/
+  end
+  /*  */
+  /* ------------------------  Y2K IN END  --------------------------*/
+
+  PWDREC.ZZZCHGDT = PW0BW01.PW0BWFDT; /* change date*/
+  PW0BW01.PW0BWTIM = VGVar.currentFormattedTime;
+  PW0BW01.PW0BWTHH = PW0BW01.PW0BWHH;
+  PW0BW01.PW0BWTMM = PW0BW01.PW0BWMI;
+  PWDREC.ZZZCHGTM = PW0BW01.PW0BWTI; /* change time*/
+
+
+
+end // end PW0B094
+
+//*** RECORD=PW0BW01 ****
+// ;********************** pk04w01 ****************************
+// ;
+// ;         work record for pk04: select by order type
+// ;
+// ;***********************************************************
+// ***********************
+Record PW0BW01 type basicRecord
+  5 PW0BWGR1 PW0BWGR1 ; 
+    10 XWHCD XWHCD ; 
+    10 XWHABRV XWHABRV ; 
+    10 PW0BWCTD PW0BWCTD ; 
+    10 PW0BWNDX PW0BWNDX ; 
+    10 PW0BWNX2 PW0BWNX2 ; 
+    10 PW0BWNX3 PW0BWNX3 ; 
+    10 PW0BWMAX PW0BWMAX ; 
+    10 PW0BWTOP PW0BWTOP ; 
+    10 PW0BWBOT PW0BWBOT ; 
+    10 PW0BWFL1 PW0BWFL1 ; 
+    10 PW0BWFL2 PW0BWFL2 ; 
+    10 PW0BWSPR PW0BWSPR ; 
+    10 PW0BWED1 PW0BWED1 ; 
+    10 PW0BWED2 PW0BWED2 ; 
+    10 PW0BWUPD PW0BWUPD ; 
+    10 PW0BWDT PW0BWDT ; 
+      15 PW0BWMM PW0BWMM ; 
+      15 PW0BWDD PW0BWDD ; 
+      15 PW0BWYY PW0BWYY ; 
+    10 PW0BWFDT PW0BWFDT ; 
+      15 PW0BWFCT PW0BWFCT ; 
+      15 PW0BWFDA PW0BWFDA ; 
+        20 PW0BWFYY PW0BWFYY ; 
+        20 PW0BWFMM PW0BWFMM ; 
+        20 PW0BWFDD PW0BWFDD ; 
+    10 PW0BWTIM PW0BWTIM ; 
+      15 PW0BWHH PW0BWHH ; 
+      15 * char(1) ; 
+      15 PW0BWMI PW0BWMI ; 
+      15 * char(1) ; 
+      15 PW0BWSS PW0BWSS ; 
+    10 PW0BWTI PW0BWTI ; 
+      15 PW0BWTHH PW0BWTHH ; 
+      15 PW0BWTMM PW0BWTMM ; 
+    10 * char(1) ; 
+    10 PW0BWCCR PW0BWCCR ; 
+    10 PW0BWACR PW0BWACR ; 
+    10 PW0BWSAV PW0BWSAV ; 
+      15 PKVSSPNB PKVSSPNB [712] ; 
+      15 TF1CARCD TF1CARCD [712] ; 
+      15 TF1CARNM TF1CARNM [712] ; 
+      15 PWCCAVFR PWCCAVFR [712] ; 
+      15 PWCCAVTR PWCCAVTR [712] ; 
+      15 PWCHLDFL PWCHLDFL [712] ; 
+      15 PW0BWCCT PW0BWCCT [712] ; 
+      15 * char(1) ; 
+      15 PW0BWDWH PW0BWDWH ; 
+      15 PWDNBRSS PWDNBRSS ; 
+      15 PWDRJTSS PWDRJTSS ; 
+      15 PWDDFPHS PWDDFPHS ; 
+      15 PWDNBRSH PWDNBRSH ; 
+      15 PWDMIPSH PWDMIPSH ; 
+      15 PWDSMDYS PWDSMDYS ; 
+      15 PW0BWDCT PW0BWDCT ; 
+    10 PW0BWHLD PW0BWHLD ; 
+    10 PW0BWFLG PW0BWFLG ; 
+    10 PW0BWEMF PW0BWEMF ; 
+end // end PW0BW01
+
+//*** RECORD=PW0BW02 ****
+// ;********************** pk04w01 ****************************
+// ;
+// ;         work record for pk04: select by order type
+// ;
+// ;***********************************************************
+// ***********************
+Record PW0BW02 type basicRecord
+  5 PW0BWSAV PW0BWSAV ; 
+    15 PKVSSPNB PKVSSPNB [712] ; 
+    15 TF1CARCD TF1CARCD [712] ; 
+    15 TF1CARNM TF1CARNM [712] ; 
+    15 PWCCAVFR PWCCAVFR [712] ; 
+    15 PWCCAVTR PWCCAVTR [712] ; 
+    15 PWCHLDFL PWCHLDFL [712] ; 
+    15 PW0BWCCT PW0BWCCT [712] ; 
+    15 * char(1) ; 
+    15 PW0BWDWH PW0BWDWH ; 
+    15 PWDNBRSS PWDNBRSS ; 
+    15 PWDRJTSS PWDRJTSS ; 
+    15 PWDDFPHS PWDDFPHS ; 
+    15 PWDNBRSH PWDNBRSH ; 
+    15 PWDMIPSH PWDMIPSH ; 
+    15 PWDSMDYS PWDSMDYS ; 
+    15 PW0BWDCT PW0BWDCT ; 
+end // end PW0BW02
+
+// passed carrier name
+DataItem PW0BWACR char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// bottom of screen in w.s.array
+DataItem PW0BWBOT num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// passed carrier code
+DataItem PW0BWCCR char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// change count - pwcrec
+DataItem PW0BWCCT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current date -yyyymmdd
+DataItem PW0BWCTD num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change count - pwdrec
+DataItem PW0BWDCT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// day
+DataItem PW0BWDD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// group date
+DataItem PW0BWDT char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// warehouse from pkdrec
+DataItem PW0BWDWH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// spur/carr update request-flag
+DataItem PW0BWED1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// control update request-flag
+DataItem PW0BWED2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error message flag
+DataItem PW0BWEMF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// century
+DataItem PW0BWFCT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// yymmdd
+DataItem PW0BWFDA num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// day
+DataItem PW0BWFDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// date in yyyymmdd
+DataItem PW0BWFDT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// enternal table overflow flag
+DataItem PW0BWFL1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// spur had errors flag
+DataItem PW0BWFL2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// general purpose flag
+DataItem PW0BWFLG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// month
+DataItem PW0BWFMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// year
+DataItem PW0BWFYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Group level
+DataItem PW0BWGR1 char(30745)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hours
+DataItem PW0BWHH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// general purpose hold area
+DataItem PW0BWHLD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// total # of valid o. t. rows
+DataItem PW0BWMAX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// min.
+DataItem PW0BWMI char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// month
+DataItem PW0BWMM char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// subscript - ws.loc of sb2
+DataItem PW0BWNDX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// subscript - position on map
+DataItem PW0BWNX2 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// subscript - gen.purpose
+DataItem PW0BWNX3 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// data base save area
+DataItem PW0BWSAV char(30633)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hold spur for edit
+DataItem PW0BWSPR num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// sec.
+DataItem PW0BWSS char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hours
+DataItem PW0BWTHH num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// time
+DataItem PW0BWTI num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// group time
+DataItem PW0BWTIM char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// minutes
+DataItem PW0BWTMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// top of screen in w.s.array
+DataItem PW0BWTOP num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// database updated flag
+DataItem PW0BWUPD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// year
+DataItem PW0BWYY char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

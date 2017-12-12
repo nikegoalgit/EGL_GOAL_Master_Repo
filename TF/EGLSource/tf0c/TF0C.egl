@@ -1,0 +1,3982 @@
+package tf0c;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import in1.common.*;
+import ku.common.*;
+import pk.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+//*** PROGRAM=TF0C ****
+// ************************************************************
+// *  TRAFFIC CUSTOMER EXCEPTION ROUTING MAINTENANCE/INQUIRY
+// *
+// *  This application will maintain and inquire against the
+// *  Traffic exception table (VRTEXN01), the weight break
+// *  table (VRTEWT01), and the comment table (VRTEXT01).
+// *  This program can also write new shipto addresses to the
+// *  Traffic address table (VRTADR01) as well as inquire
+// *  against them (provided the address is used in a weight
+// *  break).
+// ************************************************************
+// *Maintenance History:
+// *  Date    Who   Description
+// *-------- ------ -------------------------------------------
+// *7/27/87  MHALST Program Creation
+// *5/30/89  jwood  added xssegtr logic, noncsp option usage.
+// *10/04/89 kande1 tf10 - the following is a list of maint.
+// *                changes: TO DIRECTORY SCREEN -- 1. Fixed
+// *                scrolling problems and increased table
+// *                size to allow more backward, 2. Added
+// *                status code, changed type heading to rte
+// *                mthd, 3. protected customer company and
+// *                customer store in heading. ROUTING MAINT.
+// *                screen -- removed immediate delete changing
+// *                process -- Enter an action code of 'd' to
+// *                receive a 'confirm deactivate' message.
+// *                After <enter> key confirms deactivate the
+// *                EXCEPTION ROUTING, COMMENT, and WEIGHT
+// *                BREAK records will be changed to a status
+// *                of INACTIVE.
+// *10-29-90 mmoreh added bol stamp screen tf0cm005 and changed
+// *                appl to process stamp comments screen.
+// *03-05-91 rvakel Replaced references to PKAREC with XHRTBL.
+// *                Changed PKARHABR to XHRABRV, and PKARHCD
+// *                to XHRCD.
+// *04-15-91 wtate  correct hold reason code error.
+// *06-23-92 sjohns added tf5rec.xbccd initialization.
+// *09-04-92 WTATE  SET TF4REC CLEAR IN TF0C300.
+// *10-13-92 WTATE  ADDED TF-CRTN-BRK-NBR FOR 10-92 TBL CHANGE
+// *03-04-94 RYONKE Map changes because of table changes.
+// *04-05-94 RYONKE Convert TFCREC fields to varchar logic.
+// *12-06-95 DLIDDL Display all weights in kilos for Canadian
+// *                warehouses - TF0C620, TF0C720.
+// *10-21-97 kheina Do not display wt breaks with status of
+// *                "I". See Tf0c620, Tf0c700, Tf0c720,
+// *                Tf0c800, Tf0cs83.
+// *01-02-98 kheina Fix deactivate problem.
+// ************************************************************
+// *********************
+Program TF0C type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "TF00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  PK6REC PK6REC; // record
+  PK7REC PK7REC; // record
+  PKDREC PKDREC; // record
+  PKMREC PKMREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TF0CW01 TF0CW01; // record
+  TF0CW02 TF0CW02; // record
+  TF0CW03 TF0CW03; // record
+  TF1REC TF1REC; // record
+  TF4REC TF4REC; // record
+  TF5REC TF5REC; // record
+  TF6REC TF6REC; // record
+  TFAREC TFAREC; // record
+  TFBREC TFBREC; // record
+  TFCREC TFCREC; // record
+  TFDREC TFDREC; // record
+  TFWREC TFWREC; // record
+  XP0FW01 XP0FW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use XSTTBL {deleteAfterUse = yes}; // table
+  use XCTTBL {deleteAfterUse = yes}; // table
+  use XHRTBL; // table
+  use XBCTBL; // table
+  use TF0CM.TF0CM001,  // forms
+      TF0CM.TF0CM002, 
+      TF0CM.TF0CM003, 
+      TF0CM.TF0CM004, 
+      TF0CM.TF0CM005
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    TF0C000: TF0C000();
+    exit program;
+  end // end main
+end // end TF0C
+
+// Main Control Process
+Function TF0C000()
+   /* *************************************************************/
+   /* *     This is the main control process for the             **/
+   /* *     application. This process will only be performed     **/
+   /* *     one time.                                            **/
+   /* *************************************************************/
+
+  TF0C010(); /* Initialize application*/
+
+  while (TF0CW01.TF0CWEOA == "N") /* While not end of application*/
+    TF0C100(); /* Process screens*/
+  end
+
+  TF0C020(); /* Terminate application*/
+
+end // end TF0C000
+
+// Initialize Application
+Function TF0C010()
+   /* *************************************************************/
+   /* *     This process will perform the following:             **/
+   /* *       Initialize all records                             **/
+   /* *       Load passed data to TFAREC                         **/
+   /* *       Initialize TF0CW01                                 **/
+   /* *************************************************************/
+
+  XSENTRY();
+  XSSEGTR(); /* set segmented transaction id*/
+  set TF0CM001 initial;
+  set TF0CM002 initial;
+  set TF0CM003 initial;
+  set TF0CM004 initial;
+  set TF0CM005 initial;
+  set TF0CW01 empty;
+  set TF0CW02 empty;
+  set TF0CW03 empty;
+  set XP0FW01 empty;
+  set TFAREC empty;
+  set TF1REC empty;
+  set TF4REC empty;
+  set TF5REC empty;
+  set TF6REC empty;
+  set TFBREC empty;
+  set TFCREC empty;
+  set TFDREC empty;
+  set PK6REC empty;
+  set PK7REC empty;
+  set PKDREC empty;
+  set PKMREC empty;
+  TF0CW01.TF0CWERR = "N"; /* error flag*/
+  TF0CW01.TF0CWHRI = "N"; /* have record indicator*/
+  TF0CW01.TF0CWEOA = "N"; /* end of application*/
+  TF0CW01.TF0CWEOS = "N"; /* end of screen*/
+  TF0CW01.TF0CWFBI = "F"; /* Process forward  -- direction*/
+                                   /* indicator*/
+  TF0CW01.XXXRVNBR = "01"; /* revision number*/
+  set TFAREC empty;
+  set TFWREC empty;
+  XSTFS01(); /* check traffic security*/
+  if (TFWREC.TFWUPDFL == "Y") /* update flag*/
+    if (COMMAREA.CAADDFL == "Y" /* commarea add flag*/
+     || COMMAREA.CADLVL[10] == "Y") /* commarea add level flag*/
+      /* next sentence (security is ok)*/
+    else
+      converseLib.validationFailed(9); /* not authorized to update*/
+      TFWREC.TFWUPDFL = "N"; /* update flag*/
+    end
+  else
+    if (TFWREC.TFWUPDFL == "N") /* update flag*/
+      /* next sentence (everything set ok)*/
+    else
+      if (COMMAREA.CAADDFL == "Y" /* commarea add flag*/
+       || COMMAREA.CADLVL[10] == "Y") /* commarea level add flag*/
+        TFWREC.TFWUPDFL = "Y"; /* go to update mode*/
+      else
+        TFWREC.TFWUPDFL = "N"; /* go to inquiry mode*/
+      end
+    end
+  end
+  if (COMMAREA.CAFROMAP != "TF0A") /* not from traffic menu*/
+    if (COMMAREA.CAITMLTR[1] == "2") /* we want header screen*/
+      TFWREC.TFWOPT = 01; /* menu option 01*/
+    else
+      TFWREC.TFWOPT = 02; /* menu option 02*/
+    end
+    COMMAREA.CAITEM = " "; /* commarea item (to data)*/
+  end
+
+  if (TFWREC.TFWOPT == 01 /* menu option 01*/
+   || TFWREC.TFWOPT == 11) /* or menu option 11*/
+    TF0CW01.TF0CWDIR = "N"; /* no directory screen*/
+    TF0CW01.TF0CWHDR = "Y"; /* process header*/
+    TF0CM002.XWHCD = TFWREC.XWHCD;
+    if (TFWREC.XBCCD != " ")
+      TF0CM002.XBCCD = TFWREC.XBCCD;
+      if (TFWREC.XBCCD in XBCTBL.XBCCD)
+         /* NEXT SENTENCE;*/
+      else
+        converseLib.validationFailed(099);
+        set TF0CM002.XBCCD cursor, bold;
+        return;
+      end
+    end /* /*/
+    if (TFWREC.KUCCOID != 0) /* company id*/
+      XP0FW01.KUCCOID = TFWREC.KUCCOID;
+      XP0FW01.XBCCD = TFWREC.XBCCD; /* brand code*/
+      XP0FS01();
+      TF0CM002.KUCCOID = XP0FW01.XP0FW01-EXTERNAL;
+      TF0CM002.XBCCD = XP0FW01.XBCCD; /* brand code*/
+      TFAREC.TFASTRN = TFWREC.KUMSTRID; /* store id to num store id*/
+      XSTFS03();
+      TF0CM002.KUMSTRID = TFAREC.TFASTRA; /* alpha store id to map*/
+    end
+  else
+    TF0CW01.TF0CWDIR = "Y"; /* directory screen*/
+    TF0CW01.TF0CWHDR = "N"; /* no to process header*/
+    TF0CM001.XWHCD = TFWREC.XWHCD;
+    TF0CM001.TF0CMNNM = TFWREC.KUMSTRNM; /* store name*/
+    TF0CM001.XBCCD = TFWREC.XBCCD;
+    if (TFWREC.KUCCOID != 0) /* company id*/
+      TF0CM001.KUCCOID = TFWREC.KUCCOID;
+      XP0FW01.KUCCOID = TFWREC.KUCCOID;
+      XP0FW01.XBCCD = TFWREC.XBCCD;
+      XP0FS01();
+      TF0CM001.KUCCOID = XP0FW01.XP0FW01-EXTERNAL;
+      TFAREC.TFASTRN = TFWREC.KUMSTRID; /* store id to num store id*/
+      XSTFS03();
+      TF0CM001.KUMSTRID = TFAREC.TFASTRA; /* alpha store id to map*/
+    end
+  end
+  set SQLCA empty;
+  set TA1REC empty;
+  set TA2REC empty;
+  TA2REC.TA2DTOPT = "GETDATE";
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+  TFAWSUB1 = 0;
+
+end // end TF0C010
+
+// Terminate Application
+Function TF0C020()
+   /* *************************************************************/
+   /* *     This process will perform the following:             **/
+   /* *************************************************************/
+
+end // end TF0C020
+
+// Screen Processing
+Function TF0C100()
+   /* *************************************************************/
+   /* *     This process will control processing between the     **/
+   /* *     directory screen (001) and the header, comment,      **/
+   /* *     and address screen (002, 003, & 004).                **/
+   /* *************************************************************/
+
+  if (TF0CW01.TF0CWDIR == "Y") /* we want to process directory*/
+    TF0CW01.TF0CWEOS = "N";
+    while (TF0CW01.TF0CWEOS == "N")
+      TF0C200(); /* process directory screen*/
+    end
+  end
+  if (TF0CW01.TF0CWHDR == "Y") /* we want to process header*/
+    TF0CW01.TF0CWEOS = "N";
+    while (TF0CW01.TF0CWEOS == "N")
+      TF0C500(); /* process header screen*/
+    end
+  end
+end // end TF0C100
+
+// Process Directory Screen
+Function TF0C200()
+  if (TF0CW01.TF0CWERR == "Y") /* we have errors*/
+    set TF0CM001 alarm; /* so set alarm*/
+  else
+    TF0C300(); /* load data to screen*/
+  end
+  TF0CM001.XXXCURDT = VGVar.currentShortGregorianDate;
+  TF0CM001.XXXPRCNM = "TF0C200";
+  TF0CM001.XXXRVNBR = TF0CW01.XXXRVNBR;
+
+  converse TF0CM001 ;
+
+  TF0CW01.TF0CWERR = "N"; /* reset error flag*/
+  set TF0CM001.XWHCD initialAttributes;
+  set TF0CM001.TF0CMNNM initialAttributes;
+  set TF0CM001.KUCCOID initialAttributes;
+  set TF0CM001.XBCCD initialAttributes;
+  set TF0CM001.KUMSTRID initialAttributes;
+  set TF0CM001.CATOAP initialAttributes;
+  TF0CS01(); /* check PF & Fast path*/
+  if (TF0CW01.TF0CWERR == "Y") /* we got problems*/
+    TF0CW01.TF0CWFBI = " "; /* clear direction indicator*/
+    return;
+  end
+
+  if (converseVar.eventKey is pf2) /* transfer to header screen*/
+    set TF0CM002 initial;
+    TF0CM002.XWHCD = TF0CM001.XWHCD;
+    TF0CW01.TF0CWEOS = "Y";
+    TF0CW01.TF0CWDIR = "N";
+    TF0CW01.TF0CWHDR = "Y";
+    return;
+  end
+
+  if (TF0CM001 is modified)
+    if (TF0CM001.XWHCD is modified
+     || TF0CM001.TF0CMNNM is modified
+     || TF0CM001.XSTCD is modified
+     || TF0CM001.TF0CMCTY is modified)
+      TF0CM001.XWHABRV = " ";
+      TF0CM001.KUCCOID = 0;
+      TF0CM001.KUMSTRID = " ";
+      set TF0CW02 empty;
+      TFAWSUB1 = 0;
+      TF0CW01.TF0CWEOT = "N";
+      TF0CW01.TF0CWFBI = "F";
+      if (TF0CM001.TF0CMNNM != " ")
+        TFAREC.TFAPFL7 = "Y";
+      end
+      return;
+    end
+    TFAREC.TFAWSUB2 = 1;
+    TF0CM002.XWHCD = TF0CM001.XWHCD;
+    TF0CM002.XWHABRV = TF0CM001.XWHABRV;
+    while (TFAREC.TFAWSUB2 <= 14)
+      if (TF0CM001.TF0CMSEL[TFAWSUB2] != "V"
+       && TF0CM001.TF0CMSEL[TFAWSUB2] != "S"
+       && TF0CM001.TF0CMSEL[TFAWSUB2] != " ")
+        converseLib.validationFailed(60);
+        set TF0CM001.TF0CMSEL[TFAWSUB2] cursor, modified, bold;
+        TF0CW01.TF0CWERR = "Y";
+        TFAREC.TFAWSUB2 = 15;
+      else
+        if (TF0CM001.TF0CMSEL[TFAWSUB2] == "S")
+          TF0CM002.KUCCOID = TF0CM001.TF0CMCOM[TFAWSUB2];
+          TF0CM002.XBCCD = TF0CM001.XBCCD[TFAWSUB2];
+          TF0CM002.KUMSTRID = TF0CM001.TF0CMSTR[TFAWSUB2];
+          TF0CW01.TF0CWHRI = "N";
+          TF0CM001.TF0CMSEL[TFAWSUB2] = "V";
+          set TF0CM001.TF0CMSEL[TFAWSUB2] modified, bold;
+          TF0CW01.TF0CWEOS = "N";
+          while (TF0CW01.TF0CWEOS == "N")
+            TF0C500(); /* process header screen*/
+          end
+        end
+      end
+      TFAREC.TFAWSUB2 = TFAREC.TFAWSUB2 + 1;
+    end
+    TF0CW01.TF0CWEOS = "N";
+    TF0CW01.TF0CWFBI = " ";
+  else
+    TF0CW01.TF0CWFBI = "F";
+    if (converseVar.eventKey is pf7)
+      TF0CW01.TF0CWFBI = "B"; /* set to scroll backward*/
+    end
+    if (converseVar.eventKey is pf8)
+      TF0CW01.TF0CWFBI = "F";
+    end
+  end
+
+end // end TF0C200
+
+// Load records to Directory scrn
+Function TF0C300()
+   /* *************************************************************/
+   /* *     This process will load the directory screen with     **/
+   /* *     the records from the data base.  It will use         **/
+   /* *     assorted flags and tables to determine direction     **/
+   /* *     and starting location in the data base table.        **/
+   /* *************************************************************/
+
+  TA1REC.TA1LOCAT[1] = "TF0C300"; /* in case we have problems,*/
+  TA1REC.TA1MAP = "TF0CM001"; /* load stuff to ta1rec*/
+  set TF4REC empty;
+
+  if (TF0CM001.XWHABRV == " ") /* warehouse changed*/
+    TF0CW01.XWHCD = TF0CM001.XWHCD;
+    TF0CS31(); /* so get it*/
+    if (TF0CW01.TF0CWERR == "Y") /* bad warehouse*/
+      converseLib.validationFailed(11);
+      set TF0CM001.XWHCD cursor, modified, bold;
+      return;
+    else
+      TF0CM001.XWHABRV = TF0CW01.XWHABRV;
+    end
+  end
+
+  if (TF0CW01.TF0CWFBI == "F") /* scanning forward*/
+    if (TF0CW01.TF0CWEOT == "Y") /* at end of table*/
+      converseLib.validationFailed(8); /* cannot scroll forward*/
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+     /* increased the table size from 10 to 25 to allow more*/
+     /* pages of backward scrolling*/
+    if (TFAREC.TFAWSUB1 == 25) /* at table max*/
+      TF0CW02.TF0CWTBL[1] = TF0CW02.TF0CWTBL[2];
+      TF0CW02.TF0CWTBL[2] = TF0CW02.TF0CWTBL[3];
+      TF0CW02.TF0CWTBL[3] = TF0CW02.TF0CWTBL[4];
+      TF0CW02.TF0CWTBL[4] = TF0CW02.TF0CWTBL[5];
+      TF0CW02.TF0CWTBL[5] = TF0CW02.TF0CWTBL[6];
+      TF0CW02.TF0CWTBL[6] = TF0CW02.TF0CWTBL[7];
+      TF0CW02.TF0CWTBL[7] = TF0CW02.TF0CWTBL[8];
+      TF0CW02.TF0CWTBL[8] = TF0CW02.TF0CWTBL[9];
+      TF0CW02.TF0CWTBL[9] = TF0CW02.TF0CWTBL[10];
+      TF0CW02.TF0CWTBL[10] = TF0CW02.TF0CWTBL[11];
+      TF0CW02.TF0CWTBL[11] = TF0CW02.TF0CWTBL[12];
+      TF0CW02.TF0CWTBL[12] = TF0CW02.TF0CWTBL[13];
+      TF0CW02.TF0CWTBL[13] = TF0CW02.TF0CWTBL[14];
+      TF0CW02.TF0CWTBL[14] = TF0CW02.TF0CWTBL[15];
+      TF0CW02.TF0CWTBL[15] = TF0CW02.TF0CWTBL[16];
+      TF0CW02.TF0CWTBL[16] = TF0CW02.TF0CWTBL[17];
+      TF0CW02.TF0CWTBL[17] = TF0CW02.TF0CWTBL[18];
+      TF0CW02.TF0CWTBL[18] = TF0CW02.TF0CWTBL[19];
+      TF0CW02.TF0CWTBL[19] = TF0CW02.TF0CWTBL[20];
+      TF0CW02.TF0CWTBL[20] = TF0CW02.TF0CWTBL[21];
+      TF0CW02.TF0CWTBL[21] = TF0CW02.TF0CWTBL[22];
+      TF0CW02.TF0CWTBL[22] = TF0CW02.TF0CWTBL[23];
+      TF0CW02.TF0CWTBL[23] = TF0CW02.TF0CWTBL[24];
+      TF0CW02.TF0CWTBL[24] = TF0CW02.TF0CWTBL[25];
+    else
+      TFAREC.TFAWSUB1 = TFAREC.TFAWSUB1 + 1;
+    end
+    TF4REC.XWHCD = TF0CM001.XWHCD;
+    TFAREC.TFACMPR = TF0CM001.TF0CMNNM;
+    XSTFS04(); /* compress name*/
+    TF4REC.KUMSTSNM = TFAREC.TFARSLT;
+    TF4REC.XBCCD = TFWREC.XBCCD;
+    XP0FW01.XBCCD = TFWREC.XBCCD;
+    XP0FW01.KUCCOID = TF0CM001.KUCCOID;
+    XP0FS01();
+    TF4REC.KUCCOID = XP0FW01.XP0FW01-INTERNAL;
+    TFAREC.TFASTRA = TF0CM001.KUMSTRID;
+    XSTFS02();
+    TF0CM001.KUMSTRID = TFAREC.TFASTRA;
+    TF4REC.KUMSTRID = TFAREC.TFASTRN;
+    if (TF0CM001.XSTCD == " ")
+      TF4REC.KUMXSTCD = "*";
+    else
+      TF4REC.KUMXSTCD = TF0CM001.XSTCD;
+    end
+    if (TF0CM001.XBCCD == " ")
+      TF4REC.XBCCD = "*";
+    else
+      TF4REC.XBCCD = TF0CM001.XBCCD;
+    end
+    if (TF0CM001.TF0CMCTY == " ")
+      TF4REC.KUMCITYS = "*";
+    else
+      TFAREC.TFACMPR = TF0CM001.TF0CMCTY;
+      XSTFS04(); /* compress city*/
+      TF4REC.KUMCITYS = TFAREC.TFARSLT;
+    end
+    TF0CW02.KUMSTRNM[TFAWSUB1] = TF0CM001.TF0CMNNM;
+    TF0CW02.KUMSTSNM[TFAWSUB1] = TF4REC.KUMSTSNM;
+    TF0CW02.KUCCOID[TFAWSUB1] = TF4REC.KUCCOID;
+    TF0CW02.KUMSTRID[TFAWSUB1] = TF4REC.KUMSTRID;
+    TF0CW02.XSTCD[TFAWSUB1] = TF0CM001.XSTCD;
+    TF0CW02.KUMCITYS[TFAWSUB1] = TF0CM001.TF0CMCTY;
+  else
+    if (TF0CW01.TF0CWFBI == "B") /* processing backward*/
+      if (TFAREC.TFAWSUB1 == 1) /* can't go back anymore*/
+        converseLib.validationFailed(96); /* so tell user*/
+        TF0CW01.TF0CWERR = "Y";
+        return;
+      end
+      TFAREC.TFAWSUB1 = TFAREC.TFAWSUB1 - 1; /* set index down by 1*/
+      TF4REC.XWHCD = TF0CM001.XWHCD;
+      TF4REC.KUMSTSNM = TF0CW02.KUMSTSNM[TFAWSUB1];
+      TF4REC.KUMXSTCD = TF0CW02.XSTCD[TFAWSUB1];
+      if (TF0CM001.XBCCD == " ")
+        TF4REC.XBCCD = "*";
+      else
+        TF4REC.XBCCD = TF0CM001.XBCCD;
+      end
+      if (TF4REC.KUMXSTCD == " ")
+        TF4REC.KUMXSTCD = "*";
+      end
+      TF4REC.KUMCITYS = TF0CW02.KUMCITYS[TFAWSUB1];
+      if (TF4REC.KUMCITYS == " ")
+        TF4REC.KUMCITYS = "*";
+      else
+        TFAREC.TFACMPR = TF4REC.KUMCITYS;
+        XSTFS04(); /* compress city*/
+        TF4REC.KUMCITYS = TFAREC.TFARSLT;
+      end
+      TF4REC.KUCCOID = TF0CW02.KUCCOID[TFAWSUB1];
+      TF4REC.KUMSTRID = TF0CW02.KUMSTRID[TFAWSUB1];
+    else /* no direction specified, just*/
+                                   /* redisplay*/
+      return;
+    end
+  end
+
+   /* now load records to screen*/
+
+  if (TFAREC.TFAWSUB1 > 1) /* if we have done scrolling*/
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB1; /* load previous to*/
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 - 1; /* last name & number*/
+    TF0CM001.TF0CMLNM = TF0CW02.KUMSTRNM[TFAWSUB9];
+    TF0CM001.TF0CMLCU = TF0CW02.KUCCOID[TFAWSUB9];
+    XP0FW01.XBCCD = TF0CW02.XBCCD[TFAWSUB9];
+    XP0FW01.KUCCOID = TF0CW02.KUCCOID[TFAWSUB9];
+    XP0FS01();
+    TF0CM001.TF0CMLCU = XP0FW01.XP0FW01-EXTERNAL;
+    TFAREC.TFASTRN = TF0CW02.KUMSTRID[TFAWSUB9];
+    XSTFS03();
+    TF0CM001.TF0CMLST = TFAREC.TFASTRA;
+  else /* at beginning of table, clear last*/
+                                   /* name & number*/
+    TF0CM001.TF0CMLNM = " ";
+    TF0CM001.TF0CMLCU = 0;
+    TF0CM001.TF0CMLST = " ";
+  end
+
+  call "IO1900" ("S2", SQLCA, TF4REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VRTEXN01";
+    TA1REC.TA1TBLKE = "SELECT SET";
+    TF0CS99();
+  end
+  TFAREC.TFAWSUB5 = 1;
+  TF0CW01.TF0CWEOT = "N";
+  while (TFAREC.TFAWSUB5 <= 14)
+    TF0CM001.TF0CMSEL[TFAWSUB5] = " ";
+    TF0CS32(); /* get next row*/
+    if (TFAREC.TFAPFL7 == "Y") /* we need to check if customer found*/
+      TFAREC.TFAPFL7 = "N"; /* dont want to check again*/
+      if (TF0CW01.TF0CWEOT == "Y" /* hit end of table*/
+       || TF4REC.KUMSTSNM != TFAREC.TFARSLT) /* or short names not equal*/
+        TF0CM001.VAGen_EZEMSG = "CUSTOMER NAME NOT FOUND";
+      end
+    end
+    if (TF0CW01.TF0CWEOT == "N") /* not end of table*/
+      if (TFWREC.XBCCD != "08" /* If Cole Haan not requested*/
+       && TF4REC.XBCCD == "08") /* but record is Cole-Haan,*/
+      /* next sentence             /*   skip the record*/
+      else /**/
+        set TF0CM001.TF0CMSEL[TFAWSUB5] initialAttributes;
+        TF0CM001.XBCCD[TFAWSUB5] = TF4REC.XBCCD;
+        XP0FW01.XBCCD = TF4REC.XBCCD;
+        XP0FW01.KUCCOID = TF4REC.KUCCOID;
+        XP0FS01();
+        TF0CM001.TF0CMCOM[TFAWSUB5] = XP0FW01.XP0FW01-EXTERNAL;
+        TFAREC.TFASTRN = TF4REC.KUMSTRID;
+        XSTFS03(); /* convert store number*/
+        TF0CM001.TF0CMSTR[TFAWSUB5] = TFAREC.TFASTRA;
+        TF0CM001.TF0CMNAM[TFAWSUB5] = TF4REC.KUMSTRNM;
+        TF0CS33(); /* check for PSST*/
+        TF0CM001.TF0CMPS[TFAWSUB5] = TFAREC.TFAPFL2;
+         /* added status to display fields*/
+        TF0CM001.TF0CMST[TFAWSUB5] = TF4REC.XXXSTAT;
+        TF0CM001.TF0CMCM[TFAWSUB5] = TF4REC.TF4HCMFL;
+        TF0CM001.TF0CMTX[TFAWSUB5] = TF4REC.TF4HTXFL;
+        TF0CM001.TF0CMTYP[TFAWSUB5] = TF4REC.TF4RXCCD;
+        TF0CM001.TF0CMNFR[TFAWSUB5] = TF4REC.TF1CARCD[1];
+        TF0CM001.TF0CMFRT[TFAWSUB5] = TF4REC.TF1CARCD[2];
+        TF0CM001.TF0CMHCD[TFAWSUB5] = TF4REC.XHRCD; /* 03/91 tbl chgs*/
+        TF0CM001.TF0CMALT[TFAWSUB5] = TF4REC.TF4HAAFL;
+        TFAREC.TFAWSUB5 = TFAREC.TFAWSUB5 + 1;
+      end
+    else
+      set TF0CM001.TF0CMSEL[TFAWSUB5] skip, invisible;
+      TF0CM001.TF0CMCOM[TFAWSUB5] = 0;
+      TF0CM001.TF0CMSTR[TFAWSUB5] = " ";
+      TF0CM001.TF0CMNAM[TFAWSUB5] = " ";
+      TF0CM001.TF0CMPS[TFAWSUB5] = " ";
+         /* added status to display fields*/
+      TF0CM001.XBCCD[TFAWSUB5] = " ";
+      TF0CM001.TF0CMST[TFAWSUB5] = " ";
+      TF0CM001.TF0CMCM[TFAWSUB5] = " ";
+      TF0CM001.TF0CMTX[TFAWSUB5] = " ";
+      TF0CM001.TF0CMTYP[TFAWSUB5] = " ";
+      TF0CM001.TF0CMNFR[TFAWSUB5] = " ";
+      TF0CM001.TF0CMFRT[TFAWSUB5] = " ";
+      TF0CM001.TF0CMHCD[TFAWSUB5] = " ";
+      TF0CM001.TF0CMALT[TFAWSUB5] = " ";
+      TFAREC.TFAWSUB5 = TFAREC.TFAWSUB5 + 1;
+    end
+  end
+
+  TF0CS32();
+  if (TF0CW01.TF0CWEOT == "Y")
+    TF0CM001.TF0CMNNM = " ";
+    TF0CM001.KUCCOID = 0;
+    TF0CM001.KUMSTRID = " ";
+  else
+    if (TFWREC.XBCCD != "08" /* If Cole Haan not requested*/
+     && TF4REC.XBCCD == "08") /* but record is Cole-Haan,*/
+      /* next sentence             /*   skip the record*/
+    else /**/
+      TF0CM001.TF0CMNNM = TF4REC.KUMSTRNM;
+      XP0FW01.XBCCD = TF4REC.XBCCD;
+      XP0FW01.KUCCOID = TF4REC.KUCCOID;
+      XP0FS01();
+      TF0CM001.KUCCOID = XP0FW01.XP0FW01-EXTERNAL;
+      TF0CM001.TF0CMNNM = TF4REC.KUMSTRNM;
+      TFAREC.TFASTRN = TF4REC.KUMSTRID;
+      XSTFS03();
+      TF0CM001.KUMSTRID = TFAREC.TFASTRA;
+    end
+  end
+   /* now close the set*/
+  call "IO1900" ("C2", SQLCA, TF4REC) {isNoRefresh = yes, isExternal = yes};
+
+end // end TF0C300
+
+// Process Header Screen
+Function TF0C500()
+
+  if (TF0CW01.TF0CWHRI == "N" /* we don't have record*/
+   && TF0CW01.TF0CWERR == "N") /* and no errors*/
+    TF0C600(); /* load data to screen*/
+    TF0CW01.TF0CWCFD = "N"; /* set confirm deactivate indicator no*/
+  end
+  TF0CM002.XXXCURDT = VGVar.currentShortGregorianDate;
+  TF0CM002.XXXPRCNM = "TF0C500";
+  TF0CM002.XXXRVNBR = TF0CW01.XXXRVNBR;
+  if (TF0CW01.TF0CWERR == "Y"
+   && converseVar.validationMsgNum != 5
+   && converseVar.validationMsgNum != 9
+   && converseVar.validationMsgNum != 97)
+    set TF0CM002 alarm;
+  end
+  if (TFWREC.TFWUPDFL == "Y") /* updates allowed*/
+    TF0CM002.TF0CMMI = "MAINT";
+    set TF0CM002.TF0CMOPT initialAttributes;
+  else /* in inquiry only mode*/
+    TF0CM002.TF0CMMI = "INQUIRY";
+    TF0CM002.TF0CMOPT = " ";
+    TF0CS15(); /* set fields autoskip*/
+  end
+
+  if (TF0CW01.XWHCD == "42") /* CANA Canadian warehouse*/
+    TF0CM-MSRE-LIT = "MEASUREMENT:"; /* CANA MEASURMENT LITERAL*/
+    TF0CM-MEASURE = "METRIC"; /* CANA measurement*/
+  else
+    TF0CM-MSRE-LIT = "            "; /* CANA MEASURMENT LITERAL*/
+    TF0CM-MEASURE = "      "; /* CANA measurement*/
+  end
+
+  converse TF0CM002 ;
+
+  if (TF0CW01.TF0CWERR == "Y")
+    TF0CW01.TF0CWERR = "N";
+    TF0CS12(); /* reset fields to defined state*/
+  end
+  TF0CS02(); /* check function keys and fast path*/
+  if (TF0CW01.TF0CWEOS == "Y"
+   || TF0CW01.TF0CWERR == "Y")
+    return;
+  end
+
+  if (converseVar.eventKey is pf2) /* user wants directory screen*/
+    set TF0CM001 initial;
+    set TF0CW02 empty;
+    TFAREC.TFAWSUB1 = 0;
+    TF0CM001.XWHCD = TF0CM002.XWHCD;
+    TF0CW01.TF0CWEOS = "Y";
+    TF0CW01.TF0CWFBI = "F";
+    TF0CW01.TF0CWEOT = "N";
+    TF0CW01.TF0CWDIR = "Y";
+    TF0CW01.TF0CWHDR = "N";
+    return;
+  end
+
+  if (converseVar.eventKey is pa2) /* restart*/
+    TF0CW01.TF0CWERR = "Y"; /* so we don't try to get a record*/
+    return;
+  end
+
+  if (TF0CM002.XBCCD != " ")
+    if (TF0CM002.XBCCD in XBCTBL.XBCCD)
+       /* NEXT SENTENCE*/
+    else
+      converseLib.validationFailed(099);
+      set TF0CM002.XBCCD cursor, bold;
+      return;
+    end
+  end
+  if (TF0CM002.KUCCOID == 0
+   && TF0CM002.KUMSTRID == " ")
+    TF0CW01.TF0CWHRI = "N"; /* no record key if 0*/
+    return; /* go back and prompt user again*/
+  end
+
+  if (TF0CM002.XWHCD is modified
+   || TF0CM002.KUCCOID is modified
+   || TF0CM002.KUMSTRID is modified)
+    TF0CW01.TF0CWHRI = "N"; /* we don't have this record yet*/
+    TF0CW01.TF0CWHCR = "N"; /* also don't have a change reason*/
+    TFAREC.TFAPFL6 = "N"; /* and set warning indicator no*/
+    if (TF0CM002.TF0CMOPT == "C")
+      converseLib.validationFailed(77); /* CAN'T MODIFY KEY AND USE CHANGE*/
+      set TF0CM002.KUCCOID modified;
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+    if (TF0CM002.TF0CMOPT == " ") /* inquiry*/
+      return; /* reconverse to get data on screen*/
+    end
+  end
+
+
+  if (TF0CM002.TF0CMOPT != " ") /* not an inquiry*/
+    TF0C700(); /* validate input*/
+    if (TF0CW01.TF0CWERR == "Y")
+      return; /* errors*/
+    end
+    TA2REC.TA2DTOPT = "GETDATE";
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (converseVar.eventKey is pf10) /* user wants to see comments*/
+    if (TF0CM002.TF0CMOPT == " "
+     && TF4REC.TF4HCMFL != "Y") /* no comments exist*/
+      converseLib.validationFailed(78); /* NO COMMENTS FOR THIS EXCEPTION*/
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+    TF0CM003.XWHCD = TF0CM002.XWHCD;
+    TF0CM003.XWHABRV = TF0CM002.XWHABRV;
+    TF0CM003.KUCCOID = TF0CM002.KUCCOID;
+    TF0CM003.KUMSTRID = TF0CM002.KUMSTRID;
+    TF0CM003.KUCCONM = TF0CM002.KUCCONM;
+    TF0CW01.TF0CWEOS = "N";
+    while (TF0CW01.TF0CWEOS == "N")
+      TF0C520();
+    end
+    TF0CW01.TF0CWEOS = "N";
+  end
+
+  if (converseVar.eventKey is pf5) /* user wants to see bol stamp*/
+    TF0CM005.XWHCD = TF0CM002.XWHCD;
+    TF0CM005.XWHABRV = TF0CM002.XWHABRV;
+    TF0CM005.KUCCOID = TF0CM002.KUCCOID;
+    TF0CM005.KUMSTRID = TF0CM002.KUMSTRID;
+    TF0CM005.KUCCONM = TF0CM002.KUCCONM;
+    TF0CW01.TF0CWEOS = "N";
+    while (TF0CW01.TF0CWEOS == "N")
+      TF0C510();
+    end
+    TF0CW01.TF0CWEOS = "N";
+  end
+
+  if (converseVar.eventKey is pf6) /* user wants to see address*/
+    if (TF0CM002.TF0CMRXM != "4") /* only 4 has addresses*/
+      converseLib.validationFailed(79); /* INCORRECT EXCEPTION METHOD FOR*/
+                                   /* ADDRESSES*/
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+    TFAREC.TFAPFL3 = " ";
+    TFAREC.TFAWSUB3 = 1;
+    while (TFAREC.TFAWSUB3 <= 7)
+      if (TF0CM002.TF0CMALT[TFAWSUB3] == "Y")
+        TF0CM002.TF0CMSEL[TFAWSUB3] = "S";
+        TFAREC.TFAPFL3 = "Y"; /* so we know we found one*/
+      end
+      TFAREC.TFAWSUB3 = TFAREC.TFAWSUB3 + 1;
+    end
+    if (TFAREC.TFAPFL3 != "Y") /* no alternate addresses to show*/
+      converseLib.validationFailed(80); /* NO ALTERNATE SHIPTO PRESENT*/
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+  end
+
+  if (converseVar.eventKey is pf12) /* user just validating*/
+    /* next sentence (so don't show addresses)*/
+  else
+    TF0CM004.XWHCD = TF0CM002.XWHCD;
+    TF0CM004.XWHABRV = TF0CM002.XWHABRV;
+    TFAREC.TFAWSUB3 = 1;
+    while (TFAREC.TFAWSUB3 <= 7)
+      if (TF0CM002.TF0CMSEL[TFAWSUB3] != " "
+       && TF0CM002.TF0CMALT[TFAWSUB3] == "Y")
+        TF0CM004.KUCCOID = TF0CM002.KUCCOID;
+        TF0CM004.KUMSTRID = TF0CM002.KUMSTRID;
+        TF0CM004.TF0CMNM = TF0CM002.KUCCONM;
+        TF0CM004.TF0CMWBK = TF0CM002.TF0CMWT[TFAWSUB3];
+        TF0CM004.TF1CARCD = TF0CM002.TF0CMTCA[TFAWSUB3];
+        TF0CM004.TF1CARNM = TF0CM002.TF0CMTCN[TFAWSUB3];
+        TF0CWEOS = "N";
+        while (TF0CW01.TF0CWEOS == "N")
+          TF0C550();
+        end
+        TF0CW01.TF0CWEOS = "N";
+      end
+      TF0CM002.TF0CMSEL[TFAWSUB3] = " ";
+      TFAREC.TFAWSUB3 = TFAREC.TFAWSUB3 + 1;
+    end
+  end
+
+  if (TF0CW01.TF0CWERR == "N")
+    set TF0CM002.KUCCOID cursor; /* and put cursor here*/
+    if (converseVar.eventKey is pf12) /* user wanted validate*/
+      converseLib.validationFailed(5); /* all edits passed*/
+      TF0CW01.TF0CWERR = "Y"; /* so we don't get data again*/
+    else
+      TF0CS51(); /* clear unused parts of screen*/
+      if (TF0CM002.TF0CMOPT == "D" /* deactivate option*/
+       && TF0CW01.TF0CWCFD != "Y") /* deactivation not confirmed*/
+        converseLib.validationFailed(97); /* press enter to deactivate message*/
+        TF0CW01.TF0CWERR = "Y"; /* so we don't get data again*/
+        TF0CW01.TF0CWCFD = "Y";
+        return;
+      end
+      if (TF0CM002.TF0CMOPT != " ") /* not an inquiry*/
+        TF0C800(); /* update to data base*/
+        if (TF0CW01.TF0CWERR == "Y") /* update had problems*/
+          VGVar.handleSysLibraryErrors = 0;
+          sysLib.rollback(); /* rollback any changes*/
+          TF0CW01.TF0CWHRI = "N"; /* no longer have record*/
+        else
+          VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+          VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+          sysLib.commit();
+          VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+           /* commit data base changes*/
+          TF0CS34(); /* reset comment/inactive indicators*/
+          TF0CS54(); /* update directory scrn if needed*/
+          converseLib.validationFailed(9); /* updates successfull*/
+          TF0CW01.TF0CWERR = "Y"; /* don't get this data again*/
+          TF0CM002.TF0CMOPT = " "; /* and clear option field*/
+        end
+      end
+    end
+  end
+
+end // end TF0C500
+
+// Process BOL Stamp Screen
+Function TF0C510()
+  TA1REC.TA1MAP = "TF0CM005";
+  if (TF0CW01.TF0CWERR == "Y")
+    if (converseVar.validationMsgNum != 5
+     && converseVar.validationMsgNum != 9)
+      set TF0CM005 alarm;
+    end
+  else
+    TF0CM005.XXXCURDT = VGVar.currentShortGregorianDate;
+    TF0CM005.XXXPRCNM = "TF0C510";
+    TF0CM005.XXXRVNBR = TF0CW01.XXXRVNBR;
+
+    TF0C515(); /* load records to screen*/
+
+    TFAREC.TFAWSUB9 = 1;
+    while (TFAREC.TFAWSUB9 <= 6)
+      if (TF0CM002.TF0CMOPT == " ") /* inquiry only*/
+        set TF0CM005.TFDBSTXT[TFAWSUB9] skip;
+      else
+        set TF0CM005.TFDBSTXT[TFAWSUB9] initialAttributes;
+      end
+      TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+    end
+
+  end
+
+  converse TF0CM005 ;
+  TF0CW01.TF0CWERR = "N"; /* reset error flag*/
+  TF0CS03(); /* check function keys*/
+  if (TF0CW01.TF0CWERR == "Y" /* we have problems*/
+   || TF0CW01.TF0CWEOS == "Y" /* or user wants to leave*/
+   || converseVar.eventKey is pa2) /* or redisplay*/
+    return;
+  end
+  if (converseVar.eventKey is pf12)
+    converseLib.validationFailed(5); /* all edits passed*/
+    TF0CW01.TF0CWERR = "Y";
+  else
+    TF0C810(); /* do updates*/
+    converseLib.validationFailed(9); /* update successfull*/
+    TF0CW01.TF0CWERR = "Y";
+  end
+
+end // end TF0C510
+
+// Load bol Stamp text to screen
+Function TF0C515()
+
+  PKDREC.XWHCD = TF4REC.XWHCD;
+  call "IO1890" ("S ", SQLCA, PKDREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[1] = "TF0C515";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VPKCTL01";
+    TA1REC.TA1TBLKE = "SELECT";
+    TF0CS99();
+  else
+    TF0CM005.PKDBDTXT = PKDREC.PKDBDTXT;
+  end
+
+  TFDREC.XWHCD = TF4REC.XWHCD;
+  TFDREC.KUCCOID = TF4REC.KUCCOID;
+  TFDREC.KUMSTRID = TF4REC.KUMSTRID;
+  TFDREC.PKUSQNBR = -1;
+  call "IO5450" ("S1", SQLCA, TFDREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[1] = "TF0C515";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VBLSTX01";
+    TA1REC.TA1TBLKE = "SELECT SET";
+    TF0CS99();
+  end
+
+  TFAREC.TFAWSUB9 = 1;
+  while (TFAWSUB9 <= 6)
+    TF0CM005.TFDBSTXT[TFAWSUB9] = " ";
+    TF0CW01.TF0CWHTX[TFAWSUB9] = "N";
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+
+  while (SQLCA.VAGen_SQLCODE == 0)
+    call "IO5450" ("N1", SQLCA, TFDREC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 100)
+      /* next sentence (we are all done)*/
+    else
+      if (SQLCA.VAGen_SQLCODE != 0)
+        TA1REC.TA1LOCAT[1] = "TF0C515";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VBLSTX01";
+        TA1REC.TA1TBLKE = "SELECT NEXT";
+        TF0CS99();
+      else
+        TFAWSUB9 = TFDREC.PKUSQNBR;
+        TF0CM005.TFDBSTXT[TFAWSUB9] = TFDREC.TFDBSTXT;
+        TF0CW01.TF0CWHTX[TFAWSUB9] = "Y";
+      end
+    end
+  end
+
+  call "IO5450" ("C1", SQLCA, TFDREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[1] = "TF0C515";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VBLSTX01";
+    TA1REC.TA1TBLKE = "CLOSE SET";
+    TF0CS99();
+  end
+
+end // end TF0C515
+
+// Process Comment Screen
+Function TF0C520()
+  TA1REC.TA1MAP = "TF0CM003";
+  if (TF0CW01.TF0CWERR == "Y")
+    if (converseVar.validationMsgNum != 5
+     && converseVar.validationMsgNum != 9)
+      set TF0CM003 alarm;
+    end
+  else
+    TF0CM003.TF0CMMI = TF0CM002.TF0CMMI;
+    TF0CM003.XXXCURDT = VGVar.currentShortGregorianDate;
+    TF0CM003.XXXPRCNM = "TF0C520";
+    TF0CM003.XXXRVNBR = TF0CW01.XXXRVNBR;
+    TFBREC.XWHCD = TF4REC.XWHCD;
+    TFBREC.KUCCOID = TF4REC.KUCCOID;
+    TFBREC.KUMSTRID = TF4REC.KUMSTRID;
+    TF0C530(); /* load records to screen*/
+    TFAREC.TFAWSUB9 = 1;
+    while (TFAREC.TFAWSUB9 <= 15)
+      if (TF0CM002.TF0CMOPT == " ") /* inquiry only*/
+        set TF0CM003.TF0CMCMT[TFAWSUB9] skip;
+      else
+        set TF0CM003.TF0CMCMT[TFAWSUB9] initialAttributes;
+      end
+      TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+    end
+  end
+
+  converse TF0CM003 ;
+  TF0CW01.TF0CWERR = "N"; /* reset error flag*/
+  TF0CS03(); /* check function keys*/
+  if (TF0CW01.TF0CWERR == "Y" /* we have problems*/
+   || TF0CW01.TF0CWEOS == "Y" /* or user wants to leave*/
+   || converseVar.eventKey is pa2) /* or redisplay*/
+    return;
+  end
+  if (converseVar.eventKey is pf12)
+    converseLib.validationFailed(5); /* all edits passed*/
+    TF0CW01.TF0CWERR = "Y";
+  else
+    TF0C880(); /* do updates*/
+    converseLib.validationFailed(9); /* update successfull*/
+    TF0CW01.TF0CWERR = "Y";
+  end
+
+end // end TF0C520
+
+// Load Comments to screen
+Function TF0C530()
+
+  TFBREC.TFBCMSEQ = 0;
+  call "IO1930" ("S1", SQLCA, TFBREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[1] = "TF0C530";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VRTEXT01";
+    TA1REC.TA1TBLKE = "SELECT SET";
+    TF0CS99();
+  end
+
+  TFAREC.TFAWSUB9 = 1;
+  while (TFAWSUB9 <= 15)
+    TF0CM003.TF0CMCMT[TFAWSUB9] = " ";
+    TF0CW01.TF0CWHCM[TFAWSUB9] = "N";
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+
+  while (SQLCA.VAGen_SQLCODE == 0)
+    call "IO1930" ("N1", SQLCA, TFBREC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 100)
+      /* next sentence (we are all done)*/
+    else
+      if (SQLCA.VAGen_SQLCODE != 0)
+        TA1REC.TA1LOCAT[1] = "TF0C530";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VRTEXT01";
+        TA1REC.TA1TBLKE = "SELECT NEXT";
+        TF0CS99();
+      else
+        TFAWSUB9 = TFBREC.TFBCMSEQ;
+        TF0CM003.TF0CMCMT[TFAWSUB9] = TFBREC.TFBCMTXT;
+        TF0CW01.TF0CWHCM[TFAWSUB9] = "Y";
+      end
+    end
+  end
+
+  call "IO1930" ("C1", SQLCA, TFBREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[1] = "TF0C530";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VRTEXT01";
+    TA1REC.TA1TBLKE = "CLOSE SET";
+    TF0CS99();
+  end
+end // end TF0C530
+
+// Converse Address Screen
+Function TF0C550()
+  if (TF0CW01.TF0CWERR == "Y")
+    if (converseVar.validationMsgNum != 5
+     && converseVar.validationMsgNum != 9)
+      set TF0CM004 alarm;
+    end
+  else
+    TF0CM004.TF0CMMI = TF0CM002.TF0CMMI;
+    TA1REC.TA1MAP = "T0CM004";
+    TF0CM004.XXXCURDT = VGVar.currentShortGregorianDate;
+    TF0CM004.XXXPRCNM = "TF0C550";
+    TF0CM004.XXXRVNBR = TF0CW01.XXXRVNBR;
+    TF0C560(); /* load the address record*/
+    if (TF0CM002.TF0CMOPT == " ") /* user in inquiry mode*/
+      set TF0CM004.TF5ADRID skip;
+      set TF0CM004.KUCCONM skip;
+      set TF0CM004.XXXADDR1 skip;
+      set TF0CM004.XXXADDR2 skip;
+      set TF0CM004.XXXADDR3 skip;
+      set TF0CM004.XXXCITY skip;
+      set TF0CM004.XSTCD skip;
+      set TF0CM004.XXXZIP skip;
+      set TF0CM004.XCTCD skip;
+      set TF0CM004.TF5PBLFL skip;
+      set TF0CM004.TF5PLBFL skip;
+    else
+      set TF0CM004.TF5ADRID initialAttributes;
+      set TF0CM004.KUCCONM initialAttributes;
+      set TF0CM004.XXXADDR1 initialAttributes;
+      set TF0CM004.XXXADDR2 initialAttributes;
+      set TF0CM004.XXXADDR3 initialAttributes;
+      set TF0CM004.XXXCITY initialAttributes;
+      set TF0CM004.XSTCD initialAttributes;
+      set TF0CM004.XXXZIP initialAttributes;
+      set TF0CM004.XCTCD initialAttributes;
+      set TF0CM004.TF5PBLFL initialAttributes;
+      set TF0CM004.TF5PLBFL initialAttributes;
+    end
+  end
+
+  if (TF0CW01.XWHCD == "42") /* CANA Canadian warehouse*/
+    TF0CM-MSRE-LIT2 = "MEASURMENT:"; /* CANA measurement literal*/
+    TF0CM-MEASURE2 = "METRIC"; /* CANA measurement*/
+  else
+    TF0CM-MSRE-LIT2 = "           "; /* CANA measurement literal*/
+    TF0CM-MEASURE2 = "      "; /* CANA measurement*/
+  end
+
+  converse TF0CM004 ;
+  if (TF0CW01.TF0CWERR == "Y")
+    TF0CW01.TF0CWERR = "N";
+    TF0CS14();
+  end
+  TF0CS04(); /* check function keys*/
+  if (TF0CW01.TF0CWERR == "Y" /* errors*/
+   || TF0CW01.TF0CWEOS == "Y" /* or end of screen*/
+   || converseVar.eventKey is pa2) /* or redisplay*/
+    return;
+  end
+
+  if (TF0CM004 is modified) /* user did something*/
+    TF0C570(); /* edit address screen*/
+    if (TF0CW01.TF0CWERR == "N") /* no errors*/
+      converseLib.validationFailed(9); /* updates successfull*/
+      TF0CW01.TF0CWERR = "Y";
+    end
+  else
+    if (TF0CW01.TF5ADRID[TFAWSUB3] == 0)
+      converseLib.validationFailed(89); /* YOU MUST ENTER AN ADDRESS*/
+      TF0CW01.TF0CWERR = "Y";
+    else
+      TF0CW01.TF0CWEOS = "Y"; /* ok to exit*/
+    end
+  end
+
+end // end TF0C550
+
+// Load Address record to screen
+Function TF0C560()
+
+  set TF0CM004.TF5ADRID cursor; /* place cursor on adrid*/
+  TF6REC.XWHCD = TF0CM002.XWHCD;
+  TF6REC.TF6ADRID = TF0CW01.TF5ADRID[TFAWSUB3];
+  if (TF6REC.TF6ADRID == 0)
+    set TF6REC empty;
+    TF6REC.XCTCD = "USA";
+    TF0CW01.TF5PBLFL[TFAWSUB3] = "Y";
+    TF0CW01.TF5PLBFL[TFAWSUB3] = "Y";
+  else
+    call "IO1920" ("S ", SQLCA, TF6REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1LOCAT[1] = "TF0C560";
+      TA1REC.TA1DBASE = "DPICK";
+      TA1REC.TA1TBLVU = "VRTADR01";
+      TF0CS99();
+    end
+  end
+
+  TF0CS53(); /* load address to screen*/
+
+end // end TF0C560
+
+// Edit address screen
+Function TF0C570()
+
+  TA1REC.TA1LOCAT[1] = "TF0C570";
+  if (TF0CM004.TF5PBLFL != "N"
+   && TF0CM004.TF5PBLFL != "Y")
+    converseLib.validationFailed(3); /* invalid valid*/
+    set TF0CM004.TF5PBLFL cursor, bold;
+    TF0CW01.TF0CWERR = "Y";
+  else
+    TF0CW01.TF5PBLFL[TFAWSUB3] = TF0CM004.TF5PBLFL;
+  end
+  if (TF0CM004.TF5PLBFL != "N"
+   && TF0CM004.TF5PLBFL != "Y")
+    converseLib.validationFailed(3); /* invalid valid*/
+    set TF0CM004.TF5PLBFL cursor, bold;
+    TF0CW01.TF0CWERR = "Y";
+  else
+    TF0CW01.TF5PLBFL[TFAWSUB3] = TF0CM004.TF5PLBFL;
+  end
+
+  if (TF0CM004.TF5ADRID is modified
+   && TF0CM004.TF5ADRID != 0)
+    if (TF0CM004.KUCCONM is modified
+     || TF0CM004.XXXADDR1 is modified
+     || TF0CM004.XXXADDR2 is modified
+     || TF0CM004.XXXADDR3 is modified
+     || TF0CM004.XXXCITY is modified
+     || TF0CM004.XSTCD is modified
+     || TF0CM004.XXXZIP is modified
+     || TF0CM004.XCTCD is modified)
+      converseLib.validationFailed(90); /* CANNOT CHANGE BOTH ADDRESS AND ID*/
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+    TF6REC.XWHCD = TF0CM002.XWHCD;
+    TF6REC.TF6ADRID = TF0CM004.TF5ADRID;
+    call "IO1920" ("S ", SQLCA, TF6REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 0) /* good address*/
+      TF0CS53(); /* load address to screen*/
+      if (converseVar.eventKey is pf12) /* user just wants validation*/
+        converseLib.validationFailed(5); /* all edits passed*/
+        set TF0CM004.TF5ADRID modified;
+        TF0CW01.TF0CWERR = "Y"; /* so we will redisplay*/
+        return;
+      else
+        TF0CW01.TF5ADRID[TFAWSUB3] = TF0CM004.TF5ADRID;
+      end
+    else
+      if (SQLCA.VAGen_SQLCODE == 100) /* bad id*/
+        converseLib.validationFailed(91); /* address id is not in address table*/
+        set TF0CM004.TF5ADRID cursor, modified, bold;
+        TF0CW01.TF0CWERR = "Y";
+        return;
+      else
+        TA1REC.TA1LOCAT[1] = "TF0C570";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VRTADR01";
+        TF0CS99();
+      end
+    end
+  else /* we need to check address stuff*/
+    if (TF0CM004.KUCCONM is modified
+     || TF0CM004.XXXADDR1 is modified
+     || TF0CM004.XXXADDR2 is modified
+     || TF0CM004.XXXADDR3 is modified
+     || TF0CM004.XXXCITY is modified
+     || TF0CM004.XSTCD is modified
+     || TF0CM004.XXXZIP is modified
+     || TF0CM004.XCTCD is modified)
+      TF0CSE1();
+      TF0CSE2();
+      TF0CSE3();
+      if (TF0CW01.TF0CWERR == "Y") /* we got problems*/
+        return;
+      else
+        if (converseVar.eventKey is pf12) /* validate only*/
+          converseLib.validationFailed(5); /* all edits passed*/
+          set TF0CM004.KUCCONM modified;
+          TF0CW01.TF0CWERR = "Y"; /* to trigger redisplay*/
+          return;
+        end
+      end
+      TF0CS81(); /* write it to address file*/
+      TF0CW01.TF5ADRID[TFAWSUB3] = TF6REC.TF6ADRID;
+      TF0CM004.TF5ADRID = TF6REC.TF6ADRID;
+    end
+  end
+
+end // end TF0C570
+
+// Load data to TF0CM002
+Function TF0C600()
+
+  TF0CW01.XWHCD = TF0CM002.XWHCD;
+  TF0CS31(); /* get warehouse desc.*/
+  if (TF0CW01.TF0CWERR == "Y") /* can't find it*/
+    TF0CM002.XWHABRV = " ";
+    converseLib.validationFailed(11); /* invalid warehouse*/
+    set TF0CM002.XWHCD cursor, modified, bold;
+    return;
+  else
+    TF0CM002.XWHABRV = TF0CW01.XWHABRV;
+  end
+  if (TF0CM002.KUCCOID == 0 /* if these fields empty*/
+   && TF0CM002.KUMSTRID == " ") /* then don't try to get anything*/
+    return;
+  end
+
+  TF0CM002.TF0CMOPT = " "; /* clear action field*/
+  TFAREC.TFASTRA = TF0CM002.KUMSTRID;
+  XSTFS02();
+  if (TFAREC.TFAPFL9 == "E") /* error in store id*/
+    converseLib.validationFailed(76); /* INVALID STORE IDENTIFIER*/
+    TF0CW01.TF0CWERR = "Y";
+    set TF0CM002.KUMSTRID cursor, bold;
+    return;
+  end
+  TF0CM002.KUMSTRID = TFAREC.TFASTRA;
+  TF0CS41(); /* get customer/store record*/
+  if (TF0CW01.TF0CWERR == "Y") /* can't find customer*/
+    TF0CW01.TF0CWFND = "N"; /* customer not found*/
+    return; /* and can't continue*/
+  else
+    TF0CW01.TF0CWFND = "Y"; /* set customer found switch*/
+  end
+  TF0CS42(); /* now get address record*/
+  TF0CM002.KUCCONM = PK6REC.KUCCONM;
+  TF0CM002.XXXADDR1 = PK7REC.XXX-ADDR1;
+  TF0CM002.XXXADDR2 = PK7REC.XXX-ADDR2;
+  TF0CM002.XXXADDR3 = PK7REC.XXX-ADDR3;
+  TF0CM002.XXXCITY = PK7REC.XXXCITY;
+  TF0CM002.XSTCD = PK7REC.XSTSTCD;
+  TF0CM002.XXXZIP = PK7REC.XXXZIP;
+  if (PK7REC.XCTCD == "USA")
+    TF0CM002.XCTCD = " ";
+    TF0CM002.XCTDESC = " ";
+  else
+    TF0CM002.XCTCD = PK7REC.XCTCD;
+    if (TF0CM002.XCTCD in XCTTBL.XCTCD)
+      TF0CM002.XCTDESC = XCTTBL.XCTDESC[sysVar.arrayIndex];
+    else
+      TF0CM002.XCTDESC = "UNKNOWN COUNTRY";
+    end
+  end
+  TF0CS45(); /* try to get exception record*/
+  if (TFAREC.TFAPFL1 == "N") /* record not found*/
+    converseLib.validationFailed(81); /* EXCEPTION RECORD NOT ON FILE*/
+    set TF0CM002.KUCCOID cursor, modified, bold;
+    set TF0CM002.KUMSTRID bold;
+    TF0CW01.TF0CWERR = "Y";
+    return;
+  else
+    TF0CM002.KUCCONM = TF4REC.KUMSTRNM;
+  end
+  set TF0CM002.KUCCOID cursor; /* put cursor here if everything ok*/
+  TF0CS33(); /* check for psst customer*/
+  TF0CS34(); /* check for comments,stamp text*/
+  if (TF4REC.TF4HCMFL == "Y" /* we have comments*/
+   || TF4REC.TF4HTXFL == "Y") /* or we have stamp text*/
+    TF0CW01.KUCCOID = TF4REC.KUCCOID; /* for replicate later*/
+    TF0CW01.KUMSTRID = TF4REC.KUMSTRID;
+  else
+    TF0CW01.KUCCOID = 0;
+    TF0CW01.KUMSTRID = 0;
+  end
+  TF0CW01.TF0CWHRI = "Y"; /* we now have a record*/
+  TF0CW01.TF0CWHCR = "N"; /* but not a change reason*/
+  TF0CM002.TF0CMRXM = TF4REC.TF4RXCCD;
+  TF0CM002.TF0CMCRN = TF4REC.TF4MNTXT;
+  TF0CM002.TF4FBLIN = TF4REC.TF4FBLIN; /* freight billing code*/
+  TFAREC.TFAWDTEN = TF4REC.ZZZCHGDT;
+  TF0CM002.TF0CMCDT = TFAREC.TFAWYMD;
+  if (TF0CM002.TF0CMRXM == "1")
+    TFAREC.TF1CARCD = TF4REC.TF1CARCD[1];
+    TF0CS43(); /* get description*/
+    TF0CM002.TF0CMNFC = TFAREC.TF1CARCD;
+    TF0CM002.TF0CMNFN = TFAREC.TF1ABRV;
+    TFAREC.TF1CARCD = TF4REC.TF1CARCD[2];
+    TF0CS43(); /* get description*/
+    TF0CM002.TF0CMFRC = TFAREC.TF1CARCD;
+    TF0CM002.TF0CMFRN = TFAREC.TF1ABRV;
+  end
+  if (TF0CM002.TF0CMRXM == "2")
+    TFAREC.TF1CARCD = TF4REC.TF1CARCD[1];
+    TF0CS43(); /* get description*/
+    TF0CM002.TF0CM2CR = TFAREC.TF1CARCD;
+    TF0CM002.TF0CM2CN = TFAREC.TF1ABRV;
+  end
+  if (TF0CM002.TF0CMRXM == "3")
+    TFAREC.TF1CARCD = TF4REC.TF1CARCD[1];
+    TF0CS43(); /* get description*/
+    TF0CM002.TF0CM3CR = TFAREC.TF1CARCD;
+    TF0CM002.TF0CM3CN = TFAREC.TF1ABRV;
+    TFAREC.XHRCD = TF4REC.XHRCD; /* 03/04/91  table changes*/
+    TF0CS44(); /* get description*/
+    TF0CM002.TF0CMHRC = TFAREC.XHRCD;
+    TF0CM002.TF0CMHRD = TFAREC.XHRABRV; /* 03/05/91  table changes*/
+  end
+  if (TF0CM002.TF0CMRXM == "4")
+    TF0C620();
+  end
+  TF0CS51(); /* clear unused parts of map*/
+
+end // end TF0C600
+
+// Load Weight Breaks to screen
+Function TF0C620()
+  TF5REC.XWHCD = TF4REC.XWHCD;
+  TF5REC.KUCCOID = TF4REC.KUCCOID;
+  TF5REC.KUMSTRID = TF4REC.KUMSTRID;
+  TF5REC.TF5WTBRK = 0;
+  call "IO1910" ("S1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[2] = "TF0C620";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VRTEWT01";
+    TF0CS99();
+  end
+
+  TFAREC.TFAWSUB5 = 1;
+  TFAREC.TFAPFL2 = "N"; /* set for not at end of file*/
+  while (TFAREC.TFAWSUB5 <= 7)
+    TF0CM002.TF0CMSEL[TFAWSUB5] = " ";
+    TF0CS46(); /* get next record*/
+    if (TFAREC.TFAPFL2 == "Y") /* at end of table*/
+      TF0CM002.TF0CMWT[TFAWSUB5] = 0;
+      TF0CM002.TF0CMALT[TFAWSUB5] = " ";
+      set TF0CM002.TF0CMALT[TFAWSUB5] normal;
+      if (TFWREC.TFWUPDFL != "Y")
+        set TF0CM002.TF0CMALT[TFAWSUB5] skip;
+      end
+      TF0CM002.TF0CMHRT[TFAWSUB5] = " ";
+      TF0CM002.TF0CMHTD[TFAWSUB5] = " ";
+      TF0CM002.TF0CMTCA[TFAWSUB5] = " ";
+      TF0CM002.TF0CMTCN[TFAWSUB5] = " ";
+      TF0CW01.TF5WTBRK[TFAWSUB5] = 0;
+      TF0CW01.TF1CARCD[TFAWSUB5] = " ";
+      TF0CW01.XHRCD[TFAWSUB5] = " "; /* tble chngs  03/07/91*/
+      TF0CW01.TF5ALTAD[TFAWSUB5] = " ";
+      TF0CW01.TF5ADRID[TFAWSUB5] = 0;
+      TF0CW01.TF5PBLFL[TFAWSUB5] = " ";
+      TF0CW01.TF5PLBFL[TFAWSUB5] = " ";
+
+      TFAREC.TFAWSUB5 = TFAREC.TFAWSUB5 + 1;
+    else /* not end, load data to screen*/
+      if (TF5REC.XXXSTAT == "I") /* Status inactive*/
+
+      else /* Not inactive*/
+        if (TF0CW01.XWHCD == "42") /* CANA Canadian warehouse*/
+          if (TF5REC.TF5WTBRK != 9999999) /* CANA weight requires conversion*/
+            TF0CM002.TF0CMWT[TFAWSUB5] = mathLib.round(TF5REC.TF5WTBRK / 2.2046, -mathLib.decimals(TF0CM002.TF0CMWT[TFAWSUB5])); /* CANA weight in kilos*/
+          else /* CANA no weight conversion*/
+            TF0CM002.TF0CMWT[TFAWSUB5] = TF5REC.TF5WTBRK; /* weight in pounds*/
+          end
+        else /* CANA non Canadian warehouse*/
+          TF0CM002.TF0CMWT[TFAWSUB5] = TF5REC.TF5WTBRK; /* weight in pounds*/
+        end
+        TF0CM002.TF0CMALT[TFAWSUB5] = TF5REC.TF5ALTAD;
+        if (TF0CM002.TF0CMALT[TFAWSUB5] == "Y")
+          if (TFWREC.TFWUPDFL == "Y")
+            set TF0CM002.TF0CMALT[TFAWSUB5] initialAttributes;
+            set TF0CM002.TF0CMALT[TFAWSUB5] bold;
+          else
+            set TF0CM002.TF0CMALT[TFAWSUB5] skip, bold;
+          end
+        else
+          if (TFWREC.TFWUPDFL == "Y")
+            set TF0CM002.TF0CMALT[TFAWSUB5] initialAttributes;
+          else
+            set TF0CM002.TF0CMALT[TFAWSUB5] initialAttributes;
+            set TF0CM002.TF0CMALT[TFAWSUB5] skip;
+          end
+        end
+        TF0CW01.TF5WTBRK[TFAWSUB5] = TF5REC.TF5WTBRK;
+        TF0CW01.TF5ALTAD[TFAWSUB5] = TF5REC.TF5ALTAD;
+        TF0CW01.TF5ADRID[TFAWSUB5] = TF5REC.TF5ADRID;
+        TF0CW01.XHRCD[TFAWSUB5] = TF5REC.TF1CARCD;
+        TF0CW01.XHRCD[TFAWSUB5] = TF5REC.XHRCD; /* 03/91 tbl chgs*/
+        TF0CW01.TF5PBLFL[TFAWSUB5] = TF5REC.TF5PBLFL;
+        TF0CW01.TF5PLBFL[TFAWSUB5] = TF5REC.TF5PLBFL;
+        if (TF5REC.XHRCD == " ") /* no hold reason cd (03/91 tbl chgs)*/
+          TF0CM002.TF0CMHRT[TFAWSUB5] = " ";
+          TF0CM002.TF0CMHTD[TFAWSUB5] = " ";
+        else
+          TFAREC.XHRCD = TF5REC.XHRCD; /* 03/05/91  table changes*/
+          TF0CS44();
+          TF0CM002.TF0CMHRT[TFAWSUB5] = TFAREC.XHRCD; /* 03/05/91*/
+          TF0CM002.TF0CMHTD[TFAWSUB5] = TFAREC.XHRABRV; /* table changes*/
+        end
+        TFAREC.TF1CARCD = TF5REC.TF1CARCD;
+        TF0CS43();
+        TF0CM002.TF0CMTCA[TFAWSUB5] = TFAREC.TF1CARCD;
+        TF0CM002.TF0CMTCN[TFAWSUB5] = TFAREC.TF1ABRV;
+
+        TFAREC.TFAWSUB5 = TFAREC.TFAWSUB5 + 1;
+      end
+    end
+  end
+  call "IO1910" ("C1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+
+end // end TF0C620
+
+// Validate Header Screen
+Function TF0C700()
+  if (TF0CM002.XWHCD is modified)
+    TF0CM002.XWHABRV = " ";
+    TF0CW01.TF0CWHWH = TF0CW01.XWHCD; /* save old whse cd*/
+    TF0CW01.XWHCD = TF0CM002.XWHCD;
+    TF0CS31();
+    if (TF0CW01.TF0CWERR == "Y")
+      converseLib.validationFailed(11); /* invalid warehouse code*/
+      set TF0CM002.XWHCD cursor, modified, bold;
+      return;
+    end
+    TF0CM002.XWHABRV = TF0CW01.XWHABRV;
+  end
+
+  TFAREC.TFASTRA = TF0CM002.KUMSTRID;
+  XSTFS02();
+  if (TFAREC.TFAPFL9 == "E") /* error in store id*/
+    converseLib.validationFailed(76); /* INVALID STORE IDENTIFIER*/
+    TF0CW01.TF0CWERR = "Y";
+    set TF0CM002.KUMSTRID cursor, bold;
+    return;
+  end
+  TF0CM002.KUMSTRID = TFAREC.TFASTRA;
+  TF0CS41(); /* get customer/store record*/
+  if (TF0CW01.TF0CWERR == "Y") /* can't find it*/
+    return; /* and can't continue*/
+  end
+  TF0CS42(); /* now get address record*/
+  TF0CM002.XXXADDR1 = PK7REC.XXX-ADDR1;
+  TF0CM002.XXXADDR2 = PK7REC.XXX-ADDR2;
+  TF0CM002.XXXADDR3 = PK7REC.XXX-ADDR3;
+  TF0CM002.XXXCITY = PK7REC.XXXCITY;
+  TF0CM002.XSTCD = PK7REC.XSTSTCD;
+  TF0CM002.XXXZIP = PK7REC.XXXZIP;
+  TF0CM002.XBCCD = PK7REC.XBCCD;
+  if (PK7REC.XCTCD == "USA")
+    TF0CM002.XCTCD = " ";
+    TF0CM002.XCTDESC = " ";
+  else
+    TF0CM002.XCTCD = PK7REC.XCTCD;
+    if (TF0CM002.XCTCD in XCTTBL.XCTCD)
+      TF0CM002.XCTDESC = XCTTBL.XCTDESC[sysVar.arrayIndex];
+    else
+      TF0CM002.XCTDESC = "UNKNOWN COUNTRY";
+    end
+  end
+
+  if (TF0CM002.TF0CMOPT != "A"
+   && TF0CM002.TF0CMOPT != "C"
+   && TF0CM002.TF0CMOPT != "D"
+   && TF0CM002.TF0CMOPT != "R")
+    converseLib.validationFailed(38); /* invalid option*/
+    set TF0CM002.TF0CMOPT cursor, bold;
+    TF0CW01.TF0CWERR = "Y";
+    return;
+  end
+
+  if (TF0CM002.TF4FBLIN != "C"
+   && TF0CM002.TF4FBLIN != "P"
+   && TF0CM002.TF4FBLIN != "T"
+   && TF0CM002.TF4FBLIN != " ")
+    converseLib.validationFailed(98); /* invalid option*/
+    set TF0CM002.TF4FBLIN cursor, bold;
+    TF0CW01.TF0CWERR = "Y";
+    return;
+  end
+
+  TF0CS45(); /* now try for exception record*/
+  if (TFAREC.TFAPFL1 == "Y") /* we found a record*/
+    TF0CM002.KUCCONM = TF4REC.KUMSTRNM;
+    if (TF0CM002.TF0CMOPT == "A" /* but for these options*/
+     || TF0CM002.TF0CMOPT == "R") /* there should not be one*/
+      converseLib.validationFailed(39); /* duplicate record, cannot be added*/
+      set TF0CM002.KUCCOID cursor, modified, bold;
+      set TF0CM002.KUMSTRID bold;
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+  else /* we did not find a record*/
+    TF0CM002.KUCCONM = PK6REC.KUCCONM;
+    if (TF0CM002.TF0CMOPT == "C" /* but for these options,*/
+     || TF0CM002.TF0CMOPT == "D") /* we need to have one*/
+      converseLib.validationFailed(81); /* EXCEPTION RECORD IS NOT ON FILE*/
+      set TF0CM002.KUCCOID cursor, modified, bold;
+      set TF0CM002.KUMSTRID bold;
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+
+    TF4REC.KUMSTRNM = " ";
+    TF4REC.KUMSTSNM = " ";
+    TF4REC.KUMXSTCD = " ";
+    TF4REC.KUMCITYS = " ";
+    TF4REC.TF4MNTXT = " ";
+    TF4REC.TF4RXCCD = " ";
+    TF4REC.TF1CARCD[1] = " ";
+    TF4REC.TF1CARCD[2] = " ";
+    TF4REC.XHRCD = " "; /* 03/91  table changes*/
+    TF4REC.TF4HAAFL = "N";
+    TF4REC.TF4HCMFL = "N";
+    TF4REC.TF4HTXFL = "N";
+    TF4REC.XXXSTAT = "A";
+    TF4REC.ZZZSDT = 0;
+    TF4REC.ZZZCHGDT = 0;
+    TF4REC.ZZZCHGTM = 0;
+    TF4REC.ZZZCHGCT = 0;
+  end
+
+  if (TF0CM002.TF0CMOPT == "D") /* Deactivate option*/
+    if (TF4REC.XXXSTAT == "A") /* Status active*/
+
+    else
+      converseLib.validationFailed(111); /* Deactivate invalid for inactive*/
+      set TF0CM002.TF0CMOPT cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+  end
+
+  if (TF0CM002.TF0CMOPT == "C") /* Change option*/
+    if (TF4REC.XXXSTAT == "A") /* Status active*/
+
+    else
+      converseLib.validationFailed(112); /* Change invalid for inactive*/
+      set TF0CM002.TF0CMOPT cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+  end
+
+  if (TF0CW01.TF0CWHRI == "N") /* no current record*/
+    if (TF0CM002.TF0CMOPT == "C") /* and trying to change*/
+      converseLib.validationFailed(82); /* NO CURRENT RECORD TO CHANGE*/
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+  end
+
+  TF0CM002.TF0CMCDT = VGVar.currentShortGregorianDate;
+  if (TF0CM002.TF0CMCRN is modified)
+    if (TF0CM002.TF0CMCRN == " ") /* spaces not ok*/
+      converseLib.validationFailed(83); /* CHANGE REASON MUST BE NON-BLANK*/
+      set TF0CM002.TF0CMCRN cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+    else
+      TF0CW01.TF0CWHCR = "Y"; /* we now have a change reason*/
+    end
+  else
+    if (TF0CW01.TF0CWHCR != "Y") /* we don't have a change reason*/
+      converseLib.validationFailed(84); /* PLEASE ENTER A CHANGE REASON*/
+      set TF0CM002.TF0CMCRN cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+    end
+  end
+
+  if (TF0CM002.TF0CMRXM == "1")
+    TFAREC.TF1CARCD = TF0CM002.TF0CMNFC;
+    TF0CM002.TF0CMNFN = " ";
+    TF0CS43(); /* get description*/
+    if (TFAREC.TF1ABRV == "*UNKNOWN*")
+      converseLib.validationFailed(33); /* invalid carrier code*/
+      set TF0CM002.TF0CMNFC cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+    else
+      if (TFAREC.TF1ABRV == "*INVALID*")
+        converseLib.validationFailed(44); /* invalid for warehouse*/
+        set TF0CM002.TF0CMNFC cursor, bold;
+        TF0CW01.TF0CWERR = "Y";
+      else
+        TF0CM002.TF0CMNFN = TFAREC.TF1ABRV;
+        if (TF1REC.TF1FCARF == "Y") /* freight carrier not valid here*/
+          converseLib.validationFailed(31); /* must be non-freight carrier*/
+          set TF0CM002.TF0CMNFC cursor, bold;
+          TF0CW01.TF0CWERR = "Y";
+        end
+      end
+    end
+    TFAREC.TF1CARCD = TF0CM002.TF0CMFRC;
+    TF0CM002.TF0CMFRN = " ";
+    TF0CS43(); /* get description*/
+    if (TFAREC.TF1ABRV == "*UNKNOWN*")
+      converseLib.validationFailed(33); /* invalid carrier code*/
+      set TF0CM002.TF0CMFRC cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+    else
+      if (TFAREC.TF1ABRV == "*INVALID*")
+        converseLib.validationFailed(44); /* invalid for warehouse*/
+        set TF0CM002.TF0CMFRC cursor, bold;
+        TF0CW01.TF0CWERR = "Y";
+      else
+        TF0CM002.TF0CMFRN = TFAREC.TF1ABRV;
+        if (TF1REC.TF1FCARF == "N") /* non-freight carrier not valid here*/
+          converseLib.validationFailed(32); /* must be freight carrier*/
+          set TF0CM002.TF0CMFRC cursor, bold;
+          TF0CW01.TF0CWERR = "Y";
+        end
+      end
+    end
+  end
+  if (TF0CM002.TF0CMRXM == "2")
+    TFAREC.TF1CARCD = TF0CM002.TF0CM2CR;
+    TF0CM002.TF0CM2CN = " ";
+    TF0CS43(); /* get description*/
+    if (TFAREC.TF1ABRV == "*UNKNOWN*")
+      converseLib.validationFailed(33); /* invalid carrier code*/
+      set TF0CM002.TF0CM2CR cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+    else
+      if (TFAREC.TF1ABRV == "*INVALID*")
+        converseLib.validationFailed(44); /* invalid for warehouse*/
+        set TF0CM002.TF0CM2CR cursor, bold;
+        TF0CW01.TF0CWERR = "Y";
+      else
+        TF0CM002.TF0CM2CN = TFAREC.TF1ABRV;
+      end
+    end
+  end
+  if (TF0CM002.TF0CMRXM == "3")
+    TFAREC.TF1CARCD = TF0CM002.TF0CM3CR;
+    TF0CM002.TF0CM3CN = " ";
+    TF0CS43(); /* get description*/
+    if (TFAREC.TF1ABRV == "*UNKNOWN*")
+      converseLib.validationFailed(33); /* invalid carrier code*/
+      set TF0CM002.TF0CM3CR cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+    else
+      if (TFAREC.TF1ABRV == "*INVALID*")
+        converseLib.validationFailed(44); /* invalid for warehouse*/
+        set TF0CM002.TF0CM3CR cursor, bold;
+        TF0CW01.TF0CWERR = "Y";
+      else
+        TF0CM002.TF0CM3CN = TFAREC.TF1ABRV;
+      end
+    end
+    TFAREC.XHRCD = TF0CM002.TF0CMHRC; /* 03/05/91  table changes*/
+    TF0CS44(); /* get description*/
+    if (TFAREC.XHRABRV == "??????") /* 03/05/91  table changes*/
+      converseLib.validationFailed(85); /* INVALID HOLD REASON CODE*/
+      set TF0CM002.TF0CMHRC cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+    else
+      TF0CM002.TF0CMHRD = TFAREC.XHRABRV;
+    end
+  end
+  if (TF0CM002.TF0CMRXM == "4")
+    TF0C720();
+  end
+
+  if (TF0CM002.TF0CMRXM < "1"
+   || TF0CM002.TF0CMRXM > "4")
+    converseLib.validationFailed(86); /* INVALID EXCEPTION METHOD*/
+    set TF0CM002.TF0CMRXM cursor, bold;
+    TF0CW01.TF0CWERR = "Y";
+  end
+
+  if (TF0CM002.TF0CMOPT == "A" /* if in add mode*/
+   || TF0CM002.TF0CMOPT == "R") /* or replicate*/
+    if (TF0CW01.TF0CWERR == "N" /* no errors*/
+     && TFAREC.TFAPFL6 == "N")  /* and not warned yet*/
+      TFAREC.TFAPFL1 = "V"; /* verify for -1 record*/
+      TF0CS45(); /* try and find it*/
+      if (TFAREC.TFAPFL1 == "Y") /* we found one*/
+        converseLib.validationFailed(94); /* WARNING - .ALL EXISTS FOR CUST*/
+        TFAREC.TFAPFL6 = "Y"; /* set warning flag yes*/
+        TF0CW01.TF0CWERR = "Y"; /* and set error flag*/
+      else
+        TFAREC.TFAPFL6 = "N"; /* user warned, reset flag*/
+      end
+    end
+  end
+end // end TF0C700
+
+// Validate weight break tbl
+Function TF0C720()
+
+   /* first, we'll unload the screen to the work table*/
+
+  TFAREC.TFAWSUB9 = 1;
+  while (TFAWSUB9 <= 7)
+    TF0CW01.TF0CWSEL[TFAWSUB9] = TF0CM002.TF0CMSEL[TFAWSUB9];
+    if (TF0CW01.XWHCD == "42") /* CANA Canadian warehouse*/
+      if (TF0CM002.TF0CMWT[TFAWSUB9] != 9999999)
+                                   /* CANA weight needs conversion*/
+        TF0CW01.TF5WTBRK[TFAWSUB9] = mathLib.round(TF0CM002.TF0CMWT[TFAWSUB9] * 2.2046, -mathLib.decimals(TF0CW01.TF5WTBRK[TFAWSUB9])); /* CANA weight in pounds*/
+      else /* CANA weight doesn't need converting*/
+        TF0CW01.TF5WTBRK[TFAWSUB9] = TF0CM002.TF0CMWT[TFAWSUB9];
+      end
+    else /* CANA non Canadian warehouse*/
+      TF0CW01.TF5WTBRK[TFAWSUB9] = TF0CM002.TF0CMWT[TFAWSUB9];
+    end
+    TF0CW01.TF5ALTAD[TFAWSUB9] = TF0CM002.TF0CMALT[TFAWSUB9];
+    set TF0CM002.TF0CMALT[TFAWSUB9] initialAttributes;
+    TF0CW01.XHRCD[TFAWSUB9] = TF0CM002.TF0CMHRT[TFAWSUB9];
+    TF0CW01.TF1CARCD[TFAWSUB9] = TF0CM002.TF0CMTCA[TFAWSUB9];
+    if (TF0CM002.TF0CMOPT == "A") /* if we are adding*/
+      TF0CW01.TF5ADRID[TFAWSUB9] = 0; /* reset adr id*/
+      TF0CW01.TF5PBLFL[TFAWSUB9] = "N";
+      TF0CW01.TF5PLBFL[TFAWSUB9] = "N";
+    end
+    if (TF0CM002.TF0CMOPT == "R" /* if we are replicating*/
+     && TF0CM002.XWHCD != TF0CW01.TF0CWHWH) /* and changing whse*/
+      TF0CW01.TF5ADRID[TFAWSUB9] = 0; /* user must enter address*/
+      TF0CW01.TF5PBLFL[TFAWSUB9] = "N";
+      TF0CW01.TF5PLBFL[TFAWSUB9] = "N";
+    end
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+
+   /* now sort the table by weight*/
+
+  TF0CS52();
+
+   /* now, reload the sorted table back to the screen*/
+
+  TFAREC.TFAWSUB9 = 1;
+  while (TFAWSUB9 <= 7)
+    TF0CM002.TF0CMSEL[TFAWSUB9] = TF0CW01.TF0CWSEL[TFAWSUB9];
+    if (TF0CW01.XWHCD == "42") /* CANA Canadian warehouse*/
+      if (TF0CW01.TF5WTBRK[TFAWSUB9]
+       != 9999999) /* CANA weight requires conversion*/
+        TF0CM002.TF0CMWT[TFAWSUB9] = mathLib.round(TF0CW01.TF5WTBRK[TFAWSUB9] / 2.2046, -mathLib.decimals(TF0CM002.TF0CMWT[TFAWSUB9])); /* CANA weight in kilos*/
+      else /* CANA weight doesn't require*/
+                                   /* conversion*/
+        TF0CM002.TF0CMWT[TFAWSUB9] = TF0CW01.TF5WTBRK[TFAWSUB9];
+      end
+    else /* CANA non Canadian warehouse*/
+      TF0CM002.TF0CMWT[TFAWSUB9] = TF0CW01.TF5WTBRK[TFAWSUB9];
+    end
+    TF0CM002.TF0CMALT[TFAWSUB9] = TF0CW01.TF5ALTAD[TFAWSUB9];
+    if (TF0CM002.TF0CMALT[TFAWSUB9] == "Y")
+      set TF0CM002.TF0CMALT[TFAWSUB9] bold;
+    end
+    TF0CM002.TF0CMHRT[TFAWSUB9] = TF0CW01.XHRCD[TFAWSUB9];
+    TF0CM002.TF0CMTCA[TFAWSUB9] = TF0CW01.TF1CARCD[TFAWSUB9];
+    TF0CM002.TF0CMTCN[TFAWSUB9] = " ";
+    TF0CM002.TF0CMHTD[TFAWSUB9] = " ";
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+
+   /* this loop will check for a bunch of stuff:*/
+    /* check that no weight breaks are equal*/
+    /* check for valid alternate shipto flag*/
+    /* check carrier and hold reason code*/
+    /* clear data from 0 weight lines*/
+    /* check for 9999999 record*/
+
+  TFAREC.TFAPFL9 = "N"; /* flag for 9999999 record*/
+  TFAREC.TFAWSUB9 = 1;
+  TF0CW01.TF0CWHWT = 0; /* equal weight break work field*/
+  while (TFAREC.TFAWSUB9 <= 7)
+    if (TF0CW01.TF5WTBRK[TFAWSUB9] == 0) /* not used, clear*/
+      TF0CW01.TF5WTBRK[TFAWSUB9] = 0;
+      TF0CW01.TF1CARCD[TFAWSUB9] = " ";
+      TF0CW01.XHRCD[TFAWSUB9] = " ";
+      TF0CW01.TF5ALTAD[TFAWSUB9] = " ";
+      TF0CW01.TF5ADRID[TFAWSUB9] = 0;
+      TF0CW01.TF5PBLFL[TFAWSUB9] = " ";
+      TF0CW01.TF5PLBFL[TFAWSUB9] = " ";
+      TF0CM002.TF0CMSEL[TFAWSUB9] = " ";
+      TF0CM002.TF0CMWT[TFAWSUB9] = 0;
+      TF0CM002.TF0CMALT[TFAWSUB9] = " ";
+      TF0CM002.TF0CMHRT[TFAWSUB9] = " ";
+      TF0CM002.TF0CMHTD[TFAWSUB9] = " ";
+      TF0CM002.TF0CMTCA[TFAWSUB9] = " ";
+      TF0CM002.TF0CMTCN[TFAWSUB9] = " ";
+    else
+      if (TF0CW01.TF5WTBRK[TFAWSUB9] == TF0CW01.TF0CWHWT)
+        converseLib.validationFailed(87); /* DUPLICATE WEIGHT BREAK*/
+        set TF0CM002.TF0CMWT[TFAWSUB9] cursor, bold;
+        TF0CW01.TF0CWERR = "Y";
+      end
+      if (TF0CW01.TF5WTBRK[TFAWSUB9] == 9999999)
+        TFAREC.TFAPFL9 = "Y";
+      end
+      TF0CW01.TF0CWHWT = TF0CW01.TF5WTBRK[TFAWSUB9];
+      if (TF0CW01.TF5ALTAD[TFAWSUB9] == " ") /* spaces mean 'no'*/
+        TF0CW01.TF5ALTAD[TFAWSUB9] = "N"; /* so set to 'no'*/
+        TF0CM002.TF0CMALT[TFAWSUB9] = "N"; /* and screen too*/
+      end
+      if (TF0CW01.TF5ALTAD[TFAWSUB9] != "Y"
+       && TF0CW01.TF5ALTAD[TFAWSUB9] != "N")
+        converseLib.validationFailed(47); /* invalid value - values are Y or N*/
+        set TF0CM002.TF0CMALT[TFAWSUB9] cursor, bold;
+        TF0CW01.TF0CWERR = "Y";
+      end
+      TFAREC.TF1CARCD = TF0CW01.TF1CARCD[TFAWSUB9];
+      TF0CM002.TF0CMTCN[TFAWSUB9] = " ";
+      TF0CS43(); /* get description*/
+      if (TFAREC.TF1ABRV == "*UNKNOWN*")
+        converseLib.validationFailed(33); /* invalid carrier code*/
+        set TF0CM002.TF0CMTCA[TFAWSUB9] cursor, bold;
+        TF0CW01.TF0CWERR = "Y";
+      else
+        if (TFAREC.TF1ABRV == "*INVALID*")
+          converseLib.validationFailed(44); /* invalid for warehouse*/
+          set TF0CM002.TF0CMTCA[TFAWSUB9] cursor, bold;
+          TF0CW01.TF0CWERR = "Y";
+        else
+          TF0CM002.TF0CMTCN[TFAWSUB9] = TFAREC.TF1ABRV;
+        end
+      end
+      if (TF0CW01.XHRCD[TFAWSUB9] != " ")
+        TFAREC.XHRCD = TF0CW01.XHRCD[TFAWSUB9]; /* 03/05/91 tbl chgs*/
+        TF0CM002.TF0CMHTD[TFAWSUB9] = " ";
+        TF0CS44(); /* get description*/
+        if (TFAREC.XHRABRV == "??????") /* 03/05/91  table changes*/
+          converseLib.validationFailed(85); /* INVALID HOLD REASON CODE*/
+          set TF0CM002.TF0CMHRT[TFAWSUB9] cursor, bold;
+          TF0CW01.TF0CWERR = "Y";
+        else
+          TF0CM002.TF0CMHTD[TFAWSUB9] = TFAREC.XHRABRV; /* 0591 tbl chgs*/
+        end
+      else
+        TF0CM002.TF0CMHTD[TFAWSUB9] = " ";
+      end
+    end
+    if (TF0CW01.TF5ALTAD[TFAWSUB9] == "Y")
+      if (TF0CW01.TF5ADRID[TFAWSUB9] == 0)
+        TF0CM002.TF0CMSEL[TFAWSUB9] = "S";
+      end
+    else
+      TF0CW01.TF5ADRID[TFAWSUB9] = 0;
+      TF0CW01.TF5PBLFL[TFAWSUB9] = "N";
+      TF0CW01.TF5PLBFL[TFAWSUB9] = "N";
+    end
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+
+  if (TF0CM002.TF0CMOPT == "D" /* deactivate option*/
+  )                           
+  else
+    if (TFAREC.TFAPFL9 != "Y") /* we didn't find 9999999 item*/
+      converseLib.validationFailed(88); /* MISSING 9999999 WEIGHT BREAK ENTRY*/
+      set TF0CM002.TF0CMSEL[1] cursor; /* and place cursor here*/
+      TF0CW01.TF0CWERR = "Y";
+    end
+  end
+
+end // end TF0C720
+
+// Update exception & wt breaks
+Function TF0C800()
+
+   /* First, lets handle the weight break records.*/
+
+  TA1REC.TA1LOCAT[1] = "TF0C800";
+  TF4REC.TF4HAAFL = "N";
+  TF5REC.XWHCD = TF4REC.XWHCD;
+  TF5REC.KUCCOID = TF4REC.KUCCOID;
+  TF5REC.KUMSTRID = TF4REC.KUMSTRID;
+  TF5REC.XBCCD = TF4REC.XBCCD;
+  if (TF4REC.TF4RXCCD == "4" /* we used to have weight breaks*/
+   && TF0CM002.TF0CMRXM != "4") /* but we don't now*/
+    TF5REC.TF5WTBRK = -1; /* delete all weight breaks*/
+    call "IO1910" ("D ", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 0
+     || SQLCA.VAGen_SQLCODE == 100)
+      /* next sentence*/
+    else
+      TA1REC.TA1DBTBL = "DPICK";
+      TA1REC.TA1TBLVU = "VRTEWT01";
+      TA1REC.TA1TBLKE = "DELETE ALL";
+      TF0CS99();
+    end
+  end
+
+  if (TF0CM002.TF0CMRXM == "4") /* we have weight breaks*/
+    if (TF4REC.TF4RXCCD != "4") /* but none on disk to deal with*/
+      TFAREC.TFAWSUB9 = 1;
+      while (TFAREC.TFAWSUB9 < 8
+       && TF0CW01.TF5WTBRK[TFAWSUB9] > 0)
+        TF0CS82(); /* add weight breaks*/
+        TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+      end
+    else /* we have records on disk - match/merge time*/
+      if (TF0CM002.TF0CMOPT == "D" /* deactivate option*/
+      )                            /* delete all inactive wt breaks*/
+        TF5REC.XXXSTAT = "I"; /* inactive*/
+        call "IO1910" ("D1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+        if (SQLCA.VAGen_SQLCODE == 0 || 
+        SQLCA.VAGen_SQLCODE == 100)
+
+        else
+          TA1REC.TA1DBTBL = "DPICK";
+          TA1REC.TA1TBLVU = "VRTEWT01";
+          TA1REC.TA1TBLKE = "DELETE";
+          TF0CS99();
+        end
+
+      end
+
+      TF5REC.TF5WTBRK = 0;
+      call "IO1910" ("S1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+      if (SQLCA.VAGen_SQLCODE != 0)
+        TA1REC.TA1DBTBL = "DPICK";
+        TA1REC.TA1TBLVU = "VRTEWT01";
+        TA1REC.TA1TBLKE = "SELECT SET";
+        TF0CS99();
+      end
+      call "IO1910" ("N1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+      if (SQLCA.VAGen_SQLCODE == 0)
+        TFAREC.TFAWSUB9 = 1;
+        TF0CW01.TF0CWESC = "N";
+        TF0CW01.TF0CWEDB = "N";
+        TFAREC.TFAPFL9 = "N";
+        while (TFAREC.TFAPFL9 == "N") /* now at end yet*/
+          TF0CS83(); /* do match*/
+        end
+      else
+        if (SQLCA.VAGen_SQLCODE == 100)
+
+        else
+          TA1REC.TA1DBTBL = "DPICK";
+          TA1REC.TA1TBLVU = "VRTEWT01";
+          TA1REC.TA1TBLKE = "GET 1ST";
+          TF0CS99();
+        end
+      end
+      call "IO1910" ("C1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+      if (SQLCA.VAGen_SQLCODE != 0)
+        TA1REC.TA1DBTBL = "DPICK";
+        TA1REC.TA1TBLVU = "VRTEWT01";
+        TA1REC.TA1TBLKE = "CLOSE SET";
+        TF0CS99();
+      end
+    end
+  end
+
+   /* now if we are setting inactive (purged by a batch purge*/
+   /* application after retention period) weight, comment records.*/
+
+   /* now check for comment & weight break records*/
+
+  if (TF0CM002.TF0CMOPT == "D" /* set inactive*/
+   && TF0CW01.TF0CWCFD == "Y") /* deactivate confirmed*/
+    if (TF4REC.TF4RXCCD == "4") /* we have weight breaks*/
+      TF0CS85(); /* take care of them*/
+    end
+    if (TF4REC.TF4HCMFL == "Y") /* we have comments*/
+      TF0CS84(); /* take care of them*/
+    end
+    if (TF4REC.TF4HTXFL == "Y") /* we have stamp text*/
+      TF0CS86(); /* take care of them*/
+    end
+  end
+
+   /* if we are doing a replicate function, check for*/
+   /* stamp text and replicate them if needed.*/
+
+  if (TF0CM002.TF0CMOPT == "R" /* replicate action*/
+   && TF4REC.TF4HTXFL == "Y")  /* last record processed had them*/
+    TFDREC.XWHCD = TF0CW01.XWHCD;
+    TFDREC.KUCCOID = TF0CW01.KUCCOID;
+    TFDREC.KUMSTRID = TF0CW01.KUMSTRID;
+    TF0C515(); /* load stamp text*/
+    TFAREC.TFAWSUB8 = 1; /* reset subscript*/
+    while (TFAREC.TFAWSUB8 <= 6) /* need to reset have stamp text*/
+      TF0CW01.TF0CWHTX[TFAWSUB8] = "N";
+      TFAREC.TFAWSUB8 = TFAREC.TFAWSUB8 + 1;
+    end
+    TF0C810(); /* and update to disk*/
+  end
+
+   /* if we are doing a replicate function, check for*/
+   /* comments and replicate them if needed.*/
+
+  if (TF0CM002.TF0CMOPT == "R" /* replicate action*/
+   && TF4REC.TF4HCMFL == "Y")  /* last record processed had them*/
+    TFBREC.XWHCD = TF0CW01.XWHCD;
+    TFBREC.KUCCOID = TF0CW01.KUCCOID;
+    TFBREC.XBCCD = TF0CW01.XBCCD;
+    TFBREC.KUMSTRID = TF0CW01.KUMSTRID;
+    TF0C530(); /* load comments*/
+    TFAREC.TFAWSUB8 = 1; /* reset subscript*/
+    while (TFAREC.TFAWSUB8 <= 15) /* need to reset have comment flags*/
+      TF0CW01.TF0CWHCM[TFAWSUB8] = "N";
+      TFAREC.TFAWSUB8 = TFAREC.TFAWSUB8 + 1;
+    end
+    TF0C880(); /* and update to disk*/
+  end
+
+   /* now we can fix the exception record (tf4rec)*/
+
+  TFCREC.TF-AUD-BFR-LEN = 338;
+  TFCREC.TF-AUD-BFR-TEXT = TF4REC.TF4GRPLV;
+  TF4REC.KUMSTRNM = TF0CM002.KUCCONM;
+  TFAREC.TFACMPR = TF0CM002.KUCCONM;
+  XSTFS04(); /* compress name*/
+  TF4REC.KUMSTSNM = TFAREC.TFARSLT;
+  TF4REC.KUMXSTCD = TF0CM002.XSTCD;
+  TFAREC.TFACMPR = TF0CM002.XXXCITY;
+  XSTFS04(); /* compress city*/
+  TF4REC.KUMCITYS = TFAREC.TFARSLT;
+  TF4REC.TF4MNTXT = TF0CM002.TF0CMCRN;
+  TF4REC.TF4FBLIN = TF0CM002.TF4FBLIN; /* freight billing code*/
+  TF4REC.TF4RXCCD = TF0CM002.TF0CMRXM;
+  TF4REC.XHRCD = " "; /* 03/91  table changes*/
+  if (TF4REC.TF4RXCCD == "1")
+    TF4REC.TF1CARCD[1] = TF0CM002.TF0CMNFC;
+    TF4REC.TF1CARCD[2] = TF0CM002.TF0CMFRC;
+  end
+  if (TF4REC.TF4RXCCD == "2")
+    TF4REC.TF1CARCD[1] = TF0CM002.TF0CM2CR;
+    TF4REC.TF1CARCD[2] = TF0CM002.TF0CM2CR;
+  end
+  if (TF4REC.TF4RXCCD == "3")
+    TF4REC.TF1CARCD[1] = TF0CM002.TF0CM3CR;
+    TF4REC.TF1CARCD[2] = TF0CM002.TF0CM3CR;
+    TF4REC.XHRCD = TF0CM002.TF0CMHRC; /* 03/91  table changes*/
+  end
+  if (TF4REC.TF4RXCCD == "4")
+    TF4REC.TF1CARCD[1] = " ";
+    TF4REC.TF1CARCD[2] = " ";
+  end
+  if (TF0CM002.TF0CMOPT == "D")
+    TF4REC.XXXSTAT = "I";
+  else
+    TF4REC.XXXSTAT = "A";
+  end
+  if (TF0CM002.TF0CMOPT == "A"
+   || TF0CM002.TF0CMOPT == "R")
+    TF4REC.ZZZSDT = TA2REC.TA2GRGGN;
+    TF4REC.ZZZCHGCT = 0;
+  end
+  TF4REC.ZZZCHGDT = TA2REC.TA2GRGGN;
+  TF4REC.ZZZCHGTM = TA2REC.TA2TIMHM;
+  if (TF0CM002.TF0CMOPT == "A"
+   || TF0CM002.TF0CMOPT == "R")
+    TF0CW03.TF0CWIO = "A ";
+    TF4REC.XBCCD = TF0CM002.XBCCD;
+    TFCREC.TF-AUD-BFR-LEN = 338;
+    TFCREC.TF-AUD-BFR-TEXT = " ";
+    TFCREC.TF-AUD-AFT-LEN = 338;
+    TFCREC.TF-AUD-AFT-TEXT = TF4REC.TF4GRPLV;
+    TFCREC.TFCACTIN = "A";
+  else
+    TF0CW03.TF0CWIO = "U ";
+    TFCREC.TF-AUD-AFT-LEN = 338;
+    TFCREC.TF-AUD-AFT-TEXT = TF4REC.TF4GRPLV;
+    TFCREC.TFCACTIN = "C";
+  end
+  call "IO1900" (TF0CW03, SQLCA, TF4REC);
+  if (SQLCA.VAGen_SQLCODE == 100) /* someone else changed it*/
+    converseLib.validationFailed(26); /* database has been changed*/
+    TF0CW01.TF0CWERR = "Y";
+  else
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1DBTBL = "DPICK";
+      TA1REC.TA1TBLVU = "VRTEXN01";
+      TF0CS99();
+    else
+      TFCREC.TFCTBLNM = "VRTEXN01";
+      TF0CS89(); /* write audit record*/
+    end
+  end
+  if (TF4REC.TF4HCMFL == "Y" /* record has comments*/
+   || TF4REC.TF4HTXFL == "Y") /* record has stamp text*/
+    TF0CW01.KUCCOID = TF4REC.KUCCOID; /* save for replicate*/
+    TF0CW01.XBCCD = TF4REC.XBCCD;
+    TF0CW01.KUMSTRID = TF4REC.KUMSTRID;
+  else
+    TF0CW01.KUCCOID = 0;
+    TF0CW01.KUMSTRID = 0;
+    TF0CW01.XBCCD = " ";
+  end
+
+end // end TF0C800
+
+// Update BOL Stamp table
+Function TF0C810()
+
+  TFDREC.XWHCD = TF4REC.XWHCD;
+  TFDREC.KUCCOID = TF4REC.KUCCOID;
+  TFDREC.KUMSTRID = TF4REC.KUMSTRID;
+  TFCREC.TFCTBLNM = "VBLSTX01";
+
+  TFAREC.TFAWSUB9 = 1;
+  while (TFAREC.TFAWSUB9 <= 6)
+    TFCREC.TF-AUD-BFR-LEN = 338;
+    TFCREC.TF-AUD-BFR-TEXT = " ";
+    TFCREC.TF-AUD-AFT-LEN = 338;
+    TFCREC.TF-AUD-AFT-TEXT = " ";
+    if (TF0CW01.TF0CWHTX[TFAWSUB9] == "Y") /* if text exists*/
+      TFDREC.PKUSQNBR = TFAWSUB9;
+      try
+        call "IO5450" ("S ", SQLCA, TFDREC) {isNoRefresh = yes, isExternal = yes};
+      end
+      if (SQLCA.VAGen_SQLCODE != 0
+       && SQLCA.VAGen_SQLCODE != -811) /* more than one row is okay*/
+        TA1REC.TA1LOCAT[1] = "TF0C810";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VBLSTX01";
+        TA1REC.TA1TBLKE = "SELECT";
+        TF0CS99();
+      end
+      if (TF0CM005.TFDBSTXT[TFAWSUB9] == " ")
+        TF0CW03.TF0CWIO = "D "; /* set to delete*/
+        TFDREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+        TFDREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+        TFCREC.TF-AUD-BFR-LEN = 338;
+        TFCREC.TF-AUD-BFR-TEXT = TFDREC.TFDGRPLV;
+        TFCREC.TFCACTIN = "D";
+        TF0CW01.TF0CWHTX[TFAWSUB9] = "N"; /* reset 'has-text-FL to NO*/
+      else
+        if (TF0CM005.TFDBSTXT[TFAWSUB9] != TFDREC.TFDBSTXT)
+          TF0CW03.TF0CWIO = "U ";
+          TFCREC.TF-AUD-BFR-LEN = 338;
+          TFCREC.TF-AUD-BFR-TEXT = TFDREC.TFDGRPLV;
+          TFDREC.TFDBSTXT = TF0CM005.TFDBSTXT[TFAWSUB9];
+          TFDREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+          TFDREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+          TFCREC.TF-AUD-AFT-LEN = 338;
+          TFCREC.TF-AUD-AFT-TEXT = TFDREC.TFDGRPLV;
+          TFCREC.TFCACTIN = "C";
+        else
+          TF0CW03.TF0CWIO = " ";
+        end
+      end
+    else
+      if (TF0CM005.TFDBSTXT[TFAWSUB9] != " ")
+        TF0CW03.TF0CWIO = "A ";
+        TFDREC.PKUSQNBR = TFAWSUB9;
+        TFDREC.TFDBSTXT = TF0CM005.TFDBSTXT[TFAWSUB9];
+        TFDREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+        TFDREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+        TFDREC.ZZZCHGCT = 0;
+        TFCREC.TF-AUD-AFT-LEN = 338;
+        TFCREC.TF-AUD-AFT-TEXT = TFDREC.TFDGRPLV;
+        TFCREC.TFCACTIN = "A";
+        TF0CW01.TF0CWHTX[TFAWSUB9] = "Y"; /* reset 'has-text-fl to YES*/
+      else
+        TF0CW03.TF0CWIO = " ";
+      end
+    end
+    if (TF0CW03.TF0CWIO != " ") /* we need to do io*/
+      try
+        call "IO5450" (TF0CW03, SQLCA, TFDREC) {isNoRefresh = yes, isExternal = yes};
+      end
+      if (SQLCA.VAGen_SQLCODE != 0)
+        TA1REC.TA1LOCAT[1] = "TF0C810";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VBLSTX01";
+        TA1REC.TA1TBLKE = "A/C/D";
+        TF0CS99();
+      end
+      TF0CS89(); /* and audit record*/
+    end
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+
+  TFAREC.TFAWSUB9 = 1; /* initialize subscript to 1*/
+  TF4REC.TF4HTXFL = "N"; /* initialize STAMP-FLAG to 'NO'*/
+  while (TFAREC.TFAWSUB9 <= 6) /* loop thru all lines on screen*/
+    if (TF0CM005.TFDBSTXT[TFAWSUB9] != " ") /* IF stamp text found*/
+      TF4REC.TF4HTXFL = "Y"; /* Turn STAMP-FLAG 'ON'*/
+    end /* END of "IF" statement*/
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1; /* increment subscript*/
+  end /* END of loop*/
+
+
+end // end TF0C810
+
+// Update Comments to table
+Function TF0C880()
+
+  TFBREC.XWHCD = TF4REC.XWHCD;
+  TFBREC.KUCCOID = TF4REC.KUCCOID;
+  TFBREC.XBCCD = TF4REC.XBCCD;
+  TFBREC.KUMSTRID = TF4REC.KUMSTRID;
+   /* **** The following code commented by G Gilray 6/7/88 ****/
+   /* MOVE 'N' TO TF4REC.TF4HCMfl;*/
+   /* *********************************************************/
+  TFCREC.TFCTBLNM = "VRTEXT01";
+
+  TFAREC.TFAWSUB9 = 1;
+  while (TFAREC.TFAWSUB9 <= 15)
+    TFCREC.TF-AUD-BFR-LEN = 338;
+    TFCREC.TF-AUD-BFR-TEXT = " ";
+    TFCREC.TF-AUD-AFT-LEN = 338;
+    TFCREC.TF-AUD-AFT-TEXT = " ";
+    if (TF0CW01.TF0CWHCM[TFAWSUB9] == "Y") /* we have comment record*/
+      TFBREC.TFBCMSEQ = TFAWSUB9;
+      call "IO1930" ("S ", SQLCA, TFBREC) {isNoRefresh = yes, isExternal = yes};
+      if (SQLCA.VAGen_SQLCODE != 0
+       && SQLCA.VAGen_SQLCODE != -811) /* added 2-22-88  - pmainw*/
+        TA1REC.TA1LOCAT[1] = "TF0C880";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VRTEXT01";
+        TA1REC.TA1TBLKE = "SELECT";
+        TF0CS99();
+      end
+      if (TF0CM003.TF0CMCMT[TFAWSUB9] == " ")
+        TF0CW03.TF0CWIO = "D "; /* set to delete*/
+        TFBREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+        TFBREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+        TFCREC.TF-AUD-BFR-LEN = 338;
+        TF-AUD-BFR-TEXT = TFBREC.TFBGRPLV;
+        TFCREC.TFCACTIN = "D";
+        /* ***** the following code added by G Gilray 6/7/88 ******/
+        TF0CW01.TF0CWHCM[TFAWSUB9] = "N"; /* reset 'HAS-CMNT-FL to NO*/
+        /* ********************************************************/
+      else
+        if (TF0CM003.TF0CMCMT[TFAWSUB9] != TFBREC.TFBCMTXT)
+          TF0CW03.TF0CWIO = "U ";
+          /* ***** The following code commented by G Gilray 6/7/88 ******/
+          /* MOVE 'Y' TO TF4REC.TF4HCMfl;*/
+          /* ************************************************************/
+          TFCREC.TF-AUD-BFR-LEN = 338;
+          TF-AUD-BFR-TEXT = TFBREC.TFBGRPLV;
+          TFBREC.TFBCMTXT = TF0CM003.TF0CMCMT[TFAWSUB9];
+          TFBREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+          TFBREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+          TFCREC.TF-AUD-AFT-LEN = 338;
+          TF-AUD-AFT-TEXT = TFBREC.TFBGRPLV;
+          TFCREC.TFCACTIN = "C";
+        else
+          TF0CW03.TF0CWIO = " ";
+        end
+      end
+    else
+      if (TF0CM003.TF0CMCMT[TFAWSUB9] != " ")
+        TF0CW03.TF0CWIO = "A ";
+        /* ***** the following code commented by G Gilray 6/7/88 ******/
+        /* MOVE 'Y' TO TF4REC.TF4HCMfl;*/
+        /* ************************************************************/
+        TFBREC.TFBCMSEQ = TFAWSUB9;
+         /* MOVE 'A' TO TFBREC.XXXSTAT*/
+        TFBREC.TFBCMTXT = TF0CM003.TF0CMCMT[TFAWSUB9];
+        TFBREC.ZZZSDT = TA2REC.TA2GRGGN;
+        TFBREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+        TFBREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+        TFBREC.ZZZCHGCT = 0;
+        TFCREC.TF-AUD-AFT-LEN = 338;
+        TF-AUD-AFT-TEXT = TFBREC.TFBGRPLV;
+        TFCREC.TFCACTIN = "A";
+        /* ***** the following code added by G Gilray 6/7/88 ******/
+        TF0CW01.TF0CWHCM[TFAWSUB9] = "Y"; /* reset 'HAS-CMNT-FL to yes*/
+        /* ********************************************************/
+      else
+        TF0CW03.TF0CWIO = " ";
+      end
+    end
+    if (TF0CW03.TF0CWIO != " ") /* we need to do io*/
+      TFBREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+      call "IO1930" (TF0CW03, SQLCA, TFBREC) {isNoRefresh = yes, isExternal = yes};
+      if (SQLCA.VAGen_SQLCODE != 0)
+        TA1REC.TA1LOCAT[1] = "TF0C880";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VRTEXT01";
+        TA1REC.TA1TBLKE = "A/C/D";
+        TF0CS99();
+      end
+      TF0CS89(); /* and audit record*/
+    end
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+
+   /* *************************************************************/
+   /* ***** The Following code added by Grant Gilray 6/7/88  ******/
+   /* ***** This code will check each line on the COMMENTS   ******/
+   /* ***** screen for data, if none exists, the COMMENTS-   ******/
+   /* ***** Flag will be left as 'NO', but if any comment    ******/
+   /* ***** exists, the COMMENTS-FLAG will be reset to 'YES'.******/
+   /* *************************************************************/
+  TFAREC.TFAWSUB9 = 1; /* initialize subscript to 1*/
+  TF4REC.TF4HCMFL = "N";
+                                   /* initialize COMMENT-FLAG to 'NO'*/
+  while (TFAREC.TFAWSUB9 <= 15) /* loop thru all lines on screen*/
+    if (TF0CM003.TF0CMCMT[TFAWSUB9] != " ") /* IF comment found*/
+      TF4REC.TF4HCMFL = "Y"; /* Turn COMMENT-FLAG 'ON'*/
+    end /* END of "IF" statement*/
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1; /* increment subscript*/
+  end /* END of loop*/
+   /* ***** end of code added by G Gilray 6/7/88 ******************/
+
+
+end // end TF0C880
+
+// Check PF keys and Fast Path
+Function TF0CS01()
+   /* *************************************************************/
+   /* *    This statement group will check for the common        **/
+   /* *    PF keys and for Fast path and will try to go to the   **/
+   /* *    proper routine.                                       **/
+   /* *************************************************************/
+
+  if (converseVar.eventKey is pf1) /* help key*/
+    XSPF1();
+    TF0CM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+    TF0CW01.TF0CWERR = "Y";
+    return;
+  end
+
+  if (converseVar.eventKey is pf3) /* exit to traffic menu*/
+    COMMAREA.CATOAP = "TF0A";
+    XSEXIT();
+    TF0CM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+    TF0CW01.TF0CWERR = "Y";
+    return;
+  end
+
+  if (converseVar.eventKey is pf4) /* master menu*/
+    XSPF4();
+    exit program;
+  end
+
+  if (converseVar.eventKey is enter)
+    if (TF0CM001.CATOAP != " ")
+      COMMAREA.CATOAP = TF0CM001.CATOAP;
+      COMMAREA.CAITEM = TF0CM001.CAITEM;
+      XSEXIT();
+      TF0CM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+      set TF0CM001.CATOAP cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    else
+      return;
+    end
+  end
+
+  if (converseVar.eventKey is pa1
+   || converseVar.eventKey is pa2)
+    converseLib.clearScreen();
+    
+  end
+
+  if (converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8
+   || converseVar.eventKey is pf2)
+    return;
+  else
+    converseLib.validationFailed(2); /* invalid key pressed*/
+    TF0CW01.TF0CWERR = "Y";
+  end
+
+end // end TF0CS01
+
+// Check PF Keys and Fast Path
+Function TF0CS02()
+   /* *************************************************************/
+   /* *    This statement group will check for the common        **/
+   /* *    PF keys and for Fast path and will try to go to the   **/
+   /* *    proper routine.                                       **/
+   /* *************************************************************/
+
+  if (converseVar.eventKey is pf1) /* help key*/
+    XSPF1();
+    TF0CM002.VAGen_EZEMSG = COMMAREA.CAMSG;
+    TF0CW01.TF0CWERR = "Y";
+    return;
+  end
+
+  if (converseVar.eventKey is pf3) /* exit to traffic menu*/
+    if (TF0CW01.TF0CWDIR == "N") /* not using directory screen*/
+      COMMAREA.CATOAP = "TF0A";
+      XSEXIT();
+      TF0CM002.VAGen_EZEMSG = COMMAREA.CAMSG;
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    else
+      TF0CW01.TF0CWEOS = "Y";
+      TFAWSUB2 = 15;
+      return;
+    end
+  end
+
+  if (converseVar.eventKey is pf2)
+    if (TF0CW01.TF0CWDIR == "Y")
+      TF0CW01.TF0CWEOS = "Y";
+      TFAWSUB2 = 15;
+    end
+    return;
+  end
+
+  if (converseVar.eventKey is pf4) /* master menu*/
+    XSPF4();
+    exit program;
+  end
+
+  if (converseVar.eventKey is enter)
+    if (TF0CM002.CATOAP != " ")
+      COMMAREA.CATOAP = TF0CM002.CATOAP;
+      COMMAREA.CAITEM = TF0CM002.CAITEM;
+      XSEXIT();
+      TF0CM002.VAGen_EZEMSG = COMMAREA.CAMSG;
+      set TF0CM002.CATOAP cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+      return;
+    end
+    if (TF0CM002 is modified)
+      /* next sentence*/
+    else
+      if (TF0CW01.TF0CWDIR == "Y"
+       && TF0CM002.TF0CMOPT == " ")
+        TF0CW01.TF0CWEOS = "Y";
+      end
+    end
+    return;
+  end
+
+  if (converseVar.eventKey is pa1
+   || converseVar.eventKey is pa2)
+    converseLib.clearScreen();
+    
+  end
+
+  if (converseVar.eventKey is pa2)
+    return;
+  else
+    if (converseVar.eventKey is pf5 /* if request for stamp text*/
+     || converseVar.eventKey is pf6 
+     || converseVar.eventKey is pf10
+     || converseVar.eventKey is pf12)
+      if (TF0CW01.TF0CWFND == "Y") /* customer found*/
+        return;
+      else
+        converseLib.validationFailed(2); /* invalid key pressed*/
+        TF0CW01.TF0CWERR = "Y";
+      end
+    else
+      converseLib.validationFailed(2); /* invalid key pressed*/
+      TF0CW01.TF0CWERR = "Y";
+    end
+  end
+
+
+end // end TF0CS02
+
+// Check PF Keys and Fast Path
+Function TF0CS03()
+   /* *************************************************************/
+   /* *    This statement group will check for the common        **/
+   /* *    PF keys and for Fast path and will try to go to the   **/
+   /* *    proper routine.                                       **/
+   /* *************************************************************/
+
+  if (converseVar.eventKey is pf1) /* help key*/
+    XSPF1();
+    TF0CM002.VAGen_EZEMSG = COMMAREA.CAMSG;
+    TF0CW01.TF0CWERR = "Y";
+    return;
+  end
+
+  if (converseVar.eventKey is pf3 /* exit*/
+   || converseVar.eventKey is pf5 
+   || converseVar.eventKey is pf10)
+    TF0CW01.TF0CWEOS = "Y";
+    return;
+  end
+
+  if (converseVar.eventKey is pa1
+   || converseVar.eventKey is pa2)
+    converseLib.clearScreen();
+    
+  end
+
+  if (converseVar.eventKey is enter
+   || converseVar.eventKey is pf12
+   || converseVar.eventKey is pa2)
+    return;
+  else
+    converseLib.validationFailed(2); /* invalid key pressed*/
+    TF0CW01.TF0CWERR = "Y";
+  end
+
+end // end TF0CS03
+
+// Check PF Keys and Fast Path
+Function TF0CS04()
+   /* *************************************************************/
+   /* *    This statement group will check for the common        **/
+   /* *    PF keys and will try to go to the proper routine      **/
+   /* *************************************************************/
+
+  if (converseVar.eventKey is pa1
+   || converseVar.eventKey is pa2)
+    converseLib.clearScreen();
+    
+  end
+
+  if (converseVar.eventKey is pf1) /* help key*/
+    XSPF1();
+    TF0CM002.VAGen_EZEMSG = COMMAREA.CAMSG;
+    TF0CW01.TF0CWERR = "Y";
+    return;
+  else
+    if (converseVar.eventKey is pf3 /* exit*/
+     || converseVar.eventKey is pf6)
+      if (TF0CM002.TF0CMOPT == " " /* inquiry*/
+       || TF0CW01.TF5ADRID[TFAWSUB3] != 0) /* we have address id*/
+        TF0CW01.TF0CWEOS = "Y"; /* so exit is ok*/
+      end
+    else
+      if (converseVar.eventKey is enter
+       || converseVar.eventKey is pf12
+       || converseVar.eventKey is pa2)
+        if (TF0CM002.TF0CMOPT == " ")
+          TF0CW01.TF0CWEOS = "Y";
+        end
+      else
+        converseLib.validationFailed(2); /* invalid key pressed*/
+        TF0CW01.TF0CWERR = "Y";
+      end
+    end
+  end
+
+end // end TF0CS04
+
+// Reset 002 fields from converse
+Function TF0CS12()
+
+   /* reset tf0cm002 fields to normal intensity after*/
+   /* converse*/
+
+  set TF0CM002.XWHCD initialAttributes;
+  set TF0CM002.KUCCOID initialAttributes;
+  set TF0CM002.KUMSTRID initialAttributes;
+  set TF0CM002.TF0CMOPT initialAttributes;
+  set TF0CM002.TF4FBLIN initialAttributes;
+  set TF0CM002.TF0CMRXM initialAttributes;
+  set TF0CM002.TF0CMCRN initialAttributes;
+  set TF0CM002.TF0CMFRC initialAttributes;
+  set TF0CM002.TF0CMNFC initialAttributes;
+  set TF0CM002.TF0CM2CR initialAttributes;
+  set TF0CM002.TF0CM2CN initialAttributes;
+  set TF0CM002.TF0CM3CR initialAttributes;
+  set TF0CM002.TF0CM3CN initialAttributes;
+  set TF0CM002.TF0CMHRC initialAttributes;
+  set TF0CM002.TF0CMHRD initialAttributes;
+  set TF0CM002.CATOAP initialAttributes;
+  set TF0CM002.CAITEM initialAttributes;
+  TFAREC.TFAWSUB9 = 1;
+  while (TFAREC.TFAWSUB9 <= 7)
+    set TF0CM002.TF0CMSEL[TFAWSUB9] initialAttributes;
+    set TF0CM002.TF0CMWT[TFAWSUB9] initialAttributes;
+    set TF0CM002.TF0CMALT[TFAWSUB9] initialAttributes;
+    if (TF0CM002.TF0CMALT[TFAWSUB9] == "Y")
+      set TF0CM002.TF0CMALT[TFAWSUB9] bold;
+    end
+    set TF0CM002.TF0CMHRT[TFAWSUB9] initialAttributes;
+    set TF0CM002.TF0CMTCA[TFAWSUB9] initialAttributes;
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+end // end TF0CS12
+
+// Reset 004 fields after convrse
+Function TF0CS14()
+
+   /* reset enterable fields on tf0cm004 screen after*/
+   /* converse to clear any fields set bright*/
+
+  set TF0CM004.TF5ADRID initialAttributes;
+  set TF0CM004.KUCCONM initialAttributes;
+  set TF0CM004.XXXADDR1 initialAttributes;
+  set TF0CM004.XXXADDR2 initialAttributes;
+  set TF0CM004.XXXADDR3 initialAttributes;
+  set TF0CM004.XXXCITY initialAttributes;
+  set TF0CM004.XSTCD initialAttributes;
+  set TF0CM004.XXXZIP initialAttributes;
+  set TF0CM004.XCTCD initialAttributes;
+  set TF0CM004.TF5PBLFL initialAttributes;
+  set TF0CM004.TF5PLBFL initialAttributes;
+
+end // end TF0CS14
+
+// Set header screen protected
+Function TF0CS15()
+
+   /* set tf0cm002 fields to autoskip for inquiry*/
+
+  set TF0CM002.TF0CMOPT skip;
+  set TF0CM002.TF0CMRXM skip;
+  set TF0CM002.TF4FBLIN skip;
+  set TF0CM002.TF0CMCRN skip;
+  set TF0CM002.TF0CMFRC skip;
+  set TF0CM002.TF0CMNFC skip;
+  set TF0CM002.TF0CM2CR skip;
+  set TF0CM002.TF0CM2CN skip;
+  set TF0CM002.TF0CM3CR skip;
+  set TF0CM002.TF0CM3CN skip;
+  set TF0CM002.TF0CMHRC skip;
+  set TF0CM002.TF0CMHRD skip;
+  TFAREC.TFAWSUB9 = 1;
+  while (TFAREC.TFAWSUB9 <= 7)
+    set TF0CM002.TF0CMWT[TFAWSUB9] skip;
+    set TF0CM002.TF0CMALT[TFAWSUB9] skip;
+    set TF0CM002.TF0CMHRT[TFAWSUB9] skip;
+    set TF0CM002.TF0CMTCA[TFAWSUB9] skip;
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+end // end TF0CS15
+
+// Get Warehouse Description
+Function TF0CS31()
+  if (TF0CW01.XWHCD in XWHTBL.XWHCD)
+    TF0CW01.XWHABRV = XWHTBL.XWHABRV[sysVar.arrayIndex];
+  else
+    TF0CW01.TF0CWERR = "Y"; /* set error flag*/
+  end
+end // end TF0CS31
+
+// Get rows for Directory screen
+Function TF0CS32()
+  if (TF0CW01.TF0CWEOT == "N") /* not at end of table*/
+    call "IO1900" ("N2", SQLCA, TF4REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 100) /* end of table*/
+      TF0CW01.TF0CWEOT = "Y";
+      return;
+    else
+      if (SQLCA.VAGen_SQLCODE != 0) /* got bad problems*/
+        TA1REC.TA1LOCAT[2] = "TF0CS32";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VRTEXN01";
+        TF0CS99();
+      end
+    end
+  end
+end // end TF0CS32
+
+// Check for PSST record
+Function TF0CS33()
+  PKMREC.XWHCD = TF4REC.XWHCD;
+  PKMREC.KUCCOID = TF4REC.KUCCOID;
+  PKMREC.KUMSTRID = TF4REC.KUMSTRID;
+  call "IO1850" ("S ", SQLCA, PKMREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 100)
+    set TF0CM002.TF0CMI4 initialAttributes; /* not a psst customer*/
+    TFAREC.TFAPFL2 = "N"; /* and set flag for directory*/
+  else
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1LOCAT[2] = "TF0CS33";
+      TA1REC.TA1DBASE = "DPICK";
+      TA1REC.TA1TBLVU = "VPKPST01";
+      TF0CS99();
+    else
+      set TF0CM002.TF0CMI4 skip, bold; /* is a psst customer*/
+      TFAREC.TFAPFL2 = "Y"; /* and set flag for directory*/
+    end
+  end
+end // end TF0CS33
+
+// Set/Clear Indicators on Hdr
+Function TF0CS34()
+  if (TF4REC.TF4HTXFL == "Y")
+    set TF0CM002.TF0CMI2 skip, bold;
+  else
+    set TF0CM002.TF0CMI2 initialAttributes;
+  end
+  if (TF4REC.TF4HCMFL == "Y")
+    set TF0CM002.TF0CMI3 skip, bold;
+  else
+    set TF0CM002.TF0CMI3 initialAttributes;
+  end
+  if (TF4REC.XXXSTAT == "I") /* inactive status*/
+    set TF0CM002.TF0CMI4 skip, bold;
+  else
+    set TF0CM002.TF0CMI4 initialAttributes;
+  end
+
+end // end TF0CS34
+
+// Get Customer/Store Record
+Function TF0CS41()
+  XP0FW01.XBCCD = TF0CM002.XBCCD;
+  XP0FW01.KUCCOID = TF0CM002.KUCCOID;
+  XP0FS01();
+  PK6REC.KUCCOID = XP0FW01.XP0FW01-INTERNAL;
+  PK6REC.XBCCD = TF0CM002.XBCCD;
+  if (TFAREC.TFASTRN != -1)
+    PK6REC.KUMSTRID = TFAREC.TFASTRN;
+    call "IO1830" ("S ", SQLCA, PK6REC) {isNoRefresh = yes, isExternal = yes};
+  else
+    call "IO1830" ("S1", SQLCA, PK6REC) {isNoRefresh = yes, isExternal = yes};
+    call "IO1830" ("N1", SQLCA, PK6REC) {isNoRefresh = yes, isExternal = yes};
+  end
+  if (SQLCA.VAGen_SQLCODE == 100)
+    converseLib.validationFailed(92); /* CUSTOMER/STORE NUMBERS INVALID*/
+    TF0CW01.TF0CWERR = "Y";
+    set TF0CM002.KUCCOID cursor, bold;
+    set TF0CM002.KUMSTRID bold;
+  else
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1LOCAT[2] = "TF0CS41";
+      TA1REC.TA1DBASE = "DPICK";
+      TA1REC.TA1TBLVU = "VPKCUS01";
+      TF0CS99();
+    end
+  end
+  if (TFAREC.TFASTRN == -1)
+    call "IO1830" ("C1", SQLCA, PK6REC) {isNoRefresh = yes, isExternal = yes};
+    PK7REC.KULAAID = PK6REC.KUCCOAID;
+  else
+    PK7REC.KULAAID = PK6REC.KUMSTAID;
+  end
+end // end TF0CS41
+
+// Get Customer Address Record
+Function TF0CS42()
+  XP0FW01.KUCCOID = PK6REC.KUCCOID;
+  XP0FW01.XBCCD = PK6REC.XBCCD;
+  XP0FS01();
+  PK7REC.KUCCOID = XP0FW01.XP0FW01-INTERNAL;
+  call "IO2000" ("S ", SQLCA, PK7REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[2] = "TF0CS42";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VPKADR01";
+    TF0CS99();
+  end
+end // end TF0CS42
+
+// Get/Validate Careier code
+Function TF0CS43()
+  TF1REC.TF1CARCD = TFAREC.TF1CARCD;
+  call "IO0860" ("S ", SQLCA, TF1REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 100)
+    TFAREC.TF1ABRV = "*UNKNOWN*";
+    TF0CW01.TF0CWERR = "Y";
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1LOCAT[2] = "TF0CS43";
+      TA1REC.TA1DBASE = "DPICK";
+      TA1REC.TA1TBLVU = "VCARR001";
+      TF0CS99();
+    end
+  end
+
+   /* now check to see if warehouse valid for carrier*/
+
+           /* change: PM (10/30/87)*/
+           /* use current warehouse*/
+           /* and check status.*/
+  if (TF0CW01.XWHCD in TF1REC.XWHCD
+   && TF1REC.XXXSTAT == "A")
+
+    TFAREC.TF1ABRV = TF1REC.TF1ABRV;
+  else
+    TFAREC.TF1ABRV = "*INVALID*";
+    TF0CW01.TF0CWERR = "Y";
+  end
+end // end TF0CS43
+
+// Get Hold Reason code
+Function TF0CS44()
+  if (TFAREC.XHRCD in XHRTBL.XHRCD) /* 03/05/91 table changes*/
+    TFAREC.XHRABRV = XHRTBL.XHRABRV[sysVar.arrayIndex]; /* 03/05/91 tbl chng*/
+  else
+    TFAREC.XHRABRV = "??????";
+    TF0CW01.TF0CWERR = "Y";
+    return;
+  end
+end // end TF0CS44
+
+// Get specific Exception Record
+Function TF0CS45()
+  TF4REC.XWHCD = TF0CM002.XWHCD;
+  XP0FW01.KUCCOID = TF0CM002.KUCCOID;
+  XP0FW01.XBCCD = TF0CM002.XBCCD;
+  XP0FS01();
+  TF4REC.KUCCOID = XP0FW01.XP0FW01-INTERNAL;
+  TF4REC.XBCCD = TF0CM002.XBCCD;
+  if (TFAREC.TFAPFL1 == "V") /* verify for -1 record*/
+    TF4REC.KUMSTRID = -1;
+  else
+    TF4REC.KUMSTRID = TFAREC.TFASTRN;
+  end
+
+  call "IO1900" ("S ", SQLCA, TF4REC) {isNoRefresh = yes, isExternal = yes};
+
+                             /* pmainw  (02-23-88)*/
+                             /* restore kumstrid*/
+  if (TFAREC.TFAPFL1 == "V")
+    TF4REC.KUMSTRID = TFAREC.TFASTRN;
+  end
+
+
+  if (SQLCA.VAGen_SQLCODE == 100)
+    TFAREC.TFAPFL1 = "N"; /* set flag for not on file*/
+  else
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1LOCAT[2] = "TF0CS45";
+      TA1REC.TA1DBASE = "DPICK";
+      TA1REC.TA1TBLVU = "VRTEXN01";
+      TF0CS99();
+    else
+      TFAREC.TFAPFL1 = "Y";
+    end
+  end
+end // end TF0CS45
+
+// Get next Weight Break Record
+Function TF0CS46()
+  if (TFAREC.TFAPFL2 == "N") /* not at end of table*/
+    call "IO1910" ("N1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 100) /* end of table*/
+      TFAREC.TFAPFL2 = "Y";
+      return;
+    else
+      if (SQLCA.VAGen_SQLCODE != 0) /* got bad problems*/
+        TA1REC.TA1LOCAT[2] = "TF0CS46";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VRTEWT01";
+        TF0CS99();
+      end
+    end
+  end
+end // end TF0CS46
+
+// Selective Clear 002 screen
+Function TF0CS51()
+  if (TF0CM002.TF0CMRXM != "1")
+    TF0CM002.TF0CMNFC = " ";
+    TF0CM002.TF0CMNFN = " ";
+    TF0CM002.TF0CMFRC = " ";
+    TF0CM002.TF0CMFRN = " ";
+  end
+
+  if (TF0CM002.TF0CMRXM != "2")
+    TF0CM002.TF0CM2CR = " ";
+    TF0CM002.TF0CM2CN = " ";
+  end
+
+  if (TF0CM002.TF0CMRXM != "3")
+    TF0CM002.TF0CM3CR = " ";
+    TF0CM002.TF0CM3CN = " ";
+    TF0CM002.TF0CMHRC = " ";
+    TF0CM002.TF0CMHRD = " ";
+  end
+
+  if (TF0CM002.TF0CMRXM != "4")
+    TFAREC.TFAWSUB9 = 1;
+    while (TFAREC.TFAWSUB9 <= 7)
+      TF0CM002.TF0CMSEL[TFAWSUB9] = " ";
+      TF0CM002.TF0CMWT[TFAWSUB9] = 0;
+      TF0CM002.TF0CMALT[TFAWSUB9] = " ";
+      set TF0CM002.TF0CMALT[TFAWSUB9] initialAttributes;
+      TF0CM002.TF0CMHRT[TFAWSUB9] = " ";
+      TF0CM002.TF0CMHTD[TFAWSUB9] = " ";
+      TF0CM002.TF0CMTCA[TFAWSUB9] = " ";
+      TF0CM002.TF0CMTCN[TFAWSUB9] = " ";
+      TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+    end
+  end
+
+end // end TF0CS51
+
+// sort weight break table
+Function TF0CS52()
+  TFAREC.TFAWSUB9 = 1;
+  while (TFAREC.TFAWSUB9 < 8)
+    if (TF0CW01.TF5WTBRK[TFAWSUB9] == 0)
+      TF0CW01.TF5WTBRK[TFAWSUB9] = 100000000;
+    end
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+
+  TFAREC.TFAPFL9 = "Y"; /* initialize moved flag*/
+  while (TFAREC.TFAPFL9 == "Y") /* keep sorting 'til nothing moves*/
+    TFAREC.TFAWSUB8 = 1;
+    TFAREC.TFAWSUB9 = 2;
+    TFAREC.TFAPFL9 = "N";
+    while (TFAREC.TFAWSUB9 < 8) /* start loop thru table*/
+      if (TF0CW01.TF5WTBRK[TFAWSUB8] > TF0CW01.TF5WTBRK[TFAWSUB9])
+        TF0CWH4[8] = TF0CWH4[TFAWSUB9];
+        TF0CWH4[TFAWSUB9] = TF0CWH4[TFAWSUB8];
+        TF0CWH4[TFAWSUB8] = TF0CWH4[8];
+        TFAREC.TFAPFL9 = "Y";
+      end
+      TFAREC.TFAWSUB8 = TFAREC.TFAWSUB8 + 1;
+      TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+    end
+  end
+
+  TFAREC.TFAWSUB9 = 1;
+  while (TFAREC.TFAWSUB9 < 8)
+    if (TF0CW01.TF5WTBRK[TFAWSUB9] == 100000000)
+      TF0CW01.TF5WTBRK[TFAWSUB9] = 0;
+      TF0CW01.TF1CARCD[TFAWSUB9] = " ";
+      TF0CW01.XHRCD[TFAWSUB9] = " ";
+      TF0CW01.TF5ALTAD[TFAWSUB9] = " ";
+      TF0CW01.TF5ADRID[TFAWSUB9] = 0;
+      TF0CW01.TF5PBLFL[TFAWSUB9] = " ";
+      TF0CW01.TF5PLBFL[TFAWSUB9] = " ";
+    end
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+  end
+end // end TF0CS52
+
+// Load address record to screen
+Function TF0CS53()
+
+  TF0CM004.TF5PBLFL = TF0CW01.TF5PBLFL[TFAWSUB3];
+  TF0CM004.TF5PLBFL = TF0CW01.TF5PLBFL[TFAWSUB3];
+  TF0CM004.TF5ADRID = TF6REC.TF6ADRID;
+  TF0CM004.KUCCONM = TF6REC.TF6ALTNM;
+  TF0CM004.XXXADDR1 = TF6REC.XXXADDR[1];
+  TF0CM004.XXXADDR2 = TF6REC.XXXADDR[2];
+  TF0CM004.XXXADDR3 = TF6REC.XXXADDR[3];
+  TF0CM004.XXXCITY = TF6REC.XXXCITY;
+  TF0CM004.XSTCD = TF6REC.XSTCD;
+  TF0CM004.XXXZIP = TF6REC.XXXZIP;
+  if (TF6REC.XCTCD == "USA")
+    TF0CM004.XCTCD = " ";
+    TF0CM004.XCTDESC = " ";
+  else
+    TF0CM004.XCTCD = TF6REC.XCTCD;
+    if (TF0CM004.XCTCD in XCTTBL.XCTCD)
+      TF0CM004.XCTDESC = XCTTBL.XCTDESC[sysVar.arrayIndex];
+    else
+      TF0CM004.XCTDESC = "UNKNOWN";
+    end
+  end
+
+end // end TF0CS53
+
+// Reload directory info from hdr
+Function TF0CS54()
+
+   /* this statement group will reload the data on the*/
+   /* directory screen after an update. Note that if*/
+   /* the record has been deleted, we will set the*/
+   /* select field to 'd' and protect it so the user*/
+   /* cannot reselect it.*/
+
+  if (TF0CW01.TF0CWDIR == "Y") /* only do this if we have a dir. scrn*/
+    if (TF0CM002.XWHCD == TF0CM001.XWHCD /* and key data must equal*/
+     && TF0CM002.KUCCOID == TF0CM001.TF0CMCOM[TFAWSUB2]
+     && TF0CM002.KUMSTRID == TF0CM001.TF0CMSTR[TFAWSUB2])
+      TF0CM001.TF0CMCM[TFAWSUB2] = TF4REC.TF4HCMFL;
+      TF0CM001.TF0CMTX[TFAWSUB2] = TF4REC.TF4HTXFL;
+       /* added status code*/
+      TF0CM001.TF0CMST[TFAWSUB2] = TF4REC.XXXSTAT;
+      TF0CM001.TF0CMTYP[TFAWSUB2] = TF4REC.TF4RXCCD;
+      TF0CM001.TF0CMNFR[TFAWSUB2] = TF4REC.TF1CARCD[1];
+      TF0CM001.TF0CMFRT[TFAWSUB2] = TF4REC.TF1CARCD[2];
+      TF0CM001.TF0CMHCD[TFAWSUB2] = TF4REC.XHRCD; /* 03/91 tbl chgs*/
+      TF0CM001.TF0CMALT[TFAWSUB2] = TF4REC.TF4HAAFL;
+       /* commented out when delete processing was removed*/
+        /* IF TF0CM002.TF0CMOPT EQ '-' ;record deleted*/
+          /* MOVE 'D' TO TF0CM001.TF0CMSEL(TFAWSUB2);*/
+          /* SET TF0CM001.TF0CMSEL(TFAWSUB2) AUTOSKIP;*/
+        /* END ;*/
+    end
+  end
+
+end // end TF0CS54
+
+// Write new addess to table
+Function TF0CS81()
+
+   /* First we get the next address id*/
+
+  PKDREC.XWHCD = TF0CM002.XWHCD;
+  call "IO1890" ("S ", SQLCA, PKDREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[2] = "TF0CS71";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VPKCTL01";
+    TF0CS99();
+  end
+
+  TF6REC.TF6ADRID = PKDREC.TFXNXAID; /* got it*/
+
+   /* now add 1 and write it back out*/
+
+  PKDREC.TFXNXAID = PKDREC.TFXNXAID + 1;
+  PKDREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+  PKDREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+  call "IO1890" ("U ", SQLCA, PKDREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[2] = "TF0CS71";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VPKCTL01";
+    TA1REC.TA1TBLKE = "UPDATE";
+    TF0CS99();
+  end
+
+   /* now write address record*/
+
+  TF6REC.XWHCD = TF0CM004.XWHCD;
+  TF6REC.TF6ALTNM = TF0CM004.KUCCONM;
+  TFAREC.TFACMPR = TF0CM004.KUCCONM;
+  XSTFS04(); /* compress name*/
+  TF6REC.TF6ALNMS = TFAREC.TFARSLT;
+  TF6REC.XSTCD = TF0CM004.XSTCD;
+  TF6REC.XXXCITY = TF0CM004.XXXCITY;
+  TFAREC.TFACMPR = TF0CM004.XXXCITY;
+  XSTFS04(); /* compress name*/
+  TF6REC.XXXCITYS = TFAREC.TFARSLT;
+  TF6REC.XXXADDR[1] = TF0CM004.XXXADDR1;
+  TF6REC.XXXADDR[2] = TF0CM004.XXXADDR2;
+  TF6REC.XXXADDR[3] = TF0CM004.XXXADDR3;
+  TF6REC.XXXZIP = TF0CM004.XXXZIP;
+  TF6REC.XCTCD = TF0CM004.XCTCD;
+  TF6REC.XXXSTAT = "A";
+  TF6REC.ZZZSDT = TA2REC.TA2GRGGN;
+  TF6REC.ZZZCHGDT = TA2REC.TA2GRGGN;
+  TF6REC.ZZZCHGTM = TA2REC.TA2TIMHM;
+  TF6REC.ZZZCHGCT = 0;
+  call "IO1920" ("A ", SQLCA, TF6REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[2] = "TF0CS71";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VRTADR01";
+    TA1REC.TA1TBLKE = "INSERT";
+    TF0CS99();
+  end
+
+   /* now write audit record*/
+
+  TFCREC.TFCTBLNM = "VRTADR01";
+  TFCREC.TFCACTIN = "A";
+  TFCREC.TF-AUD-BFR-LEN = 338;
+  TFCREC.TF-AUD-BFR-TEXT = " ";
+  TFCREC.TF-AUD-AFT-LEN = 338;
+  TFCREC.TF-AUD-AFT-TEXT = TF6REC.TF6GRPLV;
+  TF0CS89();
+
+end // end TF0CS81
+
+// Write Weight break records
+Function TF0CS82()
+
+  TF5REC.TF5WTBRK = TF0CW01.TF5WTBRK[TFAWSUB9];
+  TF5REC.TF1CARCD = TF0CW01.TF1CARCD[TFAWSUB9];
+  TF5REC.XHRCD = TF0CW01.XHRCD[TFAWSUB9]; /* 03/91  tbl chngs*/
+  if (PK6REC.XBCCD == "*")
+    TF5REC.XBCCD = " ";
+  else
+    TF5REC.XBCCD = PK6REC.XBCCD;
+  end
+  TF5REC.TF5ALTAD = TF0CW01.TF5ALTAD[TFAWSUB9];
+  if (TF5REC.TF5ALTAD == "Y")
+    TF4REC.TF4HAAFL = "Y";
+  end
+  TF5REC.TF5ADRID = TF0CW01.TF5ADRID[TFAWSUB9];
+  TF5REC.TF5PBLFL = TF0CW01.TF5PBLFL[TFAWSUB9];
+  TF5REC.TF5PLBFL = TF0CW01.TF5PLBFL[TFAWSUB9];
+  TF5REC.XXXSTAT = "A";
+  TF5REC.ZZZSDT = TA2REC.TA2GRGGN;
+  TF5REC.ZZZCHGDT = TA2REC.TA2GRGGN;
+  TF5REC.ZZZCHGTM = TA2REC.TA2TIMHM;
+  TF5REC.TF-CRTN-BRK-NBR = 0;
+  TF5REC.ZZZCHGCT = 0;
+  call "IO1910" ("A ", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[2] = "TF0CS82";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VRTEWT01";
+    TA1REC.TA1TBLKE = "INSERT";
+    TF0CS99();
+  end
+
+   /* now write audit record*/
+
+  TFCREC.TFCTBLNM = "VRTEWT01";
+  TFCREC.TFCACTIN = "A";
+  TFCREC.TF-AUD-BFR-LEN = 338;
+  TFCREC.TF-AUD-BFR-TEXT = " ";
+  TFCREC.TF-AUD-AFT-LEN = 338;
+  TFCREC.TF-AUD-AFT-TEXT = TF5REC.TF5GRPLV;
+  TF0CS89();
+
+end // end TF0CS82
+
+// Match/Merge wt. break records
+Function TF0CS83()
+
+  if ((TF0CW01.TF5WTBRK[TFAWSUB9] < TF5REC.TF5WTBRK
+   && TF0CW01.TF0CWESC != "Y") /* End of screen flag*/
+   || (TF0CW01.TF0CWEDB == "Y")) /* End of db flag*/
+    TF0CW01.TF5GRPLV = TF5REC.TF5GRPLV; /* save record*/
+    TF0CS82(); /* add new weight break*/
+    TF5REC.TF5GRPLV = TF0CW01.TF5GRPLV; /* and restore record*/
+
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+    if (TFAREC.TFAWSUB9 > 7
+     || TF0CW01.TF5WTBRK[TFAWSUB9] == 0)
+      TF0CW01.TF0CWESC = "Y"; /* End of screen flag*/
+    end
+
+    if (TF0CW01.TF0CWESC == "Y" /* End of screen flag*/
+     && TF0CW01.TF0CWEDB == "Y") /* End of db flag*/
+      TFAREC.TFAPFL9 = "Y"; /* we are now all done*/
+    end
+
+    return;
+  else
+    if (TF0CW01.TF5WTBRK[TFAWSUB9] > TF5REC.TF5WTBRK)
+      if (TF5REC.XXXSTAT == "I") /* inactive wt break*/
+
+      else
+        TF5REC.XXXSTAT = "I";
+        TF5REC.ZZZCHGDT = TA2REC.TA2GRGGN;
+        TF5REC.ZZZCHGTM = TA2REC.TA2TIMHM;
+        call "IO1910" ("U ", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+        if (SQLCA.VAGen_SQLCODE != 0)
+          TA1REC.TA1LOCAT[2] = "TF0CS83";
+          TA1REC.TA1DBASE = "DPICK";
+          TA1REC.TA1TBLVU = "VRTEWT01";
+          TA1REC.TA1TBLKE = "UPDATE";
+          TF0CS99();
+        end
+        TFCREC.TFCTBLNM = "VRTEWT01";
+        TFCREC.TFCACTIN = "C";
+        TFCREC.TF-AUD-BFR-LEN = 338;
+        TFCREC.TF-AUD-BFR-TEXT = TF5REC.TF5GRPLV;
+        TFCREC.TF-AUD-AFT-LEN = 338;
+        TFCREC.TF-AUD-AFT-TEXT = TF5REC.TF5GRPLV;
+        TF0CS89();
+      end
+
+      call "IO1910" ("N1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+      if (SQLCA.VAGen_SQLCODE == 0)
+
+      else
+        if (SQLCA.VAGen_SQLCODE == 100)
+          TF0CW01.TF0CWEDB = "Y"; /* End of db flag*/
+        else
+          TA1REC.TA1LOCAT[2] = "TF0CS83";
+          TA1REC.TA1DBASE = "DPICK";
+          TA1REC.TA1TBLVU = "VRTEWT01";
+          TA1REC.TA1TBLKE = "MISSING 9999999";
+          TF0CS99();
+        end
+      end
+
+      return;
+    end
+  end
+
+   /* now, if we've made it this far, the two records are*/
+   /* equal. this means it's change time, but lets see if*/
+   /* anything has changed.*/
+
+  if (TF5REC.XXXSTAT == "I") /* inactive wt break*/
+    call "IO1910" ("N1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 0)
+
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        TF0CW01.TF0CWEDB = "Y"; /* End of db flag*/
+      else
+        TA1REC.TA1LOCAT[2] = "TF0CS83";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VRTEWT01";
+        TA1REC.TA1TBLKE = "NEXT/U";
+        TF0CS99();
+      end
+    end
+
+  else
+    if (TF0CW01.TF1CARCD[TFAWSUB9] == TF5REC.TF1CARCD
+     && TF0CW01.XHRCD[TFAWSUB9] == TF5REC.XHRCD /* 03/91  tbl chgs*/
+     && TF0CW01.TF5ALTAD[TFAWSUB9] == TF5REC.TF5ALTAD
+     && TF0CW01.TF5ADRID[TFAWSUB9] == TF5REC.TF5ADRID
+     && TF0CW01.TF5PBLFL[TFAWSUB9] == TF5REC.TF5PBLFL
+     && TF0CW01.TF5PLBFL[TFAWSUB9] == TF5REC.TF5PLBFL)
+      /* next sentence (nothing has changed)*/
+    else
+      TFCREC.TF-AUD-BFR-LEN = 338;
+      TFCREC.TF-AUD-BFR-TEXT = TF5REC.TF5GRPLV;
+      TF5REC.TF1CARCD = TF0CW01.TF1CARCD[TFAWSUB9];
+      TF5REC.XHRCD = TF0CW01.XHRCD[TFAWSUB9]; /* 03/91  tbl chgs*/
+      TF5REC.TF5ALTAD = TF0CW01.TF5ALTAD[TFAWSUB9];
+      TF5REC.TF5ADRID = TF0CW01.TF5ADRID[TFAWSUB9];
+      TF5REC.TF5PBLFL = TF0CW01.TF5PBLFL[TFAWSUB9];
+      TF5REC.TF5PLBFL = TF0CW01.TF5PLBFL[TFAWSUB9];
+      TF5REC.ZZZCHGDT = TA2REC.TA2GRGGN;
+      TF5REC.ZZZCHGTM = TA2REC.TA2TIMHM;
+      call "IO1910" ("U ", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+      if (SQLCA.VAGen_SQLCODE != 0)
+        TA1REC.TA1LOCAT[2] = "TF0CS83";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VRTEWT01";
+        TA1REC.TA1TBLKE = "UPDATE";
+        TF0CS99();
+      end
+      TFCREC.TFCTBLNM = "VRTEWT01";
+      TFCREC.TFCACTIN = "C";
+      TFCREC.TF-AUD-AFT-LEN = 338;
+      TFCREC.TF-AUD-AFT-TEXT = TF5REC.TF5GRPLV;
+      TF0CS89();
+    end
+
+    if (TF5REC.TF5ALTAD == "Y") /* we have alt address*/
+      TF4REC.TF4HAAFL = "Y"; /* so set exception record*/
+    end
+
+    TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+    if (TFAREC.TFAWSUB9 > 7
+     || TF0CW01.TF5WTBRK[TFAWSUB9] == 0)
+      TF0CW01.TF0CWESC = "Y"; /* End of screen flag*/
+    end
+
+    call "IO1910" ("N1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 0)
+
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        TF0CW01.TF0CWEDB = "Y"; /* End of db flag*/
+      else
+        TA1REC.TA1LOCAT[2] = "TF0CS83";
+        TA1REC.TA1DBASE = "DPICK";
+        TA1REC.TA1TBLVU = "VRTEWT01";
+        TA1REC.TA1TBLKE = "NEXT/U";
+        TF0CS99();
+      end
+    end
+  end
+
+  if (TF0CW01.TF0CWESC == "Y" /* End of screen flag*/
+   && TF0CW01.TF0CWEDB == "Y") /* End of db flag*/
+    TFAREC.TFAPFL9 = "Y"; /* we are now all done*/
+  end
+
+end // end TF0CS83
+
+// Delete/Inactivate comments
+Function TF0CS84()
+
+   /* this statement group will inactivate*/
+   /* all comment records.*/
+
+  TFBREC.XWHCD = TF4REC.XWHCD;
+  TFBREC.KUCCOID = TF4REC.KUCCOID;
+  TFBREC.XBCCD = TF4REC.XBCCD;
+  TFBREC.KUMSTRID = TF4REC.KUMSTRID;
+  TFBREC.TFBCMSEQ = 0;
+  TFCREC.TFCTBLNM = "VRTEXT01";
+  call "IO1930" ("S1", SQLCA, TFBREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[2] = "TF0CS84";
+    TA1REC.TA1DBTBL = "DPICK";
+    TA1REC.TA1TBLVU = "VRTEXT01";
+    TA1REC.TA1TBLKE = "SELECT SET";
+    TF0CS99();
+  end
+  call "IO1930" ("N1", SQLCA, TFBREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    TA1REC.TA1LOCAT[2] = "TF0CS84";
+    TA1REC.TA1DBTBL = "DPICK";
+    TA1REC.TA1TBLVU = "VRTEXT01";
+    TA1REC.TA1TBLKE = "GET 1ST";
+    TF0CS99();
+  end
+  while (SQLCA.VAGen_SQLCODE == 0)
+    if (TF0CM002.TF0CMOPT == "D") /* set inactive*/
+      TFCREC.TF-AUD-BFR-LEN = 338;
+      TFCREC.TF-AUD-BFR-TEXT = TFBREC.TFBGRPLV;
+      TF0CW03.TF0CWIO = "U ";
+       /* MOVE 'I' TO TFBREC.XXXSTAT;*/
+      TFBREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+      TFBREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+      TFCREC.TF-AUD-AFT-LEN = 338;
+      TFCREC.TF-AUD-AFT-TEXT = TFBREC.TFBGRPLV;
+      TFCREC.TFCACTIN = "C";
+    end
+    call "IO1930" (TF0CW03, SQLCA, TFBREC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1LOCAT[2] = "TF0CS84";
+      TA1REC.TA1DBTBL = "DPICK";
+      TA1REC.TA1TBLVU = "VRTEXT01";
+      TA1REC.TA1TBLKE = "DEL/CHG";
+      TF0CS99();
+    end
+    TF0CS89();
+    call "IO1930" ("N1", SQLCA, TFBREC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE != 0
+     && SQLCA.VAGen_SQLCODE != 100)
+      TA1REC.TA1LOCAT[2] = "TF0CS84";
+      TA1REC.TA1DBTBL = "DPICK";
+      TA1REC.TA1TBLVU = "VRTEXT01";
+      TA1REC.TA1TBLKE = "GET NEXT";
+      TF0CS99();
+    end
+  end
+
+end // end TF0CS84
+
+// Delete/Inactivate wt. Breaks
+Function TF0CS85()
+
+   /* this statement group will inactivate*/
+   /* all weight break records.*/
+
+  TF5REC.XWHCD = TF4REC.XWHCD;
+  TF5REC.KUCCOID = TF4REC.KUCCOID;
+  TF5REC.XBCCD = TF4REC.XBCCD;
+  TF5REC.KUMSTRID = TF4REC.KUMSTRID;
+  TF5REC.TF5WTBRK = 0;
+  TFCREC.TFCTBLNM = "VRTEWT01";
+  call "IO1910" ("S1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[2] = "TF0CS84";
+    TA1REC.TA1DBTBL = "DPICK";
+    TA1REC.TA1TBLVU = "VRTEWT01";
+    TA1REC.TA1TBLKE = "SELECT SET";
+    TF0CS99();
+  end
+  call "IO1910" ("N1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    TA1REC.TA1LOCAT[2] = "TF0CS84";
+    TA1REC.TA1DBTBL = "DPICK";
+    TA1REC.TA1TBLVU = "VRTEWT01";
+    TA1REC.TA1TBLKE = "GET 1ST";
+    TF0CS99();
+  end
+  while (SQLCA.VAGen_SQLCODE == 0)
+    if (TF0CM002.TF0CMOPT == "D") /* set inactive*/
+      TFCREC.TF-AUD-BFR-LEN = 338;
+      TFCREC.TF-AUD-BFR-TEXT = TF5REC.TF5GRPLV;
+      TF0CW03.TF0CWIO = "U ";
+      TF5REC.XXXSTAT = "I";
+      TF5REC.ZZZCHGDT = TA2REC.TA2GRGGN;
+      TF5REC.ZZZCHGTM = TA2REC.TA2TIMHM;
+      TFCREC.TF-AUD-AFT-LEN = 338;
+      TFCREC.TF-AUD-AFT-TEXT = TF5REC.TF5GRPLV;
+      TFCREC.TFCACTIN = "C";
+    end
+    call "IO1910" (TF0CW03, SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1LOCAT[2] = "TF0CS84";
+      TA1REC.TA1DBTBL = "DPICK";
+      TA1REC.TA1TBLVU = "VRTEWT01";
+      TA1REC.TA1TBLKE = "DEL/CHG";
+      TF0CS99();
+    end
+    TF0CS89();
+    call "IO1910" ("N1", SQLCA, TF5REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE != 0
+     && SQLCA.VAGen_SQLCODE != 100)
+      TA1REC.TA1LOCAT[2] = "TF0CS84";
+      TA1REC.TA1DBTBL = "DPICK";
+      TA1REC.TA1TBLVU = "VRTEWT01";
+      TA1REC.TA1TBLKE = "GET NEXT";
+      TF0CS99();
+    end
+  end
+
+end // end TF0CS85
+
+// Delete/Inactivate stamp text
+Function TF0CS86()
+
+   /* this statement group will inactivate*/
+   /* all stamp text records.*/
+
+  TFDREC.XWHCD = TF4REC.XWHCD;
+  TFDREC.KUCCOID = TF4REC.KUCCOID;
+  TFDREC.KUMSTRID = TF4REC.KUMSTRID;
+  TFDREC.PKUSQNBR = -1;
+  TFCREC.TFCTBLNM = "VBLSTX01";
+  call "IO5450" ("S1", SQLCA, TFDREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[2] = "TF0CS86";
+    TA1REC.TA1DBTBL = "DPICK";
+    TA1REC.TA1TBLVU = "VBLSTX01";
+    TA1REC.TA1TBLKE = "SELECT SET";
+    TF0CS99();
+  end
+  call "IO5450" ("N1", SQLCA, TFDREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    TA1REC.TA1LOCAT[2] = "TF0CS86";
+    TA1REC.TA1DBTBL = "DPICK";
+    TA1REC.TA1TBLVU = "VBLSTX01";
+    TA1REC.TA1TBLKE = "GET NEXT";
+    TF0CS99();
+  end
+  while (SQLCA.VAGen_SQLCODE == 0)
+    if (TF0CM002.TF0CMOPT == "D") /* set inactive*/
+      TFCREC.TF-AUD-BFR-LEN = 338;
+      TFCREC.TF-AUD-BFR-TEXT = TFDREC.TFDGRPLV;
+      TF0CW03.TF0CWIO = "U ";
+       /* MOVE 'I' TO TFdREC.XXXSTAT;*/
+      TFDREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+      TFDREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+      TFCREC.TF-AUD-AFT-LEN = 338;
+      TFCREC.TF-AUD-AFT-TEXT = TFDREC.TFDGRPLV;
+      TFCREC.TFCACTIN = "C";
+    end
+    call "IO5450" (TF0CW03, SQLCA, TFDREC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1LOCAT[2] = "TF0CS86";
+      TA1REC.TA1DBTBL = "DPICK";
+      TA1REC.TA1TBLVU = "VBLSTX01";
+      TA1REC.TA1TBLKE = "CHANGE ";
+      TF0CS99();
+    end
+    TF0CS89(); /* update audit record*/
+    call "IO5450" ("N1", SQLCA, TFDREC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE != 0
+     && SQLCA.VAGen_SQLCODE != 100)
+      TA1REC.TA1LOCAT[2] = "TF0CS86";
+      TA1REC.TA1DBTBL = "DPICK";
+      TA1REC.TA1TBLVU = "VBLSTX01";
+      TA1REC.TA1TBLKE = "GET NEXT";
+      TF0CS99();
+    end
+  end
+
+end // end TF0CS86
+
+// Write audit records
+Function TF0CS89()
+
+  TFCREC.ZZZSDT = TA2REC.TA2GRGGN;
+  TFCREC.ZZHHMMSS = TA2REC.TA2TIMEN;
+  call "IO1630" ("A ", SQLCA, TFCREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1LOCAT[2] = "TF0CS89";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VTFAUD01";
+    TA1REC.TA1TBLKE = "INSERT";
+    TF0CS99();
+  end
+
+end // end TF0CS89
+
+// Abend application
+Function TF0CS99()
+  TA1REC.TA1TYPE = "DB2";
+  TA1REC.TA1FUNC = "RETN";
+  TA1REC.TA1PGMNM = "TF0C";
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.rollback();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+   /* rollback db2 changes*/
+  call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  XSPF4();
+  exit program;
+end // end TF0CS99
+
+// edit country code
+Function TF0CSE1()
+
+
+         /* edit country code*/
+
+
+
+  if (TF0CM004.XCTCD == " ")
+      /* next sentence*/
+  else
+    if (TF0CM004.XCTCD == "USA ")
+      TF0CM004.XCTCD = " ";
+      TF0CM004.XCTDESC = " ";
+    else
+      if (TF0CM004.XCTCD in XCTTBL.XCTCD)
+        TF0CM004.XCTDESC = XCTTBL.XCTDESC[sysVar.arrayIndex];
+      else
+        TF0CW01.TF0CWERR = "Y";
+        converseLib.validationFailed(51);
+           /* country invalid*/
+        TF0CM004.XCTDESC = " ";
+        set TF0CM004.XCTCD cursor, bold;
+      end
+    end
+  end
+end // end TF0CSE1
+
+// edit city, st, zip & name
+Function TF0CSE2()
+
+
+         /* edit city, state and zip code*/
+
+
+
+  if (TF0CM004.XCTCD == " ") /* assumes us of a*/
+    if (TF0CM004.XXXZIP == " ")
+      converseLib.validationFailed(52);
+             /* zip code invalid or required*/
+      set TF0CM004.XXXZIP cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+    else
+      if (TF0CM004.XXXZIP <= "00000     "
+       || TF0CM004.XXXZIP <= "000000    "
+       || TF0CM004.XXXZIP <= "0000000   "
+       || TF0CM004.XXXZIP <= "00000000  "
+       || TF0CM004.XXXZIP <= "000000000 "
+       || TF0CM004.XXXZIP <= "0000000000")
+        converseLib.validationFailed(52);
+               /* invalid zip code - please reenter*/
+        set TF0CM004.XXXZIP cursor, bold;
+        TF0CW01.TF0CWERR = "Y";
+      end
+    end
+    if (TF0CM004.XSTCD in XSTTBL.XSTCD)
+        /* next sentence*/
+    else
+      converseLib.validationFailed(53);
+             /* state invalid or required*/
+      set TF0CM004.XSTCD cursor, bold;
+      TF0CW01.TF0CWERR = "Y";
+    end
+  end
+
+  if (TF0CM004.XXXCITY > " ")
+      /* next sentence*/
+  else
+    converseLib.validationFailed(54);
+           /* city required*/
+    set TF0CM004.XXXCITY cursor, bold;
+    TF0CW01.TF0CWERR = "Y";
+  end
+
+
+
+
+end // end TF0CSE2
+
+// edit address lines and name
+Function TF0CSE3()
+
+
+         /* edit address lines and name*/
+
+
+
+  if (TF0CM004.XXXADDR1 > " ")
+      /* next sentence*/
+  else
+    if (TF0CM004.XXXADDR2 > " ")
+        /* next sentence*/
+    else
+      if (TF0CM004.XXXADDR3 > " ")
+          /* next sentence*/
+      else
+        converseLib.validationFailed(56);
+           /* address required*/
+        set TF0CM004.XXXADDR1 cursor, bold;
+        TF0CW01.TF0CWERR = "Y";
+      end
+    end
+  end
+
+
+  if (TF0CM004.KUCCONM > " ")
+      /* next sentence*/
+  else
+    converseLib.validationFailed(55);
+           /* name required*/
+    set TF0CM004.KUCCONM cursor, bold;
+    TF0CW01.TF0CWERR = "Y";
+  end
+
+
+
+end // end TF0CSE3
+
+// Cnvt Store Id Numeric to Alpha
+Function XSTFS03()
+   /* *************************************************************/
+   /* *     XSTFS03 - Convert Store Id from Numeric to Alpha     **/
+   /* *               This routine will convert a store id of    **/
+   /* *               -1 to 'ALL ' otherwise it will left        **/
+   /* *               justify the number into the alpha field    **/
+   /* *     NOTE - THIS ROUTINE WILL USE AND TRASH THE           **/
+   /* *            SUBSCRIPTS TFAWSUB9 AND TFAWSUB8              **/
+   /* *************************************************************/
+
+  TFAREC.TFASTRA = " "; /* zero alpha store number*/
+  if (TFAREC.TFASTRN == -1)
+    TFAREC.TFASTRA = "ALL ";
+  else
+    TFAREC.TFAWSUB9 = 1;
+    TFAREC.TFAWSUB8 = 1;
+    while (TFAREC.TFAWSUB9 <= 3 /* this loop removes leading zeros*/
+     && TFAREC.TFASTRNC[TFAWSUB9] == 0)
+      TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+    end
+    while (TFAREC.TFAWSUB9 <= 4) /* and this loop moves the data*/
+      TFAREC.TFASTRC[TFAWSUB8] = TFAREC.TFASTRNC[TFAWSUB9];
+      TFAREC.TFAWSUB8 = TFAREC.TFAWSUB8 + 1;
+      TFAREC.TFAWSUB9 = TFAREC.TFAWSUB9 + 1;
+    end
+  end
+
+end // end XSTFS03
+
+//*** RECORD=TF0CW01 ****
+// ************************************************************
+// *
+// *  Working Storage Record for Program TF0C
+// *
+// ************************************************************
+// ***********************
+Record TF0CW01 type basicRecord
+  10 TF0CWEOA TF0CWEOA ; 
+  10 TF0CWEOS TF0CWEOS ; 
+  10 TF0CWERR TF0CWERR ; 
+  10 TF0CWDIR TF0CWDIR ; 
+  10 TF0CWHDR TF0CWHDR ; 
+  10 TF0CWFBI TF0CWFBI ; 
+  10 TF0CWFND TF0CWFND ; 
+  10 TF0CWHRI TF0CWHRI ; 
+  10 TF0CWHCR TF0CWHCR ; 
+  10 TF0CWCFD TF0CWCFD ; 
+  10 TF0CWEOT TF0CWEOT ; 
+  10 XXXRVNBR XXXRVNBR ; 
+  10 TF0CWH4 TF0CWH4 [8] ; 
+    15 TF0CWSEL TF0CWSEL ; 
+    15 TF5WTBRK TF5WTBRK ; 
+    15 TF1CARCD TF1CARCD ; 
+    15 XHRCD XHRCD ; 
+    15 TF5ALTAD TF5ALTAD ; 
+    15 TF5ADRID TF5ADRID ; 
+    15 TF5PBLFL TF5PBLFL ; 
+    15 TF5PLBFL TF5PLBFL ; 
+  10 TF0CWHWT TF0CWHWT ; 
+  10 KUCCOID KUCCOID ; 
+  10 KUMSTRID KUMSTRID ; 
+  10 XBCCD XBCCD ; 
+  10 XWHCD XWHCD ; 
+  10 XWHABRV XWHABRV ; 
+  10 TF0CWHCM TF0CWHCM [15] ; 
+  10 TF0CWHTX TF0CWHTX [6] ; 
+  10 TF5GRPLV TF5GRPLV ; 
+  10 TF0CWHWH TF0CWHWH ; 
+  10 TF0CWESC TF0CWESC ; 
+  10 TF0CWEDB TF0CWEDB ; 
+end // end TF0CW01
+
+//*** RECORD=TF0CW02 ****
+// ************************************************************
+// *  Scrolling table
+// *    This record is a table used to control scrolling for
+// *    the directory screen (TF0CM001).  Keys are stored in
+// *    this array as the user scrolls forward. If the user
+// *    then requests a backward scroll, we can use the data
+// *    in this table to start the select set in the proper
+// *    place.  Do NOT add any elements into this record
+// *    unless they will be used to control scrolling.
+// *    Maintenance History
+// *    date      userid   description
+// *    100289    kande1   change number of occurs from 10 to
+// *                       25 to allow more backward scrolling
+// ************************************************************
+// ***********************
+Record TF0CW02 type basicRecord
+  5 TF0CWTBL TF0CWTBL [25] ; 
+    10 KUMSTRNM KUMSTRNM ; 
+    10 KUMSTSNM KUMSTSNM ; 
+    10 XSTCD XSTCD ; 
+    10 KUMCITYS KUMCITYS ; 
+    10 KUCCOID KUCCOID ; 
+    10 XBCCD XBCCD ; 
+    10 KUMSTRID KUMSTRID ; 
+end // end TF0CW02
+
+//*** RECORD=TF0CW03 ****
+// ************************************************************
+// *  This record is used to pass the option to I/O modules
+// *  in this program. I had to do it this way because I
+// *  could not make the level 77 data item work. Do not add
+// *  any more data items into this record.
+// ************************************************************
+// ***********************
+Record TF0CW03 type basicRecord
+  10 TF0CWIO TF0CWIO ; 
+end // end TF0CW03
+
+//*** RECORD=TFBREC ****
+// ******* dpick.vrtext01 cust routing excpt text table *******
+// *
+// * db2 table:       dpick.vrtext01
+// *
+// * dclgen:          dcl00300
+// *
+// * i/o mod:         io1930
+// *
+// * key to table:    xwhcd, kuccoid, kumstrid, tfbcmseq
+// *
+// * date created:    06/04/87
+// *
+// * maintenance log:
+// *   who      when     why
+// * -------- -------- ----------------------------------------
+// *  snoble  06/04/87 initial record creation
+// *  pmainw  02/22/88 remove record status item
+// *  shende  06/18/92 add xbccd for table changes
+// **********************
+Record TFBREC type basicRecord
+  5 TFBGRPLV TFBGRPLV ; 
+    10 TFBKEY TFBKEY ; 
+      15 XWHCD XWHCD ; 
+      15 KUCCOID KUCCOID ; 
+      15 KUMSTRID KUMSTRID ; 
+      15 XBCCD XBCCD ; 
+      15 TFBCMSEQ TFBCMSEQ ; 
+    10 TFBCMTXT TFBCMTXT ; 
+    10 ZZZSDT ZZZSDT ; 
+    10 ZZZCHGDT ZZZCHGDT ; 
+    10 ZZZCHGTM ZZZCHGTM ; 
+    10 ZZZCHGCT ZZZCHGCT ; 
+end // end TFBREC
+
+//*** RECORD=TFDREC ****
+// ******* dpick.vblstx01 bill of lading stamp text     *******
+// *
+// * db2 table:       dpick.vvlstx01
+// *
+// * dclgen:          dcl00888
+// *
+// * i/o mod:         io5450
+// *
+// * key to table:    xwhcd, kuccoid, kumstrid, pkusqnbr
+// *
+// * date created:    11/01/90
+// *
+// * maintenance log:
+// *   who      when     why
+// * -------- -------- ----------------------------------------
+// *  mmoreh  10/01/90 initial record creation
+// *  CHYDE   01/17/91 Correct data item desc of tfdbstxt.
+// **********************
+Record TFDREC type basicRecord
+  5 TFDGRPLV TFDGRPLV ; 
+    10 TFDKEY TFDKEY ; 
+      15 XWHCD XWHCD ; 
+      15 KUCCOID KUCCOID ; 
+      15 KUMSTRID KUMSTRID ; 
+      15 PKUSQNBR PKUSQNBR ; 
+    10 TFDBSTXT TFDBSTXT ; 
+    10 ZZZCHGDT ZZZCHGDT ; 
+    10 ZZZCHGTM ZZZCHGTM ; 
+    10 ZZZCHGCT ZZZCHGCT ; 
+end // end TFDREC
+
+// Confirm Deactivate(Y/N)
+DataItem TF0CWCFD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Process Directory (Y/N)
+DataItem TF0CWDIR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// End db flag (y/n)
+DataItem TF0CWEDB char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// End of Application Flag
+DataItem TF0CWEOA char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// End of Screen Flag
+DataItem TF0CWEOS char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// End of table (Y/N)
+DataItem TF0CWEOT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Error flag
+DataItem TF0CWERR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// End of screen flag (y/n)
+DataItem TF0CWESC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Direction Indicator(F/B)
+DataItem TF0CWFBI char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Cust. found indicator(Y/N)
+DataItem TF0CWFND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Hold weight brk table
+DataItem TF0CWH4 char(18)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Have Comment record(Y/N)
+DataItem TF0CWHCM char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Have change reason(Y/N)
+DataItem TF0CWHCR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Process Header (Y/N)
+DataItem TF0CWHDR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Have record Indicator(Y/N)
+DataItem TF0CWHRI char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Has stamp txt record(Y/N)
+DataItem TF0CWHTX char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hold warehouse code
+DataItem TF0CWHWH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hold weight break
+DataItem TF0CWHWT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// I/O Option for iomod
+DataItem TF0CWIO char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Hold selection code
+DataItem TF0CWSEL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Group level for table
+DataItem TF0CWTBL char(60)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// tf-comnt-seq
+DataItem TFBCMSEQ smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// tf-comnt-txt
+DataItem TFBCMTXT char(60)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record group level
+DataItem TFBGRPLV char(84)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record key
+DataItem TFBKEY char(12)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// pk_bol_stmp_txt
+DataItem TFDBSTXT char(75)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record group level
+DataItem TFDGRPLV char(93)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record key
+DataItem TFDKEY char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

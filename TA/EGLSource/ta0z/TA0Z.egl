@@ -1,0 +1,1272 @@
+package ta0z;
+import corpcom1.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import ta.common.*;
+//*** PROGRAM=TA0Z ****
+// **********************************************************
+// .................   ta0z prologue ........................
+// 
+// This application is used to test all changes to TA0Q (a
+// re-gen'd version of TA0P) as follows:
+// 
+//    A)  via TEST CICS:
+//        1)  test with ta0pt01 (jcl with prod JOBLIB concat.)
+//        2)  test with ta0pt02 (jcl with test JOBLIB concat.)
+// 
+//    B)  via PROD CICS:
+//        1)  test with ta0pt01 (jcl with prod JOBLIB concat.)
+//            a)  JOB zt9921 (jcl will be re-routed to devlmvs
+//                via ESP Encore scheduler & run on devlmvs)
+//            a)  JOB zt9923 (jcl will be scheduled by ca7 &
+//                run on prodmvs)
+// 
+// **********************************************************
+// maint.
+// date      by     why
+// --------  ------ -------------------------------------------
+// 12-17-91  vcowan  New application...copied from ta0b
+// 04-15-92  vcowan  add code to test following TA0P options:
+//                   1.  GL & ZT appls on DEVLMVS,
+// 04-15-92  vcowan  add code to test following TA0P options:
+//                   1.  GL & ZT appls on DEVLMVS,
+//                   2.  SL appls using S00008 initator,
+//                   3.  all other apps using S00001 initator
+//                   4.  new ca-7 parms: MAINID, RELOPR, DELETE
+//                       CONCODE, JCLID=000 & SYSTEM=xxxx
+// 04-15-92  vcowan  add code to test following TA0P options:
+//                   1.  JOB GL1253 to run on PRODMVS only.
+// 07-31-92  vcowan  add code to test following TA0P options:
+//                   1.  logic to test the following systems
+//                       to use the su0006 initator:
+//                       ab, ab, fb, ff, fl, gl
+// 02-16-93  vcowan  chg msg file from FF to TA
+// 04-21-93  vcowan  add cics region 07 for europe ...
+// 04-22-93  vcowan  chg jcl table's joblib concatenation &
+//                   program logic to set proper PROCLIB
+//                   concatenation per the DOMESTIC or EURPOEAN
+//                   CICS processing region.
+//      ...NOTE: ta0zt01 & ta0zt02 have DOMESTIC concatenation
+//               in PRODMSL in the CMT
+//      ...NOTE: ta0zt01 & ta0zt02 have EUROPEAN concatenation
+//               in PRODMSL in the CET
+// 07-19-93  vcowan  chg jcl table's for MVSEURD
+// 08-16-93  vcowan  chg testrms to testenc; ref PROC TA0Z-610
+// 12-09-93  vcowan  chg: european systems move from mvsprod to
+//                   run on production on MVSEURD LPAR ........
+//                   chg: cicso07 to cicso13; ref PROC TA0Z-600
+// 12-11-93  vcowan  chg: DD overrides for DIAGREC & SYSUT1 in
+//                   in P0010 & S0010 respectively; ref PROC
+//                   TA0Z-610
+// 08-10-94  vcowan  chg: for MVSASIA testing ... ADD LOGIC:
+//                   IF COMMAREA.XCTH.THEATER-RUNTYPE = 'PROD'
+//                   to check for MVS's Production Regions.
+//                   ref: PROC TA0Z-600, TA0P-610.
+// 04-21-95  vcowan  correct documentation on ta0zm000 map ...
+//                   chg ta0q to ta0r
+// *********************
+Program TA0Z type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "TA00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  SQLCA SQLCA; // record
+  TA0ZW01 TA0ZW01; // record
+  TA0ZW04 TA0ZW04; // record
+  TA0ZW09 TA0ZW09; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA3REC TA3REC; // record
+  TA6REC TA6REC; // record
+  TAEREC TAEREC; // record
+  TARREC TARREC; // record
+  TARRECA TARRECA { redefines = TARREC } ; // record
+  TARRECB TARRECB { redefines = TARREC } ; // record
+  TARRECJ TARRECJ { redefines = TARREC } ; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use TA0ZT01; // table
+  use TA0ZT02; // table
+  use TA0ZM.TA0PM001,  // forms
+      TA0ZM.TA0ZM000, 
+      TA0ZM.TA0ZM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    TA0Z-000: TA0Z-000();
+    exit program;
+  end // end main
+end // end TA0Z
+
+// main flow
+Function TA0Z-000()
+   /* ************************************************************/
+   /* *   this is the "main logic" for the application.         **/
+   /* *                                                         **/
+   /* *   perform initialization, set application revision nbrs,**/
+   /* *   then do main perform until done with application      **/
+   /* *                                                         **/
+   /* ************************************************************/
+
+  XSENTRY();
+
+  XSSEGTR();
+
+  TA6REC.TA6SUBSW = "I"; /* get information only*/
+  TA0Z-001(); /* initialize the application*/
+
+   /* -------------------------------------------------------------*/
+        /* initialize map fields with default values*/
+   /* -------------------------------------------------------------*/
+  TA0ZM000.TA0ZMNBR = "00"; /* appl mx nbr for ta0zm000*/
+  TA0ZM001.TA0ZMNBR = "00"; /* appl mx nbr for ta0zm000*/
+
+  TA0ZM001.TA0ZM-TA6-MAX-COND-CODE = "0000"; /* max cond code*/
+  TA0ZM001.TA0ZM-RUNJCL-COND-CODE = "0000"; /* run cond code*/
+
+  TA0ZM001.TA0ZM-JCL-SUBMIT-SW = "T"; /* jcl submit sw*/
+  TA0ZM001.TA0ZM-CA7-SUBMIT-SW = "P"; /* jcl submit sw*/
+
+  TA0ZM001.TA0ZM-SU-INITIATOR = "Y"; /* use SU0001 initiator*/
+  TA0ZM001.TA0ZM-TA0R-CALL-SW = "Y"; /* call TA0R  sw*/
+
+  TA0ZW04.TA0ZW-EOA-SW = "N"; /* set end of application flag*/
+  TA0ZW04.TA0ZW-EOS-SW = "N"; /* set end of screen flag*/
+
+  TA0Z-002(); /* converse test instructions*/
+
+
+
+  while (TA0ZW04.TA0ZW-EOA-SW == "N") /* while not end of application*/
+    TA0Z-003(); /* process the report options*/
+  end
+
+  COMMAREA.CATOAP = "MN0M"; /* return to main menu*/
+
+end // end TA0Z-000
+
+// init NIL rept selection
+Function TA0Z-001()
+
+  set TA0PM001 empty;
+  set TA0ZM000 empty;
+  set TA0ZM001 empty;
+
+  set TA0ZW04 empty;
+  set TA0ZW09 empty;
+  set TAEREC empty;
+  set TA1REC empty;
+  set SQLCA empty;
+
+  set TA0ZM000 initial; /* clear map*/
+  set TA0ZM001 initial; /* clear map*/
+  set TA0PM001 initial; /* clear map*/
+
+   /* --------------------------------------------------*/
+   /* call sub-rtn to find which environment the program*/
+   /* is executing. Production ('03') or devl*/
+   /* --------------------------------------------------*/
+  set TA3REC empty;
+  TA3REC.TA3OPTN = "ALLFLDS";
+  try
+    call "TA0230" (TA3REC) {isNoRefresh = yes, isExternal = yes};
+  end
+  TA0ZW04.TA0ZW-TAU = TA3REC.TA3USRID;
+
+  TA0ZM001.TA0ZMPNM = "TA0ZM000"; /* first screen*/
+  TA0ZM001.TA0ZMPNM = "TA0ZM001"; /* first screen*/
+
+  TA0ZM000.TA0ZMRDT = VGVar.currentShortGregorianDate; /* system date*/
+  TA0ZM001.TA0ZMRDT = VGVar.currentShortGregorianDate; /* system date*/
+
+
+end // end TA0Z-001
+
+// Main process to display a map
+Function TA0Z-002()
+
+
+  TA0ZW04.TA0ZW-ERR-SW = "N"; /* set map-err to no*/
+
+
+  converse TA0ZM000 ;
+
+  TA0ZM000.VAGen_EZEMSG = " "; /* clear msg line*/
+   /* clear msg line*/
+  TA0ZM000.TA0ZMMSG = " ";
+   /* ---------------------------------------------------------*/
+   /* go check which pf, pa, or enter key hit*/
+   /* ---------------------------------------------------------*/
+  TA0Z-092(); /* check attention keys*/
+
+
+end // end TA0Z-002
+
+// Main process to display a map
+Function TA0Z-003()
+
+
+  TA0ZW04.TA0ZW-ERR-SW = "N"; /* set map-err to no*/
+
+
+  converse TA0ZM001 ;
+
+  TA0ZM001.VAGen_EZEMSG = " "; /* clear msg line*/
+   /* clear msg line*/
+  TA0ZM001.TA0ZMMSG = " ";
+  TA0Z-092(); /* check attention keys*/
+
+   /* ---------------------------------------------------------*/
+   /* initialize ta6rec with info from ta0zm001*/
+   /* ---------------------------------------------------------*/
+
+  set TA6REC empty; /* initialize ta6rec*/
+
+  if (TA0ZM001.TA0ZM-TA6SUBSW == "N" /* display map only*/
+   || TA0ZM001.TA0ZM-TA6SUBSW == "Y" /* display map & submit jcl*/
+   || TA0ZM001.TA0ZM-TA6SUBSW == "I" /* obtain infomation only*/
+   || TA0ZM001.TA0ZM-TA6SUBSW == "S") /* tailor & submit jcl only*/
+    TA6REC.TA6SUBSW = TA0ZM001.TA0ZM-TA6SUBSW;
+
+  else
+    TA0ZM001.TA0ZMMSG = "TA0Z ERROR: INVALID TA0P SUBMIT JCL SW OPTION SELECTED";
+    TA0ZW04.TA0ZW-ERR-SW = "Y";
+  end
+
+
+  if (TA0ZM001.TA0ZM-TA6MSGSW == "N" /* don't sent reply message*/
+   || TA0ZM001.TA0ZM-TA6MSGSW == "Y") /* sent reply message*/
+    TA6REC.TA6MSGSW = TA0ZM001.TA0ZM-TA6MSGSW;
+
+  else
+    TA0ZM001.TA0ZMMSG = "TA0Z ERROR: INVALID TA0P REPLY MESSAGE OPTION SELECTED";
+    TA0ZW04.TA0ZW-ERR-SW = "Y";
+  end
+
+
+  if (TA0ZM001.TA0ZM-RUNJCL-COND-CODE > "4095")
+    TA0ZM001.TA0ZMMSG = "TA0Z ERROR: RUNJCL COND CODE GREATER THAN 4095";
+    TA0ZW04.TA0ZW-ERR-SW = "Y";
+  end
+
+
+  if (TA0ZM001.TA0ZM-JCL-SUBMIT-SW == "T"
+   || TA0ZM001.TA0ZM-JCL-SUBMIT-SW == "P")
+       /* next sentence*/
+  else
+    TA0ZM001.TA0ZMMSG = "TA0Z ERROR: JCL SUBMIT VALUE INVALID...MUST BE D OR P";
+    TA0ZW04.TA0ZW-ERR-SW = "Y";
+  end
+
+
+  if (TA0ZM001.TA0ZM-CA7-SUBMIT-SW == "P"
+   || TA0ZM001.TA0ZM-CA7-SUBMIT-SW == "D")
+       /* next sentence*/
+  else
+    TA0ZM001.TA0ZMMSG = "TA0Z ERROR: CA7 SUBMIT VALUE INVALID...MUST BE D OR P";
+    TA0ZW04.TA0ZW-ERR-SW = "Y";
+  end
+
+  TA6REC.TA6SUBSW = TA0ZM001.TA0ZM-TA6SUBSW;
+  TA6REC.TA6MSGSW = TA0ZM001.TA0ZM-TA6MSGSW;
+  TA6REC.TA6-MAX-COND-CODE = TA0ZM001.TA0ZM-TA6-MAX-COND-CODE;
+
+  if (TA0ZW04.TA0ZW-ERR-SW == "N")
+    TA0Z-600(); /* test ta0p process*/
+    TA0Z-092(); /* check attention keys*/
+  end
+
+
+end // end TA0Z-003
+
+// Check attention identifier
+Function TA0Z-092()
+   /* ------------------------------------------------------------*/
+   /* If CANCEL was requested, indicate selection cancelled,*/
+   /* clear the map fields and exit to display the next map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+    set TA0ZM001 initial; /* m001 input/output*/
+    TA0ZW04.TA0ZW-EOS-SW = "Y";
+    TA0ZW04.TA0ZW-EOA-SW = "Y";
+    converseLib.validationFailed(0);
+    TA0ZW01.XXXMSGNO = 0;
+    TA0ZM001.VAGen_EZEMSG = " ";
+    COMMAREA.CATOAP = "MN0M";
+    XSEXIT(); /* Exit to production menu*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If HELP was requested, indicate exit to the selection menu.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+    TA0ZW09.TA0ZW-SWX = "Y"; /* Indicate exit requested*/
+    TA0ZW04.TA0ZW-EOS-SW = "Y";
+    TA0ZW04.TA0ZW-EOA-SW = "Y";
+    converseLib.validationFailed(0);
+    TA0ZW01.XXXMSGNO = 0;
+    TA0ZM001.VAGen_EZEMSG = " ";
+    COMMAREA.CATOAP = "GD01";
+    XSEXIT();
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If EXIT was requested, indicate exit to the selection menu.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+    TA0ZW09.TA0ZW-SWX = "Y"; /* Indicate exit requested*/
+    TA0ZW04.TA0ZW-EOS-SW = "Y";
+    TA0ZW04.TA0ZW-EOA-SW = "Y";
+    converseLib.validationFailed(0);
+    TA0ZW01.XXXMSGNO = 0;
+    TA0ZM001.VAGen_EZEMSG = " ";
+    COMMAREA.CATOAP = "MN0M";
+    XSEXIT(); /* Exit to production menu*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If pf4....go to next screen: ta0zm001*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf4) /* PF4 was pressed*/
+    return; /* Exit to display map*/
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+    TA0ZW01.XXXMODID = "072"; /* Module identification*/
+    converseLib.validationFailed(3); /* Indicate invalid attention key*/
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+    return; /* Exit to display map*/
+  end
+
+
+end // end TA0Z-092
+
+// PROCESS THE VALID DATA
+Function TA0Z-600()
+
+   /* ------------------------------------------------------------*/
+       /* PROCESS THE INPUT*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0ZW04.TA0ZW-ERR-SW == "Y" /* we have an edit error*/
+   || converseVar.validationMsgNum != 0) /* we have a message*/
+
+    return; /* return to top of job*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+      /* CALL SUB-ROUTINE TO FIND WHICH ENVIRONMENT*/
+      /* THE PROGRAM IS EXECUTING IN, DEVELOPMENT*/
+      /* OR PRODUCTION.*/
+   /* ------------------------------------------------------------*/
+  set TA3REC empty;
+  TA3REC.TA3OPTN = "ASSIGN ";
+  try
+    call "TA0230" (TA3REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA3REC.TA3RTNCD == 0)          /* Good return code*/
+    if (COMMAREA.XCTH-THEATER-LOCATION == "PROD" /* IF PRODUCTION CICS REGION*/
+     || TA3REC.TA3RGNID == "03"                  /* if on DOMESTIC prod.sys CP(MVSPROD)*/
+     || TA3REC.TA3RGNID == "13"                  /* if on EUROPEAN prod.SYS CPE(MVSEURD)*/
+     || TA3REC.TA3RGNID == "23")                 /* if on ASIA prod.SYS CPA(MVSASIA)*/
+      TA0Z-610(); /* format production jcl*/
+    else
+      if (TA0ZM001.TA0ZM-JCL-SUBMIT-SW == "T")
+        TA0Z-620(); /* format development jcl*/
+      else
+        TA0Z-610(); /* format prod jcl on devlmvs*/
+      end
+    end
+
+  else
+
+    TA0ZM001.TA0ZMPNM = "TA0Z600"; /* module identification*/
+    converseLib.validationFailed(87); /* Error encountered with print request*/
+    return;
+  end
+
+end // end TA0Z-600
+
+// PROCESS THE prod jcl
+Function TA0Z-610()
+   /* ------------------------------------------------------------*/
+       /* PROCESS THE INPUT*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0ZW04.TA0ZW-ERR-SW == "Y" /* we have an edit error*/
+   || converseVar.validationMsgNum != 0) /* we have a message*/
+
+    return; /* return to top of job*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* if no messages:  perpare to submit the PROD JCL*/
+   /* ------------------------------------------------------------*/
+
+   /* ------------------------------------------------------------*/
+   /* Initialize the work areas and indexes to be used.*/
+   /* note:  ta6rec initialized in process: ta0z-002*/
+   /* ------------------------------------------------------------*/
+
+
+
+  TA0ZW04.TA0ZW-LINE-IDX = 1; /* Initialize table index*/
+  TA6REC.TA6INDEX = 1; /* Initialize parameters index*/
+
+   /* ------------------------------------------------------------*/
+   /* Format jcl & parameters into the subroutine work area.*/
+   /* ------------------------------------------------------------*/
+
+  while (TA0ZW04.TA0ZW-LINE-IDX > 0) /* Until end of table*/
+
+
+    /* insert "//   typrun=scan"  to submit PROD JCL on TESTMVS*/
+
+    if (TA0ZT01.TARTYPE[TA0ZW-LINE-IDX] == "X") /* insert TEST-code parms*/
+      if (COMMAREA.XCTH-THEATER-RUNTYPE == "PROD" /* PRODUCTION CICS RGN*/
+       || TA3REC.TA3RGNID == "03"                 /* DOMESTIC production system MVSPROD*/
+       || TA3REC.TA3RGNID == "13"                 /* EUROPEAN production system MVSEURD*/
+       || TA3REC.TA3RGNID == "23")                /* ASIA production system MVSASIA*/
+               /* next sentence*/
+      else
+        TA6REC.TARJCL[TA6INDEX] = "//*            TYPRUN=SCAN,";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "//             CLASS=A,    ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "//             MSGCLASS=T, ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "//             NOTIFY=     ";
+        TA6REC.TARTYPE[TA6INDEX] = "N"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "//*                        ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "//*                        ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "/*JOBPARM  PROCLIB=TEST    ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "//*                        ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA0ZW04.TA0ZW-LINE-IDX = TA0ZW04.TA0ZW-LINE-IDX + 1;
+                                   /* Increment table index*/
+      end
+
+       /* if domestic/european production system, add "/*jobparm stmt"*/
+       /* --------- added 3-21-93  vcowan -----------------*/
+
+      if (COMMAREA.XCTH-THEATER-RUNTYPE == "PROD" /* PRODUCTION CICS RGN*/
+       || TA3REC.TA3RGNID == "03"                 /* DOMESTIC production system MVSPROD*/
+       || TA3REC.TA3RGNID == "13"                 /* EUROPEAN production system MVSEURD*/
+       || TA3REC.TA3RGNID == "23")                /* ASIA production system MVSASIA*/
+               /* do following*/
+        TA6REC.TARJCL[TA6INDEX] = "//      CLASS=P,MSGCLASS=J ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "//*                        ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "//*                        ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "/*JOBPARM PROCLIB=ONETIME  ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA6REC.TARJCL[TA6INDEX] = "//*                        ";
+        TA6REC.TARTYPE[TA6INDEX] = "Z"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA0ZW04.TA0ZW-LINE-IDX = TA0ZW04.TA0ZW-LINE-IDX + 1;
+                                   /* Increment table index*/
+      end
+    end
+
+
+    /* insert "//s0050 exec testenc"  in submit PROD JCL on TESTMVS*/
+
+    if (TA0ZT01.TARTYPE[TA0ZW-LINE-IDX] == "Q") /* insert TEST-code parms*/
+      if (COMMAREA.XCTH-THEATER-RUNTYPE == "PROD" /* PRODUCTION CICS RGN*/
+       || TA3REC.TA3RGNID == "03"                 /* DOMESTIC production sys...MVSPROD*/
+       || TA3REC.TA3RGNID == "13"                 /* EUROPEAN production sys...MVSEURD*/
+       || TA3REC.TA3RGNID == "23")                /* ASIA production sys...MVSASIA*/
+               /* next sentence*/
+      else
+        TA6REC.TARJCL[TA6INDEX] = "//S0005 EXEC TESTENC      ,";
+        TA6REC.TARTYPE[TA6INDEX] = "Q"; /* Type*/
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+
+        TA0ZW04.TA0ZW-LINE-IDX = TA0ZW04.TA0ZW-LINE-IDX + 1;
+
+      end
+    end
+
+    TARREC.TARJCL = TA0ZT01.TARJCL[TA0ZW-LINE-IDX]; /* move jcl info*/
+
+
+    /* insert "cond-code values" in appropiate JCL statements*/
+
+    if (TA0ZT01.TARTYPE[TA0ZW-LINE-IDX] == "A") /* set max-cond-code parms*/
+      TARRECA.TA6-MAX-COND-CODE = TA0ZM001.TA0ZM-RUNJCL-COND-CODE;
+    end
+
+    if (TA0ZT01.TARTYPE[TA0ZW-LINE-IDX] == "B") /* set max-cond-code parms*/
+      TARRECB.TA6-MAX-COND-CODE = TA0ZM001.TA0ZM-RUNJCL-COND-CODE;
+    end
+
+    /* insert JOBNAME into JOBCARD per nike's test requiremwents*/
+    /* 1.  all "GL" jobs are submitted to the MVSDEVL LPAR "except"*/
+    /* "gl1253" .... ref Monti Buhite, X2175*/
+    /* 2.  DEFAULT JOB: "ZT9923"*/
+
+    if (TA0ZT01.TARTYPE[TA0ZW-LINE-IDX] == "J") /* insert job name info*/
+      if (TA0ZM001.TA0ZM-CA7-SUBMIT-SW == "P")
+        TARRECJ.XURJOBID = "ZT9923"; /* run jcl on prodmvs*/
+        if (TA0ZM001.TA0ZM-SU-INITIATOR == "G") /* submit 'gl1601' to run on*/
+          TARRECJ.XURJOBID = "GL1601"; /* MVSDEVL LPAR only*/
+        end
+        if (TA0ZM001.TA0ZM-SU-INITIATOR == "X") /* submit 'gl1253' to runon*/
+          TARRECJ.XURJOBID = "GL1253"; /* PRODMVS LPAR only*/
+        end
+      end
+    end
+
+    if (TA0ZT01.TARTYPE[TA0ZW-LINE-IDX] == "J") /* insert job name info*/
+      if (TA0ZM001.TA0ZM-CA7-SUBMIT-SW != "P")
+        TARRECJ.XURJOBID = "ZT9921"; /* run jcl on devlmvs*/
+
+        if (COMMAREA.XCTH-THEATER-LOCATION == "ASIA") /* MVSASIA LPAR*/
+          TARRECJ.XURJOBID = "ZT992A"; /* MVSDEVL LPAR only*/
+        end
+
+        if (COMMAREA.XCTH-THEATER-LOCATION == "EUROPE") /* MVSEURO LPAR*/
+          TARRECJ.XURJOBID = "ZT992E"; /* MVSDEVL LPAR only*/
+        end
+
+        if (TA0ZM001.TA0ZM-SU-INITIATOR == "G") /* submig 'gl1601' to run on*/
+          TARRECJ.XURJOBID = "GL1601"; /* MVSDEVL LPAR only*/
+        end
+      end
+
+    end
+
+
+    /* insert SYSUT1 Dataset name for Step S0010 depending:*/
+    /* 1.  if job bing run in PRODUCTION on MVSPROD, MVSEURD or MVSASIA*/
+    /* set Dsn=TA.F0171.CNTL*/
+    /* 2.  if job bing run in DEVELOPMENT on MVSDEVL, MVSEURD or MVSASIA*/
+    /* set DSN=T.TA.F0171.CNTL*/
+
+    if (TA0ZT01.TARTYPE[TA0ZW-LINE-IDX] == "T") /* insert test/prod dsn*/
+      if (TA0ZM001.TA0ZM-CA7-SUBMIT-SW == "P")
+        if (COMMAREA.XCTH-THEATER-RUNTYPE == "PROD" /* PRODUCTION CICS RGN*/
+         || TA3REC.TA3RGNID == "03"                 /* DOMESTIC prod.system MVSPROD*/
+         || TA3REC.TA3RGNID == "13"                 /* EUROPEAN prod.system MVSEURD*/
+         || TA3REC.TA3RGNID == "23")                /* ASIA     prod.system MVSASIA*/
+          TARREC.TARJCL = "//SYSUT1   DD DSN=TA.F0171.CNTL,DISP=SHR ";
+        else
+          TARREC.TARJCL = "//SYSUT1   DD DSN=T.TA.F0171.CNTL,DISP=SHR ";
+        end
+      else
+        TARREC.TARJCL = "//SYSUT1   DD DSN=T.TA.F0171.CNTL,DISP=SHR ";
+      end
+    end
+
+
+
+    /* insert DIAGREC Dataset name for Step S0010 depending:*/
+    /* 1.  if job bing run in PRODUCTION on MVSPROD, MVSEURD or MVSASIA*/
+    /* set DSN=TA.V0010.DIAGREC*/
+    /* 2.  if job bing run in DEVELOPMENT on MVSDEVL, MVSEURD or MVSASIA*/
+    /* set DSN=T.TA.V0010.DIAGREC*/
+
+    if (TA0ZT01.TARTYPE[TA0ZW-LINE-IDX] == "K") /* insert test/prod dsn*/
+      if (TA0ZM001.TA0ZM-CA7-SUBMIT-SW == "P")
+        if (COMMAREA.XCTH-THEATER-RUNTYPE == "PROD" /* PRODUCTION CICS RGN*/
+         || TA3REC.TA3RGNID == "03"                 /* DOMESTIC prod.system MVSPROD*/
+         || TA3REC.TA3RGNID == "13"                 /* EUROPEAN prod.system MVSEURD*/
+         || TA3REC.TA3RGNID == "23")                /* ASIA     prod.system MVSASIA*/
+          TARREC.TARJCL = "//DIAGREC  DD DSN=TA.V0010.DIAGREC,DISP=SHR";
+        else
+          TARREC.TARJCL = "//DIAGREC  DD DSN=T.TA.V0010.DIAGREC,DISP=SHR ";
+        end
+      end
+    end
+
+
+    /* ------------------------------------------------------------*/
+     /* If not end of table, move jcl & increment the table index.*/
+    /* ------------------------------------------------------------*/
+
+    TA6REC.TARJCL[TA6INDEX] = TARREC.TARJCL; /* JCL*/
+    TA6REC.TARTYPE[TA6INDEX] = TA0ZT01.TARTYPE[TA0ZW-LINE-IDX];
+                                   /* Type*/
+
+    if (TA0ZT01.TARJCL[TA0ZW-LINE-IDX] == "/*EOF") /* End of table*/
+      TA0ZW04.TA0ZW-LINE-IDX = 0; /* Indicate end of table*/
+    else
+      TA0ZW04.TA0ZW-LINE-IDX = TA0ZW04.TA0ZW-LINE-IDX + 1;
+                                   /* Increment table index*/
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for batch execution.*/
+   /* ------------------------------------------------------------*/
+
+  TA0ZS-SUBMIT-JCL(); /* Submit the JCL*/
+
+   /* ------------------------------------------------------------*/
+   /* Display results of print request.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* If print was successful*/
+   && SQLCA.VAGen_SQLCODE == 0)     
+
+    TA0ZM001.TA0ZMPNM = "TA0Z610"; /* Process name*/
+    TA0ZM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* ===> Job info messege*/
+
+  else
+
+    TA0ZM001.TA0ZMPNM = "TA0Z610"; /* Process name*/
+    converseLib.validationFailed(10); /* Error encountered with print request*/
+
+  end
+
+end // end TA0Z-610
+
+// PROCESS THE TEST JCL
+Function TA0Z-620()
+   /* ------------------------------------------------------------*/
+       /* PROCESS THE INPUT*/
+   /* ------------------------------------------------------------*/
+
+  if (TA0ZW04.TA0ZW-ERR-SW == "Y" /* we have an edit error*/
+   || converseVar.validationMsgNum != 0) /* we have a message*/
+
+    return; /* return to top of job*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If no messages:   perpare to submit the TEST JCL*/
+   /* ------------------------------------------------------------*/
+
+   /* ------------------------------------------------------------*/
+   /* Initialize the work areas and indexes to be used.*/
+   /* note:  ta6rec was initialized in process: ta0z-002*/
+   /* ------------------------------------------------------------*/
+
+
+  TA0ZW04.TA0ZW-LINE-IDX = 1; /* Initialize table index*/
+  TA6REC.TA6INDEX = 1; /* Initialize parameters index*/
+
+   /* ------------------------------------------------------------*/
+   /* Format TEST JCL and parameters into the subroutine work area.*/
+   /* ------------------------------------------------------------*/
+
+  while (TA0ZW04.TA0ZW-LINE-IDX > 0) /* Until end of table*/
+
+    TARREC.TARJCL = TA0ZT02.TARJCL[TA0ZW-LINE-IDX]; /* JCL*/
+
+    if (TA0ZT02.TARTYPE[TA0ZW-LINE-IDX] == "A") /* set max-cond-code parms*/
+      TARRECA.TA6-MAX-COND-CODE = TA0ZM001.TA0ZM-RUNJCL-COND-CODE;
+    end
+    if (TA0ZT02.TARTYPE[TA0ZW-LINE-IDX] == "B") /* set max-cond-code parms*/
+      TARRECB.TA6-MAX-COND-CODE = TA0ZM001.TA0ZM-RUNJCL-COND-CODE;
+    end
+
+
+    /* insert JOBNAME into JOBCARD per nike's test requiremwents*/
+    /* 1.  all "GL" jobs are submitted to the MVSDEVL LPAR "except"*/
+    /* "gl1253" .... ref Monti Buhite, X2175*/
+    /* 2.  DEFAULT JOB: "ZT9923"*/
+
+    if (TA0ZT02.TARTYPE[TA0ZW-LINE-IDX] == "J") /* insert job name info*/
+      if (TA0ZM001.TA0ZM-CA7-SUBMIT-SW == "P")
+        TARRECJ.XURJOBID = "ZT9923"; /* run jcl on prodmvs*/
+        if (TA0ZM001.TA0ZM-SU-INITIATOR == "G") /* submit 'gl1601' to run on*/
+          TARRECJ.XURJOBID = "GL1601"; /* MVSDEVL LPAR only*/
+        end
+        if (TA0ZM001.TA0ZM-SU-INITIATOR == "X") /* submit 'gl1253' to runon*/
+          TARRECJ.XURJOBID = "GL1253"; /* PRODMVS LPAR only*/
+        end
+      end
+    end
+
+    if (TA0ZT02.TARTYPE[TA0ZW-LINE-IDX] == "J") /* insert job name info*/
+      if (TA0ZM001.TA0ZM-CA7-SUBMIT-SW != "P")
+        TARRECJ.XURJOBID = "ZT9921"; /* run jcl on devlmvs*/
+
+        if (COMMAREA.XCTH-THEATER-LOCATION == "ASIA") /* MVSASIA LPAR*/
+          TARRECJ.XURJOBID = "ZT992A"; /* MVSDEVL LPAR only*/
+        end
+
+        if (COMMAREA.XCTH-THEATER-LOCATION == "EUROPE") /* MVSEURO LPAR*/
+          TARRECJ.XURJOBID = "ZT992E"; /* MVSDEVL LPAR only*/
+        end
+
+        if (TA0ZM001.TA0ZM-SU-INITIATOR == "G") /* submig 'gl1601' to run on*/
+          TARRECJ.XURJOBID = "GL1601"; /* MVSDEVL LPAR only*/
+        end
+      end
+
+    end
+
+
+    /* ------------------------------------------------------------*/
+     /* If not end of table, move jcl & increment the table index.*/
+    /* ------------------------------------------------------------*/
+
+    TA6REC.TARJCL[TA6INDEX] = TARREC.TARJCL; /* JCL*/
+    TA6REC.TARTYPE[TA6INDEX] = TA0ZT02.TARTYPE[TA0ZW-LINE-IDX];
+                                   /* Type*/
+
+
+    if (TA0ZT02.TARJCL[TA0ZW-LINE-IDX] == "/*EOF") /* End of table*/
+      TA0ZW04.TA0ZW-LINE-IDX = 0; /* Indicate end of table*/
+    else
+      TA0ZW04.TA0ZW-LINE-IDX = TA0ZW04.TA0ZW-LINE-IDX + 1;
+                                   /* Increment table index*/
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment ta6 index*/
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for batch execution.*/
+   /* ------------------------------------------------------------*/
+
+  TA0ZS-SUBMIT-JCL(); /* Submit the JCL*/
+
+   /* ------------------------------------------------------------*/
+   /* Display results of print request.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* If print was successful*/
+   && SQLCA.VAGen_SQLCODE == 0)     
+
+    TA0ZM001.TA0ZMPNM = "TA0Z620"; /* Process name*/
+    TA0ZM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* ===> Job info messege*/
+
+  else
+
+    TA0ZM001.TA0ZMPNM = "TA0Z620"; /* Process name*/
+    converseLib.validationFailed(10); /* Error encountered with print request*/
+
+  end
+
+
+end // end TA0Z-620
+
+// SUBMIT JCL TO INTERNAL READER
+Function TA0ZS-SUBMIT-JCL()
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for batch execution.*/
+   /* ------------------------------------------------------------*/
+
+   /* MOVE 'Y' TO TA6REC.TA6SUBSW;      /* Tailor and submit JCL*/
+   /* MOVE 'Y' TO TA6REC.TA6MSGSW;      /* CICS job completed message*/
+
+  if (TA0ZM-TA0R-CALL-SW == "Y") /* call subroutine TA0R*/
+    while (TA6REC.TA6RTNCD < "0") /* Until subroutine completed*/
+      XPTA0R-CALL-TA0R(); /* TA0R Print Request Subroutine*/
+    end
+
+    TA0ZM001.TA0ZMMSG = "TA0Z RUN MSG:  TA0Z CALLED TA0R SUBPROGRAM";
+  else
+   /* ****  default ****                   call subroutine TA0Q*/
+    while (TA6REC.TA6RTNCD < "0") /* Until subroutine completed*/
+   /* PERFORM XPTA0Q-CALL-TA0Q;      /* Print Request Subroutine*/
+      XPTA0P(); /* TA0P Print Request Subroutine*/
+    end
+
+    TA0ZM001.TA0ZMMSG = "TA0Z RUN MSG:  TA0Z CALLED TA0P SUBPROGRAM";
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If a successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "0")        /* and normal return*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If user cancelled request, indicate user cancelled.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "1")        /* and user cancelled request*/
+
+    converseLib.validationFailed(86); /* Indicate user cancelled*/
+    TA0ZM001.TA0ZMPNM = "TA0ZSUB"; /* Process name*/
+  else
+    converseLib.validationFailed(10); /* Indicate system error*/
+    TA0ZM001.TA0ZMPNM = "TA0ZSUB"; /* Process name*/
+
+  end
+
+
+end // end TA0ZS-SUBMIT-JCL
+
+// Submit JCL for background job
+Function XPTA0R-CALL-TA0R()
+
+   /* - -   S U B R O U T I N E   "ta0r"*/
+
+   /* - -   S U B R O U T I N E   D E S C R I P T I O N   - -*/
+
+   /* This subroutine obtains user and report routing information*/
+   /* and submits JCL to execute in the background environment.*/
+
+   /* It will, optionally, insert a step at the end of the JCL*/
+   /* that is submitted to return a completion message to the*/
+   /* online user at end of job.*/
+
+   /* It displays a map to gather/verify the user information.*/
+   /* The information is obtained from available sources and*/
+   /* displayed for the user to change/verify.  The information*/
+   /* is returned to the calling application.*/
+
+   /* Depending on the value of the submit switch supplied by the*/
+   /* calling application, a batch job may be submitted for*/
+   /* execution.  This subroutine will tailor the JCL, adding*/
+   /* user identification and name, print destination and number*/
+   /* of copies.  The job is submitted to the internal reader.*/
+   /* The JCL format must conform to TARREC specifications.*/
+
+   /* Map TA0PM001 must be copied to the calling application's*/
+   /* map group from map group TA0PM in PRODMSL.*/
+
+   /* See $SUBMIT in DVMSL and/or DV0D in PRODMSL for examples of*/
+   /* the coding required to use this subroutine.*/
+
+   /* Refer to TA6REC prologue for more subroutine description.*/
+
+   /* *** Code the following before this is executed:         ****/
+   /* ***                                                     ****/
+   /* ***   TA6REC.TA6SUBSW: N - Display map, but, do not     ****/
+   /* ***                        submit any JCL.              ****/
+   /* ***                    Y - Display map, then, tailor    ****/
+   /* ***                        and submit JCL.              ****/
+   /* ***                    I - Obtain information only.     ****/
+   /* ***                    S - Tailor and submit JCL only.  ****/
+   /* ***                                                     ****/
+   /* ***   TA6REC.TA6MSGSW: N - Do not send online message   ****/
+   /* ***                        to user at end of job.       ****/
+   /* ***                    Y - Send online message to user  ****/
+   /* ***                        at end of job.               ****/
+   /* ***                    This parameter is required only  ****/
+   /* ***                    if TA6SUBSW is "Y" or "S".       ****/
+   /* ***                                                     ****/
+   /* ***   TA6REC.TA6ROW  : Up to 400 JCL statements in job  ****/
+   /* ***                    format for the subroutine to     ****/
+   /* ***                    tailor and submit for execution. ****/
+   /* ***                    TA6INDEX may be used to address  ****/
+   /* ***                    this array for formatting.       ****/
+
+   /* This subroutine will return the CSP return code in EZERT8,*/
+   /* and the subroutine return code in TA6RTNCD.*/
+
+   /* If a normal return, a formatted message is returned in*/
+   /* COMMAREA.CAMSG for display to the user.*/
+
+   /* The gathered information is, also, returned to the calling*/
+   /* application, if a normal return.*/
+
+   /* *** Both return codes must indicate normal return.      ****/
+   /* ***                                                     ****/
+   /* ***   EZERT8                                            ****/
+   /* ***   ------                                            ****/
+   /* ***   '00000000' = Normal return                        ****/
+   /* ***   OTHER      = Unexpected error has occurred        ****/
+   /* ***                                                     ****/
+   /* ***   TA6REC.TA6RTNCD                                   ****/
+   /* ***   ---------------                                   ****/
+   /* ***   '0'  = Normal return                              ****/
+   /* ***   '1'  = User cancelled request                     ****/
+   /* ***   OTHER = Unexpected error has occurred             ****/
+
+   /* This subroutine will do any required Error Diagnosis*/
+   /* Reporting using TA0020.  The calling application must check*/
+   /* the return codes and take the appropriate action relating*/
+   /* to its terminal output.  The calling process does not need*/
+   /* to do any Error Diagnosis Reporting.*/
+
+   /* - -   S U B R O U T I N E   D E S C R I P T I O N   - -*/
+
+   /* ------------------------------------------------------------*/
+   /* Call the Background Job Request Subroutine application.*/
+   /* ------------------------------------------------------------*/
+
+  TA6REC.TA6RTNCD = " "; /* Subroutine return code*/
+
+  while (TA6REC.TA6RTNCD < "0") /* Until end of subroutine*/
+
+    try
+      call "TA0R" (COMMAREA, TA6REC, TA0PM001) {isNoRefresh = yes};
+    end
+
+    /* ------------------------------------------------------------*/
+     /* If successful, determine if the subroutine is completed.*/
+    /* ------------------------------------------------------------*/
+
+    if (sysVar.errorCode == "00000000") /* Call successful*/
+
+      if (TA6REC.TA6RTNCD > "1") /* Error Diagnosis Reporting called*/
+        converseLib.clearScreen();
+         /* Clear screen before display*/
+      end
+
+    else
+
+      /* ------------------------------------------------------------*/
+       /* Post the error information to the Error Diagnosis Facility.*/
+      /* ------------------------------------------------------------*/
+
+      TA6REC.TA6RTNCD = "8"; /* Indicate CALL not successful*/
+
+      TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+      TAEREC.TAEDESC2 = TA6REC.TA6GROUP; /* Error information*/
+
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+      TA1REC.TA1LOC = "SUBMIT JCL FOR BACKGROUND JOB";
+      TA1REC.TA1PGMNM = "XPTA0P  "; /* Process name*/
+      TA1REC.TA1MAP = "TA0PM001"; /* Map name*/
+
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* If subroutine is completed, return to the previous process.*/
+    /* ------------------------------------------------------------*/
+
+    if (TA6REC.TA6RTNCD >= "0") /* Subroutine completed*/
+      return; /* Return to previous process*/
+    end
+
+    /* ------------------------------------------------------------*/
+     /* Reset any highlighted fields to normal intensity.*/
+    /* ------------------------------------------------------------*/
+
+    set TA0PM001.XURDEST initialAttributes; /* Printer*/
+    set TA0PM001.XURUSRNM cursor, initialAttributes; /* Report recipient*/
+    set TA0PM001.XURBLDID initialAttributes; /* Location*/
+    set TA0PM001.XURCOPY initialAttributes; /* Number of copies*/
+
+    TA6REC.TA6INDEX = 1; /* Initialize index*/
+
+    while (TA6REC.TA6INDEX <= 10) /* Until end of lines*/
+
+      if (TA0PM001.TA0PMCD[TA6INDEX] > " ") /* Line is formatted*/
+
+        set TA0PM001.TA0PMSEL[TA6INDEX] normal; /* Selection field*/
+      else
+        set TA0PM001.TA0PMSEL[TA6INDEX] initialAttributes; /* Selection field*/
+
+      end
+
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* Protect information fields if report distribution not used.*/
+    /* ------------------------------------------------------------*/
+
+    if (TA6REC.TA6SUBSW == "Y" /* Submit switch Y*/
+     || TA6REC.TA6SUBSW == "S") /* Submit switch S*/
+
+      if ("R" in TA6REC.TARTYPE) /* Report distribution*/
+
+         /* NEXT SENTENCE*/
+
+      else
+
+        set TA0PM001.XURUSRNM skip; /* Report recipient*/
+        set TA0PM001.XURBLDID skip; /* Location*/
+        set TA0PM001.TA0PMSEL[1] cursor; /* Selection field*/
+
+      end
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* Check field error flags and highlight any field in error.*/
+    /* ------------------------------------------------------------*/
+
+    TA6REC.TA6INDEX = 10; /* Initialize index*/
+
+    while (TA6REC.TA6INDEX > 0) /* Until end of lines*/
+
+      if (TA6REC.TA6ERRFL[TA6INDEX] == "Y") /* Field error flag*/
+        set TA0PM001.TA0PMSEL[TA6INDEX] cursor, bold; /* Selection flag*/
+      end
+
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX - 1; /* Decrement index*/
+
+    end
+
+    if (TA6REC.TA6ERRFL[11] == "Y") /* Field error flag*/
+      set TA0PM001.XURCOPY cursor, bold; /* Number of copies*/
+    end
+
+    if (TA6REC.TA6ERRFL[12] == "Y") /* Field error flag*/
+      set TA0PM001.XURBLDID cursor, bold; /* Location*/
+    end
+
+    if (TA6REC.TA6ERRFL[13] == "Y") /* Field error flag*/
+      set TA0PM001.XURUSRNM cursor, bold; /* Report recipient*/
+    end
+
+    if (TA6REC.TA6ERRFL[14] == "Y") /* Field error flag*/
+      set TA0PM001.XURDEST cursor, bold; /* Printer*/
+    end
+
+    /* ------------------------------------------------------------*/
+     /* If any error was found, indicate sound the audible alarm.*/
+    /* ------------------------------------------------------------*/
+
+    if (VAGen_EZEMSG > " ") /* Error was found*/
+      set TA0PM001 alarm; /* Sound audible alarm*/
+    end
+
+    /* ------------------------------------------------------------*/
+     /* Converse the formatted Print Request screen.*/
+    /* ------------------------------------------------------------*/
+
+    converse TA0PM001 ;
+
+    /* ------------------------------------------------------------*/
+     /* Determine whether a valid attention identifier was pressed.*/
+    /* ------------------------------------------------------------*/
+
+    if (converseVar.eventKey is pf7) /* BACK was requested*/
+
+      TA6REC.TA6RTNCD = "B"; /* Indicate BACK requested*/
+
+    else
+
+      if (converseVar.eventKey is pf8) /* FRWD was requested*/
+
+        TA6REC.TA6RTNCD = "F"; /* Indicate FRWD requested*/
+
+      else
+
+        if (converseVar.eventKey is pa2) /* CANCEL was requested*/
+
+          TA6REC.TA6RTNCD = "X"; /* Indicate user cancelled*/
+
+        else
+
+          if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+
+            TA6REC.TA6RTNCD = "?"; /* Invalid attention key*/
+
+            if (converseVar.eventKey is pakey) /* PA key was pressed*/
+              converseLib.clearScreen();
+               /* Clear screen before display*/
+            end
+
+          end
+
+        end
+
+      end
+
+    end
+
+  end
+
+
+end // end XPTA0R-CALL-TA0R
+
+//*** RECORD=TA0ZW01 ****
+// *********** FOOTWEAR FORECASTING SYSTEM COMMAREA ***********
+// 
+// This record contains data fields that are passed between the
+// Footwear Forecasting System applications.
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+//          03/23/89  SPOPA   New record.
+// ***********************
+Record TA0ZW01 type basicRecord
+  10 XXXMODID XXXMODID ; 
+  10 XXXMSGNO XXXMSGNO ; 
+end // end TA0ZW01
+
+//*** RECORD=TA0ZW04 ****
+// ****************** ta09w04 work record *********************
+// 
+// -------------------  maintenance log -----------------------
+// NIL applications. This is not a global working-storage
+// passed to other NIL applics.  It is a second w-s record
+// for an individual application .
+// 
+// ************************************************************
+// ***********************
+Record TA0ZW04 type basicRecord
+  10 TA0ZW-EOA-SW TA0ZW-EOA-SW ; 
+  10 TA6SUBSW TA6SUBSW ; 
+  10 TA6MSGSW TA6MSGSW ; 
+  10 TA6-MAX-COND-CODE TA6-MAX-COND-CODE ; 
+  10 TA0ZW-LINE-IDX TA0ZW-LINE-IDX ; 
+  10 TA0ZW-EOS-SW TA0ZW-EOS-SW ; 
+  10 TA0ZW-ERR-SW TA0ZW-ERR-SW ; 
+  10 TA0ZW-SCX TA0ZW-SCX ; 
+  10 TA0ZW-SCR TA0ZW-SCR ; 
+  10 TA0ZW-NAM TA0ZW-NAM [6] ; 
+  10 TA0ZW-TAU TA0ZW-TAU ; 
+  10 TA0ZW-CT1 TA0ZW-CT1 ; 
+  10 TA0ZW-CT2 TA0ZW-CT2 ; 
+end // end TA0ZW04
+
+//*** RECORD=TA0ZW09 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// 
+// ***********************
+Record TA0ZW09 type basicRecord
+  10 TA0ZW-SWX TA0ZW-SWX ; 
+end // end TA0ZW09
+
+// table counter
+DataItem TA0ZW-CT1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// screen counter
+DataItem TA0ZW-CT2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// end-of-application flag (y/n)
+DataItem TA0ZW-EOA-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end-of-screen flag (y/n)
+DataItem TA0ZW-EOS-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// have map error (y/n)
+DataItem TA0ZW-ERR-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// line index
+DataItem TA0ZW-LINE-IDX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// screen name
+DataItem TA0ZW-NAM char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// name of current screen
+DataItem TA0ZW-SCR char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// screen pointer
+DataItem TA0ZW-SCX num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Exit requested switch
+DataItem TA0ZW-SWX char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// wta0230-uto200-userid
+DataItem TA0ZW-TAU char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

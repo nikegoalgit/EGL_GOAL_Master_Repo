@@ -1,0 +1,3284 @@
+package ob02;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import dg.common.*;
+import ku.common.*;
+import ob.common.*;
+import op.common.*;
+import pk.common.*;
+import pw.common.*;
+import sm.common.*;
+import sp.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import vv.common.*;
+//*** PROGRAM=OB02 ****
+// OB02 -- ORDER PROCESSING -- CUSTOMER PREPACK BY PACKAGE
+//      temp storage used:  add, read, update - OBSPREC
+//      VBCSPR01 - DORDB.VBCSPR01 - Insert, Update, Delete
+// ;
+// This program consists of one screen:
+//   1.  Display Package - Prepack item
+// 
+// This program uses the DORDB.VBCSPR01 database.  If
+// anything is changed for an item, Temp Storage is Updated
+// this is continued until the operator exits (PF3) or
+// "Commits" (PF10).
+// 
+// Screen process one (1) Package at a time.  Attempts to
+// change Package Number are errors.
+// 
+// PFkey Assignments:
+// 
+//    PF02 - Allow changes to screen
+//    PF03 - Skip Update / Product
+//    PF07 - Scroll Forward
+//    PF08 - Scroll Backward
+//    PF10 - Create Package (all items)
+//    PF12 - Edit current display
+//    PF24 - Delete Item from Prepack database
+// 
+// NOTE!!  ANY NEW CODE ADDED THAT CAUSES THE PROGRAM TO
+// END (DXFER,XFER,ABEND ETC) MUST ALSO PURGE TEMP STORAGE
+// BEFORE THE EXIT TAKES PLACE.
+// USE OB02S6A.
+// ------------------------------------------------------------
+//                    maintenance history
+// ------------------------------------------------------------
+// 
+// 01/15/97   wleong   Created program.
+// 10/16/97   wleong   removed delete function.  ob02s60.
+//                     include cu orders for msr edits. ob02s8a
+//                     show mix box flag for 'ms' orders.
+//                     ob02s31.
+// 03/11/98   wleong   changed msr rule of min of 6 pk to 3 per
+//                     sandi clark.
+// 04/06/98   wleong   changed msr rule of min of 3 pk back to
+//                     6 per sandi clark. (make up your mind!)
+//                     ob02s8a.
+// 04/09/98   wleong   added call to pk4420 to get yntcd if
+//                     pack code of 'cu' is requested.
+// 01/08/99   svargh   added the error message being shown up
+//                     when an invalid ynt_crtn_typ_cd is added
+//                     by the user.The change has been added in
+//                     ob02s-get-crtn_typ stmtgrp.
+// 03/19/99   sgopal   changed OB02S8A to process prepaks less
+//                     than 6 units.
+// 05/25/99   rshaik   Commented the stmt group(OB0ES-ALT-CTN-
+//                    TYPE)which gets the alternate carton type
+//                     from VCMPNY01 and changed it to display
+//                     relevant messages.Changes are in
+//                     OB0ES-GET-CTN-TYPE.
+// 07/08/99   sgopal   Added code in OB02S-GET-CTN-TYPE
+//                     to handle direct ship orders seperately
+//                     for return codes 5 and 6 from PK4420.
+// *********************
+Program OB02 type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OB00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  KUCREC KUCREC; // record
+  OB02W00 OB02W00; // record
+  OB02W01 OB02W01; // record
+  OB02W02 OB02W02; // record
+  OB02W03 OB02W03; // record
+  OB02W04 OB02W04; // record
+  OB02W05 OB02W05; // record
+  OB1REC OB1REC; // record
+  OB8REC OB8REC; // record
+  OBAREC OBAREC; // record
+  OBBREC OBBREC; // record
+  OBCREC OBCREC; // record
+  OBDREC OBDREC; // record
+  OBEREC OBEREC; // record
+  OBFEREC OBFEREC; // record
+  OBFREC OBFREC; // record
+  OBLEREC OBLEREC; // record
+  OBSPREC OBSPREC; // record
+  OBSWREC OBSWREC; // record
+  OBWREC OBWREC; // record
+  PWSREC PWSREC; // record
+  SQLCA SQLCA; // record
+  SY4REC SY4REC; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  VBCSPR01 VBCSPR01; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XGPTBL; // table
+  use XPATBL; // table
+  use OB02M.OB02M001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OB02000: OB02000();
+    goto OB02010;
+    OB02010: OB02010();
+    goto OB02010; /* loop back to beginning*/
+  end // end main
+end // end OB02
+
+// INITIALIZE APPLICATION
+Function OB02000()
+   /* ------------------------------------------------------------*/
+   /* MAIN PROCESS FOR OB02*/
+   /* ------------------------------------------------------------*/
+
+  XSENTRY(); /* application entry validation*/
+
+  XSOBS01(); /* o/b system security*/
+
+  COMMAREA.CACURRAP = "OB02";
+
+  OB02S01(); /* initialize application*/
+
+   /* set -911 processing flag*/
+  OBWREC.OBWER911 = "N";
+
+   /* determine if batch edit is running*/
+   /* XSOBS02;*/
+
+
+   /* read current header*/
+  OBSWREC.OBSWSGRP = COMMAREA.CA-USER-WORKAREA-4K;
+  OBWREC.OBWGROUP = OBSWREC.OBSWOMWGP;
+  XSOBS03();
+  OB02W00.XXXTSPAG = OBSWREC.OBSWTSF1P;
+
+
+   /* display commarea message*/
+  OB02M001.CAMSG = OBWREC.CAMSG;
+  OBWREC.CAMSG = " ";
+
+
+   /* set one time only values*/
+
+  OB02W00.XXXTSLEN = 3820; /* temporary storage length*/
+  TA1REC.TA1PGMNM = "OB02000"; /* program name*/
+  OB02W00.TA5APPID = "OB01"; /* application identification*/
+
+
+   /* OB02W02 is a table that contains the ts queue page and*/
+   /* item references for items that have been displayed.*/
+   /* OB02W2IX is the index for the OB02W03 table.*/
+
+
+  OB02W02.OB02WPAG[1] = OBSWREC.OBSWTSF1P; /* 1st page*/
+  OB02W00.OB02WPRD = OBSWREC.OBSWTSF1S; /* 1st product*/
+  OB02W02.OB02WSUB[1] = OBSWREC.OBSWTSF1S; /* setup product subscript*/
+  OB02W02.OB02W2IX = 2;
+
+  OB02S05(); /* read first ts queue page*/
+
+   /* populate OB02w00.OBSPseltd 'a' = all items for the package*/
+                             /* 's' = specific items from package*/
+
+  OB02W00.OBSPSELTD = OBSPREC.OBSPSELTD[OB02WPRD]; /* select code*/
+
+  OB02M001.XXXCURDT = VGVar.currentShortGregorianDate; /* current date*/
+
+  if (OBSWREC.OP-PREPK-PKG-NBR == 0) /* item not assigned to a package*/
+    OB02S15(); /* get next package number*/
+  else
+    OB02W00.OP-PREPK-PKG-NBR = OBSWREC.OP-PREPK-PKG-NBR; /* pkg# already assigned*/
+  end
+
+   /* build map for display*/
+
+  OB02S20(); /* move values to map*/
+
+  OB02W00.OB02WERR = "N"; /* error message flag*/
+   /* prepk created flag*/
+  OBSWREC.OBSW-PREPK-CRE-FL = "N";
+   /* edit map*/
+   /* IF OB1REC.YOBCD NE 'CA' OR    /*  hasn't cleared availability*/
+     /* OB1REC.YOBCD NE 'LP' OR    /*  hasn't lost demand reported*/
+     /* OB1REC.YOBCD NE 'PD';      /*  hasn't postponed demand report*/
+     /* OB02S3A;*/
+   /* END;*/
+
+
+
+end // end OB02000
+
+// DISPLAY MAP
+Function OB02010()
+
+                 /* Display Map*/
+
+
+  converseVar.segmentedMode = 1;
+
+  OB02S25(); /* set display attributes*/
+
+  if (OB02W00.OB02WERR == "Y") /* error exist*/
+     /* next sentence*/
+  else
+    OB02S1A(); /* move map values to hold record*/
+    OB02S2C(); /* calculate remainder qtys*/
+  end
+
+   /* MOVE COMMAREA.CAMSG TO OB02M001.CAMSG;   /* move message to map*/
+  OB02M001.CAMSG = OBWREC.CAMSG; /* move message to map*/
+
+  converse OB02M001 ;
+
+  OB02W00.OB02WERR = "N"; /* reset error flag*/
+  OB02W00.OB02WCHF = "N"; /* reset change flag*/
+   /* MOVE ' ' TO COMMAREA.CAMSG;       /* reset message area*/
+  OBWREC.CAMSG = " "; /* reset message area*/
+
+   /* reset field attributes*/
+   /* OB02S25;*/
+
+   /* ;/* -- wai test begin*/
+   /* IF OB1REC.YOBCD NE 'CA' AND*/
+     /* OB1REC.YOBCD NE 'LP' AND*/
+     /* OB1REC.YOBCD NE 'PD';*/
+     /* OB02S3A;*/
+     /* IF OB02W00.OB02WERR = 'N';*/
+        /* IF EZEAID IS ENTER;*/
+           /* OB02S75;      /* update prepack record*/
+        /* END;*/
+     /* END;*/
+   /* END;*/
+
+
+   /* ;/* -- wai test end*/
+
+  OB02S60(); /* build prepack packages*/
+
+   /* ;/* -- wai test begin*/
+   /* IF OB02W00.OB02WERR = 'N';*/
+     /* IF EZEAID IS ENTER;*/
+        /* IF OB02W00.OB02WCHF = 'Y';*/
+           /* MOVE 2 TO OBWREC.OBW-EDIT-FUNCTION;*/
+           /* XSOBS-ONLINE-EDIT;*/
+        /* END;*/
+     /* END;*/
+   /* END;*/
+   /* ;/* -- wai test end*/
+
+end // end OB02010
+
+// GET CARTON TYPE
+Function OB02S-GET-CTN-TYPE()
+   /* since a 'cu' order must have a carton type code, we call pk4420*/
+   /* to calculate the carton type code.  if pk4420 does not return a*/
+   /* good value, get it from dcust.vcmpny01*/
+
+  set PWSREC empty;
+  PWSREC.KUCCOID = OB1REC.KUCCOID;
+  PWSREC.OP1PARTN = VBCSPR01.OP1PARTN;
+  PWSREC.OP1CUOID = VBCSPR01.OP1CUOID;
+  PWSREC.OP1NORID = VBCSPR01.OP1NORID;
+  PWSREC.XWHCD = VBCSPR01.XWHCD;
+  PWSREC.XGPCD = VBCSPR01.XGPCD;
+  PWSREC.XBCCD = OB1REC.XBCCD;
+  PWSREC.OP2LNINB[1] = VBCSPR01.OP2LNINB;
+  PWSREC.SY1STNBR[1] = VBCSPR01.SY1STNBR;
+  PWSREC.SY2CLRID[1] = VBCSPR01.SY2CLRID;
+  PWSREC.XDMCD[1] = VBCSPR01.XDMCD;
+  PWSREC.PWSPPQ01[1] = VBCSPR01.PKTPPQTY[01];
+  PWSREC.PWSPPQ02[1] = VBCSPR01.PKTPPQTY[02];
+  PWSREC.PWSPPQ03[1] = VBCSPR01.PKTPPQTY[03];
+  PWSREC.PWSPPQ04[1] = VBCSPR01.PKTPPQTY[04];
+  PWSREC.PWSPPQ05[1] = VBCSPR01.PKTPPQTY[05];
+  PWSREC.PWSPPQ06[1] = VBCSPR01.PKTPPQTY[06];
+  PWSREC.PWSPPQ07[1] = VBCSPR01.PKTPPQTY[07];
+  PWSREC.PWSPPQ08[1] = VBCSPR01.PKTPPQTY[08];
+  PWSREC.PWSPPQ09[1] = VBCSPR01.PKTPPQTY[09];
+  PWSREC.PWSPPQ10[1] = VBCSPR01.PKTPPQTY[10];
+  PWSREC.PWSPPQ11[1] = VBCSPR01.PKTPPQTY[11];
+  PWSREC.PWSPPQ12[1] = VBCSPR01.PKTPPQTY[12];
+  PWSREC.PWSPPQ13[1] = VBCSPR01.PKTPPQTY[13];
+  PWSREC.PWSPPQ14[1] = VBCSPR01.PKTPPQTY[14];
+  PWSREC.PWSPPQ15[1] = VBCSPR01.PKTPPQTY[15];
+  PWSREC.PWSPPQ16[1] = VBCSPR01.PKTPPQTY[16];
+  PWSREC.PWSPPQ17[1] = VBCSPR01.PKTPPQTY[17];
+  PWSREC.PWSPPQ18[1] = VBCSPR01.PKTPPQTY[18];
+  PWSREC.PWSPPQ19[1] = VBCSPR01.PKTPPQTY[19];
+  PWSREC.PWSPPQ20[1] = VBCSPR01.PKTPPQTY[20];
+  PWSREC.PWSPPQ21[1] = VBCSPR01.PKTPPQTY[21];
+  PWSREC.PWSPPQ22[1] = VBCSPR01.PKTPPQTY[22];
+  PWSREC.PWSPPQ23[1] = VBCSPR01.PKTPPQTY[23];
+  PWSREC.PWSPPQ24[1] = VBCSPR01.PKTPPQTY[24];
+  PWSREC.PWSPPQ25[1] = VBCSPR01.PKTPPQTY[25];
+  PWSREC.PWSPPQ26[1] = VBCSPR01.PKTPPQTY[26];
+  PWSREC.PWSPPQ27[1] = VBCSPR01.PKTPPQTY[27];
+  PWSREC.PWSPPQ28[1] = VBCSPR01.PKTPPQTY[28];
+  PWSREC.PWSPPQ29[1] = VBCSPR01.PKTPPQTY[29];
+  PWSREC.PWSPPQ30[1] = VBCSPR01.PKTPPQTY[30];
+  PWSREC.PWSPPQ31[1] = VBCSPR01.PKTPPQTY[31];
+  PWSREC.PWSPPQ32[1] = VBCSPR01.PKTPPQTY[32];
+  PWSREC.PWSPPQ33[1] = VBCSPR01.PKTPPQTY[33];
+  PWSREC.PWSPPQ34[1] = VBCSPR01.PKTPPQTY[34];
+  PWSREC.PWSPPQ35[1] = VBCSPR01.PKTPPQTY[35];
+  PWSREC.PWSPPQ36[1] = VBCSPR01.PKTPPQTY[36];
+  PWSREC.PWSPPQ37[1] = VBCSPR01.PKTPPQTY[37];
+  PWSREC.PWSPPQ38[1] = VBCSPR01.PKTPPQTY[38];
+  PWSREC.PWSPPQ39[1] = VBCSPR01.PKTPPQTY[39];
+  PWSREC.PWSPPQ40[1] = VBCSPR01.PKTPPQTY[40];
+
+  try
+    call "PK4420" (SQLCA, PWSREC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (SQLCA.VAGen_SQLCODE == -911)
+    XSOBS04();
+    return;
+  end
+
+  if (PWSREC.PWSRTNCD == 0)
+    VBCSPR01.YNTCD = PWSREC.YNTCD;
+  else
+    if (PWSREC.PWSRTNCD == 3)
+      /* begin tcs*/
+      OB02M001.VAGen_EZEMSG = " NO CARTONS LARGE ENOUGH - RETRY";
+      converseLib.validationFailed(255);
+      exit stack;
+      /* EZERTN;*/
+      /* OB02S-ALT-CTN-TYPE;*/
+      /* end tcs*/
+    else
+      if (PWSREC.PWSRTNCD == 4)
+        /* Wipro change begin#05/25/99 #*/
+        OB02M001.VAGen_EZEMSG = " PACKAGE REQUIRES MATCHING CARTON TYPES";
+        exit stack;
+        /* EZERTN;*/
+        /* OB02S-ALT-CTN-TYPE;*/
+        /* Wipro change end*/
+      else
+        if (PWSREC.PWSRTNCD == 5)
+          if (OB1REC.XDSCD != "1")
+            /* Wipro change begin#05/25/99 #*/
+            OB02M001.VAGen_EZEMSG = " NOT SET UP WITH CARTON CLASS";
+            exit stack;
+          end
+          /* EZERTN;*/
+          /* OB02S-ALT-CTN-TYPE;*/
+          /* Wipro change end*/
+        else
+          if (PWSREC.PWSRTNCD == 6)
+            if (OB1REC.XDSCD != "1")
+              /* Wipro change begin#05/25/99 #*/
+              OB02M001.VAGen_EZEMSG = " NOT SET UP WITH CARTON CLASS RECORD";
+              exit stack;
+            end
+            /* EZERTN;*/
+            /* OB02S-ALT-CTN-TYPE;*/
+            /* Wipro change end*/
+          else
+            if (PWSREC.PWSRTNCD == 7)
+              /* Wipro change begin#05/25/99 #*/
+              OB02M001.VAGen_EZEMSG = " NEEDS HANGING CARTON CLASS";
+              exit stack;
+              /* EZERTN;*/
+              /* OB02S-ALT-CTN-TYPE;*/
+              /* Wipro change end*/
+            else
+              if (PWSREC.PWSRTNCD == 8)
+                /* Wipro change begin #05/25/99 #*/
+                OB02M001.VAGen_EZEMSG = " NO ITEM PASSED";
+                exit stack;
+                /* EZERTN;*/
+                /* OB02S-ALT-CTN-TYPE;*/
+                /* Wipro change end*/
+              else
+                if (PWSREC.PWSRTNCD == 9)
+                  /* Wipro change begin #05/25/99 #*/
+                  OB02M001.VAGen_EZEMSG = " NO PREPACK QUANTITIES";
+                  exit stack;
+                  /* EZERTN;*/
+                  /* OB02S-ALT-CTN-TYPE;*/
+                  /* Wipro change end*/
+                else
+                  TA1REC.TA1DBASE = "DORDER  ";
+                  TA1REC.TA1TBLVU = "VCSPRP01";
+                  TA1REC.TA1TBLKE = "PK4420";
+                  TA1REC.TA1LOCAT[2] = "OB02S-GET-CTN-TYPE";
+                  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+                  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+                  sysLib.rollback();
+                  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+                  
+                  OB02SZA();
+                  OB02SZB();
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+end // end OB02S-GET-CTN-TYPE
+
+// initialization
+Function OB02S01()
+
+  set ERRSQLCA empty;
+  set KUCREC empty;
+  set OBWREC empty;
+  set OBSWREC empty;
+  set VBCSPR01 empty;
+  set OB8REC empty;
+  set OBAREC empty;
+  set OBBREC empty;
+  set OBCREC empty;
+  set OBDREC empty;
+  set OBEREC empty;
+  set OBFREC empty;
+  set OBFEREC empty;
+  set OBLEREC empty;
+  set OB02W00 empty;
+  set OB02W01 empty;
+  set OB02W02 empty;
+  set OB1REC empty;
+  set SQLCA empty;
+  set TAEREC empty;
+  set TA1REC empty;
+  set TA2REC empty;
+  set TA5REC empty;
+  set XX0XW01 empty;
+
+   /* SET OB02M001 EMPTY;*/
+  TA1REC.TA1MAP = "OB02M001";
+
+    /* get date and time*/
+  XX0XS01();
+  OBWREC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* date*/
+  OBWREC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* time*/
+
+  OBWREC.OBWERRFL = "N"; /* init screen error fl*/
+  OBSWREC.OBSW-ENTER-FL = "N"; /* init ENTER fl*/
+
+end // end OB02S01
+
+// READS 1ST TS QUEUE PAGE
+Function OB02S05()
+
+   /* READ 1ST TS QUEUE PAGE*/
+
+
+  set OBSPREC empty;
+
+  OB02M001.OB02MPRC = "OB02S05"; /* Module identification*/
+  OBSPREC.OBSPTSLEN = OB02W00.XXXTSLEN; /* Temporary storage length*/
+  TA5REC.TA5APPID = OB02W00.TA5APPID; /* Application identification*/
+  TA5REC.TA5TSQIX = OBSWREC.OBSWTSF1P; /* Page number*/
+  TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+  try
+    call "TA0050" (OBSPREC, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OB02S05";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    OBWREC.OP1CUOID = OB1REC.OP1CUOID; /* display cust ord id*/
+    OBWREC.OP1NORID = OB1REC.OP1NORID; /* display nike ord id*/
+   /* MOVE OMWREC.OMWORD TO TA1REC.TA1TBLKE; /* first row, first rec*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TAEREC.TAEDESC2 = "PROBLEM READING TEMP STORAGE";
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    COMMAREA.CA-USER-WORKAREA-4K = " "; /* clear user commarea*/
+    OB02SZB(); /* force dxfr out*/
+  end
+
+
+end // end OB02S05
+
+// GET NEXT PACKAGE NBR
+Function OB02S15()
+
+             /* Assign package number*/
+        /* read last page from temp storage*/
+
+  if (OBSWREC.OBSWTSF1M == OBSWREC.OBSWTSF1P) /* TS last pg = 1st pg w/sel*/
+    OB02W03.OBSPGROUP = OBSPREC.OBSPGROUP; /* Ts rec to w/s*/
+  else /* obtain last page of data*/
+    set OB02W03 empty;
+    OB02M001.OB02MPRC = "OB02S15"; /* Module identification*/
+    OB02W03.OBSPTSLEN = OB02W00.XXXTSLEN; /* Temporary storage length*/
+    TA5REC.TA5APPID = OB02W00.TA5APPID; /* Application identification*/
+    TA5REC.TA5TSQIX = OBSWREC.OBSWTSF1M; /* max page number*/
+    TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+    try
+      call "TA0050" (OB02W03, TA5REC) {isNoRefresh = yes, isExternal = yes};
+    end /* Temporary storage*/
+
+    if (TA5REC.TA5RTNCD == 0)
+      /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[1] = "OB02S15";
+      TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+      TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+      OBWREC.OP1CUOID = OB1REC.OP1CUOID; /* display cust ord id*/
+      OBWREC.OP1NORID = OB1REC.OP1NORID; /* display nike ord id*/
+     /* MOVE OMWREC.OMWORD TO TA1REC.TA1TBLKE; /* first row, first rec*/
+      TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+      TAEREC.TAEDESC2 = "PROBLEM READING TEMP STORAGE";
+      TA1REC.TA1TYPE = "APPL";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+      try
+        call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+      end
+      COMMAREA.CA-USER-WORKAREA-4K = " "; /* clear user commarea*/
+      OB02SZB(); /* force dxfr out*/
+    end
+  end
+
+        /* last package number is on last page of TS queue*/
+
+  OB02W00.OB02WPSX = 1; /* map index*/
+
+  while (OB02W00.OB02WPSX <= 12)
+    if (OB02W03.OP-PREPK-PKG-NBR[OB02WPSX] == 0)
+       /* next sentence*/
+    else
+      OB02W00.OP-PREPK-PKG-NBR = OB02W03.OP-PREPK-PKG-NBR[OB02WPSX];
+    end
+    OB02W00.OB02WPSX = OB02W00.OB02WPSX + 1;
+  end
+
+    /* add 1 to pkg#*/
+  OB02W00.OP-PREPK-PKG-NBR = OB02W00.OP-PREPK-PKG-NBR + 1;
+
+
+
+end // end OB02S15
+
+// MOVE SCREEN VALUES TO HOLD REC
+Function OB02S1A()
+   /* ------------------------------------------------------------*/
+   /* MOVE SCREEN VALUES TO HOLD RECORD (OB02W01)*/
+   /* ------------------------------------------------------------*/
+
+  OB02W01.OP-PREPK-PKG-NBR = OB02M001.OP-PREPK-PKG-NBR; /* PACKAGE #*/
+
+  OB02W01.KUFMIXBL = OB02M001.KUFMIXBL; /* MIX BOX FLAG*/
+
+   /* ------------------------------------------------------------*/
+   /* PKTPPQTY IS THE PRE-PACK QUANTITY*/
+   /* ------------------------------------------------------------*/
+
+  OB02W00.OB02WIXM = 1;
+
+  while (OB02W00.OB02WIXM <= 20)
+    OB02W01.PKTPPQTY[OB02WIXM] = OB02M001.PKTPPQTY[OB02WIXM];
+    OB02W00.OB02WIXM = OB02W00.OB02WIXM + 1;
+  end
+
+
+
+end // end OB02S1A
+
+// MOVE VALUES TO MAP
+Function OB02S20()
+   /* ------------------------------------------------------------*/
+   /* POPULATE SCREEN FIELDS FROM COMMAREA*/
+   /* ------------------------------------------------------------*/
+
+   /* ------------------------------------------------------------*/
+   /* OB02S2A MOVES MAP HEADER VALUES*/
+   /* ------------------------------------------------------------*/
+
+  OB02S2A();
+
+   /* ------------------------------------------------------------*/
+   /* OB02S2B MOVES MAP DETAIL VALUES*/
+   /* ------------------------------------------------------------*/
+
+  OB02S2B();
+
+
+
+end // end OB02S20
+
+// SETS DISPLAY ATTRIBUTES
+Function OB02S25()
+
+       /* Display detail literals only if data is present*/
+
+       /* if position 11 is blank, no other values exist*/
+       /* on that map line*/
+  if (OB02M001.OP3ONOQT[11] == 0)
+    set OB02M001.OB02MSZL[2] skip, invisible;
+    set OB02M001.OB02MOQL[2] skip, invisible;
+    set OB02M001.OB02MQTL[2] skip, invisible;
+    set OB02M001.OB02MRML[2] skip, invisible;
+  else
+    set OB02M001.OB02MSZL[2] initialAttributes;
+    set OB02M001.OB02MOQL[2] initialAttributes;
+    set OB02M001.OB02MQTL[2] initialAttributes;
+    set OB02M001.OB02MRML[2] initialAttributes;
+  end
+
+  OB02W00.OB02WIXM = 20; /* map index*/
+
+  while (OB02W00.OB02WIXM > 0)
+    if (OB02M001.OP3IDDSC[OB02WIXM] == " ")
+      set OB02M001.OP3ONOQT[OB02WIXM] skip, invisible;
+      set OB02M001.PKTPPQTY[OB02WIXM] skip, invisible;
+      set OB02M001.OB02MRND[OB02WIXM] skip, invisible;
+    end
+    OB02W00.OB02WIXM = OB02W00.OB02WIXM - 1;
+  end
+
+   /* IF OMWREC.OMWCHGFL = 'Y'          /* change mode*/
+    /* OR OMWREC.OMWPF2CH = 'Y';       /* temp change mode*/
+    /* IF OSPREC.OSPDELET(OB02WPRD) = 'D'     /* delete (OB02)*/
+      /* OR OSPREC.OSPDELET(OB02WPRD) = '*'   /* delete (os0g)*/
+      /* OR OSPREC.OSPDELET(OB02WPRD) = 'A'   /* allocated*/
+      /* OR OSPREC.OSPDELET(OB02WPRD) = 'P';  /* partially allocated*/
+      /* OB02S30;                      /* protect enterable fields*/
+    /* ELSE;*/
+      /* OB02S31;                      /* set enterable fields defined*/
+    /* END;*/
+   /* ELSE;*/
+   /* OB02S30;                        /* protect enterable fields*/
+   /* END;*/
+
+  OB02S31(); /* set enterable fields defined*/
+
+
+end // end OB02S25
+
+// MOVE MAP HEADER VALUES
+Function OB02S2A()
+
+                 /* MOVE MAP HEADER VALUES*/
+
+  OB02W00.OB02WF1 = "."; /* 1st period*/
+  OB02W00.OB02WF2 = "."; /* 2nd period*/
+  OB02W00.OB02WF3 = "."; /* 3rd period*/
+
+  OB02W00.OB02WCID = OB1REC.OP1CUOID; /* cust ord id*/
+
+  OB02W00.OB02WNID = OB1REC.OP1NORID; /* nike ord id*/
+
+  OB02M001.OB02MORD = OB02W00.OB02MORD; /* formatted order #*/
+
+  OB02W00.OB02WCOD = OB1REC.KUCCOID; /* company id*/
+
+  OB02W00.OB02WSID = OB1REC.KUMSTRID; /* store id*/
+
+  OB02W00.OB02WDID = OB1REC.XNXCD; /* dept id*/
+
+  OB02M001.OB02MCUS = OB02W00.OB02MCUS; /* formatted customer*/
+
+  OB02M001.KUMSTRNM = OBWREC.KUMSTRNM; /* store name*/
+
+  OB02W00.XPACD = OB1REC.XPACD; /* cust pack code*/
+  OB02M001.XPACD = OB1REC.XPACD;
+  OB02S40(); /* pack code abrv*/
+
+  OB02W00.XWHCD = OB1REC.XWHCD; /* warehouse*/
+
+  OB02W00.XGPCD = OB1REC.XGPCD; /* gpc*/
+
+            /* populate map from temp storage*/
+    /* xxxtsitm is subscript on current ts page for selected item*/
+
+  OB02M001.KUFMIXBL = OBSPREC.KUFMIXBL[OB02WPRD]; /* mix box flag*/
+  OB02W00.KUFMIXBL = OBSPREC.KUFMIXBL[OB02WPRD];
+
+  OB02W00.XDMCD = OBSPREC.XDMCD[OB02WPRD]; /* dimension code*/
+
+  OB02M001.YNTCD = OBSPREC.YNTCD[OB02WPRD]; /* carton type code*/
+  OB02W00.YNTCD = OBSPREC.YNTCD[OB02WPRD];
+
+  OB02M001.KUCUNTCS = OBSPREC.KUCUNTCS[OB02WPRD]; /* units per carton*/
+  OB02W00.KUCUNTCS = OBSPREC.KUCUNTCS[OB02WPRD];
+
+
+end // end OB02S2A
+
+// MOVE MAP DETAIL VALUES
+Function OB02S2B()
+
+   /* OB02S2B MOVES MAP DETAIL VALUES*/
+
+  if (OBSPREC.OBSPMORE[OB02WPRD] == "Y") /* more sizes?*/
+    OB02M001.OB02WMOR = "MORE SIZES"; /* well, then say so*/
+  else /* no*/
+    OB02M001.OB02WMOR = " "; /* well, then dont say so*/
+  end
+
+  if (OBSPREC.OP-PREPK-PKG-NBR[OB02WPRD] > 0) /* pkg# assigned*/
+    OB02M001.OP-PREPK-PKG-NBR = OBSPREC.OP-PREPK-PKG-NBR[OB02WPRD];
+  else
+    OB02M001.OP-PREPK-PKG-NBR = 0;
+  end
+
+  OB02M001.OB02MSTN = OBSPREC.OBSPSTYNB[OB02WPRD];
+
+  OB02M001.SY1SSTNM = OBSPREC.SY1SSTNM[OB02WPRD];
+  OB02W00.SY1SSTNM = OBSPREC.SY1SSTNM[OB02WPRD];
+
+  OB02M001.SY2CLRAB = OBSPREC.SY2CLRAB[OB02WPRD];
+  OB02W00.SY2CLRAB = OBSPREC.SY2CLRAB[OB02WPRD];
+
+  OB02M001.OP2CGPCD = OBSPREC.OP2CGPCD[OB02WPRD];
+  OB02W00.OP2CGPCD = OBSPREC.OP2CGPCD[OB02WPRD];
+
+   /* ------------------------------------------------------------*/
+   /* FIRST FIVE SIZES AND QTYS*/
+   /* ------------------------------------------------------------*/
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[1] = OBSPREC.OBSPSZI01[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ01[OB02WPRD];
+  OB02M001.PKTPPQTY[1] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ01[OB02WPRD];
+  OB02M001.OP3ONOQT[1] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[2] = OBSPREC.OBSPSZI02[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ02[OB02WPRD];
+  OB02M001.PKTPPQTY[2] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ02[OB02WPRD];
+  OB02M001.OP3ONOQT[2] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[3] = OBSPREC.OBSPSZI03[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ03[OB02WPRD];
+  OB02M001.PKTPPQTY[3] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ03[OB02WPRD];
+  OB02M001.OP3ONOQT[3] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[4] = OBSPREC.OBSPSZI04[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ04[OB02WPRD];
+  OB02M001.PKTPPQTY[4] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ04[OB02WPRD];
+  OB02M001.OP3ONOQT[4] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[5] = OBSPREC.OBSPSZI05[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ05[OB02WPRD];
+  OB02M001.PKTPPQTY[5] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ05[OB02WPRD];
+  OB02M001.OP3ONOQT[5] = OB02W00.OB02WNUM;
+
+   /* ------------------------------------------------------------*/
+   /* SIX THRU TEN SIZES AND QTYS*/
+   /* ------------------------------------------------------------*/
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[6] = OBSPREC.OBSPSZI06[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ06[OB02WPRD];
+  OB02M001.PKTPPQTY[6] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ06[OB02WPRD];
+  OB02M001.OP3ONOQT[6] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[7] = OBSPREC.OBSPSZI07[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ07[OB02WPRD];
+  OB02M001.PKTPPQTY[7] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ07[OB02WPRD];
+  OB02M001.OP3ONOQT[7] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[8] = OBSPREC.OBSPSZI08[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ08[OB02WPRD];
+  OB02M001.PKTPPQTY[8] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ08[OB02WPRD];
+  OB02M001.OP3ONOQT[8] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[9] = OBSPREC.OBSPSZI09[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ09[OB02WPRD];
+  OB02M001.PKTPPQTY[9] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ09[OB02WPRD];
+  OB02M001.OP3ONOQT[9] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[10] = OBSPREC.OBSPSZI10[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ10[OB02WPRD];
+  OB02M001.PKTPPQTY[10] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ10[OB02WPRD];
+  OB02M001.OP3ONOQT[10] = OB02W00.OB02WNUM;
+
+   /* ------------------------------------------------------------*/
+   /* ELEVEN THRU FIFTEEN SIZES AND QTYS*/
+   /* ------------------------------------------------------------*/
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[11] = OBSPREC.OBSPSZI11[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ11[OB02WPRD];
+  OB02M001.PKTPPQTY[11] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ11[OB02WPRD];
+  OB02M001.OP3ONOQT[11] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[12] = OBSPREC.OBSPSZI12[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ12[OB02WPRD];
+  OB02M001.PKTPPQTY[12] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ12[OB02WPRD];
+  OB02M001.OP3ONOQT[12] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[13] = OBSPREC.OBSPSZI13[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ13[OB02WPRD];
+  OB02M001.PKTPPQTY[13] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ13[OB02WPRD];
+  OB02M001.OP3ONOQT[13] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[14] = OBSPREC.OBSPSZI14[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ14[OB02WPRD];
+  OB02M001.PKTPPQTY[14] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ14[OB02WPRD];
+  OB02M001.OP3ONOQT[14] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[15] = OBSPREC.OBSPSZI15[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ15[OB02WPRD];
+  OB02M001.PKTPPQTY[15] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ15[OB02WPRD];
+  OB02M001.OP3ONOQT[15] = OB02W00.OB02WNUM;
+
+   /* ------------------------------------------------------------*/
+   /* SIXTEEN THRU TWENTY SIZES AND QTYS*/
+   /* ------------------------------------------------------------*/
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[16] = OBSPREC.OBSPSZI16[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ16[OB02WPRD];
+  OB02M001.PKTPPQTY[16] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ16[OB02WPRD];
+  OB02M001.OP3ONOQT[16] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[17] = OBSPREC.OBSPSZI17[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ17[OB02WPRD];
+  OB02M001.PKTPPQTY[17] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ17[OB02WPRD];
+  OB02M001.OP3ONOQT[17] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[18] = OBSPREC.OBSPSZI18[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ18[OB02WPRD];
+  OB02M001.PKTPPQTY[18] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ18[OB02WPRD];
+  OB02M001.OP3ONOQT[18] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[19] = OBSPREC.OBSPSZI19[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ19[OB02WPRD];
+  OB02M001.PKTPPQTY[19] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ19[OB02WPRD];
+  OB02M001.OP3ONOQT[19] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = 0;
+
+  OB02M001.OP3IDDSC[20] = OBSPREC.OBSPSZI20[OB02WPRD];
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPPQ20[OB02WPRD];
+  OB02M001.PKTPPQTY[20] = OB02W00.OB02WNUM;
+
+  OB02W00.OB02WNUM = OBSPREC.OBSPORQ20[OB02WPRD];
+  OB02M001.OP3ONOQT[20] = OB02W00.OB02WNUM;
+
+  if (OBSPREC.OBSPMORE[OB02WPRD] == "2")
+   /* next sentence        /* POPULATE SCROLLING TABLE FROM CURRENT Dsply*/
+  else /* populate the scrolling table*/
+    OB02S2D();
+  end
+
+
+end // end OB02S2B
+
+// CALCULATE REMAINDER
+Function OB02S2C()
+
+   /* CALCULATE REMAINING PIECES OF ITEM THAT WILL NOT FIT IN*/
+   /* PREPACK*/
+
+
+
+   /* initialize all remainder fields*/
+
+
+  OB02W00.OB02WIXM = 1;
+
+  while (OB02W00.OB02WIXM <= 20)
+    OB02M001.OB02MRND[OB02WIXM] = 0;
+    OB02W00.OB02WIXM = OB02W00.OB02WIXM + 1;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* REMAINDER(X) IS CALCULATED BY FINDING:*/
+
+    /* 1). THE LOWEST NUMBER OF PACKAGES*/
+
+         /* NBR OF PACKAGES = (ON ORDER QTY(X) / PREPACK QTY(X))*/
+
+    /* 2). THE NUMBER OF UNITS PER PACKAGE*/
+
+        /* UNITS PER PACK(X) = (PREPACK QTY(X) * NBR OF PACKAGES)*/
+
+    /* 3). REMAINDER UNITS*/
+
+        /* REMAINDER(X) = (UNITS PER PACK(X) - PREPACK QTY(X))*/
+
+   /* ------------------------------------------------------------*/
+
+  OB02W00.OB02WREM = 9999;
+
+  OB02W00.OB02WIXM = 1;
+
+  while (OB02W00.OB02WIXM <= 20)
+    if (OB02M001.OP3ONOQT[OB02WIXM] == 0)
+      /* NEXT SENTENCE*/
+    else
+      if (OB02M001.PKTPPQTY[OB02WIXM] == 0)
+        /* NEXT SENTENCE*/
+      else
+        OB02W00.OP3ONOQT = OB02M001.OP3ONOQT[OB02WIXM];
+        OB02W00.PKTPPQTY = OB02M001.PKTPPQTY[OB02WIXM];
+        OB02W00.OB02WQOT = OB02W00.OP3ONOQT / OB02W00.PKTPPQTY;
+        if (OB02W00.OB02WREM > OB02W00.OB02WQOT)
+          OB02W00.OB02WREM = OB02W00.OB02WQOT;
+        end
+      end
+    end
+    OB02W00.OB02WIXM = OB02W00.OB02WIXM + 1;
+  end
+
+  if (OB02W00.OB02WREM == 0
+   || OB02W00.OB02WREM == 9999)
+    return;
+  end
+
+  OB02W00.OB02WIXM = 1;
+
+  OBWREC.OBWERRFL = "N"; /* reset screen error fl*/
+
+  while (OB02W00.OB02WIXM <= 20)
+    if (OB02M001.OP3ONOQT[OB02WIXM] == 0)
+      /* NEXT SENTENCE*/
+    else
+      if (OB02M001.PKTPPQTY[OB02WIXM] == 0)
+        /* NEXT SENTENCE*/
+      else
+        OB02W00.OP3ONOQT = OB02M001.OP3ONOQT[OB02WIXM];
+        OB02W00.PKTPPQTY = OB02M001.PKTPPQTY[OB02WIXM];
+        OB02W00.OB02WTRM = OB02W00.PKTPPQTY * OB02W00.OB02WREM;
+        OB02M001.OB02MRND[OB02WIXM] = OB02W00.OP3ONOQT - OB02W00.OB02WTRM;
+        if (OB02M001.OB02MRND[OB02WIXM] == 0)
+          OB02W00.OB02WERR = "N"; /* error does not exist*/
+        else
+          OB02W00.OB02WERR = "Y"; /* error exist*/
+          OBWREC.OBWERRFL = "Y"; /* error exist*/
+          if (OB02M001.KUFMIXBL == "N")
+            if (OB1REC.XPACD == "MS")
+              OBWREC.CAMSG = "REMAINDER NOT ALLOWED FOR MUSICAL SIZE RUN";
+            else
+              OBWREC.CAMSG = "REMAINDER EXIST - SET ALLOW MIX BOX FLAG";
+            end
+          end
+        end
+      end
+    end
+    OB02W00.OB02WIXM = OB02W00.OB02WIXM + 1;
+  end
+end // end OB02S2C
+
+// POPULATE SCROLLING TABLE
+Function OB02S2D()
+
+   /* POPULATE SCROLLING TABLE WITH CURRENT TS QUEUE KEYS*/
+
+
+   /* ------------------------------------------------------------*/
+   /* ob02witm is the concatenation of ts page and item sub*/
+   /* ------------------------------------------------------------*/
+
+  sysVar.arrayIndex = 1;
+
+  if (OB02W00.OB02WITM in OB02W02.OB02WITM) /* ws item index*/
+    /* NEXT SENTENCE                       ; index for scroll tbl*/
+  end
+
+  if (sysVar.arrayIndex == 0)
+    OB02W02.OB02WITM[OB02W2IX] = OB02W00.OB02WITM;
+    OB02W02.OB02W2IX = OB02W02.OB02W2IX + 1;
+  end
+
+
+
+end // end OB02S2D
+
+// SET FIELDS DEFINED
+Function OB02S31()
+
+           /* SET ENTERABLE FIELDS DEFINED*/
+
+  OB02W00.OB02WIXM = 20; /* map index*/
+
+  while (OB02W00.OB02WIXM > 0)
+    if (OB02M001.OP3IDDSC[OB02WIXM] == " ")
+      /* next sentence*/
+    else
+      set OB02M001.OP3ONOQT[OB02WIXM] initialAttributes;
+      set OB02M001.PKTPPQTY[OB02WIXM] initialAttributes;
+      set OB02M001.OB02MRND[OB02WIXM] initialAttributes;
+    end
+    OB02W00.OB02WIXM = OB02W00.OB02WIXM - 1;
+  end
+
+   /* IF OB1REC.XPACD = 'MS';     /* cust pack code*/
+     /* SET OB02M001.KUFMIXBL AUTOSKIP,DARK;*/
+   /* ELSE;*/
+     /* SET OB02M001.KUFMIXBL DEFINED;*/
+   /* END;*/
+
+  if (OB1REC.XPACD == "MS" ||  /* cust pack code   11/11/97*/
+  OB1REC.XPACD == "CU")       
+    set OB02M001.KUFMIXBL protect;
+  end
+
+end // end OB02S31
+
+// get pack code abrv
+Function OB02S40()
+
+
+   /* this statement group gets the pack code abrv*/
+
+  sysVar.arrayIndex = 1;
+  if (OB1REC.XPACD in XPATBL.XPACD /* pack code exists*/
+   && XPATBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and it's active*/
+    OB02M001.XPAABRV = XPATBL.XPAABRV[sysVar.arrayIndex];
+     /* NEXT SENTENCE*/
+  else
+    OB02M001.XPAABRV = " ";
+  end
+
+end // end OB02S40
+
+// BUILD PREPACK PACKAGES
+Function OB02S60()
+
+       /* Valid PFkeys are enter, pf2, pf7, pf8, pf10, pf12, pf24*/
+
+
+   /* IF EZEAID IS PF2;                 /* change mode requested*/
+    /* IF COMMAREA.CACHGFL > ' ';      /* id authorized to change*/
+      /* IF OBSPREC.OBSPDELET = '*'      /* delete*/
+        /* OR OBSPREC.OBSPDELET = 'A'    /* allocated*/
+        /* OR OBSPREC.OBSPDELET = 'P';   /* partially allocated*/
+        /* MOVE 'Y' TO OB02W00.OB02WERR;*/
+        /* MOVE 701 TO EZEMNO;         /* item status does not allow chgs*/
+        /* EZERTN;*/
+      /* ELSE;*/
+        /* MOVE 'Y' TO OMWREC.OMWPF2CH;       /* temp change mode*/
+        /* EZERTN;*/
+      /* END;*/
+    /* ELSE;*/
+      /* MOVE 'Y' TO OB02W00.OB02WERR;*/
+                                  /* MOVE 352 TO EZEMNO;           /* id*/
+                                   /* not authorized to change order*/
+      /* EZERTN;*/
+    /* END;*/
+   /* END;*/
+
+  if (converseVar.eventKey is pf3) /* dxfer to OB01*/
+    OB02S6A(); /* purge temp storage*/
+    COMMAREA.CAFRMAPP = COMMAREA.CACURRAP;
+    COMMAREA.CAFROMAP = COMMAREA.CACURRAP;
+    COMMAREA.CACURRAP = "OB01";
+    sysVar.transferName = COMMAREA.CACURRAP;
+    transfer to program sysVar.transferName passing COMMAREA; /* Exit to OB01*/
+  end
+
+  if (converseVar.eventKey is pf7) /* scroll backward*/
+    OB02S65(); /* get previous item*/
+    return;
+  end
+
+  if (converseVar.eventKey is pf8) /* scroll forward*/
+    OB02W00.OB02WCHF = "N"; /* change flag*/
+    OB02W00.OB02WFND = "N"; /* item found flag*/
+    OB02W00.OB02WSPG = OB02W00.XXXTSPAG; /* save cur page id*/
+    OB02W00.OB02WSTM = OB02W00.OB02WPRD; /* save cur item id*/
+    if (OBSPREC.OBSPMORE[OB02WPRD] == "2") /* are we on size 21-40 page*/
+      converseLib.validationFailed(220);
+      return;
+    else
+      OB02S9B(); /* get next item for display*/
+    end
+    if (OB02W00.OB02WERR == "Y") /* error exists*/
+      OB02W00.XXXTSPAG = OB02W00.OB02WSPG; /* restore cur page id*/
+      OB02W00.OB02WPRD = OB02W00.OB02WSTM; /* restore cur item id*/
+    end
+    return;
+  end
+
+  if (converseVar.eventKey is pf10) /* package items*/
+    if (OBSWREC.OBSW-ENTER-FL == "Y")
+      OBSWREC.OBSW-ENTER-FL = "N";
+      if (OBSWREC.OBSW-PREPK-CRE-FL == "N")
+        if (OBWREC.OBWERRFL == "Y") /* screen error exists*/
+          converseLib.validationFailed(231); /* error must be corrected before update*/
+        else
+          OB02S75(); /* create package*/
+        end
+        return;
+      else
+        OBWREC.CAMSG = "PREPACK HAS BEEN CREATED, PRESS PF3 TO RETURN TO OB01";
+        return;
+      end
+    else
+      OBWREC.CAMSG = "PRESS ENTER TO VALIDATE QTY BEFORE PREPACK UPDATE/INSERT";
+      return;
+    end
+  end
+
+   /* IF EZEAID IS PF12;                /* edit only*/
+    /* OB02S80;                        /* validate current map*/
+    /* EZERTN;*/
+   /* END;*/
+
+  if (converseVar.eventKey is pf21) /* display previous sizes*/
+    if (OBSPREC.OBSPMORE[OB02WPRD] == "2") /* are we on page 2*/
+      OB02W00.XXXTSPAG = OB02W00.XXXTSPAG - 1; /* get back to prev page*/
+      OB02S6C(); /* read the ts queue page*/
+      OB02S2B(); /* rebuild the map*/
+      OB02S31(); /* set fields defined*/
+      set OB02M001.OB02MSZL[2] initialAttributes;
+      set OB02M001.OB02MOQL[2] initialAttributes;
+      set OB02M001.OB02MQTL[2] initialAttributes;
+      set OB02M001.OB02MRML[2] initialAttributes;
+      return;
+    else
+      converseLib.validationFailed(222); /* not valid from this screen*/
+      return;
+    end
+  end
+
+   /* * removed delete function to be in sync with new smu logic in*/
+   /* * ob1600  10/16/97*/
+   /* IF EZEAID IS PF24;                /* delete*/
+   /* OB02S85;                        /* delete item from prepack*/
+   /* EZERTN;*/
+   /* END;*/
+
+  if (converseVar.eventKey is enter) /* validate and show next item*/
+    OBSWREC.OBSW-ENTER-FL = "Y";
+    if (OBSWREC.OBSW-PREPK-CRE-FL == "N")
+      OB02W00.OB02WSPG = OB02W00.XXXTSPAG; /* save cur page id*/
+      OB02W00.OB02WSTM = OB02W00.OB02WPRD; /* save cur item id*/
+      OB02S90(); /* edit map*/
+      if (OB02W00.OB02WERR == "Y") /* error exists*/
+        if (OB02W00.OB02WSPG == OB02W00.XXXTSPAG) /* current page id*/
+           /* NEXT SENTENCE*/
+        else
+          OB02W00.XXXTSPAG = OB02W00.OB02WSPG; /* restore cur pg id*/
+          OB02S6C(); /* read current ts page*/
+        end
+        OB02W00.OB02WPRD = OB02W00.OB02WSTM; /* restore cur item id*/
+      end
+      return;
+    else
+      OBWREC.CAMSG = "PREPACK HAS BEEN CREATED, PRESS PF3 TO RETURN TO OB01";
+      return;
+    end
+  end
+
+   /* IF EZEAID IS PF17;                /* error screen*/
+    /* XSOBP17;*/
+   /* END;*/
+
+   /* IF EZEAID IS PF19;                /* hold screen*/
+    /* XSOBP19;*/
+   /* END;*/
+
+  converseLib.validationFailed(001); /* invalid pfkey*/
+  OB02W00.OB02WERR = "Y";
+  return;
+
+
+
+end // end OB02S60
+
+// SCROLL BACKWARD
+Function OB02S65()
+
+
+        /* Scroll Backwards ITEM*/
+
+   /* ob02witm is the concatenation of ts page and item sub*/
+
+
+  OB02W00.OB02WIX3 = 0; /* map index*/
+
+  sysVar.arrayIndex = 1;
+
+  if (OB02W00.OB02WITM in OB02W02.OB02WITM) /* pg/itm in table*/
+    /* NEXT SENTENCE*/
+  end
+
+  if (sysVar.arrayIndex == 0 /* item not in table*/
+   || sysVar.arrayIndex == 1) /* or already at 1st page*/
+    OB02W00.OB02WERR = "Y";
+    converseLib.validationFailed(086); /* cannot scroll backward*/
+    return;
+  end
+
+   /* IF OB02W00.XXXTSPAG > OSWREC.OSWTSF1M;      /* exceeded max page*/
+                                  /* OB02W00.XXXTSPAG = OB02W00.XXXTSPAG -*/
+                                   /* 2; /* then fix paging problem*/
+     /* OB02W00.OB02WIX3 = EZETST - 1;*/
+   /* ELSE;*/
+  OB02W00.OB02WIX3 = sysVar.arrayIndex - 1;
+   /* END;*/
+
+   /* current page in table equals current temp storage page*/
+
+  if (OB02W02.OB02WPAG[OB02WIX3] == OB02W00.XXXTSPAG)
+    /* NEXT SENTNECE*/
+  else
+     /* move current page in working storage table*/
+     /* to temp storage page(xxxtspage) before read*/
+    OB02W00.XXXTSPAG = OB02W02.OB02WPAG[OB02WIX3];
+    OB02S6C(); /* READ TS QUEUE PAGE*/
+  end
+
+     /* current page/item*/
+  OB02W00.OB02WPRD = OB02W02.OB02WSUB[OB02WIX3];
+
+  OB02S6C(); /* MOVE DETAIL TO MAP*/
+  OB02S2B(); /* MOVE DETAIL TO MAP*/
+  OB02S31(); /* reset attributes*/
+
+
+
+end // end OB02S65
+
+// PURGE TS QUEUE
+Function OB02S6A()
+
+    /* PURGE TEMPORARY STORAGE QUEUE*/
+
+
+  TA5REC.TA5APPID = "OB02"; /* applic id*/
+
+  TA5REC.TA5FNCCD = "P"; /* function code 'p' = purge*/
+
+  call "TA0050" (OBSPREC, TA5REC) {isNoRefresh = yes, isExternal = yes};
+
+   /* * * * * * * * * * * * * * * * * * * * * * * **/
+
+    /* note: return code from TA0050 is not*/
+          /* checked here in the purge routine*/
+          /* 'coz it doesn't matter if the*/
+          /* purging is ok or not.  Also, if*/
+          /* it was unsuccessful, the error*/
+          /* is posted in TA0050.*/
+
+   /* * * * * * * * * * * * * * * * * * * * * * * **/
+
+
+
+end // end OB02S6A
+
+// READ NEXT TS QUEUE RECORD
+Function OB02S6C()
+
+   /* Obtain next page of data to display.*/
+
+
+  set OBSPREC empty;
+
+  OB02M001.OB02MPRC = "OB02S6C"; /* Module identification*/
+  OBSPREC.OBSPTSLEN = OB02W00.XXXTSLEN; /* Temporary storage length*/
+  TA5REC.TA5APPID = OB02W00.TA5APPID; /* Application identification*/
+  TA5REC.TA5TSQIX = OB02W00.XXXTSPAG; /* Page number*/
+  TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+  try
+    call "TA0050" (OBSPREC, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OB02S6C";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    OBWREC.OP1CUOID = OB1REC.OP1CUOID; /* display cust ord id*/
+    OBWREC.OP1NORID = OB1REC.OP1NORID; /* display nike ord id*/
+   /* MOVE OMWREC.OMWORD TO TA1REC.TA1TBLKE; /* first row, first rec*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TAEREC.TAEDESC2 = "PROBLEM READING TEMP STORAGE";
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    COMMAREA.CA-USER-WORKAREA-4K = " "; /* clear user commarea*/
+    OB02SZB(); /* force dxfr out*/
+  end
+
+  if (OBSPREC.OBSPMORE[1] == "2"
+   || OBSPREC.OBSPMORE[2] == "2"
+   || OBSPREC.OBSPMORE[3] == "2"
+   || OBSPREC.OBSPMORE[4] == "2"
+   || OBSPREC.OBSPMORE[5] == "2"
+   || OBSPREC.OBSPMORE[6] == "2"
+   || OBSPREC.OBSPMORE[7] == "2"
+   || OBSPREC.OBSPMORE[8] == "2"
+   || OBSPREC.OBSPMORE[9] == "2"
+   || OBSPREC.OBSPMORE[10] == "2"
+   || OBSPREC.OBSPMORE[11] == "2"
+   || OBSPREC.OBSPMORE[12] == "2")
+    if (converseVar.eventKey is pf8)
+      OB02W00.XXXTSPAG = OB02W00.XXXTSPAG + 1;
+      if (OB02W00.XXXTSPAG > OBSWREC.OBSWTSF1M)
+        OB02W00.XXXTSPAG = OB02W00.XXXTSPAG - 2;
+        converseLib.validationFailed(087);
+        OB02W00.OB02WERR = "Y";
+      end
+    else
+      if (converseVar.eventKey is pf7)
+        OB02W00.XXXTSPAG = OB02W00.XXXTSPAG - 1;
+        if (OB02W00.XXXTSPAG < OBSWREC.OBSWTSF1M)
+          converseLib.validationFailed(086);
+          OB02W00.OB02WERR = "Y";
+        end
+      end
+    end
+    OB02M001.OB02MPRC = "OB02S6C"; /* Module identification*/
+    OBSPREC.OBSPTSLEN = OB02W00.XXXTSLEN; /* Temp storage length*/
+    TA5REC.TA5APPID = OB02W00.TA5APPID; /* Application id*/
+    TA5REC.TA5TSQIX = OB02W00.XXXTSPAG; /* Page number*/
+    TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+    try
+      call "TA0050" (OBSPREC, TA5REC) {isNoRefresh = yes, isExternal = yes};
+    end /* Temporary storage*/
+    if (TA5REC.TA5RTNCD == 0)
+       /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[1] = "OB02S6C";
+      TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+      TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+      OBWREC.OP1CUOID = OB1REC.OP1CUOID; /* display cust ord id*/
+      OBWREC.OP1NORID = OB1REC.OP1NORID; /* display nike ord id*/
+      /* MOVE OMWREC.OMWORD TO TA1REC.TA1TBLKE; /* first row, first rec*/
+      TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+      TAEREC.TAEDESC2 = "PROBLEM READING TEMP STORAGE";
+      TA1REC.TA1TYPE = "APPL";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+      try
+        call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+      end
+      COMMAREA.CA-USER-WORKAREA-4K = " "; /* clear user commarea*/
+      OB02SZB(); /* force dxfr out*/
+    end
+  end
+
+
+end // end OB02S6C
+
+// UPDATE TEMPORARY STORAGE
+Function OB02S6D()
+
+   /* Update the page in temporary storage.*/
+
+
+  OB02M001.OB02MPRC = "OB02S6D"; /* Module identification*/
+  OBSPREC.OBSPTSLEN = OB02W00.XXXTSLEN; /* Temporary storage length*/
+  TA5REC.TA5APPID = OB02W00.TA5APPID; /* Application identification*/
+  TA5REC.TA5TSQIX = OB02W00.XXXTSPAG; /* Page number*/
+  TA5REC.TA5FNCCD = "U"; /* Function code*/
+
+  try
+    call "TA0050" (OBSPREC, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OB02S6D";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    OBWREC.OP1CUOID = OB1REC.OP1CUOID; /* display cust ord id*/
+    OBWREC.OP1NORID = OB1REC.OP1NORID; /* display nike ord id*/
+   /* MOVE OMWREC.OMWORD TO TA1REC.TA1TBLKE; /* first row, first rec*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TAEREC.TAEDESC2 = "PROBLEM UPDATING TEMP STORAGE";
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+    COMMAREA.CA-USER-WORKAREA-4K = " "; /* clear user commarea*/
+    OB02SZB(); /* force dxfr out*/
+  end
+
+
+
+
+end // end OB02S6D
+
+// CREATE PACKAGE
+Function OB02S75()
+
+         /* PF10 computes package size and updates database*/
+
+   /* IF OMWREC.OMWCHGFL = 'Y'          /* change mode*/
+    /* OR OMWREC.OMWPF2CH = 'Y';       /* temp change mode*/
+    /* ; /* next sentence*/
+   /* ELSE;*/
+    /* MOVE 'Y' TO OB02W00.OB02WERR;   /* error exist*/
+                                  /* MOVE 684 TO EZEMNO;             /**/
+                                   /* cannot update unless in change mode*/
+    /* EZERTN;*/
+   /* END;*/
+
+
+      /* build pwsrec for pk4420 (carton type calculation)*/
+
+  OB02W00.OB02WITC = 0; /* item count*/
+
+  OB02S77(); /* build pwsrec*/
+
+  if (OB02W00.OB02WERR == "Y") /* error exist*/
+    return;
+  end
+
+   /* IF OB02W00.OB02WITC > 0;          /* item count*/
+     /* OB02S78;                        /* compute carton type*/
+     /* IF PWSREC.PWSRTNCD = 0;*/
+        /* OB02S7G;                      /* test carton size*/
+     /* ELSE;*/
+        /* OB02S6C;                      /* get back to beginning*/
+        /* EZERTN;*/
+     /* END;*/
+   /* END;*/
+
+  if (OB02W00.OB02WERR == "Y")
+    return;
+  end
+
+             /* update database*/
+
+  XX0XS01(); /* get current date and time*/
+
+  OB02W00.XXXTSPAG = OBSWREC.OBSWTSF1P; /* begin 1st page*/
+  OB02W00.OB02WIXM = OBSWREC.OBSWTSF1S; /* 1st item*/
+
+  OB02W00.OB02WPSX = 1;
+
+  OB02S05(); /* get first ts page*/
+
+  OB02W00.OB02WEOP = "N"; /* end of pages flag*/
+
+  while (OB02W00.OB02WEOP == "N")
+    if (OBSPREC.OP-PREPK-PKG-NBR[OB02WIXM] == OBSWREC.OP-PREPK-PKG-NBR)
+      OB02S79(); /* update database*/
+    end
+    OB02W00.OB02WIXM = OB02W00.OB02WIXM + 1;
+    if (OB02W00.OB02WIXM == 13)
+      OB02W00.OB02WIXM = 1;
+      OB02W00.XXXTSPAG = OB02W00.XXXTSPAG + 1;
+      if (OB02W00.XXXTSPAG >= OBSWREC.OBSWTSF1M)
+        OB02W00.OB02WEOP = "Y"; /* end of pages flag*/
+      else
+        OB02S6C(); /* read next ts page*/
+        OB02S81(); /* read next ts page*/
+      end
+    end
+  end
+
+
+  OB02S6A(); /* purge temp storage*/
+
+          /* transfer to OB01*/
+
+  OBSWREC.OBSWPPEXF = "Y"; /* prepack exist flag*/
+  OBSWREC.OBSWOMWGP = OBWREC.OBWGROUP;
+  COMMAREA.CA-USER-WORKAREA-4K = OBSWREC.OBSWOMWGP;
+  OBWREC.CAMSG = "PACKAGE HAS BEEN CREATED";
+  OBSWREC.OBSW-PREPK-CRE-FL = "Y"; /* prepk created flag*/
+
+   /* call to ob1600 for edits*/
+  OBWREC.OBW-EDIT-FUNCTION = 2;
+  XSOBS-ONLINE-EDIT();
+   /* set error message flag*/
+  OBWREC.OBW-GET-ERRORS-FL = "Y";
+  OBWREC.OBW-GET-HOLDS-FL = "Y";
+  OBWREC.OBW-GET-ITEMS-FL = "Y";
+
+  return;
+   /* MOVE COMMAREA.CACURRAP TO COMMAREA.CAFRMAPP;*/
+   /* MOVE 'OB01' TO COMMAREA.CACURRAP;*/
+   /* MOVE COMMAREA.CACURRAP TO EZEAPP;*/
+   /* DXFR EZEAPP COMMAREA;              /* dxfer to OB01*/
+
+
+
+
+
+end // end OB02S75
+
+// BUILD PWSREC
+Function OB02S77()
+
+        /* Build pwsrec for call to compute carton type*/
+
+
+  set PWSREC empty;
+
+  OB02W00.OB02WUPC = 0; /* tally for units p/ctn*/
+
+  OB02S05(); /* get 1st ts page for package*/
+
+   /* Start populating pwsrec from first valid tsq item*/
+   /* (not marked for deletion) until next package or*/
+   /* end of ts queue*/
+
+  OB02W00.OB02WSPG = OB02W00.XXXTSPAG; /* save cur page*/
+  OB02W00.OB02WSTM = OB02W00.OB02WPRD; /* save cur item*/
+
+   /* move pwsrec record header information*/
+
+  PWSREC.KUCCOID = OB02W00.OB02WCOD;
+
+  PWSREC.OP1PARTN = OB02W00.OP1PARTN;
+
+  PWSREC.OP1CUOID = OB02W00.OB02WCID;
+
+  PWSREC.OP1NORID = OB02W00.OB02WNID;
+
+  PWSREC.XWHCD = OB02W00.XWHCD;
+
+  PWSREC.XGPCD = OB02W00.XGPCD;
+
+   /* OBSPREC may not have been updated for first current if came*/
+   /* from OB01 with no package # and pressed pf10 to create new*/
+   /* package.*/
+
+   /* first item always qualifies as current package (from OB01)*/
+
+  OB02W00.XXXTSPAG = OBSWREC.OBSWTSF1P; /* cur ts page*/
+
+  OB02W00.OB02WTIX = OBSWREC.OBSWTSF1S; /* cur ts item*/
+
+  OB02W00.OB02WPSX = 0; /* pwsrec index*/
+
+  OB02W00.OB02WEOP = "N"; /* end of page*/
+
+  while (OB02W00.OB02WEOP == "N")
+   /* ts pkg = pkg sel*/
+    if (OBSPREC.OP-PREPK-PKG-NBR[OB02WTIX] == OBSWREC.OP-PREPK-PKG-NBR)
+      OB02S7A(); /* test delete indicator*/
+      if (OB02W00.OB02WERR == "Y") /* error exist*/
+        return;
+      end
+    else
+    /* ts pkg lt pkg sel*/
+      if (OBSPREC.OP-PREPK-PKG-NBR[OB02WTIX] < OBSWREC.OP-PREPK-PKG-NBR)
+         /* next sentence*/
+      else
+        OB02W00.OB02WEOP = "Y"; /* end of page*/
+      end
+    end
+    if (OB02W00.OB02WEOP == "N")
+      OB02W00.OB02WTIX = OB02W00.OB02WTIX + 1;
+      OB02S7B(); /* test position on page/item*/
+    end
+  end
+
+  OB02W00.XXXTSPAG = OB02W00.OB02WSPG; /* current page*/
+  OB02W00.OB02WPRD = OB02W00.OB02WSTM; /* current item*/
+
+
+
+end // end OB02S77
+
+// PROCESS UPDATES
+Function OB02S79()
+
+            /* Update prepack database*/
+
+
+   /* IF OBSPREC.OBSPDELET(OB02WIXM) = '*';      /* csr has not deleted*/
+    /* EZERTN;*/
+   /* END;*/
+
+  OB02W00.OB02W-ADD-PREPK = "N";
+  OB02W00.OB02W-CHG-PREPK = "N";
+
+    /* read item before update*/
+
+  set VBCSPR01 empty;
+
+  VBCSPR01.XWHCD = OB1REC.XWHCD;
+  VBCSPR01.OP1PARTN = OB1REC.OP1PARTN;
+  VBCSPR01.OP1CUOID = OB1REC.OP1CUOID;
+  VBCSPR01.OP1NORID = OB1REC.OP1NORID;
+  VBCSPR01.OP2LNINB = OBSPREC.OP2LNINB[OB02WIXM];
+
+  try
+    call "VBCSPR01" ("S ", SQLCA, VBCSPR01) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* Call successful*/
+   || SQLCA.VAGen_SQLCODE == -811) /* Call successful/mult rows*/
+    OB02W00.OB02W-CHG-PREPK = "Y";
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* Call successful Rec not found*/
+      OB02W00.OB02W-ADD-PREPK = "Y";
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+        converseLib.validationFailed(145); /* database busy*/
+        OB02W00.OB02WERR = "Y";
+        return;
+      else
+        TA1REC.TA1MAP = "OB02M001"; /* MAP NAME*/
+        TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+        TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+        TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+        TA1REC.TA1PGMNM = OB02M001.OB02MPRC; /* Program Name*/
+        TA1REC.TA1LOC = "OB02S79 - READ BEFORE UPDATE";
+        TA1REC.TA1DBASE = "DORDB  "; /* DATABASE NAME*/
+        TA1REC.TA1TBLVU = "VBCSPR01"; /* VIEW NAME*/
+        OBWREC.OP1CUOID = OB1REC.OP1CUOID; /* display cust ord id*/
+        OBWREC.OP1NORID = OB1REC.OP1NORID; /* display sub order id*/
+
+        OB02SZA(); /* db2 err routine*/
+        OB02SZB(); /* force dxfr out*/
+      end
+    end
+  end
+
+   /* IF OBSPREC.OBSPDELET(OB02WIXM) = 'D'      /* delete status*/
+    /* AND SQLCA.SQLCODE = 100;        /* and not found*/
+    /* EZERTN;*/
+   /* END;*/
+
+   /* IF OBSPREC.OBSPDELET(OB02WIXM) = 'D';      /* delete status*/
+     /* next sentence                  ; and found*/
+   /* ELSE;*/
+  OB02S7R(); /* accum qtys for cur item*/
+
+  OB02S7D(); /* populate VBCSPR01*/
+
+  OB02W00.OB02WPSX = OB02W00.OB02WPSX + 1; /* incr pwsrec index*/
+   /* END;*/
+
+  OB02S7E(); /* update prepack database*/
+
+
+
+
+end // end OB02S79
+
+// TEST DELETE INDICATOR
+Function OB02S7A()
+
+       /* Test OBSPrec item delete indicator*/
+
+
+   /* IF OBSPREC.OBSPDELET(OB02WTIX) = 'A'/* allocated item*/
+    /* OR OBSPREC.OBSPDELET(OB02WTIX) = 'P';/* partially alloc item*/
+    /* MOVE 'Y' TO OB02W00.OB02WERR;*/
+    /* MOVE 703 TO EZEMNO;*/
+                                /* can't chg pkg with 'al' or 'pa' items*/
+    /* EZERTN;*/
+   /* END;*/
+
+   /* IF OBSPREC.OBSPDELET(OB02WTIX) = 'D'/* delete from OB02*/
+    /* OR OBSPREC.OBSPDELET(OB02WTIX) = '*';/* delete from OB01*/
+    /* ;/* NEXT SENTENCE*/
+   /* ELSE;*/
+  OB02W00.OB02WPSX = OB02W00.OB02WPSX + 1; /* pwsrec index*/
+  if (OB02W00.OB02WPSX <= 180) /* max items for package*/
+    OB02S8A(); /* move values to pwsrec*/
+    if (OBSPREC.OBSPMORE[OB02WTIX] == "Y") /* do we have more than 20 sizes*/
+      XXXTSPAG = XXXTSPAG + 1; /* add 1 to page*/
+      OB02S6C(); /* get next ts record*/
+      OB02S8A(); /* yes*/
+        /* XXXTSPAG = XXXTSPAG - 1;        /* set page back*/
+    end
+     /* IF OB02W00.OB02WERR = 'Y';*/
+       /* MOVE 822 TO EZEMNO;        /* prepack qty invalid*/
+       /* EZERTN;*/
+     /* END;*/
+  else
+    OB02W00.OB02WERR = "Y"; /* error exist*/
+    converseLib.validationFailed(224); /* items exceed 180*/
+    return;
+  end
+   /* END;*/
+
+
+
+end // end OB02S7A
+
+// TEST POSITION ON ITEM/PAGE
+Function OB02S7B()
+
+   /* READ NEXT PAGE WHEN NECESSARY*/
+
+
+  if (OB02W00.OB02WTIX > 12)
+    OB02W00.XXXTSPAG = OB02W00.XXXTSPAG + 1;
+    if (OB02W00.XXXTSPAG < OBSWREC.OBSWTSF1M)
+      OB02S6C(); /* READ NEXT TS QUEUE PAGE*/
+      OB02W00.OB02WTIX = 1;
+    else
+      OB02W00.OB02WEOP = "Y";
+      return;
+    end
+  end
+
+  if (OBSPREC.OP-PREPK-PKG-NBR[OB02WTIX] == OBSWREC.OP-PREPK-PKG-NBR)
+     /* next sentence*/
+  end
+
+  if (OBSPREC.SY1STNBR[OB02WTIX] == " ")
+    OB02W00.OB02WEOP = "Y";
+  end
+
+
+
+end // end OB02S7B
+
+// POPULATE VBCSPR01
+Function OB02S7D()
+
+   /* POPULATE CURRENT ITEM PRE-PACK QUANTITIES IN VBCSPR01*/
+
+
+   /* record header*/
+
+  VBCSPR01.XWHCD = OB1REC.XWHCD;
+
+  VBCSPR01.OP1PARTN = OB1REC.OP1PARTN;
+
+  VBCSPR01.OP1CUOID = OB1REC.OP1CUOID;
+
+  VBCSPR01.OP-PREPK-PKG-NBR = OBSWREC.OP-PREPK-PKG-NBR;
+
+  VBCSPR01.XPACD = OB1REC.XPACD;
+
+  VBCSPR01.KUFMIXBL = OB02W00.KUFMIXBL;
+
+  VBCSPR01.KUCUNTCS = OB02W00.OB02WUPC;
+
+  VBCSPR01.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY;
+
+   /* OVE PWSREC.YNTCD TO VBCSPR01.YNTCD;*/
+
+  VBCSPR01.XGPCD = OB1REC.XGPCD;
+
+  VBCSPR01.SY1STNBR = PWSREC.SY1STNBR[OB02WPSX];
+
+  VBCSPR01.SY2CLRID = PWSREC.SY2CLRID[OB02WPSX];
+
+  VBCSPR01.XDMCD = PWSREC.XDMCD[OB02WPSX];
+
+  VBCSPR01.PKTBACTI = OB02W00.PKTBACTI;
+
+   /* ------------------------------------------------------------*/
+   /* RECORD DETAIL*/
+   /* ------------------------------------------------------------*/
+
+  VBCSPR01.PKTPPQTY[01] = PWSREC.PWSPPQ01[OB02WPSX];
+  VBCSPR01.PKTPPQTY[02] = PWSREC.PWSPPQ02[OB02WPSX];
+  VBCSPR01.PKTPPQTY[03] = PWSREC.PWSPPQ03[OB02WPSX];
+  VBCSPR01.PKTPPQTY[04] = PWSREC.PWSPPQ04[OB02WPSX];
+  VBCSPR01.PKTPPQTY[05] = PWSREC.PWSPPQ05[OB02WPSX];
+
+  VBCSPR01.PKTPPQTY[06] = PWSREC.PWSPPQ06[OB02WPSX];
+  VBCSPR01.PKTPPQTY[07] = PWSREC.PWSPPQ07[OB02WPSX];
+  VBCSPR01.PKTPPQTY[08] = PWSREC.PWSPPQ08[OB02WPSX];
+  VBCSPR01.PKTPPQTY[09] = PWSREC.PWSPPQ09[OB02WPSX];
+  VBCSPR01.PKTPPQTY[10] = PWSREC.PWSPPQ10[OB02WPSX];
+
+  VBCSPR01.PKTPPQTY[11] = PWSREC.PWSPPQ11[OB02WPSX];
+  VBCSPR01.PKTPPQTY[12] = PWSREC.PWSPPQ12[OB02WPSX];
+  VBCSPR01.PKTPPQTY[13] = PWSREC.PWSPPQ13[OB02WPSX];
+  VBCSPR01.PKTPPQTY[14] = PWSREC.PWSPPQ14[OB02WPSX];
+  VBCSPR01.PKTPPQTY[15] = PWSREC.PWSPPQ15[OB02WPSX];
+
+  VBCSPR01.PKTPPQTY[16] = PWSREC.PWSPPQ16[OB02WPSX];
+  VBCSPR01.PKTPPQTY[17] = PWSREC.PWSPPQ17[OB02WPSX];
+  VBCSPR01.PKTPPQTY[18] = PWSREC.PWSPPQ18[OB02WPSX];
+  VBCSPR01.PKTPPQTY[19] = PWSREC.PWSPPQ19[OB02WPSX];
+  VBCSPR01.PKTPPQTY[20] = PWSREC.PWSPPQ20[OB02WPSX];
+
+  VBCSPR01.PKTPPQTY[21] = PWSREC.PWSPPQ21[OB02WPSX];
+  VBCSPR01.PKTPPQTY[22] = PWSREC.PWSPPQ22[OB02WPSX];
+  VBCSPR01.PKTPPQTY[23] = PWSREC.PWSPPQ23[OB02WPSX];
+  VBCSPR01.PKTPPQTY[24] = PWSREC.PWSPPQ24[OB02WPSX];
+  VBCSPR01.PKTPPQTY[25] = PWSREC.PWSPPQ25[OB02WPSX];
+
+  VBCSPR01.PKTPPQTY[26] = PWSREC.PWSPPQ26[OB02WPSX];
+  VBCSPR01.PKTPPQTY[27] = PWSREC.PWSPPQ27[OB02WPSX];
+  VBCSPR01.PKTPPQTY[28] = PWSREC.PWSPPQ28[OB02WPSX];
+  VBCSPR01.PKTPPQTY[29] = PWSREC.PWSPPQ29[OB02WPSX];
+  VBCSPR01.PKTPPQTY[30] = PWSREC.PWSPPQ30[OB02WPSX];
+
+  VBCSPR01.PKTPPQTY[31] = PWSREC.PWSPPQ31[OB02WPSX];
+  VBCSPR01.PKTPPQTY[32] = PWSREC.PWSPPQ32[OB02WPSX];
+  VBCSPR01.PKTPPQTY[33] = PWSREC.PWSPPQ33[OB02WPSX];
+  VBCSPR01.PKTPPQTY[34] = PWSREC.PWSPPQ34[OB02WPSX];
+  VBCSPR01.PKTPPQTY[35] = PWSREC.PWSPPQ35[OB02WPSX];
+
+  VBCSPR01.PKTPPQTY[36] = PWSREC.PWSPPQ36[OB02WPSX];
+  VBCSPR01.PKTPPQTY[37] = PWSREC.PWSPPQ37[OB02WPSX];
+  VBCSPR01.PKTPPQTY[38] = PWSREC.PWSPPQ38[OB02WPSX];
+  VBCSPR01.PKTPPQTY[39] = PWSREC.PWSPPQ39[OB02WPSX];
+  VBCSPR01.PKTPPQTY[40] = PWSREC.PWSPPQ40[OB02WPSX];
+
+   /* ------------------------------------------------------------*/
+    /* SET CHANGE DATE AND TIME*/
+   /* ------------------------------------------------------------*/
+
+  VBCSPR01.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  VBCSPR01.ZZZCHGTM = XX0XW01.XX0XWTIM;
+
+
+   /* get carton type code from pk4420 or dcust.vcmpny01*/
+   /* if pack code is 'cu'*/
+  OB02S-GET-CTN-TYPE();
+
+
+end // end OB02S7D
+
+// UPDATE PRE-PACK DATABASE
+Function OB02S7E()
+
+        /* UPDATE PREPACK DATABASE*/
+
+
+  VBCSPR01.ZZZCHGCT = OBSPREC.ZZZCHGCT[OB02WIXM];
+
+   /* IF OBSPREC.OBSPDELET(OB02WIXM) = 'D';     /* DELETE FROM OB02*/
+    /* CALL VBCSPR01 'D ',SQLCA,VBCSPR01 (NOMAPS,NONCSP,REPLY;*/
+   /* ELSE;*/
+   /* F SQLCA.SQLCODE = 0;          /* RECORD EXISTS*/
+  if (OB02W00.OB02W-CHG-PREPK == "Y") /* RECORD EXISTS*/
+    try
+      call "VBCSPR01" ("U ", SQLCA, VBCSPR01) {isNoRefresh = yes, isExternal = yes};
+    end
+  else
+    if (OB02W00.OB02W-ADD-PREPK == "Y") /* RECORD EXISTS*/
+      VBCSPR01.ZZZSDT = XX0XW01.XX0XWDAT;
+      VBCSPR01.ZZZSTM = XX0XW01.XX0XWTIM;
+      try
+        call "VBCSPR01" ("A ", SQLCA, VBCSPR01) {isNoRefresh = yes, isExternal = yes};
+      end
+    end
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 0 ||  /* Call successful*/
+  SQLCA.VAGen_SQLCODE == +100)    
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+      converseLib.validationFailed(145); /* database busy*/
+      OB02W00.OB02WERR = "Y";
+      return;
+    else
+      TA1REC.TA1MAP = "OB02M001"; /* map name*/
+      TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+      TA1REC.TA1LOC = "OB02S7E";
+      TA1REC.TA1DBASE = "DORDB   "; /* DATABASE NAME*/
+      TA1REC.TA1TBLVU = "VBCSPR01"; /* VIEW NAME*/
+      OBWREC.OP1CUOID = OB1REC.OP1CUOID; /* display cust ord id*/
+      OBWREC.OP1NORID = OB1REC.OP1NORID; /* display sub order id*/
+     /* MOVE OMWREC.OMWORD TO TA1REC.TA1TBLKE;*/
+      OB02SZA(); /* db2 err routine*/
+      OB02SZB(); /* force dxfr out*/
+    end
+  end
+
+
+
+
+end // end OB02S7E
+
+// ACCUMULATE ON ORDER QTYS
+Function OB02S7R()
+
+   /* OB02S7R - ACCUMULATE ON ORDER QTYS*/
+
+
+  OB02W00.OP-PREPK-TOTITMQTY = 0;
+
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ01[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ02[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ03[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ04[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ05[OB02WIXM];
+
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ06[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ07[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ08[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ09[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ10[OB02WIXM];
+
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ11[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ12[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ13[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ14[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ15[OB02WIXM];
+
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ16[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ17[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ18[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ19[OB02WIXM];
+  OB02W00.OP-PREPK-TOTITMQTY = OB02W00.OP-PREPK-TOTITMQTY + OBSPREC.OBSPPQ20[OB02WIXM];
+
+
+
+end // end OB02S7R
+
+// check for page 2
+Function OB02S81()
+
+         /* check for the page with sizes 21-40*/
+
+
+  if (OBSPREC.OBSPMORE[1] == "2"
+   || OBSPREC.OBSPMORE[2] == "2"
+   || OBSPREC.OBSPMORE[3] == "2"
+   || OBSPREC.OBSPMORE[4] == "2"
+   || OBSPREC.OBSPMORE[5] == "2"
+   || OBSPREC.OBSPMORE[6] == "2"
+   || OBSPREC.OBSPMORE[7] == "2"
+   || OBSPREC.OBSPMORE[8] == "2"
+   || OBSPREC.OBSPMORE[9] == "2"
+   || OBSPREC.OBSPMORE[10] == "2"
+   || OBSPREC.OBSPMORE[11] == "2"
+   || OBSPREC.OBSPMORE[12] == "2")
+    OB02W00.XXXTSPAG = OB02W00.XXXTSPAG + 1;
+  end
+
+
+end // end OB02S81
+
+// MOVE VALUES TO PWSREC DETAILS
+Function OB02S8A()
+
+         /* MOVE VALUES TO PWSREC*/
+
+
+  OB02W00.OB02WITC = OB02W00.OB02WITC + 1; /* item count*/
+
+   /* find size bucket locations*/
+
+  OB02SZ2(); /* read size scale db*/
+
+   /* move values from OBSPrec to pwsrec*/
+
+  OB02S8B(); /* move OBSPszi?? to work table*/
+
+  OB02S8C(); /* move OBSPppq?? to work table*/
+
+  if (OBSPREC.OBSPMORE[OB02WTIX] == "2")
+    /* NEXT SENTENCE*/
+  else
+    set OB02W05 empty;
+  end
+
+  OB02W00.OB02WIX3 = 1; /* map index*/
+
+  while (OB02W00.OB02WIX3 <= 20)
+    sysVar.arrayIndex = 1;
+    if (OB02W04.SY4IDDSC[OB02WIX3] in SY4REC.SY4IDDSC)
+       /* next sentence*/
+    end
+    if (sysVar.arrayIndex == 0) /* size not in sy4rec*/
+      TA1REC.TA1LOCAT[1] = "OB02S8A"; /* type of access*/
+      TA1REC.TA1LOCAT[2] = "S "; /* i/o mod*/
+      TA1REC.TA1LOCAT[3] = "IO0040"; /* i/o mod*/
+      TA1REC.TA1DBASE = "DPROD"; /* data base name*/
+      TA1REC.TA1TBLVU = "VSCALE01"; /* table view*/
+      TA1REC.TA1TBLKE = SY4REC.SY4SZSCL; /* key value*/
+      TA1REC.TA1FUNC = "RETN"; /* abend func*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      OB02SZA(); /* db2 err routine*/
+      OB02SZB(); /* force dxfr out*/
+    else
+      OB02W05.PKTPPQTY[sysVar.arrayIndex] = OB02W04.PKTPPQTY[OB02WIX3];
+      /* OB02W00.OB02WUPC = OB02W00.OB02WUPC + OB02W04.PKTPPQTY(OB02WIX3);*/
+      OB02W00.OB02WUPC = OB02W00.OB02WUPC + OB02M001.PKTPPQTY[OB02WIX3];
+    end
+    OB02W00.OB02WIX3 = OB02W00.OB02WIX3 + 1;
+    if (OB02W00.OB02WIX3 == 21)
+      /* next sentence;*/
+    else
+      if (OB02W04.SY4IDDSC[OB02WIX3] == " ")
+        if (SY4REC.SY4SZSCL == "01"
+         || SY4REC.SY4SZSCL == "13")
+          OB02W00.OB02WIX3 = OB02W00.OB02WIX3 + 20;
+        end
+      end
+    end
+  end
+
+  OB02W00.OB02WIX3 = 40;
+
+  while (OB02W00.OB02WIX3 >= 1)
+    if (OB02W05.PKTPPQTY[OB02WIX3] > 0)
+      OB02W00.PKTBACTI = OB02W00.OB02WIX3;
+    end
+    OB02W00.OB02WIX3 = OB02W00.OB02WIX3 - 1;
+  end
+
+  PWSREC.OP2LNINB[OB02WPSX] = OBSPREC.OP2LNINB[OB02WTIX];
+
+  PWSREC.XDMCD[OB02WPSX] = OB02W00.XDMCD;
+
+  PWSREC.SY1STNBR[OB02WPSX] = OBSPREC.SY1STNBR[OB02WTIX];
+
+  PWSREC.SY2CLRID[OB02WPSX] = OBSPREC.SY2CLRID[OB02WTIX];
+
+  PWSREC.PWSPPQGP[OB02WPSX] = OB02W05.OB02WPGP;
+
+  if (OB02W00.XPACD == "MS" || 
+  OB02W00.XPACD == "CU") /* apply msr rules to cu orders 10/23/97*/
+    if (OB02W00.OB02WUPC < 1) /* tcs change 03/19/99*/
+      OB02W00.OB02WERR = "Y";
+      converseLib.validationFailed(228);
+      return;
+    else
+      if (OBSPREC.SY4SZSCL == "03") /* Infant shoes*/
+        if (OB02W00.OB02WUPC > 36)
+          OB02W00.OB02WERR = "Y";
+          converseLib.validationFailed(230);
+          return;
+        end
+      else /* Adult/children/etc.*/
+        if (OB02W00.OB02WUPC > 24)
+          OB02W00.OB02WERR = "Y";
+          converseLib.validationFailed(229);
+        end
+      end
+    end
+  end
+
+
+end // end OB02S8A
+
+// MOVE OP3IDDSC TO WORK TABLE
+Function OB02S8B()
+   /* ------------------------------------------------------------*/
+   /* MOVE SCREEN VALUES TO OB02W04.SY4IDDSC (SIZE DESCRIPTION)*/
+   /* ------------------------------------------------------------*/
+
+  OB02W04.SY4IDDSC[1] = OBSPREC.OBSPSZI01[OB02WTIX];
+  OB02W04.SY4IDDSC[2] = OBSPREC.OBSPSZI02[OB02WTIX];
+  OB02W04.SY4IDDSC[3] = OBSPREC.OBSPSZI03[OB02WTIX];
+  OB02W04.SY4IDDSC[4] = OBSPREC.OBSPSZI04[OB02WTIX];
+  OB02W04.SY4IDDSC[5] = OBSPREC.OBSPSZI05[OB02WTIX];
+
+  OB02W04.SY4IDDSC[6] = OBSPREC.OBSPSZI06[OB02WTIX];
+  OB02W04.SY4IDDSC[7] = OBSPREC.OBSPSZI07[OB02WTIX];
+  OB02W04.SY4IDDSC[8] = OBSPREC.OBSPSZI08[OB02WTIX];
+  OB02W04.SY4IDDSC[9] = OBSPREC.OBSPSZI09[OB02WTIX];
+  OB02W04.SY4IDDSC[10] = OBSPREC.OBSPSZI10[OB02WTIX];
+
+  OB02W04.SY4IDDSC[11] = OBSPREC.OBSPSZI11[OB02WTIX];
+  OB02W04.SY4IDDSC[12] = OBSPREC.OBSPSZI12[OB02WTIX];
+  OB02W04.SY4IDDSC[13] = OBSPREC.OBSPSZI13[OB02WTIX];
+  OB02W04.SY4IDDSC[14] = OBSPREC.OBSPSZI14[OB02WTIX];
+  OB02W04.SY4IDDSC[15] = OBSPREC.OBSPSZI15[OB02WTIX];
+
+  OB02W04.SY4IDDSC[16] = OBSPREC.OBSPSZI16[OB02WTIX];
+  OB02W04.SY4IDDSC[17] = OBSPREC.OBSPSZI17[OB02WTIX];
+  OB02W04.SY4IDDSC[18] = OBSPREC.OBSPSZI18[OB02WTIX];
+  OB02W04.SY4IDDSC[19] = OBSPREC.OBSPSZI19[OB02WTIX];
+  OB02W04.SY4IDDSC[20] = OBSPREC.OBSPSZI20[OB02WTIX];
+
+
+
+end // end OB02S8B
+
+// MOVE OSPPPQ?? TO WORK TABLE
+Function OB02S8C()
+   /* ------------------------------------------------------------*/
+   /* MOVE VALUES FROM OBSPREC.OBSPPQTY TO OB02W04.PKTPPQTY*/
+   /* ------------------------------------------------------------*/
+
+  OB02W04.PKTPPQTY[01] = OBSPREC.OBSPPQ01[OB02WTIX];
+  OB02W04.PKTPPQTY[02] = OBSPREC.OBSPPQ02[OB02WTIX];
+  OB02W04.PKTPPQTY[03] = OBSPREC.OBSPPQ03[OB02WTIX];
+  OB02W04.PKTPPQTY[04] = OBSPREC.OBSPPQ04[OB02WTIX];
+  OB02W04.PKTPPQTY[05] = OBSPREC.OBSPPQ05[OB02WTIX];
+
+  OB02W04.PKTPPQTY[06] = OBSPREC.OBSPPQ06[OB02WTIX];
+  OB02W04.PKTPPQTY[07] = OBSPREC.OBSPPQ07[OB02WTIX];
+  OB02W04.PKTPPQTY[08] = OBSPREC.OBSPPQ08[OB02WTIX];
+  OB02W04.PKTPPQTY[09] = OBSPREC.OBSPPQ09[OB02WTIX];
+  OB02W04.PKTPPQTY[10] = OBSPREC.OBSPPQ10[OB02WTIX];
+
+  OB02W04.PKTPPQTY[11] = OBSPREC.OBSPPQ11[OB02WTIX];
+  OB02W04.PKTPPQTY[12] = OBSPREC.OBSPPQ12[OB02WTIX];
+  OB02W04.PKTPPQTY[13] = OBSPREC.OBSPPQ13[OB02WTIX];
+  OB02W04.PKTPPQTY[14] = OBSPREC.OBSPPQ14[OB02WTIX];
+  OB02W04.PKTPPQTY[15] = OBSPREC.OBSPPQ15[OB02WTIX];
+
+  OB02W04.PKTPPQTY[16] = OBSPREC.OBSPPQ16[OB02WTIX];
+  OB02W04.PKTPPQTY[17] = OBSPREC.OBSPPQ17[OB02WTIX];
+  OB02W04.PKTPPQTY[18] = OBSPREC.OBSPPQ18[OB02WTIX];
+  OB02W04.PKTPPQTY[19] = OBSPREC.OBSPPQ19[OB02WTIX];
+  OB02W04.PKTPPQTY[20] = OBSPREC.OBSPPQ20[OB02WTIX];
+
+
+
+
+end // end OB02S8C
+
+// PROCESS ENTER PRESSED
+Function OB02S90()
+
+       /* VALIDATE CHANGES WHEN PRESENT OR DISPLAYS NEXT ITEM*/
+
+
+  OB02W00.OB02WCHF = "N"; /* reset change flag*/
+  OB02W00.OB02WFND = "N"; /* reset item found*/
+
+   /* IF OMWREC.OMWCHGFL = 'Y'          /* change mode*/
+    /* OR OMWREC.OMWPF2CH = 'Y';       /* temp change mode*/
+  OB02S9A(); /* compare map to work record*/
+  if (OB02W00.OB02WCHF == "N") /* no changes made*/
+    if (OBSPREC.OBSPMORE[OB02WPRD] == "Y")
+      OB02W00.XXXTSPAG = OB02W00.XXXTSPAG + 1;
+      OB02S6C(); /* get next item*/
+      OB02S2B(); /* get next item*/
+    else
+      if (OBSPREC.OBSPMORE[OB02WPRD] == "2")
+        converseLib.validationFailed(220);
+        OB02W00.OB02WERR = "Y";
+      else
+        OB02S9B(); /* get next item*/
+      end
+    end
+  end
+   /* ELSE;*/
+    /* IF OBSPREC.OBSPMORE(OB02WPRD) = 'Y';*/
+       /* OB02W00.XXXTSPAG = OB02W00.XXXTSPAG + 1;*/
+       /* OB02S6C;                      /* get next item*/
+       /* OB02S2B;                      /* get next item*/
+    /* ELSE;*/
+       /* IF OBSPREC.OBSPMORE(OB02WPRD) = '2';*/
+          /* MOVE 713 TO EZEMNO;*/
+          /* MOVE 'Y' TO OB02W00.OB02WERR;*/
+       /* ELSE;*/
+          /* OB02S9B;                        /* get next item*/
+       /* END;*/
+    /* END;*/
+   /* END;*/
+
+  if (OB02W00.OB02WERR == "N") /* no errors*/
+    if (OB02W00.OB02WFND == "Y") /* item found*/
+      converseLib.validationFailed(219); /* next product displayed*/
+    end
+  end
+
+   /* MOVE 'N' TO OB02W00.OB02WCHF;     /* reset change flag*/
+
+
+
+end // end OB02S90
+
+// COMPARE ITEM TO Ob02W01
+Function OB02S9A()
+
+        /* COMPARE SCREEN ITEM TO HOLD ITEM (OB02W01)*/
+
+
+  OB02W00.OB02WIXM = 1; /* map index*/
+
+  while (OB02W00.OB02WIXM <= 20)
+    if (OB02W01.PKTPPQTY[OB02WIXM] == OB02M001.PKTPPQTY[OB02WIXM])
+      /* NEXT SENTENCE*/
+    else
+      OB02W00.OB02WCHF = "Y";
+    end
+    OB02W00.OB02WIXM = OB02W00.OB02WIXM + 1;
+  end
+
+  if (OB02W00.OB02WCHF == "Y") /* changes made*/
+    OB02SB1(); /* validate qtys*/
+  end
+
+  if (OB02W01.KUFMIXBL == OB02M001.KUFMIXBL)
+    /* NEXT SENTENCE*/
+  else
+    OB02W00.OB02WCHF = "Y";
+    OB02SB2(); /* validate mix box flag*/
+  end
+
+
+     /* OB02s9c populates osprec.osptsrow*/
+     /* OB02s6d updates temporary storage*/
+
+
+   /* IF OB02W00.OB02WCHF = 'N';        /* no changes made*/
+    /* EZERTN;*/
+   /* ELSE;*/
+    /* IF OB02W00.OB02WERR = 'Y';      /* error exists*/
+      /* EZERTN;*/
+    /* ELSE;*/
+       /* move new pkg# on enter*/
+  OB02M001.OP-PREPK-PKG-NBR = OB02W00.OP-PREPK-PKG-NBR;
+
+  OB02S9C(); /* populate temp storage row*/
+  OB02S6D(); /* update temp storage*/
+    /* END;*/
+   /* END;*/
+
+
+
+end // end OB02S9A
+
+// GET NEXT ITEM FOR DISPLAY
+Function OB02S9B()
+
+        /* GET NEXT ITEM FOR DISPLAY*/
+
+  sysVar.arrayIndex = 1;
+
+  if (OB02W00.OB02WITM in OB02W02.OB02WITM) /* itm/pg sub in ws tbl*/
+   /* next sentence*/
+  end
+
+  OB02S9F(); /* test key table (OB02w02)*/
+
+  OB02S9D(); /* get next item*/
+
+  if (OB02W00.OB02WERR == "N") /* no errors*/
+    OB02S2B(); /* move item to detail*/
+  end
+
+
+
+end // end OB02S9B
+
+// POPULATE OSPTSROW
+Function OB02S9C()
+
+   /* POPULATE CURRENT ITEM IN OBSPREC*/
+
+
+   /* record header*/
+
+   /* MOVE 'U' TO OBSPREC.OBSPDELET(OB02WPRD);*/
+
+  OBSPREC.KUFMIXBL[OB02WPRD] = OB02M001.KUFMIXBL;
+
+  OBSWREC.OP-PREPK-PKG-NBR = OB02M001.OP-PREPK-PKG-NBR;
+  OBSPREC.OP-PREPK-PKG-NBR[OB02WPRD] = OB02M001.OP-PREPK-PKG-NBR;
+
+   /* ------------------------------------------------------------*/
+   /* RECORD DETAIL*/
+   /* ------------------------------------------------------------*/
+
+  OBSPREC.OBSPPQ01[OB02WPRD] = OB02M001.PKTPPQTY[1];
+  OBSPREC.OBSPPQ02[OB02WPRD] = OB02M001.PKTPPQTY[2];
+  OBSPREC.OBSPPQ03[OB02WPRD] = OB02M001.PKTPPQTY[3];
+  OBSPREC.OBSPPQ04[OB02WPRD] = OB02M001.PKTPPQTY[4];
+  OBSPREC.OBSPPQ05[OB02WPRD] = OB02M001.PKTPPQTY[5];
+
+  OBSPREC.OBSPPQ06[OB02WPRD] = OB02M001.PKTPPQTY[6];
+  OBSPREC.OBSPPQ07[OB02WPRD] = OB02M001.PKTPPQTY[7];
+  OBSPREC.OBSPPQ08[OB02WPRD] = OB02M001.PKTPPQTY[8];
+  OBSPREC.OBSPPQ09[OB02WPRD] = OB02M001.PKTPPQTY[9];
+  OBSPREC.OBSPPQ10[OB02WPRD] = OB02M001.PKTPPQTY[10];
+
+  OBSPREC.OBSPPQ11[OB02WPRD] = OB02M001.PKTPPQTY[11];
+  OBSPREC.OBSPPQ12[OB02WPRD] = OB02M001.PKTPPQTY[12];
+  OBSPREC.OBSPPQ13[OB02WPRD] = OB02M001.PKTPPQTY[13];
+  OBSPREC.OBSPPQ14[OB02WPRD] = OB02M001.PKTPPQTY[14];
+  OBSPREC.OBSPPQ15[OB02WPRD] = OB02M001.PKTPPQTY[15];
+
+  OBSPREC.OBSPPQ16[OB02WPRD] = OB02M001.PKTPPQTY[16];
+  OBSPREC.OBSPPQ17[OB02WPRD] = OB02M001.PKTPPQTY[17];
+  OBSPREC.OBSPPQ18[OB02WPRD] = OB02M001.PKTPPQTY[18];
+  OBSPREC.OBSPPQ19[OB02WPRD] = OB02M001.PKTPPQTY[19];
+  OBSPREC.OBSPPQ20[OB02WPRD] = OB02M001.PKTPPQTY[20];
+
+
+
+end // end OB02S9C
+
+// FIND NEXT ITEM FOR DISPLAY
+Function OB02S9D()
+
+          /* FIND NEXT ITEM FOR DISPLAY*/
+
+
+   /* Identifies if current ts queue page contains next item to*/
+   /* test.  ob02w00.ob02wixm is carried from calling statement*/
+   /* group.*/
+
+  OB02W00.OB02WIXM = OB02W00.OB02WPRD; /* current item*/
+
+  if (OB02W00.OB02WIXM == 13)
+    OB02W00.OB02WIXM = 1;
+    OB02W00.XXXTSPAG = OB02W00.XXXTSPAG + 1;
+    if (OB02W00.XXXTSPAG > OBSWREC.OBSWTSF1M) /* > max page*/
+      OB02W00.OB02WERR = "Y";
+      if (converseVar.eventKey is enter)
+        converseLib.validationFailed(223); /* last item displayed*/
+      else
+        converseLib.validationFailed(087); /* can't scroll forward*/
+      end
+      return;
+    else
+      OB02S6C(); /* read next ts queue page*/
+    end
+  end
+
+
+      /* See if current item qualifies for display*/
+
+  while (OB02W00.OB02WERR == "N"
+   && OB02W00.OB02WFND == "N")
+    OB02W00.OB02WIXM = OB02W00.OB02WIXM + 1;
+    if (OB02W00.OB02WIXM > 12)
+      OB02W00.OB02WIXM = 1;
+      OB02W00.XXXTSPAG = OB02W00.XXXTSPAG + 1;
+      if (OB02W00.XXXTSPAG <= OBSWREC.OBSWTSF1M)
+        OB02S6C(); /* read next ts queue page*/
+      else
+        if (converseVar.eventKey is enter)
+          converseLib.validationFailed(223); /* last item displayed*/
+          OB02W00.OB02WERR = "Y";
+          return;
+        else
+          converseLib.validationFailed(087); /* can't scroll forward*/
+          OB02W00.OB02WERR = "Y";
+          return;
+        end
+      end
+    end
+    OB02S9E(); /* test next item*/
+  end
+
+
+
+end // end OB02S9D
+
+// TEST NEXT ITEM FOR DISPLAY
+Function OB02S9E()
+
+         /* Test next item for dispaly*/
+   /* pkg match or pkg < w/s pkg*/
+  if (OBSPREC.OP-PREPK-PKG-NBR[OB02WIXM] == OBSWREC.OP-PREPK-PKG-NBR
+   || OBSPREC.OP-PREPK-PKG-NBR[OB02WIXM] < OBSWREC.OP-PREPK-PKG-NBR)
+    /* next sentence*/
+  else
+    OB02W00.OB02WERR = "Y"; /* error exist*/
+    if (converseVar.eventKey is enter)
+      converseLib.validationFailed(223); /* last item displayed*/
+    else
+      converseLib.validationFailed(087); /* can't scroll forward*/
+    end
+    return;
+  end
+
+  if (OBSPREC.OP-PREPK-PKG-NBR[OB02WIXM] == OBSWREC.OP-PREPK-PKG-NBR
+   || OBSPREC.OP-PREPK-PKG-NBR[OB02WIXM] == 0)
+    if (OB02W00.OBSPSELTD == "A") /* all items for package*/
+      if (OBSPREC.OP-PREPK-PKG-NBR[OB02WIXM] == OBSWREC.OP-PREPK-PKG-NBR)
+        OB02W00.OB02WFND = "Y"; /* item found switch*/
+        OB02W00.OB02WPRD = OB02W00.OB02WIXM; /* item ts queue ref*/
+      else
+         /* next sentence*/
+      end
+    else
+      if (OB02W00.OBSPSELTD == OBSPREC.OBSPSELTD[OB02WIXM])
+        OB02W00.OB02WFND = "Y"; /* item found switch*/
+        OB02W00.OB02WPRD = OB02W00.OB02WIXM; /* item ts queue ref*/
+        return;
+      end
+    end
+  end
+
+
+
+end // end OB02S9E
+
+// TEST Ob02W02 FOR NEXT REC KEYS
+Function OB02S9F()
+
+   /* GET TS QUEUE KEYS FROM OB02W02 TABLE*/
+
+   /* ob02witm is the concatenation of ts page and item sub*/
+
+  OB02W00.OB02WIXM = sysVar.arrayIndex + 1;
+
+   /* when OB02wsub is 0 item has never been displayed*/
+
+  if (converseVar.eventKey is enter
+   && OBSPREC.OBSPMORE == "Y")
+    /* next sentence*/
+  else
+    if (OB02W02.OB02WSUB[OB02WIXM] == 0) /* map index cur pg/itm*/
+        /* next sentence*/
+    else
+      OB02W00.OB02WFND = "Y";
+      OB02W00.OB02WPRD = OB02W02.OB02WSUB[OB02WIXM]; /* cur itm/pg*/
+      if (OB02W02.OB02WPAG[OB02WIXM] == OB02W00.XXXTSPAG) /* cur pg = tspg*/
+          /* next sentence;cur pg = t/s pg - no need to read*/
+      else
+        OB02W00.XXXTSPAG = OB02W02.OB02WPAG[OB02WIXM];
+        OB02S6C(); /* read next ts queue page*/
+      end
+    end
+  end
+
+
+
+
+end // end OB02S9F
+
+// VALIDATE DETAIL PREPACK QTY
+Function OB02SB1()
+
+           /* VALIDATE DETAIL PREPACK QTY*/
+
+
+  OB02W00.OB02WIXM = 20; /* map index*/
+
+  while (OB02W00.OB02WIXM >= 1)
+    if (OB02M001.OP3ONOQT[OB02WIXM] < OB02M001.PKTPPQTY[OB02WIXM])
+      OB02W00.OB02WERR = "Y";
+      converseLib.validationFailed(226); /* prepack qty exceed order qty*/
+      set OB02M001.PKTPPQTY[OB02WIXM] cursor, bold;
+      return;
+    else
+      if (OB02M001.OP3ONOQT[OB02WIXM] > 0
+       && OB02M001.PKTPPQTY[OB02WIXM] == 0)
+        OB02W00.OB02WERR = "Y";
+        converseLib.validationFailed(227); /* no prepack qtys entered for item*/
+        set OB02M001.PKTPPQTY[OB02WIXM] cursor, bold;
+        return;
+      end
+    end
+    if (OB02M001.PKTPPQTY[OB02WIXM] == OB02W01.PKTPPQTY[OB02WIXM])
+      /* NEXT SENTENCE*/
+    else
+      if (converseVar.eventKey is pf12) /* edit only*/
+         /* next sentence - skip update*/
+      else
+       /* MOVE 'U' TO OBSPREC.OBSPDELET(OB02WPRD); /* set for update*/
+        OB02W00.OB02WCHF = "Y"; /* set change flag*/
+      end
+    end
+    OB02W00.OB02WIXM = OB02W00.OB02WIXM - 1;
+  end
+
+
+
+end // end OB02SB1
+
+// VALIDATE MIX BOX FLAG
+Function OB02SB2()
+
+           /* Validate MIX BOX FLAG*/
+
+
+  if (OB02M001.KUFMIXBL == "Y"
+   || OB02M001.KUFMIXBL == "N")
+    if (converseVar.eventKey is pf12) /* edit ony*/
+       /* next sentence - skip update*/
+    else
+      OB02W00.KUFMIXBL = OB02M001.KUFMIXBL;
+      return;
+    end
+  else
+    OB02W00.OB02WERR = "Y"; /* error msg flag*/
+    converseLib.validationFailed(018); /* must be 'y' or 'no'*/
+    set OB02M001.KUFMIXBL cursor, bold;
+  end
+
+
+
+end // end OB02SB2
+
+// READ SIZE DESC TABLE
+Function OB02SZ2()
+
+   /* READ DB2 FOR THE PRODUCT'S SIZE SCALE CODE*/
+   /* RETURNS THE 40 SIZE DESCRIPTIONS*/
+
+
+  set SQLCA empty;
+
+  set SY4REC empty;
+
+  set OB02W04 empty;
+
+  SY4REC.SY4SZSCL = OBSPREC.SY4SZSCL[OB02WTIX]; /* scale code*/
+
+  try
+    call "IO0040" ("S ", SQLCA, SY4REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* good return*/
+    return;
+  else
+    TA1REC.TA1LOCAT[1] = "OB02SZ2"; /* type of access*/
+    TA1REC.TA1LOCAT[2] = "S "; /* type of access*/
+    TA1REC.TA1LOCAT[3] = "IO0040"; /* i/o mod*/
+    TA1REC.TA1DBASE = "DPROD"; /* data base name*/
+    TA1REC.TA1TBLVU = "VSCALE01"; /* table view*/
+    TA1REC.TA1TBLKE = OBSPREC.SY4SZSCL[OB02WTIX]; /* record key*/
+
+    if (SQLCA.VAGen_SQLCODE == -911) /* deadlock/timeout*/
+      TA1REC.TA1FUNC = "POST"; /* post err*/
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes}; /* abend module*/
+      converseLib.validationFailed(145); /* data base busy try again*/
+      return; /* return to OB02*/
+    else
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* synpoint rollback*/
+      OB02SZA(); /* db2 err routine*/
+      OB02SZB(); /* force dxfr out*/
+    end
+  end
+
+
+
+end // end OB02SZ2
+
+// TEST CSP RETURN CODE
+Function OB02SZA()
+
+
+  set ERRSQLCA empty;
+
+  move SQLCA to ERRSQLCA withV60Compat;
+
+  TA1REC.TA1TYPE = "DB2";
+
+  TA1REC.TA1FUNC = "RETN";
+
+  TA1REC.TA1PGMNM = COMMAREA.CACURRAP; /* currrent applic.*/
+
+  try
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+  end
+
+
+end // end OB02SZA
+
+// FORCE DXFR OUT
+Function OB02SZB()
+
+
+   /* ==================================================*/
+
+   /* this statement group is performed when there*/
+   /* are abnormal returns from the other modules*/
+   /* like PK4420, TA0050.*/
+   /* for the reason that there is no use to continue*/
+   /* processing for these abnormal errors, the*/
+   /* system forces user out to 'OB0A' and*/
+   /* sending a msg thru commarea.*/
+
+   /* ==================================================*/
+
+   /* MOVE ' ' TO COMMAREA.CAMSG;*/
+  OBWREC.CAMSG = " ";
+
+  OBWREC.CAMSG = "UNABLE TO PROCESS REQUEST-CONTACT USER ANALYST";
+
+  COMMAREA.CATOAP = "OB0A";
+
+  OB02S6A(); /* purge temp storage*/
+
+  OB02SZC(); /* DXFR out*/
+
+
+
+end // end OB02SZB
+
+// DXFR OUT
+Function OB02SZC()
+
+   /* =================*/
+       /* dxfr out*/
+   /* =================*/
+
+
+  COMMAREA.CAFROMAP = COMMAREA.CACURRAP;
+
+  sysVar.transferName = COMMAREA.CATOAP;
+
+  COMMAREA.CATOAP = " ";
+
+  transfer to program sysVar.transferName passing COMMAREA;
+
+
+end // end OB02SZC
+
+//*** RECORD=OB02W00 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// ***********************
+Record OB02W00 type basicRecord
+  10 OB02WIXM OB02WIXM ; 
+  10 OB02WTIX OB02WTIX ; 
+  10 OB02WPSX OB02WPSX ; 
+  10 OB02WIX3 OB02WIX3 ; 
+  10 XXXTSLEN XXXTSLEN ; 
+  10 OB02WPAG OB02WPAG ; 
+  10 OB02WSPI OB02WSPI ; 
+    15 OB02WSPG OB02WSPG ; 
+    15 OB02WSTM OB02WSTM ; 
+  10 OB02MIXM OB02MIXM ; 
+  10 OB02WITC OB02WITC ; 
+  10 OB02WUPC OB02WUPC ; 
+  10 OB02WTIQ OB02WTIQ ; 
+  10 PKTPPQTY PKTPPQTY ; 
+  10 OB02WQOT OB02WQOT ; 
+  10 OB02WREM OB02WREM ; 
+  10 OB02WTRM OB02WTRM ; 
+  10 OP3ONOQT OP3ONOQT ; 
+  10 OB02WNUM OB02WNUM ; 
+  10 PKTBACTI PKTBACTI ; 
+  10 OP-PREPK-TOTITMQTY OP-PREPK-TOTITMQTY [180] ; 
+  10 OB02WITM OB02WITM ; 
+    15 XXXTSPAG XXXTSPAG ; 
+    15 OB02WPRD OB02WPRD ; 
+  10 OP-PREPK-PKG-NBR OP-PREPK-PKG-NBR ; 
+  10 OB02WERR OB02WERR ; 
+  10 OB02WCHF OB02WCHF ; 
+  10 OB02WFND OB02WFND ; 
+  10 OB02WEOP OB02WEOP ; 
+  10 OBSPSELTD OBSPSELTD ; 
+  10 TA5APPID TA5APPID ; 
+  10 OB02MORD OB02MORD ; 
+    15 OB02WCID OB02WCID ; 
+      20 * num(7) ; 
+      20 OP1PARTN OP1PARTN ; 
+    15 OB02WF1 OB02WF1 ; 
+    15 OB02WNID OB02WNID ; 
+  10 OB02MCUS OB02MCUS ; 
+    15 OB02WCOD OB02WCOD ; 
+    15 OB02WF2 OB02WF2 ; 
+    15 OB02WSID OB02WSID ; 
+    15 OB02WF3 OB02WF3 ; 
+    15 OB02WDID OB02WDID ; 
+  10 XPACD XPACD ; 
+  10 YNTCD YNTCD ; 
+  10 XWHCD XWHCD ; 
+  10 XGPCD XGPCD ; 
+  10 XDMCD XDMCD ; 
+  10 KUFMIXBL KUFMIXBL ; 
+  10 KUCUNTCS KUCUNTCS ; 
+  10 SY1SSTNM SY1SSTNM ; 
+  10 SY2CLRAB SY2CLRAB ; 
+  10 OP2CGPCD OP2CGPCD ; 
+  10 OB02WMSG OB02WMSG ; 
+    15 OB02WSTL OB02WSTL ; 
+    15 OB02WSCD OB02WSCD ; 
+      20 OB02WSTY OB02WSTY ; 
+      20 OB02WF4 OB02WF4 ; 
+      20 OB02WCLR OB02WCLR ; 
+      20 OB02WF5 OB02WF5 ; 
+      20 OB02WDIM OB02WDIM ; 
+    15 OB02WTXT OB02WTXT ; 
+  10 OB02W-ADD-PREPK OB02W-ADD-PREPK ; 
+  10 OB02W-CHG-PREPK OB02W-CHG-PREPK ; 
+end // end OB02W00
+
+//*** RECORD=OB02W01 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// ***********************
+Record OB02W01 type basicRecord
+  10 OP-PREPK-PKG-NBR OP-PREPK-PKG-NBR ; 
+  10 KUFMIXBL KUFMIXBL ; 
+  10 PKTPPQTY PKTPPQTY [20] ; 
+end // end OB02W01
+
+//*** RECORD=OB02W02 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// 
+// TABLE THAT CONTAINS THE TS-PAGE, TS-ITEM SUBSCRIPTS
+// OF ALL ITEMS THAT HAVE BEEN DISPLAYED SO FAR.
+// 
+// ***********************
+Record OB02W02 type basicRecord
+  5 OB02W2IX OB02W2IX ; 
+  5 OB02WITM OB02WITM [50] ; 
+    10 OB02WPAG OB02WPAG ; 
+    10 OB02WSUB OB02WSUB ; 
+end // end OB02W02
+
+//*** RECORD=OB02W03 ****
+// ************************************************************
+// * Temporary storage record used to hold detail items for   *
+// * a particular order no. for the OB01 application.         *
+// *                                                          *
+// * This is used for paging purpose.  1 page = 1 temporary   *
+// * storage record.  There are 12 occurrences of detail item *
+// * for 1 page/1 ts record.                                  *
+// *                                                          *
+// *==========================================================*
+// *                                                          *
+// * NOTE:  Since CSP does not allow 'OCCURS' within an       *
+// *        'OCCURS', the 40 occurrences for prepack-qty,     *
+// *        size-active-flag, on-order-qty and size-id-desc   *
+// *        have to be defined with a unique name for each    *
+// *        occurrence.                                       *
+// *                                                          *
+// *==========================================================*
+// *                                                          *
+// * CSP record:  OBSPREC                                     *
+// *                                                          *
+// * File name :  OSF2 (?????)                                *
+// *                                                          *
+// * Data from :  VBCSPR01/OB2REC/OB3REC                      *
+// ************************************************************
+// 
+// ***********************
+Record OB02W03 type basicRecord
+  5 OBSPGROUP OBSPGROUP ; 
+    10 OBSPTSLEN OBSPTSLEN ; 
+    10 OBSPTSROW OBSPTSROW [12] ; 
+      15 OBSPDELET OBSPDELET ; 
+      15 OBSPSELTD OBSPSELTD ; 
+      15 OBSPMORE OBSPMORE ; 
+      15 OP-PREPK-PKG-NBR OP-PREPK-PKG-NBR ; 
+      15 OBSPSTYNB OBSPSTYNB ; 
+        20 SY1STNBR SY1STNBR ; 
+        20 OBSPPER1 OBSPPER1 ; 
+        20 SY2CLRID SY2CLRID ; 
+        20 OBSPPER2 OBSPPER2 ; 
+        20 XDMCD XDMCD ; 
+      15 OP2CGPCD OP2CGPCD ; 
+      15 SY1SSTNM SY1SSTNM ; 
+      15 SY2CLRAB SY2CLRAB ; 
+      15 OBSPPQ01 OBSPPQ01 ; 
+      15 OBSPPQ02 OBSPPQ02 ; 
+      15 OBSPPQ03 OBSPPQ03 ; 
+      15 OBSPPQ04 OBSPPQ04 ; 
+      15 OBSPPQ05 OBSPPQ05 ; 
+      15 OBSPPQ06 OBSPPQ06 ; 
+      15 OBSPPQ07 OBSPPQ07 ; 
+      15 OBSPPQ08 OBSPPQ08 ; 
+      15 OBSPPQ09 OBSPPQ09 ; 
+      15 OBSPPQ10 OBSPPQ10 ; 
+      15 OBSPPQ11 OBSPPQ11 ; 
+      15 OBSPPQ12 OBSPPQ12 ; 
+      15 OBSPPQ13 OBSPPQ13 ; 
+      15 OBSPPQ14 OBSPPQ14 ; 
+      15 OBSPPQ15 OBSPPQ15 ; 
+      15 OBSPPQ16 OBSPPQ16 ; 
+      15 OBSPPQ17 OBSPPQ17 ; 
+      15 OBSPPQ18 OBSPPQ18 ; 
+      15 OBSPPQ19 OBSPPQ19 ; 
+      15 OBSPPQ20 OBSPPQ20 ; 
+      15 OBSPORQ01 OBSPORQ01 ; 
+      15 OBSPORQ02 OBSPORQ02 ; 
+      15 OBSPORQ03 OBSPORQ03 ; 
+      15 OBSPORQ04 OBSPORQ04 ; 
+      15 OBSPORQ05 OBSPORQ05 ; 
+      15 OBSPORQ06 OBSPORQ06 ; 
+      15 OBSPORQ07 OBSPORQ07 ; 
+      15 OBSPORQ08 OBSPORQ08 ; 
+      15 OBSPORQ09 OBSPORQ09 ; 
+      15 OBSPORQ10 OBSPORQ10 ; 
+      15 OBSPORQ11 OBSPORQ11 ; 
+      15 OBSPORQ12 OBSPORQ12 ; 
+      15 OBSPORQ13 OBSPORQ13 ; 
+      15 OBSPORQ14 OBSPORQ14 ; 
+      15 OBSPORQ15 OBSPORQ15 ; 
+      15 OBSPORQ16 OBSPORQ16 ; 
+      15 OBSPORQ17 OBSPORQ17 ; 
+      15 OBSPORQ18 OBSPORQ18 ; 
+      15 OBSPORQ19 OBSPORQ19 ; 
+      15 OBSPORQ20 OBSPORQ20 ; 
+      15 PKTBACTI PKTBACTI ; 
+      15 KUFMIXBL KUFMIXBL ; 
+      15 KUCUNTCS KUCUNTCS ; 
+      15 OP2LNINB OP2LNINB ; 
+      15 SY4SZSCL SY4SZSCL ; 
+      15 YNTCD YNTCD ; 
+      15 OBSPSZI01 OBSPSZI01 ; 
+      15 OBSPSZI02 OBSPSZI02 ; 
+      15 OBSPSZI03 OBSPSZI03 ; 
+      15 OBSPSZI04 OBSPSZI04 ; 
+      15 OBSPSZI05 OBSPSZI05 ; 
+      15 OBSPSZI06 OBSPSZI06 ; 
+      15 OBSPSZI07 OBSPSZI07 ; 
+      15 OBSPSZI08 OBSPSZI08 ; 
+      15 OBSPSZI09 OBSPSZI09 ; 
+      15 OBSPSZI10 OBSPSZI10 ; 
+      15 OBSPSZI11 OBSPSZI11 ; 
+      15 OBSPSZI12 OBSPSZI12 ; 
+      15 OBSPSZI13 OBSPSZI13 ; 
+      15 OBSPSZI14 OBSPSZI14 ; 
+      15 OBSPSZI15 OBSPSZI15 ; 
+      15 OBSPSZI16 OBSPSZI16 ; 
+      15 OBSPSZI17 OBSPSZI17 ; 
+      15 OBSPSZI18 OBSPSZI18 ; 
+      15 OBSPSZI19 OBSPSZI19 ; 
+      15 OBSPSZI20 OBSPSZI20 ; 
+      15 ZZZCHGCT ZZZCHGCT ; 
+end // end OB02W03
+
+//*** RECORD=OB02W04 ****
+// ************************************************************
+// * A table to hold the 20 screen item Size Descriptions and *
+// * the 20 Pre-Pack Quantities.                              *
+// *                                                          *
+// * Example:                                                 *
+// *            Size Description(1): XL                       *
+// *           Pre-Pack Quantity(1): 12                       *
+// *                                                          *
+// * This table is used to properly place the screen Pre-Pack *
+// * Quantity (1 - 20) in the appropriate database Pre-Pack   *
+// * Quantity (1 - 40).                                       *
+// *                                                          *
+// ************************************************************
+// 
+// ***********************
+Record OB02W04 type basicRecord
+  5 SY4IDDSC SY4IDDSC [20] ; 
+  5 PKTPPQTY PKTPPQTY [20] ; 
+end // end OB02W04
+
+//*** RECORD=OB02W05 ****
+// ************************************************************
+// * A table to hold the 40 Database Pre-Pack Quantities.     *
+// *                                                          *
+// * This table is used to properly place the screen Pre-Pack *
+// * Quantity (1 - 20) in the appropriate database Pre-Pack   *
+// * Quantity (1 - 40).                                       *
+// *                                                          *
+// ************************************************************
+// 
+// ***********************
+Record OB02W05 type basicRecord
+  5 OB02WPGP OB02WPGP ; 
+    10 PKTPPQTY PKTPPQTY [40] ; 
+end // end OB02W05
+
+DataItem OB02MCUS char(15)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OB02MIXM smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem OB02MORD char(13)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ADD PREPK FLAG
+DataItem OB02W-ADD-PREPK char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CHG PREPK FLAG
+DataItem OB02W-CHG-PREPK char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DISPLAY ITEM INDEX
+DataItem OB02W2IX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// FIELD MODIFIED FLAG
+DataItem OB02WCHF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// op-cust-ord-id
+DataItem OB02WCID num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// SY2CLRID
+DataItem OB02WCLR char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CU_CO_ID
+DataItem OB02WCOD num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// XNX_DEPT_ID_XREF
+DataItem OB02WDID num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// XDMCD
+DataItem OB02WDIM char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// END OF TS PAGES FLAG
+DataItem OB02WEOP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ERROR MESSAGE FLAG
+DataItem OB02WERR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// FILLER '.'
+DataItem OB02WF1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// FILLER '.'
+DataItem OB02WF2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// FILLER '.'
+DataItem OB02WF3 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// FILLER '-'
+DataItem OB02WF4 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// FILLER '-'
+DataItem OB02WF5 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ITEM FOUND FLAG
+DataItem OB02WFND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ITEM COUNT
+DataItem OB02WITC smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// TS QUEUE PAGE/ITEM
+DataItem OB02WITM num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem OB02WIX3 smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem OB02WIXM smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OB02WMSG char(79)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// op-nike-ord-id
+DataItem OB02WNID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// PACK TO DISPLAY CONVERT
+DataItem OB02WNUM num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// temporary storage page
+DataItem OB02WPAG num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OB02WPGP char(160)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TS ITEM
+DataItem OB02WPRD num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem OB02WPSX smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// QUOTENT
+DataItem OB02WQOT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// REMAINDER
+DataItem OB02WREM int {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// STYLE-COLOR-DIM
+DataItem OB02WSCD char(14)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CU_STOR_ID
+DataItem OB02WSID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CURRENT TS QUEUE PAGE
+DataItem OB02WSPG smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SAVE CURRENT PAGE/ITEM
+DataItem OB02WSPI int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// FILLER 'STYLE: '
+DataItem OB02WSTL char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CURRENT TS QUEUE ITEM
+DataItem OB02WSTM smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SY1STNBR
+DataItem OB02WSTY char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TS ITEM
+DataItem OB02WSUB num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// OP_PREPK_TOTITMQTY
+DataItem OB02WTIQ int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Index for TS QUEUE ITEMS
+DataItem OB02WTIX smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TEMPORARY REMAINDER
+DataItem OB02WTRM int {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// MESSAGE TEXT
+DataItem OB02WTXT char(58)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CALC UNITS PER CARTON
+DataItem OB02WUPC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

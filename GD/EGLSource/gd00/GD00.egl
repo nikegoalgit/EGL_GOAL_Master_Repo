@@ -1,0 +1,860 @@
+package gd00;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import gd.common.*;
+import ta.common.*;
+//*** PROGRAM=GD00 ****
+// Nike On-line help menu.
+// 
+// OVERVIEW:  This menu display program is designed so that one
+//            program can display numberous menus. This is done
+//            by storing the literals which vary from menu to
+//  menu on a vsam file indexed by the transaction ID or, in
+//  this case, the help application code. This file is called
+//  the Menu Literal File (MLF), and is maintained with the
+//  application GZ00. The MLF file has 583 byte records, each
+//  record containing data for one menu.
+//            The data for each menu consists of:
+//            - A four byte tran-id/application name key field
+//            - A 49 byte menu heading
+//            - A 530 byte menu body array, each row
+//              containing:
+//                    - A 49 byte selection description
+//                    - a 4 byte destination tran-id.
+// 
+//             Upon entering the application, the security is
+//  checked, and the CACURRAP field of the COMMAREA is used as
+//  the key to look up the correct data in the MLF. The record
+//  is read, and standard error processing is done. The data
+//  is then moved into the map, and the map displayed.
+// 
+//              The user has the option of entering either a
+//  non help application code or help code in the fast path
+//  option field, or pressing a valid PF key.
+//  If the option field is used, the program looks up the
+//  option on a CSP table to find out if the option belongs to
+//  help, and if so, if the option is a menu or text display.
+//  If the option is not found on the table, then it is assumed
+//  that an application name has been entered and the program
+//  branches to it using XSEXIT. The table is called the Trans-
+//  action Link Table (TLT). When a transaction is found on the
+//  TLT, the program determines if the tran is another help
+//  menu by checking the second column of the table in the same
+//  row for a menu flag. If the flag does not indicate menu,
+//  then the program fetches data needed by the test display
+//  program from the TLT, and passed it in CAITEM to the
+//  application GD01 (Text Display). If the flag indicates a
+//  menu, the program branches to the new menu transaction. It
+//  should be noted that all branches to applications are done
+//  using the XSEXIT statement group, and that error recovery
+//  code is in place to format a message in the event of a
+//  security failure. The user may exit the help system by
+//  pressing one of three PF keys. Their functions are as
+//  follows:
+// 
+//        PF2 - Returns the user to the orginial application.
+//        PF3 - Returns the user to the previous level, and if
+//              keyed on the main help menu, it will return to
+//              the Main Goal Menu.
+//        PF4 - Returns the user to the Main Goal Menu.
+// 
+//  The Transaction Link Table (TLT) is a three column table
+//  which contains a four byte target transaction ID, and
+//  eight byte member name field, and a four byte logically
+//  previous transaction ID. An option found on the table is a
+//  menu if the member name column for that row contains
+//  "    MEMU". Text options contain the alpha portion of the
+//  key used to access the test master file. The third row is
+//  logically previous tran ID which is used if the user types
+//  PF3 to return to the next higher level.
+// 
+// 
+//  DATE CREATED: 04/04/86
+//        AUTHOR: Dan Loomis
+// 
+//  MAINTENANCE HISTORY:
+// 
+//     DATE      BY WHOM        OVERVEIW OF CHANGES MADE
+//   -------  -------------   ------------------------------
+//   04-09-86   Rick C.      - documentation
+//                           - standards
+//                             - headers
+//                             - code
+//                             - naming and format
+//   11-11-88   John Wood    - added xssegtr logic
+//   02-09-93   VERN COWAN   - added "GD09" to pf7 & pf8 "if"
+//                             logic in gd00200
+//                             note: "GD09" menu is used for
+//                             all European "HELP" information
+//   04-05-93   VERN COWAN   - chg xgdtbl to xgetbl(europe ver)
+// *********************
+Program GD00 type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  GD2REC GD2REC; // record
+  GD3REC GD3REC; // record
+  GDTREC GDTREC; // record
+  GDWREC GDWREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XGETBL {deleteAfterUse = yes}; // table
+  use GD00M.GD00M002 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    GD00100: GD00100();
+    goto GD00150; /* converse screen*/
+     /* *************************************************************/
+
+
+
+    GD00150: GD00150();
+    goto GD00200;
+     /* *************************************************************/
+
+
+
+
+    GD00200: GD00200();
+
+     /* ************************************************************/
+
+       /* *********************************************************/
+       /* * If process flowed, then map is to be reconversed.    **/
+       /* * this happens if enter was pressed on a blank or      **/
+       /* * invalid Tran-ID, or PA2, or the error message        **/
+       /* * returned from xsexit.                                **/
+       /* *********************************************************/
+
+    if (GDWREC.GDWAIDS == "Z")
+      goto GD00200; /* reconverse map without message or alarm.*/
+
+    else /* if map is to be reconversed, then there must be a message.*/
+
+      set GD00M002 alarm; /* draw the user's attention to it.*/
+
+    end
+
+    goto GD00200; /* reconverse map, with message if present.*/
+
+
+
+  end // end main
+end // end GD00
+
+// get MLF record for this TRANID
+Function GD00100()
+
+
+     /* ********************************************************/
+     /* * This process intializes program work areas, checks  **/
+     /* * user security, and edits the option and item field. **/
+     /* *              Flow to GD00150                        **/
+     /* ********************************************************/
+
+     /* check security.*/
+
+   /* ************************************************************/
+  XSENTRY();
+   /* ************************************************************/
+
+   /* ************************************************************/
+  XSSEGTR(); /* 11/88 jw - set segmented trans id*/
+   /* ************************************************************/
+   /* MOVE 'CSP' TO COMMAREA.CASYSINT;*/
+   /* MOVE 'RCONNO' TO COMMAREA.CAUSERID;*/
+
+  set GDTREC empty;
+  set GDWREC empty;
+  set GD2REC empty;
+  set GD3REC empty;
+  if (COMMAREA.CAFROMAP != "GD00")
+    if (COMMAREA.CAFROMAP != "GD01")
+    else
+      GDWREC.GDWRECGP = COMMAREA.CAUSERA;
+    end
+  else
+    GDWREC.GDWRECGP = COMMAREA.CAUSERA;
+  end
+
+     /* find commarea.cafromap on table, if not there, save*/
+     /* original application name in working storage.*/
+
+
+  GD3REC.GD349B = " "; /* initialize working storage.*/
+  GDWREC.GDWFLAGS = " "; /* initialize application flags.*/
+
+  GDWREC.GDWTID = COMMAREA.CAFROMAP;
+  XSGD010(); /* look for from app on TLT table.*/
+
+  if (GDWREC.GDWEDIT == "F")
+
+       /* not found on table, means it must be users application.*/
+       /* save users application for PF2 direct return.*/
+
+    if (COMMAREA.CAFROMAP == "GD00")
+       /* next*/
+    else
+      if (COMMAREA.CAFROMAP == "GD01")
+         /* next*/
+      else
+        GDWREC.GDWFMAPP = COMMAREA.CAFROMAP;
+      end
+    end
+  end
+  if (GDWREC.GDWEDIT == "P")
+    if (COMMAREA.CAFROMAP == "GD01")
+        /* MOVE GD3REC.GD320B TO COMMAREA.CAITEM;*/
+    else
+      if (COMMAREA.CAFROMAP != "GD00")
+        GDWREC.GDWFMAPP = COMMAREA.CAFROMAP;
+      end
+    end
+  end
+
+  if (COMMAREA.CAITEM != GD3REC.GD320B) /* does item field have data.*/
+
+            /* The first four bytes of the item field are the help*/
+       /* option, followed by one byte of filler, and ten optional*/
+       /* bytes of find string.*/
+
+    GDWREC.GDWITEM = COMMAREA.CAITEM; /* take it apart,*/
+    GDWREC.GDWTID = GDWREC.GDWITID;
+
+            /* Retreive the second column of the TLT based on the*/
+       /* help option.  If the specified option is not a menu, and*/
+       /* it is on the TLT (then it must be a text option), link*/
+       /* link to GD01.  note that the item field is already in*/
+       /* COMMAREA.CAITEM and does not have to be moved again.*/
+
+              /* SEARCH FOR SPECIFIED OPTION ON TLT.*/
+
+    XSGD010(); /* search for specified option on TLT.*/
+
+    if (GDWREC.GDWEDIT == "P") /* tran code found on TLT*/
+
+      if (XGETBL.XGETMEB[sysVar.arrayIndex] != "    MENU") /* not a menu?*/
+
+        if (GDWREC.GDWITID == "GD0G")
+          GDWREC.GDWUTID = GDWREC.GDWFMAPP;
+          COMMAREA.CAITEM = GDWREC.GDWIFND;
+          COMMAREA.CATOAP = "GD0G";
+          XSEXIT(); /* link to display transaction.*/
+
+          XSGD040(); /* transfer failed, format message,*/
+          GD00S20(); /* and move to GD00M001.EZEMSG*/
+
+        end /* TLT entry was EQ '    MENU'*/
+
+        GDWREC.GDWUTID = GDWREC.GDWFMAPP;
+        COMMAREA.CAITEM = GDWREC.GDWITEM;
+        COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+        COMMAREA.CATOAP = "GD01";
+        XSEXIT(); /* link to display transaction.*/
+
+        XSGD040(); /* transfer failed, format message,*/
+        GD00S20(); /* and move to GD00M001.EZEMSG*/
+
+      else /* TLT entry was EQ '    MENU'*/
+
+          /* if a menu, then go display the menu.*/
+
+      end /* if ne '    menu'*/
+
+    else /* not on table, must be outside of help system.*/
+
+      GD3REC.GD3PEND1 = "INVALID HELP OPTION.  VERI";
+      GD3REC.GD3PEND2 = "FY THAT NAME IS CORRECT AN";
+      GD3REC.GD3PEND3 = "D TRY AGAIN.     (GD00100)";
+
+        /* message pending, moved into ezemsg during map setup.*/
+
+    end /* if found on TLT*/
+
+  else /* item field blank.  default to main menu.*/
+
+    GDWREC.GDWTID = "GD00";
+
+  end /* if item field ne blanks.*/
+
+     /* If link fails, format the message in GD00150, and display*/
+     /* the menu.  If the menu inquire fails, then the message*/
+     /* will be overwritten before it is displayed.*/
+
+  GDWREC.GDWEDIT = " ";
+  GDWREC.GDWMLRIO = " ";
+  GD2REC.GD2TRAN = GDWREC.GDWTID; /* set up record key*/
+
+
+
+   /* ***********************************************************/
+  try
+    get GD2REC ;
+  end
+   /* ***********************************************************/
+
+
+
+  if (GD2REC is ioError)
+    GDWREC.GDWMLRIO = "Y";
+
+    if (GD2REC is noRecordFound)
+      GD3REC.GD3PEND1 = "NO MENU ON FILE.  UNABLE T";
+      GD3REC.GD3PEND2 = "O DISPLAY MENU.  PLEASE CH";
+      GD3REC.GD3PEND3 = "OOSE ANOTHER.             ";
+      exit stack;
+
+    else
+
+      GD3REC.GD3PEND1 = "I/O ERROR READING MENU LIT";
+      GD3REC.GD3PEND2 = "ERAL FILE.  UNABLE TO DISP";
+      GD3REC.GD3PEND3 = "LAY MENU.                 ";
+      exit stack;
+
+    end
+
+  end
+
+  exit stack;
+
+
+
+
+   /* *************************************************************/
+end // end GD00100
+
+// set up contents of menu.
+Function GD00150()
+
+
+     /* ****************************************************/
+     /* *                                                 **/
+     /* * This process intializes the gd00m002 map and    **/
+     /* * sets up the body of the menu.                   **/
+     /* *                                                 **/
+     /* *     Flow from GD0100, Flow to GD00200           **/
+     /* ****************************************************/
+
+    /* set up map and heading of menu.*/
+
+  set GD00M002 initial;
+  GD3REC.GD3PROC = "GD00200";
+  GD3REC.GD3MAP = "GD00M002";
+  GD00M002.GD00MDT = VGVar.currentShortGregorianDate;
+
+             /* MOVE PENDING MESSAGE TO THE SCREEN*/
+
+  GD00S20(); /* move pending message;*/
+
+  if (GDWREC.GDWMLRIO == "Y"
+   || GDWREC.GDWMLREF == "Y")
+    exit stack;
+
+  else /* no errors during inquire.*/
+
+    GD3REC.GD3TTL = GD2REC.GD2HEAD;
+    GD00M002.GD00MHED = GD3REC.GD3HEAD;
+
+       /* set up body of menu*/
+
+    GDWREC.GDWINDX1 = 1;
+    while (GDWREC.GDWINDX1 <= 13) /* ***** 2/10/88 - jbw ******/
+
+      GD00M002.GD00MLIT[GDWINDX1] = GD2REC.GD2LIT[GDWINDX1];
+      GD00M002.GD00MDID[GDWINDX1] = GD2REC.GD2DTID[GDWINDX1];
+      GDWREC.GDWINDX1 = GDWREC.GDWINDX1 + 1;
+
+    end
+
+  end
+
+
+
+   /* *************************************************************/
+end // end GD00150
+
+// display the menu.
+Function GD00200()
+
+     /* ****************************************************/
+     /* * This process converses the GD00M002 map, edits  **/
+     /* * the return keys and or values, then transfers   **/
+     /* * control to appropriate area. The Flow is used   **/
+     /* * only if there is some error message pending and **/
+     /* * the map is to be reconversed.                   **/
+     /* ****************************************************/
+
+
+     /* map formatting performed in gd00150 execute process.*/
+
+  GDWREC.GDWAIDS = " ";
+  converseLib.clearScreen();
+  
+  set GD00M002.GD00MITM cursor;
+
+  if (GD2REC.GD2TRAN == "GD00")
+    set GD00M002.GD00MP7L invisible;
+    set GD00M002.GD00MP8L normal;
+  else
+    if (GD2REC.GD2TRAN == "GD06")
+      set GD00M002.GD00MP7L normal;
+      set GD00M002.GD00MP8L normal;
+    else
+      if (GD2REC.GD2TRAN == "GD07")
+        set GD00M002.GD00MP7L normal;
+        set GD00M002.GD00MP8L normal;
+      else
+        if (GD2REC.GD2TRAN == "GD08")
+          set GD00M002.GD00MP7L normal;
+          set GD00M002.GD00MP8L normal;
+        else
+          if (GD2REC.GD2TRAN == "GD09")
+            set GD00M002.GD00MP7L normal;
+            set GD00M002.GD00MP8L invisible;
+          else
+            set GD00M002.GD00MP7L invisible;
+            set GD00M002.GD00MP8L invisible;
+          end
+        end
+      end
+    end
+  end
+  GD00M002.GD00MSEL[1] = "_";
+  GD00M002.GD00MSEL[2] = "_";
+  GD00M002.GD00MSEL[3] = "_";
+  GD00M002.GD00MSEL[4] = "_";
+  GD00M002.GD00MSEL[5] = "_";
+  GD00M002.GD00MSEL[6] = "_";
+  GD00M002.GD00MSEL[7] = "_";
+  GD00M002.GD00MSEL[8] = "_";
+  GD00M002.GD00MSEL[9] = "_";
+  GD00M002.GD00MSEL[10] = "_";
+  GD00M002.GD00MSEL[11] = "_";
+  GD00M002.GD00MSEL[12] = "_";
+  GD00M002.GD00MSEL[13] = "_";
+
+   /* **********************************************************/
+  converse GD00M002 ;
+   /* **********************************************************/
+    /* check for selection entry*/
+
+  GD00S10();
+
+   /* **********************************************************/
+
+
+
+     /* pf key flag is set for process linkage in flow stage.*/
+     /* pf keys 2, 3, and 4 should only reach flow stage in*/
+     /* exception situations.  A message will be displayed and*/
+     /* the map reconversed.  Enter key causes linkage to the*/
+     /* option specified in the fast path field.  If there is*/
+     /* an abnormal return from XSEXIT, a message is formatted*/
+     /* and the map is reconversed.*/
+
+
+  if (converseVar.eventKey is enter)
+
+    GDWREC.GDWAIDS = "0";
+
+    if (GD00M002.GD00M2AP is modified
+     && GD00M002.GD00M2AP != GD3REC.GD304B) /* and not spaces*/
+
+      COMMAREA.CAITEM = GD00M002.GD00MITM;
+      COMMAREA.CATOAP = GD00M002.GD00M2AP;
+
+      XSEXIT(); /* link to spacified application.*/
+
+      XSGD040(); /* if transfer fails, a message is formated,*/
+      GD00S20(); /* and moved to the EZEMSG field of the map.*/
+
+      COMMAREA.CATOAP = " ";
+
+      exit stack; /* transfer failed due to bad tran-id,*/
+                                /* reconverse map with message.*/
+
+    else /* was not a fast path option, item entered?*/
+
+      if (GD00M002.GD00MITM is modified /* was item field entered.*/
+       && GD00M002.GD00MITM != GD3REC.GD320B)
+
+        COMMAREA.CAITEM = GD00M002.GD00MITM;
+
+        XSGD092(); /* determine desired application and link.*/
+        GD00S20(); /* if transfer fails, a message is formated,*/
+                         /* and moved to the EZEMSG field of the map.*/
+
+        exit stack;
+
+      else /* not item modified or fast path enter pressed or select*/
+        if (GD00M002.GD00MITM != " " /* was item field moved*/
+         && GD00M002.GD00MITM != GD3REC.GD320B)
+
+          COMMAREA.CAITEM = GD00M002.GD00MITM;
+
+          XSGD092(); /* determine desired application and link.*/
+          GD00S20(); /* if transfer fails, a message is formated,*/
+                           /* and moved to the EZEMSG field of the map.*/
+
+          exit stack;
+
+        else /* enter pressed on blank screen*/
+
+
+          GD00M002.VAGen_EZEMSG = "ENTER A TRAN-ID OR SELECTION";
+          exit stack; /* reconverse map with message*/
+
+        end /* if gd00mitm selected*/
+      end /* if gd00item modified*/
+
+    end /* if gd00fp modified*/
+
+  end /* if enter*/
+
+
+  if (converseVar.eventKey is pa2)
+    GDWREC.GDWAIDS = "Z";
+    GD00M002.VAGen_EZEMSG = " "; /* blank out message field*/
+    exit stack; /* reconverse map.*/
+
+  end
+
+             /* Return to orginal application*/
+
+  if (converseVar.eventKey is pf2) /* return to orginal application.*/
+    GDWREC.GDWAIDS = "2";
+    COMMAREA.CATOAP = GDWREC.GDWFMAPP;
+    COMMAREA.CAITEM = " ";
+
+    XSEXIT(); /* either link or terminate appl.*/
+
+    GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+    COMMAREA.CATOAP = " ";
+    exit stack;
+
+  end
+
+            /* Return to Next higher level.*/
+
+  if (converseVar.eventKey is pf3) /* return to next higher level.*/
+
+    GDWREC.GDWAIDS = "3"; /* set pf key flag for flow stage*/
+
+      /* >>     The following code will not work, because the <<*/
+      /* >> calling application is not defined to the         <<*/
+      /* >> security tables used by xsexit.  When the         <<*/
+      /* >> calling application is defined, then the          <<*/
+      /* >> exit will take place.                             <<*/
+
+    if (GD2REC.GD2TRAN == "GD00") /* if highest level of goal doc,*/
+                                  /* return to orginal appl.*/
+
+      COMMAREA.CATOAP = "MN0M";
+      COMMAREA.CAITEM = " ";
+      XSEXIT(); /* link or error.*/
+
+      GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+      COMMAREA.CATOAP = " ";
+      exit stack;
+
+    else
+
+       /* PF3 AND NOT HIGHEST LEVEL OF GOAL DOC.  retreive previous*/
+        /* transaction from tran link table.  setup link to tran*/
+
+      if (GD2REC.GD2TRAN in XGETBL.XGETTRN)
+        GDWREC.GDWPTID = XGETBL.XGETTID[sysVar.arrayIndex];
+      end
+
+      if (sysVar.arrayIndex == 0) /* disaster, this cannot happen!!*/
+
+        GD00M002.VAGen_EZEMSG = "UNABLE TO RETURN TO PREVIOUS APPL";
+        COMMAREA.CATOAP = "GD00"; /* return to main GD menu.*/
+        COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+
+        XSEXIT();
+
+        GD00M002.VAGen_EZEMSG = "UNABLE TO RETURN TO GOAL MENU    ";
+        XSPF4(); /* return to main menu*/
+
+        XSEXIT();
+
+        exit program; /* if that fails terminate appl*/
+
+      else /* previous tran retreived, transfer to it.*/
+
+        GDWREC.GDWITEM = " ";
+        GDWREC.GDWITID = GDWREC.GDWPTID;
+        COMMAREA.CAITEM = GDWREC.GDWITEM;
+        COMMAREA.CATOAP = "GD00";
+        COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+
+        XSEXIT();
+
+        GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+        COMMAREA.CATOAP = " ";
+        exit stack;
+
+      end /* block if ezetst eq 0*/
+
+    end
+                                   /* block if commarea.cacurrap eq 'gd00'*/
+
+  end /* not pf3*/
+
+                  /* Return to Main Goal Menu.*/
+
+  if (converseVar.eventKey is pf4)
+    GDWREC.GDWAIDS = "4";
+    COMMAREA.CAITEM = " ";
+    XSPF4(); /* transfer to main goal menu.*/
+
+    GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+    COMMAREA.CATOAP = " ";
+    exit stack;
+
+  else
+
+    /* **************** 01/28/88 jw *********************/
+    /* ****** added "gd09" ...  02-08-93  vcowan ********/
+
+     /* check for pf7 or pf8, then go to that menu*/
+
+    if (converseVar.eventKey is pf7)
+      if (GD2REC.GD2TRAN == "GD06")
+        COMMAREA.CAITEM = " ";
+        COMMAREA.CATOAP = "GD00";
+        COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+        XSEXIT();
+        GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+        COMMAREA.CAITEM = " ";
+        COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+        exit stack;
+
+      else
+        if (GD2REC.GD2TRAN == "GD07")
+          COMMAREA.CAITEM = "GD06";
+          COMMAREA.CATOAP = "GD00";
+          COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+          XSEXIT();
+          GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+          COMMAREA.CAITEM = " ";
+          COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+          exit stack;
+
+        else
+          if (GD2REC.GD2TRAN == "GD08")
+            COMMAREA.CAITEM = "GD07";
+            COMMAREA.CATOAP = "GD00";
+            COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+            XSEXIT();
+            GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+            COMMAREA.CAITEM = " ";
+            COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+            exit stack;
+
+          else
+            if (GD2REC.GD2TRAN == "GD09")
+              COMMAREA.CAITEM = "GD07";
+              COMMAREA.CATOAP = "GD00";
+              COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+              XSEXIT();
+              GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+              COMMAREA.CAITEM = " ";
+              COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+              exit stack;
+
+            else
+              GD3REC.GD3PEND1 = "YOU CANNOT PRESS PF7 AT TH";
+              GD3REC.GD3PEND2 = "IS LEVEL                  ";
+              GD3REC.GD3PEND3 = "                          ";
+              COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+              GD00S20();
+              exit stack;
+            end
+          end
+        end
+      end
+    else
+      if (converseVar.eventKey is pf8)
+        if (GD2REC.GD2TRAN == "GD00")
+          COMMAREA.CAITEM = "GD06";
+          COMMAREA.CATOAP = "GD00";
+          COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+          XSEXIT();
+          GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+          COMMAREA.CAITEM = " ";
+          COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+          exit stack;
+        else
+          if (GD2REC.GD2TRAN == "GD06")
+            COMMAREA.CAITEM = "GD07";
+            COMMAREA.CATOAP = "GD00";
+            COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+            XSEXIT();
+            GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+            COMMAREA.CAITEM = " ";
+            COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+            exit stack;
+          else
+            if (GD2REC.GD2TRAN == "GD07")
+              COMMAREA.CAITEM = "GD08";
+              COMMAREA.CATOAP = "GD00";
+              COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+              XSEXIT();
+              GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+              COMMAREA.CAITEM = " ";
+              COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+              exit stack;
+            else
+              if (GD2REC.GD2TRAN == "GD08")
+                COMMAREA.CAITEM = "GD09";
+                COMMAREA.CATOAP = "GD00";
+                COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+                XSEXIT();
+                GD00M002.VAGen_EZEMSG = COMMAREA.CAMSG;
+                COMMAREA.CAITEM = " ";
+                COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+                exit stack;
+              else
+                if (GD2REC.GD2TRAN == "GD09")
+                  GD3REC.GD3PEND1 = "YOU CANNOT PRESS PF8 AT TH";
+                  GD3REC.GD3PEND2 = "IS LEVEL                  ";
+                  GD3REC.GD3PEND3 = "                          ";
+                  COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+                  GD00S20();
+                  exit stack;
+                else
+                  GD3REC.GD3PEND1 = "YOU CANNOT PRESS PF8 AT TH";
+                  GD3REC.GD3PEND2 = "IS LEVEL                  ";
+                  GD3REC.GD3PEND3 = "                          ";
+                  COMMAREA.CAUSERA = GDWREC.GDWRECGP;
+                  GD00S20();
+                  exit stack;
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+                /* Error routine*/
+
+    GD3REC.GD3PEND1 = "AN UNSUPPORTED PF KEY WAS ";
+    GD3REC.GD3PEND2 = "PRESSED - PLEASE TRY ANOTH";
+    GD3REC.GD3PEND3 = "ER.                       ";
+
+    GD00S20();
+
+    exit stack;
+
+  end /* if ezeaid is pf4*/
+
+
+
+   /* ************************************************************/
+end // end GD00200
+
+// check for selection entry
+Function GD00S10()
+   /* ********************************************/
+      /* check if s entered in selection columns*/
+
+  if (GD00M002.GD00MSEL[1] == "S")
+    GD00M002.GD00MITM = GD00M002.GD00MDID[1];
+  else
+    if (GD00M002.GD00MSEL[2] == "S")
+      GD00M002.GD00MITM = GD00M002.GD00MDID[2];
+    else
+      if (GD00M002.GD00MSEL[3] == "S")
+        GD00M002.GD00MITM = GD00M002.GD00MDID[3];
+      else
+        if (GD00M002.GD00MSEL[4] == "S")
+          GD00M002.GD00MITM = GD00M002.GD00MDID[4];
+        else
+          if (GD00M002.GD00MSEL[5] == "S")
+            GD00M002.GD00MITM = GD00M002.GD00MDID[5];
+          else
+             /* next sentence*/
+          end
+        end
+      end
+    end
+  end
+
+  if (GD00M002.GD00MSEL[6] == "S")
+    GD00M002.GD00MITM = GD00M002.GD00MDID[6];
+  else
+    if (GD00M002.GD00MSEL[7] == "S")
+      GD00M002.GD00MITM = GD00M002.GD00MDID[7];
+    else
+      if (GD00M002.GD00MSEL[8] == "S")
+        GD00M002.GD00MITM = GD00M002.GD00MDID[8];
+      else
+        if (GD00M002.GD00MSEL[9] == "S")
+          GD00M002.GD00MITM = GD00M002.GD00MDID[9];
+        else
+          if (GD00M002.GD00MSEL[10] == "S")
+            GD00M002.GD00MITM = GD00M002.GD00MDID[10];
+          else
+            if (GD00M002.GD00MSEL[11] == "S")
+              GD00M002.GD00MITM = GD00M002.GD00MDID[11];
+            else
+              if (GD00M002.GD00MSEL[12] == "S")
+                GD00M002.GD00MITM = GD00M002.GD00MDID[12];
+              else
+                if (GD00M002.GD00MSEL[13] == "S")
+                  GD00M002.GD00MITM = GD00M002.GD00MDID[13];
+                else
+                  /* next*/
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end // end GD00S10
+
+// Move pending message to EZEMSG
+Function GD00S20()
+
+     /* *********************************************************/
+     /* *    This statement group does the following:          **/
+     /* * Move and clear pending message field               . **/
+     /* *********************************************************/
+
+  GD00M002.VAGen_EZEMSG = GD3REC.GD3PEND;
+  GD3REC.GD3PEND = " ";
+
+  return;
+
+
+
+end // end GD00S20
+
+

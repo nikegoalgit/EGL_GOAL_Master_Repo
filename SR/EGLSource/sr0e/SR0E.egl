@@ -1,0 +1,3238 @@
+package sr0e;
+import az.common.*;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import fy.common.*;
+import in1.common.*;
+import ku.common.*;
+import ni.common.*;
+import op.common.*;
+import os.common.*;
+import pc.common.*;
+import pk.common.*;
+import pw.common.*;
+import sl.common.*;
+import sm.common.*;
+import sp.common.*;
+import sr.common.*;
+import sw.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+import vv.common.*;
+//*** PROGRAM=SR0E ****
+// ---------------  sr0e - split batch  --------------------
+// 
+// overview: this application is used to split off orders from
+//           an original picking schedule batch to a newly
+//           generated batch.  this is done by entering the
+//           original whse and batch, and each order to be
+//           split off.  the application verifys entered batch
+//           and order data, and if valid generates a new batch
+//           number, copys requested orders into the new batch,
+//           and deletes copied orders from the original batch.
+// 
+// processing:
+//   i. initialization  (process sr0e010)
+//      a. verify entry security
+//      b. clear map and work records
+//      c. if whse passed from other applications, move to map
+//         and verify validity.
+//      d. flow - to converse split batch map (sr0e030)
+// 
+//  ii. load map from work array  (process sr0e020)
+//      a. used when reloading after pf7/pf8
+//      b. clear map
+//      c. carry fwd headings
+//      d. move array order keys to map for current page.
+//      e. flow - to converse split batch map (sr0e030)
+// 
+// iii. converse split batch  (process sr0e030)
+//      a. no before stage processing
+//      b. reset msg and flag fields
+//      c. check pf keys for transfer requests
+//      d. edit split batch map data:
+//         1. if split processing has already occured,
+//            reset (pa2) must be keyed before attempting to
+//            split another batch.
+//         2. read original batch header (sr0es07)
+//            a) batch must exist
+//            b) batch must be entered, prepared, or on hold
+//         3. for each entered order: (sr0es10)
+//            a) read shiprec order (sr0es12)
+//               1) order must be found
+//               2) order must not be deallocated
+//            b) verify order not already requested in
+//               another slot.
+//            c) count orders
+//            d) save in work array
+//         4. number of orders entered must be less than
+//            number of original orders.  note: map only has
+//            room for 30 orders.  more orders may be entered
+//            after keying pf8.  orders entered on all pages
+//            must be counted.
+//         5. split reason is required
+//      e. flow:
+//         1. reset (pa2) request - initialize - sr0e010
+//         2. errors - redisplay - sr0e030
+//         3. if enter keyed: (and no errors)
+//            a) if less than 30 orders are entered -
+//               split batch - sr0e040
+//            b) if more than 30 orders have been entered,
+//               display 'key enter to split orders, pf7 to
+//               review orders, or pf8 to add orders' - sr0e030
+//               if this message has already been displayed
+//               and entered is keyed for the second time,
+//               go to split batch - sr0e040
+//         4. if pf8 keyed: (and no errors)
+//            a) if less than 30 orders are entered, display
+//               'must enter 30 orders before using pf8'
+//                message - sr0e030
+//            b) if 30 orders have been entered on current page
+//               increment page count, load new page from work
+//               array - sr0e020.
+//         5. if pf7 keyed: (and no errors)
+//            a) decrement page count, adjust to 1 if
+//               neccessary.  load new page from work array -
+//               sr0e020
+// 
+//  iv. split batch (process sr0e040)
+//      a. convert csp time/date (xx0xs01)
+//      b. get next schedule number (sr0es15)
+//      c. for each order entered:
+//         1. select items from original order (sr0es17)
+//         2. for each item in original order: (sr0es22 - read)
+//            a) fmt/write new batch item (sr0es20)
+//         3. close set of selected items (sr0e25)
+// ??????  4. delete original items (sr0es27)
+//         5. read original order (sr0es12)
+//         6. accumulate item, qty, amt totals
+//         7. fmt/write new batch order (sr0es30)
+//         8. delete original order (sr0es32)
+//         9. read shiprec address table (sr0es35)
+//            a) if address is found:
+//               * fmt/write new batch order address (sr0es37)
+//               * delete original batch order addr. (sr0es40)
+//      d. read original batch header (sr0es07)
+//      e. fmt/write new batch header (sr0es42)
+//      f. fmt/update original batch header to reflect
+//         decreased batch totals (sr0es45)
+//      g. set 'batch split message
+//      h. commit db2 changes.
+// 
+// date written: 10/86
+// author:       david ply - cap gemini america
+// 
+// MAINTENANCE HISTORY:
+// 
+// CONTROL    DATE    USERID  DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+//   10/05/87    gda    include code for phase 3 changes so
+//                      that the application no longer uses the
+//                      dship.vsrnxt01 table.
+//   10/20/88    jwood  added call option NONCSP
+//   10/21/88    jcampb fix cntr for number of orders
+//                      grps: sr0e040,sr0es42,sr0es45,sr0ew01
+//   11/14/88    jcampb consolidated bill of lading enhansment
+//   12/06/88    mblail temp. fix for zzsdt problem.
+//   01/16/89    jcampb sr0ew01 rec change because of sr1rec
+//                      change.
+//   01/16/89   jcampb rename sr0ewhdr to sr1grp to match field
+//                     to its source field.
+//   03/20/89   jwood  added xssegtr logic
+//   11/16/89   jcampb structure change
+//   03/23/90   jcampb allow renumbered schedules to be split
+//                     see stmt grp sr0es13. Added pkdrec and
+//                     i/o mod io1890 to determine whse type.
+//   03/07/91   rvakel regenned for table changes.
+//   12/18/91   dchian move process date to sr3rec.zzzchgdt
+//                     in sr0es22
+// SR#0     12/22/92  SPOPA   Update PK-PICK-SCHED-NBR in the
+//                            VSRTXT01, VSRXCP01, VSPLIT01, and
+//                            VNLPLO01 tables, if rows exist
+//                            in those tables when an order is
+//                            split off to another schedule.
+// 48565    12/30/92  SPOPA   Move "from" PK-PICK-SCHED-NBR to
+//                            VSRORD01 before selecting row.
+// SR#32    04/07/93  HKEMPE  Display an error message when the
+//                            maximum number of orders than can
+//                            be entered is reached
+// 1H0003   01/11/94  HKEMPE  Changed order nbr length to nine
+//                            digit in SR0EM030.
+// SR9001   02/28/94  HKEMPE  Generate/Compile to pick up
+//                            revised COMMAREA, SR3REC, SR4REC,
+//                            PWPREC and XWHTBL.
+//                            Resized SR0EW01.SR0EWAMT.
+// SR00     12/02/94  HKEMPE  Reset to next available schedule
+//                            nbr when already split 9 times.
+//                            Rearrange screen PF keys and got
+//                            rid of invalid ones.
+// SR00     12/02/96  DKESLE  Update AZCIT and AZCTN when new
+//                            schedule created
+// SR00     03/05/98  DKESLE  added update to srhdr when all
+//                            orders on old or new part of
+//                            split are released
+// SR00     03/19/98  DKESLE  changed pf9 key on map to pf13
+// SR00     04/24/98  DKESLE  change how pick actual and pick
+//                            status flags are set
+// tblchgs  06/18/98  tdaugh  regen for table changes
+// RETROFT  08/04/98  marbuc  Inhibit DCMS orders so they can
+//                            not be split
+// *********************
+Program SR0E type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "SR00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  PKDREC PKDREC; // record
+  PWPREC PWPREC; // record
+  SQLCA SQLCA; // record
+  SR0EW01 SR0EW01; // record
+  SR0EW02 SR0EW02; // record
+  SR1REC SR1REC; // record
+  SR2REC SR2REC; // record
+  SR3REC SR3REC; // record
+  SR5REC SR5REC; // record
+  SR9REC SR9REC; // record
+  SRWREC SRWREC; // record
+  TA1REC TA1REC; // record
+  TAEREC TAEREC; // record
+  TSVREC TSVREC; // record
+  VAZCIT01 VAZCIT01; // record
+  VAZCTN01 VAZCTN01; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL; // table
+  use SR0EM.SR0EM030 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    SR0E010: SR0E010();
+
+     /* -----------  sr0e010 flow ------------------*/
+
+    goto SR0E030; /* display empty split batch map*/
+
+    SR0E020: SR0E020();
+
+     /* -------------  sr0e020 flow ----------------*/
+
+    goto SR0E030; /* display split batch map*/
+
+    SR0E030: SR0E030();
+
+     /* ------------  sr0e030 flow  --------------------*/
+
+
+    if (converseVar.eventKey is pa2) /* reset?*/
+      goto SR0E010; /* to init split batch*/
+    end
+
+
+     /* if errors, redisplay map*/
+     /* no errors - split batch*/
+    if (SRWREC.SRWMSG != " ")
+      SR0EM030.SR0EMMSG = SRWREC.SRWMSG; /* security errors*/
+    end
+
+    if (converseVar.validationMsgNum == 0
+     && SR0EM030.SR0EMMSG == " ")
+      /* next sentence*/
+    else
+      goto SR0E030; /* errors - redisplay*/
+    end
+
+
+    if (converseVar.eventKey is enter)
+
+      if (SR0EW01.SR0EWOPP < 30) /* lt 30 orders per page?*/
+
+         /* note: single page flag init to 'y' in sr0e010*/
+               /* verify msg flag init to 'n' in sr0e010*/
+        if (SR0EW01.SR0EWSPF == "Y") /* single page?*/
+          goto SR0E040; /* to split batch*/
+        else /* multiple pages (and less than 30*/
+                                     /* orders)*/
+          if (SR0EW01.SR0EWVMF == "Y") /* verify message processed?*/
+            goto SR0E040; /* to split batch*/
+          else
+            converseLib.validationFailed(55); /* must key enter, pf7, pf8*/
+            SR0EW01.SR0EWVMF = "Y"; /* verify message flag*/
+            goto SR0E030; /* redisplay map*/
+          end
+        end /* end if single page*/
+
+      else /* 30 orders per page*/
+
+        if (SR0EW01.SR0EWVMF == "Y") /* verify message processed?*/
+          goto SR0E040; /* to split batch*/
+        else
+          converseLib.validationFailed(55); /* must key enter, pf7, pf8*/
+          SR0EW01.SR0EWVMF = "Y"; /* verify message flag*/
+          goto SR0E030; /* redisplay map*/
+        end
+
+      end /* end if lt 30 orders per page*/
+    end /* end if enter*/
+
+
+    if (converseVar.eventKey is pf8)
+      if (SR0EW01.SR0EWOPP < 30) /* less than 30 orders per page?*/
+        converseLib.validationFailed(56);
+                                     /* MUST ENTER 30 ORDERS BEFORE USING PF8*/
+        goto SR0E030; /* redisplay map*/
+      else
+         /* note: 30 orders per map and split order count less than*/
+         /* order count on orig. batch should keep page count*/
+         /* within allowable maximum (5).*/
+        SR0EW01.SR0EWPAG = SR0EW01.SR0EWPAG + 1; /* current page*/
+        if (SR0EW01.SR0EWPAG <= 5)
+          SR0EW01.SR0EWVMF = "N"; /* clear verify message flag*/
+          if (SR0EW01.SR0EWHPG < SR0EW01.SR0EWPAG)
+            SR0EW01.SR0EWHPG = SR0EW01.SR0EWPAG; /* high page*/
+          end
+          goto SR0E020; /* load new page*/
+        else
+          SR0EW01.SR0EWPAG = SR0EW01.SR0EWPAG - 1; /* current page*/
+          converseLib.validationFailed(98); /* maximum page forward is reached*/
+          goto SR0E030; /* redisplay map*/
+        end
+      end /* end if lt 30 orders per page*/
+    end /* end if pf8*/
+
+
+    if (converseVar.eventKey is pf7)
+      SR0EW01.SR0EWPAG = SR0EW01.SR0EWPAG - 1;
+      if (SR0EW01.SR0EWPAG == 0) /* already on first page?*/
+        SR0EW01.SR0EWPAG = SR0EW01.SR0EWPAG + 1;
+        converseLib.validationFailed(99); /* cannot go past first page*/
+        goto SR0E030; /* redisplay first page*/
+      else
+        SR0EW01.SR0EWVMF = "N"; /* clear verify message flag*/
+        goto SR0E020; /* load prior page*/
+      end
+    end
+
+
+    SR0EM030.SR0EMMSG = "THERE IS A HOLE IN YOUR LOGIC";
+    goto SR0E030;
+
+
+    SR0E040: SR0E040();
+     /* ------------  sr0e040 flow ----------------*/
+
+    goto SR0E030; /* to display split map*/
+
+
+  end // end main
+end // end SR0E
+
+// initialize split batch
+Function SR0E010()
+   /* --------------- start process sr0e010 ---------------------*/
+
+  XSENTRY(); /* entry security*/
+
+  XSSEGTR(); /* set segmented transaction id*/
+
+  set SR0EW01 empty; /* clear misc work fields*/
+  set SR0EW02 empty; /* clear batches array*/
+  set SR0EM030 initial; /* clear map fields*/
+  SR0EM030.SR0EMDT = VGVar.currentShortGregorianDate; /* move system date to map*/
+
+     /* look for whse passed from outside applications*/
+  SRWREC.SRWGRP = COMMAREA.CAUSERA; /* user commarea to work*/
+  SR0EW01.SR0EW2CH = COMMAREA.CAFROMAP; /* if entered from*/
+  if (SR0EW01.SR0EW2CH != "SR") /* outside shiprec system,*/
+    SRWREC.SRWXWHCD = COMMAREA.XWHCD; /* use commarea.xwhcd*/
+  end
+
+    /* if whse passed in commarea, move to map and validate*/
+  if (SRWREC.SRWXWHCD != " ")
+    SR0EM030.SR0EMXWH = SRWREC.SRWXWHCD;
+    SR0ES05(); /* validate whse*/
+  else
+    set SR0EM030.SR0EMXWH cursor;
+  end
+
+  SR0EW01.SR0EWPAG = 1; /* set page to 1*/
+  SR0EM030.SR0EMPAG = SR0EW01.SR0EWPAG; /* /page counter*/
+  SR0EW01.SR0EWHPG = 1; /* set high page to 1*/
+  SR0EW01.SR0EWSPF = "Y"; /* set single page flag*/
+  SR0EW01.SR0EWVMF = "N"; /* clear verify message flag*/
+
+   /* ---------------   end process sr0e010 ---------------------*/
+
+end // end SR0E010
+
+// load map from work array
+Function SR0E020()
+   /* -----------------  start process sr0e020  -----------------*/
+
+    /* clear map, load set up order keys from work array*/
+
+  set SR0EM030 initial;
+  SR0EM030.SR0EMDT = VGVar.currentShortGregorianDate; /* set system date*/
+  SR0EM030.SR0EMXWH = SRWREC.SRWXWHCD; /* carry fwd whse cd*/
+  if (SR0EM030.SR0EMXWH in XWHTBL.XWHCD)
+    SR0EM030.SR0EMWHN = XWHTBL.XWHNM[sysVar.arrayIndex];
+  end /* whse name*/
+  SR0EM030.SR0EMPAG = SR0EW01.SR0EWPAG; /* page counter*/
+  SR0EM030.SR0EMSCH = SR0EW01.SR0EWSCH; /* carry fwd orig. sched.*/
+  SR0EM030.SR0EMRSN = SR0EW01.SR0EWRSN; /* carry fwd split reason*/
+
+  SR0EW02.SR0EWOIX = SR0EW01.SR0EWPAG * 30;
+  SR0EW01.SR0EWIX1 = 30;
+  while (SR0EW01.SR0EWIX1 > 0)
+    SR0EM030.SR0EMORD[SR0EWIX1] = SR0EW02.SR0EWORD[SR0EWOIX];
+    SR0EM030.SR0EMSUB[SR0EWIX1] = SR0EW02.SR0EWSUB[SR0EWOIX];
+    SR0EM030.SR0EMTMA[SR0EWIX1] = SR0EW02.SR0EWTMA[SR0EWOIX];
+    SR0EW01.SR0EWIX1 = SR0EW01.SR0EWIX1 - 1;
+    SR0EW02.SR0EWOIX = SR0EW02.SR0EWOIX - 1;
+  end
+
+   /* -----------------  end   process sr0e020  -----------------*/
+end // end SR0E020
+
+// converse split batch map
+Function SR0E030()
+   /* -------------- sr0e030 before stage ----------------*/
+
+    /* no processing*/
+
+  converse SR0EM030 ;
+   /* -------------- sr0e030 after stage -----------------*/
+
+  set SRWREC empty;
+  SR0EM030.SR0EMMSG = " "; /* clear msg field*/
+  SR0EW01.SR0EWOPP = 0; /* reset orders per page count*/
+
+  SRWREC.SRWXWHCD = SR0EM030.SR0EMXWH; /* set whse for commarea*/
+  COMMAREA.CAUSERA = SRWREC.SRWGRP;
+
+  if (converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8)
+     /* next sentence*/
+  else
+    XSSRS01(); /* check shiprec pf keys*/
+    if (converseVar.validationMsgNum != 0
+     || SRWREC.SRWMSG != " ")
+      exit stack;
+    end
+  end
+
+
+   /* ------------  edit split batch map -----------------*/
+
+  if (SR0EW01.SR0EWPSF == "Y") /* prior split data still exists?*/
+    converseLib.validationFailed(51);
+                                   /* MUST RESET BEFORE SPLITTING NEW BATCH*/
+    exit stack;
+  end
+
+
+       /* verify original batch requested is valid*/
+  SR0ES07(); /* read batch header*/
+
+  set SR0EM030.SR0EMSCH initialAttributes;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (SR1REC.TF1CARNM == "DCMS") /* DCMS ORDER*/
+      converseLib.validationFailed(254); /* DCMS CAN NOT BE SPLIT*/
+      set SR0EM030.SR0EMSCH cursor, modified, bold;
+      exit stack;
+    end
+    if (SR1REC.SR1BTST == "E" /* status entered?*/
+     || SR1REC.SR1BTST == "P" /* status prepared?*/
+     || SR1REC.SR1BTST == "H") /* status hold?*/
+       /* next sentence*/
+    else
+      converseLib.validationFailed(52); /* ORIG. BTCH MUST BE E, P, OR H*/
+      set SR0EM030.SR0EMSCH cursor, modified, bold;
+      exit stack;
+    end
+  else
+    converseLib.validationFailed(53); /* ORIG. BTCH NOT FOUND*/
+    set SR0EM030.SR0EMSCH cursor, modified, bold;
+    exit stack;
+  end
+
+
+     /* check all order number slots*/
+  SR0EW01.SR0EWIX1 = 30; /* init map index*/
+  SR0EW02.SR0EWOIX = SR0EW01.SR0EWPAG * 30; /* init array index*/
+  while (SR0EWIX1 > 0)
+
+    set SR0EM030.SR0EMORD[SR0EWIX1] initialAttributes; /* clear any hilite*/
+    set SR0EM030.SR0EMSUB[SR0EWIX1] initialAttributes;
+    set SR0EM030.SR0EMTMA[SR0EWIX1] initialAttributes;
+
+    if (SR0EM030.SR0EMORD[SR0EWIX1] > 0 /* order number entered?*/
+     || SR0EM030.SR0EMSUB[SR0EWIX1] > 0 
+     || SR0EM030.SR0EMTMA[SR0EWIX1] > 0)
+      SR0ES10(); /* validate order*/
+    else
+      SR0EW02.SR0EWORD[SR0EWOIX] = 0; /* reset any erased field*/
+      SR0EW02.SR0EWSUB[SR0EWOIX] = 0;
+      SR0EW02.SR0EWTMA[SR0EWOIX] = 0;
+      SR0EW02.SR0EWBOL[SR0EWOIX] = 0;
+      SR0EW02.SR0EWBLS[SR0EWOIX] = 0;
+    end
+
+    SR0EWIX1 = SR0EWIX1 - 1;
+    SR0EWOIX = SR0EWOIX - 1;
+
+  end /* end while index gt 0*/
+
+
+  if (SR0EW01.SR0EWOPP == 0) /* check number of orders on page*/
+    set SR0EM030.SR0EMORD[1] cursor, bold;
+    set SR0EM030.SR0EMSUB[1] bold;
+    set SR0EM030.SR0EMTMA[1] bold;
+    converseLib.validationFailed(67); /* at least one order must be entered*/
+  end
+
+
+  if (SR0EW01.SR0EWNOD == SR1REC.SR1NBORD) /* check nbr of split orders*/
+    converseLib.validationFailed(57); /* NEW BATCH CONTAINS ALL ORIG. ORDERS*/
+  end
+
+
+    /* split reason is required*/
+  set SR0EM030.SR0EMRSN initialAttributes;
+  if (SR0EM030.SR0EMRSN == " ")
+    set SR0EM030.SR0EMRSN cursor, modified, bold;
+    converseLib.validationFailed(54); /* SPLIT REASON REQUIRED*/
+  end
+
+
+  SR0ES05(); /* verify valid whse*/
+
+
+    /* save reason, sched for pf7/pf8 carry fwd (sr0e020)*/
+  SR0EW01.SR0EWRSN = SR0EM030.SR0EMRSN;
+  SR0EW01.SR0EWSCH = SR0EM030.SR0EMSCH;
+
+
+end // end SR0E030
+
+// split batch process
+Function SR0E040()
+   /* ---------------------------------------------------------*/
+   /* split batch processing*/
+   /* ---------------------------------------------------------*/
+
+  XX0XS01(); /* convert csp time/date*/
+
+  SR0ES13(); /* get base schedule for whse*/
+
+  if (converseVar.validationMsgNum != 0)
+
+    exit stack;
+
+  else
+
+    SR0EM030.SR0EMNSC = SR0EW01.SR7NXTSD; /* new sched. nbr*/
+
+    SR0ES14(); /* update base schedule nbr*/
+
+  end
+
+  SR0EW01.SR0EWOCT = 0; /* zero number of orders cntr*/
+  SR0EW01.SR0EWIX2 = 1;
+
+  while (SR0EW01.SR0EWIX2 <= SR0EW01.SR0EWLMT) /* for each order slot*/
+
+    if (SR0EW02.SR0EWORD[SR0EWIX2] > 0) /* if order is present*/
+      if (SR0EM030.SR0EMXWH in XWHTBL.XWHCD)
+        if (XWHTBL.XWTCD[sysVar.arrayIndex] == "01"
+         && XWHTBL.XWHSTKLF[sysVar.arrayIndex] == "Y")
+          SR0ES50(); /* open vazctn01 cursor*/
+          SR0ES51(); /* fetch first vazctn01 row*/
+          while (SQLCA.VAGen_SQLCODE == 0)
+            SR0ES52(); /* open vazcit01 cursor*/
+            SR0ES53(); /* fetch first vazcit01 row*/
+            while (SQLCA.VAGen_SQLCODE == 0)
+              SR0ES54(); /* update vazcit01 row*/
+              SR0ES53(); /* fetch next vazcit01 row*/
+            end
+            SR0ES55(); /* close vazcit01 cursor*/
+            SR0ES56(); /* update vazctn01 row*/
+            SR0ES51(); /* fetch next vazctn01 row*/
+          end
+          SR0ES57(); /* close vazctn01 cursor*/
+        end
+      end
+
+      SR0ES17(); /* select items in original order*/
+
+      while (SQLCA.VAGen_SQLCODE == 0)
+
+        SR0ES20(); /* read next selected item*/
+
+        if (SQLCA.VAGen_SQLCODE == 0) /* Normal return*/
+          SR0ES22(); /* fmt/write new item/sizes*/
+        end
+
+      end /* end for each item*/
+
+      SR0ES25(); /* close item set*/
+
+      SR0ES27(); /* global delete original items*/
+
+      SR0ES-VSRXCP01-UPD(); /* Update VSRXCP01 table rows*/
+
+      SR0ES-VSRTXT01-UPD(); /* Update VSRTXT01 table rows*/
+
+      SR0ES-VNLPLO01-UPD(); /* Update VNLPLO01 table rows*/
+
+      SR0ES-VSPLIT01-UPD(); /* Update VSPLIT01 table rows*/
+
+      set SR2REC empty; /* Clear row storage area*/
+
+      SR2REC.XWHCD = SR0EM030.SR0EMXWH;
+      SR2REC.PK1PKSCH = SR0EM030.SR0EMSCH;
+      SR2REC.OP1CUOID = SR0EW02.SR0EWORD[SR0EWIX2];
+      SR2REC.OP1NORID = SR0EW02.SR0EWSUB[SR0EWIX2];
+      SR2REC.OP1NTMAL = SR0EW02.SR0EWTMA[SR0EWIX2];
+
+      SR0ES12(); /* read original shiprec order*/
+
+      SR0EW01.SR0EWITM = SR0EW01.SR0EWITM + SR2REC.SR2NBITM; /* accum items*/
+      SR0EW01.SR0EWAMT = SR0EW01.SR0EWAMT + SR2REC.SR2DLRAM; /* accum amt*/
+      SR0EW01.SR0EWQTY = SR0EW01.SR0EWQTY + SR2REC.SR2QTYSH; /* accum qty*/
+      SR0EW01.SR0EWOCT = SR0EW01.SR0EWOCT + 1; /* add 1 to new order cnt*/
+
+      SR0ES32(); /* delete original order*/
+
+      SR0ES30(); /* fmt/write new order*/
+
+    end /* end if order present in slot*/
+
+    SR0EW01.SR0EWIX2 = SR0EW01.SR0EWIX2 + 1;
+
+  end /* end for each order slot*/
+
+  SR0ES07(); /* read original batch header*/
+
+  SR0EW01.SR1GRP = SR1REC.SR1GRP; /* save original header*/
+
+  SR0ES42(); /* fmt/write new batch header*/
+
+  SR1REC.SR1GRP = SR0EW01.SR1GRP; /* moved save original hdr back*/
+
+  SR0ES45(); /* fmt/update original header*/
+
+  SR0EW01.SR0EWPSF = "Y"; /* set prior split flag*/
+
+  converseLib.validationFailed(58); /* BATCH HAS BEEN SPLIT*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.commit(); /* Commit all changes*/
+
+
+end // end SR0E040
+
+// check new schedule nbr
+Function SR0ES-RESET-SCHED()
+   /* ------------- start stmt grp sr0e-reset-sched ---------------*/
+
+    /* check if new schedule already exists*/
+
+  SR1REC.XWHCD = SR0EM030.SR0EMXWH; /* whse*/
+  SR1REC.PK1PKSCH = SR0EW01.SR0EWBSC; /* schedule*/
+
+  call "IO0790" ("S ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (SR0EW01.SR0EWLOD == 9)
+      SR0EW01.SR0EWLOD = 1;
+    else
+      SR0EW01.SR0EWLOD = SR0EW01.SR0EWLOD + 1;
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      SR0EW01.SR0EW-GOOD-SCHED = "Y"; /* good schedule is found*/
+    else
+      SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "ABND";
+      TA1REC.TA1DBASE = "DSHIP";
+      TA1REC.TA1TBLVU = "VSRHDR01";
+      TA1REC.TA1MAP = "SR0EM030";
+      TA1REC.TA1TBLKE = " ";
+      TA1REC.TA1LOC = "SR0ES13";
+      TA1REC.TA1PGMNM = "CSP    ";
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+  end
+
+
+   /* -------------   end stmt grp sr0es-reset-sched   --------------*/
+end // end SR0ES-RESET-SCHED
+
+// Close VNLPLO01 cursor
+Function SR0ES-VNLPLO01-C2()
+   /* ------------------------------------------------------------*/
+   /* Close the selected set of table rows.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4700" ("C2", SQLCA, TSVREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE VNLPLO01 CURSOR";
+  TA1REC.TA1PGMNM = "NLPLO-C2"; /* Program name*/
+  TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VNLPLO01"; /* Table view name*/
+  TA1REC.TA1TBLKE = TSVREC.TSVKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VNLPLO01-C2
+
+// Fetch next VNLPLO01 row
+Function SR0ES-VNLPLO01-N2()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row to update from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4700" ("N2", SQLCA, TSVREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or end of cursor*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH NEXT VNLPLO01 ROW";
+  TA1REC.TA1PGMNM = "NLPLO-N2"; /* Program name*/
+  TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VNLPLO01"; /* Table view name*/
+  TA1REC.TA1TBLKE = TSVREC.TSVKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VNLPLO01-N2
+
+// Open VNLPLO01 cursor
+Function SR0ES-VNLPLO01-S2()
+   /* ------------------------------------------------------------*/
+   /* Select the requested set of rows from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4700" ("S2", SQLCA, TSVREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Open cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, initialize the line index and cursor switch.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OPEN VNLPLO01 CURSOR";
+  TA1REC.TA1PGMNM = "NLPLO-S2"; /* Program name*/
+  TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VNLPLO01"; /* Table view name*/
+  TA1REC.TA1TBLKE = TSVREC.TSVKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VNLPLO01-S2
+
+// Update VNLPLO01 row
+Function SR0ES-VNLPLO01-U()
+   /* ------------------------------------------------------------*/
+   /* Update the row in the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO4700" ("U ", SQLCA, TSVREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Update row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UPDATE VNLPLO01 ROW";
+  TA1REC.TA1PGMNM = "NLPLO-U "; /* Program name*/
+  TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VNLPLO01"; /* Table view name*/
+  TA1REC.TA1TBLKE = TSVREC.TSVKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VNLPLO01-U
+
+// Update VNLPLO01 table rows
+Function SR0ES-VNLPLO01-UPD()
+   /* ---------------------------------------------------------------------*/
+   /* Update PK-PICK-SCHED-NBR in the DTRANS.VNLPLO01 table rows.*/
+   /* ---------------------------------------------------------------------*/
+
+  set TSVREC empty; /* Clear row storage area*/
+
+  TSVREC.OP1CUOID = SR0EW02.SR0EWORD[SR0EWIX2];
+  TSVREC.OP1NORID = SR0EW02.SR0EWSUB[SR0EWIX2];
+
+  SR0ES-VNLPLO01-S2(); /* Open VNLPLO01 cursor*/
+
+  while (SQLCA.VAGen_SQLCODE == 0) /* Until end of rows*/
+
+    SR0ES-VNLPLO01-N2(); /* Fetch next VNLPLO01 row*/
+
+    if (SQLCA.VAGen_SQLCODE == 0          /* Normal return*/
+     && SR0EM030.SR0EMXWH == TSVREC.XWHCD /* and same warehouse*/
+     && SR0EM030.SR0EMSCH == TSVREC.PK2SCHNO) /* and same schedule*/
+
+      TSVREC.PK2SCHNO = SR0EW01.SR7NXTSD; /* New schedule*/
+      TSVREC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* Change date*/
+      TSVREC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* Change time*/
+
+      SR0ES-VNLPLO01-U(); /* Update VNLPLO01 row*/
+
+    end
+
+  end
+
+  SR0ES-VNLPLO01-C2(); /* Close VNLPLO01 cursor*/
+
+
+end // end SR0ES-VNLPLO01-UPD
+
+// Close VSPLIT01 cursor
+Function SR0ES-VSPLIT01-C4()
+   /* ------------------------------------------------------------*/
+   /* Close the selected set of table rows.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO5760" ("C4", SQLCA, PWPREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE VSPLIT01 CURSOR";
+  TA1REC.TA1PGMNM = "SPLIT-C4"; /* Program name*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSPLIT01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PWPREC.PWPKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSPLIT01-C4
+
+// Fetch next VSPLIT01 row
+Function SR0ES-VSPLIT01-N4()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row to update from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO5760" ("N4", SQLCA, PWPREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or end of cursor*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH NEXT VSPLIT01 ROW";
+  TA1REC.TA1PGMNM = "SPLIT-N4"; /* Program name*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSPLIT01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PWPREC.PWPKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSPLIT01-N4
+
+// Open VSPLIT01 cursor
+Function SR0ES-VSPLIT01-S4()
+   /* ------------------------------------------------------------*/
+   /* Select the requested set of rows from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO5760" ("S4", SQLCA, PWPREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Open cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, initialize the line index and cursor switch.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OPEN VSPLIT01 CURSOR";
+  TA1REC.TA1PGMNM = "SPLIT-S4"; /* Program name*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSPLIT01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PWPREC.PWPKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSPLIT01-S4
+
+// Update VSPLIT01 row
+Function SR0ES-VSPLIT01-U()
+   /* ------------------------------------------------------------*/
+   /* Update the row in the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO5760" ("U ", SQLCA, PWPREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Update row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UPDATE VSPLIT01 ROW";
+  TA1REC.TA1PGMNM = "SPLIT-U "; /* Program name*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSPLIT01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PWPREC.PWPKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSPLIT01-U
+
+// Update VSPLIT01 table rows
+Function SR0ES-VSPLIT01-UPD()
+   /* ---------------------------------------------------------------------*/
+   /* Update PK-PICK-SCHED-NBR in the DPICK.VSPLIT01 table rows.*/
+   /* ---------------------------------------------------------------------*/
+
+  set PWPREC empty; /* Clear row storage area*/
+
+  PWPREC.XWHCD = SR0EM030.SR0EMXWH;
+  PWPREC.PK1PKSCH = SR0EM030.SR0EMSCH;
+  PWPREC.OP1CUOID = SR0EW02.SR0EWORD[SR0EWIX2];
+  PWPREC.OP1NORID = SR0EW02.SR0EWSUB[SR0EWIX2];
+
+  SR0ES-VSPLIT01-S4(); /* Open VSPLIT01 cursor*/
+
+  while (SQLCA.VAGen_SQLCODE == 0) /* Until end of rows*/
+
+    SR0ES-VSPLIT01-N4(); /* Fetch next VSPLIT01 row*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return*/
+
+      PWPREC.PK1PKSCH = SR0EW01.SR7NXTSD; /* New schedule*/
+      PWPREC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* Change date*/
+      PWPREC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* Change time*/
+
+      SR0ES-VSPLIT01-U(); /* Update VSPLIT01 row*/
+
+    end
+
+  end
+
+  SR0ES-VSPLIT01-C4(); /* Close VSPLIT01 cursor*/
+
+
+end // end SR0ES-VSPLIT01-UPD
+
+// close VSRORD01 C2 cusrsor
+Function SR0ES-VSRORD01-C2()
+
+  call "IO0800" ("C2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "CLOSE VSRORD01 S2 CUSSOR";
+    TA1REC.TA1PGMNM = "ORD01-C2";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES-VSRORD01-C2
+
+// fetch next VSRORD01 row
+Function SR0ES-VSRORD01-N2()
+
+  call "IO0800" ("N2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "FETCH VSRORD01 S2 ROW";
+    TA1REC.TA1PGMNM = "ORD01-N2";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES-VSRORD01-N2
+
+// open S2 cursor for VSRORD01
+Function SR0ES-VSRORD01-S2()
+
+  call "IO0800" ("S2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "OPEN VSRORD01 S2 CURSOR";
+    TA1REC.TA1PGMNM = "ORD01-S2";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES-VSRORD01-S2
+
+// Insert VSRTXT01 row
+Function SR0ES-VSRTXT01-A()
+   /* ------------------------------------------------------------*/
+   /* Insert the updated row into the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO2040" ("A ", SQLCA, SR9REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Insert row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "INSERT VSRTXT01 ROW";
+  TA1REC.TA1PGMNM = "SRTXT-A "; /* Program name*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRTXT01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR9REC.SR9KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSRTXT01-A
+
+// Close VSRTXT01 cursor
+Function SR0ES-VSRTXT01-C1()
+   /* ------------------------------------------------------------*/
+   /* Close the selected set of table rows.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO2040" ("C1", SQLCA, SR9REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE VSRTXT01 CURSOR";
+  TA1REC.TA1PGMNM = "SRTXT-C1"; /* Program name*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRTXT01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR9REC.SR9KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSRTXT01-C1
+
+// Delete VSRTXT01 row
+Function SR0ES-VSRTXT01-D()
+   /* ------------------------------------------------------------*/
+   /* Delete the selected row from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO2040" ("D ", SQLCA, SR9REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Delete row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "DELETE VSRTXT01 ROW";
+  TA1REC.TA1PGMNM = "SRTXT-D "; /* Program name*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRTXT01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR9REC.SR9KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSRTXT01-D
+
+// Fetch next VSRTXT01 row
+Function SR0ES-VSRTXT01-N1()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row to update from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO2040" ("N1", SQLCA, SR9REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or end of cursor*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH NEXT VSRTXT01 ROW";
+  TA1REC.TA1PGMNM = "SRTXT-N1"; /* Program name*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRTXT01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR9REC.SR9KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSRTXT01-N1
+
+// Open VSRTXT01 cursor
+Function SR0ES-VSRTXT01-S1()
+   /* ------------------------------------------------------------*/
+   /* Select the requested set of rows from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO2040" ("S1", SQLCA, SR9REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Open cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, initialize the line index and cursor switch.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OPEN VSRTXT01 CURSOR";
+  TA1REC.TA1PGMNM = "SRTXT-S1"; /* Program name*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRTXT01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR9REC.SR9KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSRTXT01-S1
+
+// Update VSRTXT01 table rows
+Function SR0ES-VSRTXT01-UPD()
+   /* ---------------------------------------------------------------------*/
+   /* Update PK-PICK-SCHED-NBR in the DSHIP.VSRTXT01 table rows.*/
+   /* ---------------------------------------------------------------------*/
+
+  set SR9REC empty; /* Clear row storage area*/
+
+  SR9REC.XWHCD = SR0EM030.SR0EMXWH;
+  SR9REC.PK1PKSCH = SR0EM030.SR0EMSCH;
+  SR9REC.OP1CUOID = SR0EW02.SR0EWORD[SR0EWIX2];
+  SR9REC.OP1NORID = SR0EW02.SR0EWSUB[SR0EWIX2];
+  SR9REC.OP4TRTYP = "*";
+  SR9REC.XNDCD = "*";
+
+  SR0ES-VSRTXT01-S1(); /* Open VSRTXT01 cursor*/
+
+  while (SQLCA.VAGen_SQLCODE == 0) /* Until end of rows*/
+
+    SR0ES-VSRTXT01-N1(); /* Fetch next VSRTXT01 row*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return*/
+
+      SR0ES-VSRTXT01-D(); /* Delete VSRTXT01 row*/
+
+      SR9REC.PK1PKSCH = SR0EW01.SR7NXTSD; /* New schedule*/
+      SR9REC.ZZZCHGCT = SR9REC.ZZZCHGCT + 1; /* Change count*/
+
+      SR0ES-VSRTXT01-A(); /* Insert VSRTXT01 row*/
+
+    end
+
+  end
+
+  SR0ES-VSRTXT01-C1(); /* Close VSRTXT01 cursor*/
+
+
+end // end SR0ES-VSRTXT01-UPD
+
+// Insert VSRXCP01 row
+Function SR0ES-VSRXCP01-A()
+   /* ------------------------------------------------------------*/
+   /* Insert the updated row into the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0830" ("A ", SQLCA, SR5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Insert row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "INSERT VSRXCP01 ROW";
+  TA1REC.TA1PGMNM = "SRXCP-A "; /* Program name*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRXCP01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR5REC.SR5GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSRXCP01-A
+
+// Close VSRXCP01 cursor
+Function SR0ES-VSRXCP01-C1()
+   /* ------------------------------------------------------------*/
+   /* Close the selected set of table rows.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0830" ("C1", SQLCA, SR5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE VSRXCP01 CURSOR";
+  TA1REC.TA1PGMNM = "SRXCP-C1"; /* Program name*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRXCP01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR5REC.SR5GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSRXCP01-C1
+
+// Delete VSRXCP01 row
+Function SR0ES-VSRXCP01-D()
+   /* ------------------------------------------------------------*/
+   /* Delete the selected row from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0830" ("D ", SQLCA, SR5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Delete row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(124); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "DELETE VSRXCP01 ROW";
+  TA1REC.TA1PGMNM = "SRXCP-D "; /* Program name*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRXCP01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR5REC.SR5GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSRXCP01-D
+
+// Fetch next VSRXCP01 row
+Function SR0ES-VSRXCP01-N1()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row to update from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0830" ("N1", SQLCA, SR5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or end of cursor*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH NEXT VSRXCP01 ROW";
+  TA1REC.TA1PGMNM = "SRXCP-N1"; /* Program name*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRXCP01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR5REC.SR5GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSRXCP01-N1
+
+// Open VSRXCP01 cursor
+Function SR0ES-VSRXCP01-S1()
+   /* ------------------------------------------------------------*/
+   /* Select the requested set of rows from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO0830" ("S1", SQLCA, SR5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Open cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, initialize the line index and cursor switch.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OPEN VSRXCP01 CURSOR";
+  TA1REC.TA1PGMNM = "SRXCP-S1"; /* Program name*/
+  TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSRXCP01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR5REC.SR5GRP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0ES-VSRXCP01-S1
+
+// Update VSRXCP01 table rows
+Function SR0ES-VSRXCP01-UPD()
+   /* ---------------------------------------------------------------------*/
+   /* Update PK-PICK-SCHED-NBR in the DSHIP.VSRXCP01 table rows.*/
+   /* ---------------------------------------------------------------------*/
+
+  set SR5REC empty; /* Clear row storage area*/
+
+  SR5REC.XWHCD = SR0EM030.SR0EMXWH;
+  SR5REC.PK1PKSCH = SR0EM030.SR0EMSCH;
+  SR5REC.OP1CUOID = SR0EW02.SR0EWORD[SR0EWIX2];
+  SR5REC.OP1NORID = SR0EW02.SR0EWSUB[SR0EWIX2];
+
+  SR0ES-VSRXCP01-S1(); /* Open VSRXCP01 cursor*/
+
+  while (SQLCA.VAGen_SQLCODE == 0) /* Until end of rows*/
+
+    SR0ES-VSRXCP01-N1(); /* Fetch next VSRXCP01 row*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return*/
+
+      SR0ES-VSRXCP01-D(); /* Delete VSRXCP01 row*/
+
+      SR5REC.PK1PKSCH = SR0EW01.SR7NXTSD; /* New schedule*/
+      SR5REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* Change date*/
+      SR5REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* Change time*/
+      SR5REC.ZZZCHGCT = SR5REC.ZZZCHGCT + 1; /* Change count*/
+
+      SR0ES-VSRXCP01-A(); /* Insert VSRXCP01 row*/
+
+    end
+
+  end
+
+  SR0ES-VSRXCP01-C1(); /* Close VSRXCP01 cursor*/
+
+
+end // end SR0ES-VSRXCP01-UPD
+
+// validate whse
+Function SR0ES05()
+   /* ------------- start stmt grp sr03s05 ---------------*/
+
+      /* look up warehouse in csp corp whse table*/
+        /* found/active - move whse name to map*/
+        /* notfnd/inactive - brt, error msg*/
+
+  set SR0EM030.SR0EMXWH initialAttributes;
+  if (SR0EM030.SR0EMXWH != " ")
+    if (SR0EM030.SR0EMXWH in XWHTBL.XWHCD)
+      SR0EM030.SR0EMWHN = XWHTBL.XWHNM[sysVar.arrayIndex];
+    end
+    if (sysVar.arrayIndex != 0)
+      if (XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+        set PKDREC empty;
+        PKDREC.XWHCD = XWHTBL.XWHCD[sysVar.arrayIndex];
+        SR0ES06(); /* get picking cntrl tbl*/
+      else
+        SR0EM030.SR0EMWHN = " ";
+        set SR0EM030.SR0EMXWH cursor, modified, bold;
+        converseLib.validationFailed(2); /* warehouse code inactive*/
+      end
+    else
+      SR0EM030.SR0EMWHN = " ";
+      set SR0EM030.SR0EMXWH cursor, modified, bold;
+      converseLib.validationFailed(1); /* warehouse code invalid*/
+    end
+  else
+    SR0EM030.SR0EMWHN = " ";
+    set SR0EM030.SR0EMXWH cursor, modified, bold;
+    converseLib.validationFailed(17); /* warehouse code required*/
+  end
+
+
+   /* -------------   end stmt grp sr0es05 ---------------*/
+end // end SR0ES05
+
+// get whse type(processing etc)
+Function SR0ES06()
+   /* ------------- start stmt grp sr0es06 ---------------*/
+
+    /* read picking control table (dpick.vpkctl01)*/
+
+  call "IO1890" ("S ", SQLCA, PKDREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = PKDREC.XWHCD;
+    TA1REC.TA1LOC = "SR0ES06";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+   /* -------------   end stmt grp sr0es06 ---------------*/
+end // end SR0ES06
+
+// read shiprec batch header
+Function SR0ES07()
+   /* ------------- start stmt grp sr0es07 ---------------*/
+
+    /* read shiprec batch hdr*/
+
+    /* build order level key*/
+  SR1REC.XWHCD = SR0EM030.SR0EMXWH; /* whse*/
+  SR1REC.PK1PKSCH = SR0EM030.SR0EMSCH; /* schedule*/
+
+  call "IO0790" ("S ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES07";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+   /* -------------   end stmt grp sr0es07 ---------------*/
+end // end SR0ES07
+
+// validate order to be split off
+Function SR0ES10()
+   /* ---------------  start stmt grp sr0es10  ----------------*/
+
+       /* validate requested order as eligable for split*/
+
+  SR0EW01.SR0EWOPP = SR0EWOPP + 1; /* inc nbr of orders per page*/
+
+    /* build order key*/
+  set SR2REC empty;
+  SR2REC.XWHCD = SR0EM030.SR0EMXWH;
+  SR2REC.PK1PKSCH = SR0EM030.SR0EMSCH;
+  SR2REC.OP1CUOID = SR0EM030.SR0EMORD[SR0EWIX1];
+  SR2REC.OP1NORID = SR0EM030.SR0EMSUB[SR0EWIX1];
+  SR2REC.OP1NTMAL = SR0EM030.SR0EMTMA[SR0EWIX1];
+
+  SR0ES12(); /* read shiprec order*/
+
+  if (SQLCA.VAGen_SQLCODE == 100)
+    converseLib.validationFailed(3); /* order not found*/
+    set SR0EM030.SR0EMORD[SR0EWIX1] cursor, bold;
+    set SR0EM030.SR0EMSUB[SR0EWIX1] bold;
+    set SR0EM030.SR0EMTMA[SR0EWIX1] bold;
+    return;
+  end
+
+
+  if (SR2REC.SR2DALFL != " ") /* deallocated?*/
+    /* MOVE ?? TO EZEMNO              ;  order has been deallocated*/
+    SR0EM030.SR0EMMSG = "ORDER HAS BEEN DEALLOCATED";
+    set SR0EM030.SR0EMORD[SR0EWIX1] cursor, bold;
+    set SR0EM030.SR0EMSUB[SR0EWIX1] bold;
+    set SR0EM030.SR0EMTMA[SR0EWIX1] bold;
+    return;
+  end
+
+
+    /* verify order not already requested, count orders*/
+
+    /* note: wix1 is current map slot, wix2 is current array*/
+          /* slot, woix is array slot assoc. with current*/
+          /* page and map slot.*/
+    /* limit work array slot checking to high used page * 30*/
+  SR0EW01.SR0EWLMT = SR0EW01.SR0EWHPG * 30;
+  SR0EW01.SR0EWNOD = 0; /* reset number of orders*/
+  SR0EW01.SR0EWIX2 = 1;
+  while (SR0EW01.SR0EWIX2 <= SR0EW01.SR0EWLMT)
+    if (SR0EW02.SR0EWORD[SR0EWIX2] > 0)
+      SR0EW01.SR0EWNOD = SR0EWNOD + 1; /* inc nbr of orders*/
+
+      if (SR0EM030.SR0EMORD[SR0EWIX1] == SR0EW02.SR0EWORD[SR0EWIX2]
+       && SR0EM030.SR0EMSUB[SR0EWIX1] == SR0EW02.SR0EWSUB[SR0EWIX2]
+       && SR0EM030.SR0EMTMA[SR0EWIX1] == SR0EW02.SR0EWTMA[SR0EWIX2])
+        if (SR0EW01.SR0EWIX2 != SR0EW02.SR0EWOIX)
+          converseLib.validationFailed(45); /* order has already been requested*/
+          set SR0EM030.SR0EMORD[SR0EWIX1] cursor, bold;
+          set SR0EM030.SR0EMSUB[SR0EWIX1] bold;
+          set SR0EM030.SR0EMTMA[SR0EWIX1] bold;
+          return;
+        else /* (wix2 = woix)*/
+          SR0EW01.SR0EWNOD = SR0EWNOD - 1; /* reincremented below*/
+        end /* end if wix2 not = woix*/
+      end /* end if map order eq array order*/
+
+    end /* end if array order gt 0*/
+    SR0EW01.SR0EWIX2 = SR0EWIX2 + 1;
+  end /* end for each potentially active array slot*/
+
+
+     /* move map order to array order*/
+  SR0EW02.SR0EWORD[SR0EWOIX] = SR0EM030.SR0EMORD[SR0EWIX1];
+  SR0EW02.SR0EWSUB[SR0EWOIX] = SR0EM030.SR0EMSUB[SR0EWIX1];
+  SR0EW02.SR0EWTMA[SR0EWOIX] = SR0EM030.SR0EMTMA[SR0EWIX1];
+  SR0EW02.SR0EWBOL[SR0EWOIX] = SR2REC.PK1BLLAD;
+  SR0EW02.SR0EWBLS[SR0EWOIX] = SR2REC.SR2BLLSU;
+  SR0EW01.SR0EWNOD = SR0EWNOD + 1; /* inc nbr of orders in split batch*/
+
+
+   /* ---------------  end   stmt grp sr0es10  ----------------*/
+end // end SR0ES10
+
+// read shiprec order
+Function SR0ES12()
+   /* ------------- start stmt grp sr0es12 ---------------*/
+
+    /* read shiprec order*/
+
+  call "IO0800" ("S ", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES12";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* -------------   end stmt grp sr0es12 ---------------*/
+end // end SR0ES12
+
+// get new schedule number
+Function SR0ES13()
+   /* ------------- start stmt grp sr0es13 ---------------*/
+
+    /* read base shiprec batch hdr*/
+
+    /* build order level key*/
+  SR1REC.XWHCD = SR0EM030.SR0EMXWH; /* whse*/
+  SR0EW01.SR0EWBSC = SR0EM030.SR0EMSCH; /* base schedule*/
+  SR0EW01.SR0EWLOD = 0; /* base schedule low order digit*/
+  SR1REC.PK1PKSCH = SR0EW01.SR0EWBSC; /* schedule*/
+
+
+  call "IO0790" ("S ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* NOTE: the first three(3) statments are used to calculate*/
+           /* a correct orignial sched number since that field is*/
+           /* never changed from the orig posted sched number when*/
+           /* a renumber of schedules is needed. In most cases the*/
+           /* value of sr0ewsct will be zero.*/
+
+    SR0EW01.SR1GRP = SR1REC.SR1GRP;
+
+    if (SR1REC.PK1PKSCH > 9900000 /* direct ship*/
+     || PKDREC.PKDWHTCD == "10"   /* packing spur warehouse*/
+     || PKDREC.PKDWHTCD == "30")  /* processing warehouse*/
+      SR0EW01.SR0EWSCT = 0;
+    else
+      SR0EW01.SR0EWSCT = SR1REC.PK1PKSCH;
+      SR0EW01.SR0EWSCX = 0;
+      SR1REC.SR1ORGSD = SR1REC.SR1ORGSD + SR0EW01.SR0EWSCT;
+    end
+
+    SR0EW01.SR0EWBSC = SR1REC.SR1ORGSD;
+    SR0EW01.SR0EWLST = SR0EW01.SR0EWLOD;
+    if (SR0EW01.SR0EWLOD == 9)
+  /* MOVE 108 TO EZEMNO;          /* schedule already split 9 times*/
+      SR0EW01.SR0EWLOD = 1;
+    else /* calculate next schedule nbr and then*/
+  /* /* reset back to base nbr*/
+  /* SR0EW01.SR0EWLOD = SR0EW01.SR0EWLOD + 1;/* add 1 to get next sched*/
+  /* MOVE SR0EW01.SR0EWBSC TO SR0EW01.SR7NXTSD;/* setup next sched field*/
+  /* MOVE 0 TO SR0EW01.SR0EWLOD;  /* reset back to base schedule number*/
+      SR0EW01.SR0EWLOD = SR0EW01.SR0EWLOD + 1;
+    end
+
+    SR0EW01.SR0EW-GOOD-SCHED = "N";
+    while (SR0EW01.SR0EW-GOOD-SCHED == "N"
+     && converseVar.validationMsgNum == 0
+     && SR0EW01.SR0EWLOD != SR0EW01.SR0EWLST)
+      SR0ES-RESET-SCHED(); /* reset sched to allow for 9+ splits*/
+    end
+    if (SR0EW01.SR0EW-GOOD-SCHED == "Y")
+      SR0EW01.SR7NXTSD = SR0EW01.SR0EWBSC; /* setup next sched field*/
+      SR0EW01.SR0EWLOD = 0; /* reset back to base schedule number*/
+    else
+      converseLib.validationFailed(108); /* schedule already split 9 times*/
+    end
+    SR1REC.SR1GRP = SR0EW01.SR1GRP;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      converseLib.validationFailed(109); /* base schedule not found*/
+    else
+      SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "ABND";
+      TA1REC.TA1DBASE = "DSHIP";
+      TA1REC.TA1TBLVU = "VSRHDR01";
+      TA1REC.TA1MAP = "SR0EM030";
+      TA1REC.TA1TBLKE = " ";
+      TA1REC.TA1LOC = "SR0ES13";
+      TA1REC.TA1PGMNM = "CSP    ";
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+  end
+
+
+   /* -------------   end stmt grp sr0es13 ---------------*/
+end // end SR0ES13
+
+// fmt/update orig. batch header
+Function SR0ES14()
+   /* ---------------  start stmt grp sr0es14  ------------------*/
+
+     /* update base schedule number*/
+
+  SR1REC.XWHCD = SR0EM030.SR0EMXWH; /* whse nbr*/
+  SR1REC.PK1PKSCH = SR0EW01.SR0EWBSC; /* pick sched nbr*/
+  SR1REC.SR1NTMSP = SR1REC.SR1NTMSP + 1;
+  /* SR1REC.SR1ORGSD = SR1REC.SR1ORGSD + 1;*/
+  /* SR1REC.SR1ORGSD = SR1REC.SR1ORGSD - SR0EW01.SR0EWSCT;*/
+  SR1REC.SR1ORGSD = SR0EW01.SR7NXTSD;
+  SR1REC.SR1DTCHG = XX0XW01.XX0XWDAT;
+  SR1REC.SR1TMCHG = XX0XW01.XX0XWTIM;
+  SR1REC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  SR1REC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+
+    /* update db2 shiprec batch table row*/
+  call "IO0790" ("U ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES45";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end   stmt grp sr0es45  ------------------*/
+end // end SR0ES14
+
+// select original item set
+Function SR0ES17()
+   /* ---------------  start stmt grp sr0es17  ------------------*/
+
+    /* select set of shiprec items*/
+
+  SR3REC.XWHCD = SR0EM030.SR0EMXWH;
+  SR3REC.PK1PKSCH = SR0EM030.SR0EMSCH; /* original schedule*/
+  SR3REC.OP1CUOID = SR0EW02.SR0EWORD[SR0EWIX2];
+  SR3REC.OP1NORID = SR0EW02.SR0EWSUB[SR0EWIX2];
+  SR3REC.OP1NTMAL = SR0EW02.SR0EWTMA[SR0EWIX2];
+
+  call "SR1100" ("SS", SQLCA, SR3REC) {isNoRefresh = yes, isExternal = yes}; /* ss dship.vsritm01 view*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRITM01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES17";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end   stmt grp sr0es17  ------------------*/
+end // end SR0ES17
+
+// readnext original item
+Function SR0ES20()
+   /* ---------------  start stmt grp sr0es20  ------------------*/
+
+    /* readnext  shiprec item*/
+
+  call "SR1100" ("SN", SQLCA, SR3REC) {isNoRefresh = yes, isExternal = yes}; /* sn dship.vsritm01 view*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRITM01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES20";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end   stmt grp sr0es20  ------------------*/
+end // end SR0ES20
+
+// fmt/write new item
+Function SR0ES22()
+   /* ---------------  start stmt grp sr0es22  ------------------*/
+
+      /* fmt/write shiprec new item record*/
+
+    /* new item fmt is old item image + these changes*/
+  SR3REC.PK1PKSCH = SR0EW01.SR7NXTSD; /* new schedule number*/
+   /* MOVE XX0XW01.XX0XWDAT TO SR3REC.ZZZSDT ;    setup date*/
+  SR3REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* change date*/
+  SR3REC.ZZZCHGCT = 0; /* change count*/
+  SR3REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* last chng time*/
+
+     /* write db2 shiprec item/sizes table row*/
+  call "SR1100" ("A ", SQLCA, SR3REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsritm01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRITM01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES22";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end   stmt grp sr0es22  ------------------*/
+end // end SR0ES22
+
+// close item set
+Function SR0ES25()
+   /* ---------------  start stmt grp sr0es25  ------------------*/
+
+    /* close set of shiprec items*/
+
+  call "SR1100" ("CS", SQLCA, SR3REC) {isNoRefresh = yes, isExternal = yes}; /* cs dship.vsritm01 view*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRITM01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES25";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end   stmt grp sr0es25  ------------------*/
+end // end SR0ES25
+
+// global delete original items
+Function SR0ES27()
+   /* ---------------  start stmt grp sr0es27  ------------------*/
+
+      /* global delete of original items*/
+
+  SR3REC.PK1PKSCH = SR0EM030.SR0EMSCH; /* reset original sched.*/
+  SR3REC.OP2LNINB = -1; /* wildcard for items*/
+
+    /* delete db2 shiprec item/sizes table rows for order*/
+  call "SR1100" ("D ", SQLCA, SR3REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsritm01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRITM01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES27";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end   stmt grp sr0es27  ------------------*/
+end // end SR0ES27
+
+// fmt/write new shiprec order
+Function SR0ES30()
+   /* ---------------  start stmt grp sr0es30  ------------------*/
+
+      /* fmt/write shiprec order record*/
+
+    /* use original order image + these changes*/
+  SR2REC.PK1PKSCH = SR0EW01.SR7NXTSD; /* new schedule number*/
+  SR2REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* Change date*/
+  SR2REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* last chng time*/
+  SR2REC.ZZZCHGCT = SR2REC.ZZZCHGCT + 1; /* Change count*/
+
+     /* write db2 shiprec order table row*/
+  call "IO0800" ("A ", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES30";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end   stmt grp sr0es30  ------------------*/
+end // end SR0ES30
+
+// delete original shiprec order
+Function SR0ES32()
+   /* ---------------  start stmt grp sr0es32  ------------------*/
+
+      /* delete original shiprec order*/
+
+  call "IO0800" ("D ", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES32";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end   stmt grp sr0es32  ------------------*/
+end // end SR0ES32
+
+// fmt/write new batch header
+Function SR0ES42()
+   /* ---------------  start stmt grp sr0es42  ------------------*/
+      /* fmt/write new shiprec batch header*/
+   /* -----------------------------------------------------------*/
+
+    /* use original image + these changes*/
+  SR1REC.SR1ORGSD = SR0EW01.SR0EWBSC;
+  SR1REC.PK1PKSCH = SR0EW01.SR7NXTSD; /* new schedule number*/
+  SR1REC.SR1ORGSD = SR1REC.SR1ORGSD - SR0EW01.SR0EWSCT;
+  SR1REC.SR1HLDRN = " "; /* Hold reason*/
+  SR1REC.SR1SPLRN = SR0EM030.SR0EMRSN; /* split reason*/
+  SR1REC.XXXUSRID = COMMAREA.CAUSERID; /* user id*/
+  SR1REC.SR1NTMSP = 0; /* number times split*/
+  SR1REC.SR1DTCHG = 0; /* clear change date*/
+  SR1REC.SR1TMCHG = 0; /* clear change time*/
+  SR1REC.SR1NBORD = SR0EW01.SR0EWOCT; /* number of orders*/
+  SR1REC.SR1NBITM = SR0EW01.SR0EWITM; /* number of items*/
+  SR1REC.SR1QTYSH = SR0EW01.SR0EWQTY; /* batch qty shipped*/
+  SR1REC.SR1DLRAM = SR0EW01.SR0EWAMT; /* batch dollar amt*/
+  SR1REC.ZZZSDT = XX0XW01.XX0XWDAT; /* setup date*/
+  SR1REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* change date*/
+  SR1REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* last chng time*/
+  SR1REC.ZZZCHGCT = 0; /* change count*/
+
+  SR2REC.PK1PKSCH = SR0EW01.SR7NXTSD; /* new schedule number*/
+  SR0ES43(); /* see if all orders on new schedule*/
+                                  /* have been picked*/
+  if (SR0EW-ALL-STAT-EQ-Y-FL == "Y" /* if all orders have been picked*/
+   && SR0EW-ALL-SHP-DT-GT-ZERO-FL == "Y") /* and all ship dates gt 0*/
+    SR1REC.SR1BTST = "P"; /* mark schedule as prepared*/
+    SR1REC.SR1SHPDT = SR0EW-MAX-SHP-DT; /* and use max ship date*/
+  else
+    SR1REC.SR1BTST = "E"; /* mark schedule as entered*/
+    SR1REC.SR1SHPDT = 0; /* use zero ship date*/
+  end
+
+  if (SR0EW-ALL-ACT-EQ-N-STAT-EQ-Y-FL == "Y")
+    SR1REC.SR1PKAFL = "N"; /* set srhdr pick actual to n*/
+    SR1REC.SR1PKSFL = "Y"; /* set srhdr pick status to y*/
+    SR1REC.SR1PKSDT = SR0EW-MAX-PICK-DT; /* and use max pick date*/
+  else
+    SR1REC.SR1PKSFL = "N"; /* set srhdr pick status to n*/
+    SR1REC.SR1PKSDT = 0; /* and use zero pick date*/
+    if (SR0EW-ANY-ACT-EQ-Y-FL == "Y")
+      SR1REC.SR1PKAFL = "Y"; /* set srhdr pick actual to y*/
+    else
+      SR1REC.SR1PKAFL = "N"; /* set srhdr pick actual to n*/
+    end
+  end
+
+     /* write db2 shiprec batch table row*/
+  call "IO0790" ("A ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES42";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end   stmt grp sr0es42  ------------------*/
+end // end SR0ES42
+
+// see if all orders picked
+Function SR0ES43()
+
+  SR0EW-ALL-STAT-EQ-Y-FL = "Y";
+  SR0EW-ANY-ACT-EQ-Y-FL = "N";
+  SR0EW-ALL-ACT-EQ-N-STAT-EQ-Y-FL = "Y";
+  SR0EW-ALL-SHP-DT-GT-ZERO-FL = "Y";
+  SR0EW-MAX-SHP-DT = 0;
+  SR0EW-MAX-PICK-DT = 0;
+
+  SR2REC.XWHCD = SR0EM030.SR0EMXWH;
+  SR2REC.OP1CUOID = -1;
+  SR2REC.OP1NORID = -1;
+  SR2REC.OP1NTMAL = -1;
+
+  SR0ES-VSRORD01-S2(); /* select set of srord rows with sched*/
+  SR0ES-VSRORD01-N2(); /* fetch first row*/
+
+  while (SQLCA.VAGen_SQLCODE == 0)
+    if (SR2REC.SR1PKSFL == "N")
+      SR0EW-ALL-STAT-EQ-Y-FL = "N";
+    end
+    if (SR2REC.SR1PKAFL == "Y")
+      SR0EW-ANY-ACT-EQ-Y-FL = "Y";
+    end
+    if (SR2REC.SR1PKAFL == "N"
+     && SR2REC.SR1PKSFL == "Y")
+
+    else
+      SR0EW-ALL-ACT-EQ-N-STAT-EQ-Y-FL = "N";
+    end
+    if (SR2REC.SR1SHPDT == 0)
+      SR0EW-ALL-SHP-DT-GT-ZERO-FL = "N";
+    end
+    if (SR2REC.SR1PKSDT > SR0EW-MAX-PICK-DT)
+      SR0EW-MAX-PICK-DT = SR2REC.SR1PKSDT;
+    end
+    if (SR2REC.SR1SHPDT > SR0EW-MAX-SHP-DT)
+      SR0EW-MAX-SHP-DT = SR2REC.SR1SHPDT;
+    end
+    SR0ES-VSRORD01-N2(); /* fetch next row*/
+  end
+
+  SR0ES-VSRORD01-C2(); /* close cursor for srord*/
+
+end // end SR0ES43
+
+// fmt/update orig. batch header
+Function SR0ES45()
+   /* ---------------  start stmt grp sr0es45  ------------------*/
+     /* fmt/update original batch header*/
+   /* -----------------------------------------------------------*/
+
+  SR1REC.SR1DTCHG = XX0XW01.XX0XWDAT;
+  SR1REC.SR1TMCHG = XX0XW01.XX0XWTIM;
+  SR1REC.SR1NBORD = SR1REC.SR1NBORD - SR0EW01.SR0EWOCT; /* nbr of orders*/
+  SR1REC.SR1NBITM = SR1REC.SR1NBITM - SR0EW01.SR0EWITM; /* nbr of items*/
+  SR1REC.SR1QTYSH = SR1REC.SR1QTYSH - SR0EW01.SR0EWQTY; /* qty shipped*/
+  SR1REC.SR1DLRAM = SR1REC.SR1DLRAM - SR0EW01.SR0EWAMT; /* dollar amt*/
+  SR1REC.XXXUSRID = COMMAREA.CAUSERID;
+  SR1REC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  SR1REC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+
+  SR2REC.PK1PKSCH = SR0EM030.SR0EMSCH; /* old schedule number*/
+  SR0ES43(); /* see if all orders on old schedule*/
+                                  /* have been picked*/
+  if (SR0EW-ALL-STAT-EQ-Y-FL == "Y" /* if all orders have been picked*/
+   && SR0EW-ALL-SHP-DT-GT-ZERO-FL == "Y") /* and all ship dates gt 0*/
+    SR1REC.SR1BTST = "P"; /* mark schedule as prepared*/
+    SR1REC.SR1SHPDT = SR0EW-MAX-SHP-DT; /* and use max ship date*/
+  else
+    SR1REC.SR1BTST = "E"; /* mark schedule as entered*/
+    SR1REC.SR1SHPDT = 0; /* use zero ship date*/
+  end
+
+  if (SR0EW-ALL-ACT-EQ-N-STAT-EQ-Y-FL == "Y")
+    SR1REC.SR1PKAFL = "N"; /* set srhdr pick actual to n*/
+    SR1REC.SR1PKSFL = "Y"; /* set srhdr pick status to y*/
+    SR1REC.SR1PKSDT = SR0EW-MAX-PICK-DT; /* and use max pick date*/
+  else
+    SR1REC.SR1PKSFL = "N"; /* set srhdr pick status to n*/
+    SR1REC.SR1PKSDT = 0; /* and use zero pick date*/
+    if (SR0EW-ANY-ACT-EQ-Y-FL == "Y")
+      SR1REC.SR1PKAFL = "Y"; /* set srhdr pick actual to y*/
+    else
+      SR1REC.SR1PKAFL = "N"; /* set srhdr pick actual to n*/
+    end
+  end
+
+    /* update db2 shiprec batch table row*/
+  call "IO0790" ("U ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES45";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end   stmt grp sr0es45  ------------------*/
+end // end SR0ES45
+
+// select carton set (S6)
+Function SR0ES50()
+
+  VAZCTN01.XWH-WHSE-CD = SR0EM030.SR0EMXWH;
+  VAZCTN01.PK-BILL-OF-LADING = -1;
+  VAZCTN01.PK-BOL-SUB-NBR = -1;
+  VAZCTN01.OP-CUST-ORD-ID = SR0EW02.SR0EWORD[SR0EWIX2];
+  VAZCTN01.OP-NIKE-ORD-ID = SR0EW02.SR0EWSUB[SR0EWIX2];
+  VAZCTN01.PK-PICK-SCHED-NBR = SR0EM030.SR0EMSCH;
+
+  call "VAZCTN01" ("S6", SQLCA, VAZCTN01) {isNoRefresh = yes, isExternal = yes}; /* s6 dship.vazctn01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VAZCTN01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES50";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES50
+
+// read next carton row (N6)
+Function SR0ES51()
+
+  call "VAZCTN01" ("N6", SQLCA, VAZCTN01) {isNoRefresh = yes, isExternal = yes}; /* N6 dship.vazctn01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VAZCTN01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES51";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES51
+
+// select original item set
+Function SR0ES52()
+
+  VAZCIT01.XWH-WHSE-CD = VAZCTN01.XWH-WHSE-CD;
+  VAZCIT01.PK-BILL-OF-LADING = VAZCTN01.PK-BILL-OF-LADING;
+  VAZCIT01.PK-BOL-SUB-NBR = VAZCTN01.PK-BOL-SUB-NBR;
+  VAZCIT01.OP-CUST-ORD-ID = VAZCTN01.OP-CUST-ORD-ID;
+  VAZCIT01.OP-NIKE-ORD-ID = VAZCTN01.OP-NIKE-ORD-ID;
+  VAZCIT01.PK-CRTN-SEQ-NBR = VAZCTN01.PK-CRTN-SEQ-NBR;
+
+  call "VAZCIT01" ("S2", SQLCA, VAZCIT01) {isNoRefresh = yes, isExternal = yes}; /* s2 dship.vazcit01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VAZCIT01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES52";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES52
+
+// fetch next item row
+Function SR0ES53()
+
+  call "VAZCIT01" ("N2", SQLCA, VAZCIT01) {isNoRefresh = yes, isExternal = yes}; /* N2 dship.vazcit01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VAZCIT01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES53";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES53
+
+// update dship.vazcit01 row
+Function SR0ES54()
+
+  VAZCIT01.PK-PICK-SCHED-NBR = SR0EW01.SR7NXTSD;
+  VAZCIT01.ZZ-CHNG-DT = XX0XW01.XX0XWDAT;
+  VAZCIT01.ZZ-CHNG-HHMM = XX0XW01.XX0XWTIM;
+  VAZCIT01.ZZ-CHNG-CNT = 0;
+
+  call "VAZCIT01" ("U ", SQLCA, VAZCIT01) {isNoRefresh = yes, isExternal = yes}; /* update dship.vazcit01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VAZCIT01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES54";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES54
+
+// close item set
+Function SR0ES55()
+
+  call "VAZCIT01" ("C2", SQLCA, VAZCIT01) {isNoRefresh = yes, isExternal = yes}; /* c2 dship.vazcit01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VAZCIT01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES55";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES55
+
+// update dship.vazctn01 row
+Function SR0ES56()
+
+  VAZCTN01.PK-PICK-SCHED-NBR = SR0EW01.SR7NXTSD;
+  VAZCTN01.ZZ-CHNG-DT = XX0XW01.XX0XWDAT;
+  VAZCTN01.ZZ-CHNG-HHMM = XX0XW01.XX0XWTIM;
+  VAZCTN01.ZZ-CHNG-CNT = 0;
+
+  call "VAZCTN01" ("U ", SQLCA, VAZCTN01) {isNoRefresh = yes, isExternal = yes}; /* update dship.vazctn01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VAZCTN01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES56";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES56
+
+// close carton set (C6)
+Function SR0ES57()
+
+  call "VAZCTN01" ("C6", SQLCA, VAZCTN01) {isNoRefresh = yes, isExternal = yes}; /* c6 dship.vazctn01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0EW01.SR0EWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0EW01.SR0EWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VAZCTN01";
+    TA1REC.TA1MAP = "SR0EM030";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0ES57";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+end // end SR0ES57
+
+//*** RECORD=SR0EW01 ****
+// *********** split batch misc fields work rec ***************
+// 
+// ***********************
+Record SR0EW01 type basicRecord
+  5 SR0EWDUM SR0EWDUM ; 
+  5 SR0EWDUN SR0EWDUN ; 
+  5 SR0EWIX1 SR0EWIX1 ; 
+  5 SR0EWIX2 SR0EWIX2 ; 
+  5 SR0EW2CH SR0EW2CH ; 
+  5 SR0EWSCH SR0EWSCH ; 
+  5 SR0EWSCT SR0EWSCT ; 
+    10 * num(1) ; 
+    10 SR0EWSCX SR0EWSCX ; 
+  5 SR0EWRSN SR0EWRSN ; 
+  5 SR0EWPSF SR0EWPSF ; 
+  5 SR0EWSPF SR0EWSPF ; 
+  5 SR0EWVMF SR0EWVMF ; 
+  5 SR0EWNOD SR0EWNOD ; 
+  5 SR0EWOCT SR0EWOCT ; 
+  5 SR0EWOPP SR0EWOPP ; 
+  5 SR0EWITM SR0EWITM ; 
+  5 SR0EWQTY SR0EWQTY ; 
+  5 SR0EWAMT SR0EWAMT ; 
+  5 SR0EWPAG SR0EWPAG ; 
+  5 SR0EWHPG SR0EWHPG ; 
+  5 SR1GRP SR1GRP ; 
+  5 SR0EWLMT SR0EWLMT ; 
+  5 SR0EWSQL SR0EWSQL ; 
+  5 SR0EWBSC SR0EWBSC ; 
+    10 * char(6) ; 
+    10 SR0EWLOD SR0EWLOD ; 
+  5 SR7NXTSD SR7NXTSD ; 
+  5 SR0EW-GOOD-SCHED SR0EW-GOOD-SCHED ; 
+  5 SR0EWLST SR0EWLST ; 
+  5 SR0EW-ALL-SHP-DT-GT-ZERO-FL SR0EW-ALL-SHP-DT-GT-ZERO-FL ; 
+  5 SR0EW-ALL-STAT-EQ-Y-FL SR0EW-ALL-STAT-EQ-Y-FL ; 
+  5 SR0EW-ANY-ACT-EQ-Y-FL SR0EW-ANY-ACT-EQ-Y-FL ; 
+  5 SR0EW-ALL-ACT-EQ-N-STAT-EQ-Y-FL SR0EW-ALL-ACT-EQ-N-STAT-EQ-Y-FL ; 
+  5 SR0EW-MAX-PICK-DT SR0EW-MAX-PICK-DT ; 
+  5 SR0EW-MAX-SHP-DT SR0EW-MAX-SHP-DT ; 
+end // end SR0EW01
+
+//*** RECORD=SR0EW02 ****
+// ** split batch orders array and supporting fields **
+// 
+// ***********************
+Record SR0EW02 type basicRecord
+  10 SR0EWOIX SR0EWOIX ; 
+  10 SR0EWOEL SR0EWOEL [150] ; 
+    15 SR0EWORD SR0EWORD ; 
+    15 SR0EWSUB SR0EWSUB ; 
+    15 SR0EWTMA SR0EWTMA ; 
+    15 SR0EWBOL SR0EWBOL ; 
+    15 SR0EWBLS SR0EWBLS ; 
+end // end SR0EW02
+
+DataItem SR0EW-ALL-ACT-EQ-N-STAT-EQ-Y-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0EW-ALL-SHP-DT-GT-ZERO-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0EW-ALL-STAT-EQ-Y-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0EW-ANY-ACT-EQ-Y-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0EW-GOOD-SCHED char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0EW-MAX-PICK-DT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SR0EW-MAX-SHP-DT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 2 char work field
+DataItem SR0EW2CH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// dollar amt of batch
+DataItem SR0EWAMT num(11,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pk-bol-sub-nbr
+DataItem SR0EWBLS smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pk-bill-of-lading
+DataItem SR0EWBOL decimal(13)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base schedule nbr
+DataItem SR0EWBSC num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SR0EWDUM char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0EWDUN num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// high used page
+DataItem SR0EWHPG num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nbr of items in batch
+DataItem SR0EWITM num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work index 1
+DataItem SR0EWIX1 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work index 2
+DataItem SR0EWIX2 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// limit of work array chk
+DataItem SR0EWLMT num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// low order digit of sched nbr
+DataItem SR0EWLOD num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// low order digit of sched nbr
+DataItem SR0EWLST num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// number of split orders
+DataItem SR0EWNOD num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// actual split orders cnt
+DataItem SR0EWOCT num(3)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = "0", inputRequired = no
+}
+end
+
+// order elements
+DataItem SR0EWOEL char(17)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// order index
+DataItem SR0EWOIX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nbr of orders per page
+DataItem SR0EWOPP num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   customer order
+DataItem SR0EWORD int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current page
+DataItem SR0EWPAG num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// prior split flag
+DataItem SR0EWPSF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// qty shipped in batch
+DataItem SR0EWQTY num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hold split reason
+DataItem SR0EWRSN char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// original sched. nbr
+DataItem SR0EWSCH num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// for renumbered scheds
+DataItem SR0EWSCT num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SR0EWSCX num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// single page flag
+DataItem SR0EWSPF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// save area for sqlca
+DataItem SR0EWSQL char(136)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   nike order
+DataItem SR0EWSUB smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   times allocated
+DataItem SR0EWTMA smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// verify message flag
+DataItem SR0EWVMF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

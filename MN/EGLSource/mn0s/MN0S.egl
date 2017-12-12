@@ -1,0 +1,579 @@
+package mn0s;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import mn.common.*;
+import ta.common.*;
+//*** PROGRAM=MN0S ****
+// this application checks the causerid/catoap field against
+// the menu file to validate the existance of a menu file
+// record for the combination.  a return code is returned to
+// the caller indicating the status of the call.
+// 
+// 12/07/89   JWOOD   ADDED XSXC470 ROUTINE
+// 06/29/90   JWOOD   adDED FRONT END TABLE LOOKUP TO ALLOW
+//                    MN0N AND GD0G w/o NEEDING IN SCTY FILE.
+// 01/24/92   JWOOD   ADDED initialize logic
+// 03/17/93   vcowan  "COMMENTED OUT" the following statement:
+// 03/17/93            "if comarea.userid = 'jwood'" in PROCs:
+//                    MN0S001 & MN0S004
+// 07/23/93   vcowan  chg in xsxc470 ... rtn code 4 = appl not
+//                    in prod.csp.loadlib ... ref: mn0s001
+//                    action:  re-gen mn0s for xsxc470 chgs
+// 07/29/93   jcampb  add mnwrec for change in xsxc470
+// 10/18/93   vcowan  chg in xsxc470 ... rtn code 3 = not an
+//                    error in xc0470, correct err descriptions
+//                    for rtn code 1, 2, & 4.
+// 10/18/94   vcowan  chg in xsxc470: when ezesegtr = 'eze' &
+//                    ut3retcd = (1, 2, or 4), skip production
+//                    error checking. When AD TESTING, ezesegtr
+//                    equals 'eze'.
+// *********************
+Program MN0S type textUIProgram //VAGen Info - called text program
+  (
+   COMMAREA COMMAREA // record
+  )
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes
+  }
+
+  // Data Declarations
+  MN0SW01 MN0SW01; // record
+  MN1REC MN1REC; // record
+  MNWREC MNWREC; // record
+  UT3REC UT3REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use MN0ST01 {deleteAfterUse = yes}; // table
+  use MN0ST02 {deleteAfterUse = yes}; // table
+  //  use  MN0SM // VAGen Info - unused formGroup    {
+  //    pfKeyEquate = no
+  //  };
+  
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    MN0S001: MN0S001();
+
+
+
+    if (COMMAREA.CASECRC == 4) /* test for not found menu rec*/
+      goto MN0S003; /* branch to inquiry grp rec*/
+    end
+
+    exit program; /* return to caller*/
+
+
+
+    MN0S003: MN0S003();
+    if (COMMAREA.CASECRC == 0)
+      goto MN0S004;
+    else
+      exit program;
+    end
+    MN0S004: MN0S004();
+    exit program;
+  end // end main
+end // end MN0S
+
+// read menu rec for validation
+Function MN0S001()
+  set MN0SW01 empty;
+  set MN1REC empty;
+   /* ************************************************************/
+   /* THE  FIRST STEP OF THIS APPLICATION IS TO VERIFY THAT THE*/
+   /* TRANSACTION YOU ARE GOING TO HAS NOT BEEN DISABLED.*/
+   /* IF A BAD RETURN CODE IS ENCOUNTERED AS A RESULT OF THE*/
+   /* CALL, CONTROL WILL BE RETURNED TO THE XSEXIT PARAGRAGH*/
+   /* WITH A RETURN CODE OF 4 AND A MSG IN THE CAMSG ITEM...*/
+   /* ************************************************************/
+  set UT3REC empty;
+  UT3REC.CATOAP = COMMAREA.CATOAP;
+  XSXC470();
+  if (UT3REC.UT3RETCD == "0")
+      /* NEXT SENTENCE*/
+  else
+    COMMAREA.XXXPRCNM = "MN0S001";
+    exit program;
+  end
+
+   /* ************************************************************/
+    /* ------ new standard inquiry table scan logic ------*/
+           /* -- if appl in table, then it is an inquiry only*/
+              /* application... if not, do the file io's*/
+   /* ************************************************************/
+  sysVar.arrayIndex = 0;
+  if (COMMAREA.CATOAP in MN0ST01.CATOAP)
+    MN0S100(); /* set flags from table*/
+    exit program; /* exit application*/
+  else
+    /* next               ; do the io's*/
+  end
+
+
+   /* ************************************************************/
+   /* this application is called by another applicaton to*/
+   /* determine if the requested application is valid for*/
+   /* the user id by attempting to read the menu record on*/
+   /* the menu file.*/
+
+   /* the return code is initally set TO 0 (NO ERROR).*/
+   /* if a BAD read occurs then the return code is set*/
+   /* to NON-zero.  IF THE USER/APPL RECORD IS NOT FOUND, THE*/
+   /* MN0S003 PROCESS IS EXECUTED. IF AN ERROR OCCURS OTHER THAN*/
+   /* NOT FOUND, OR IF THE READ WAS SUCCESSFUL, CONTROL IS*/
+   /* RETURNED TO THE CALLING APPLICATION.*/
+
+   /* return code        error message sent in commmsg*/
+   /* ----------------   ---------------------------------------*/
+         /* 0            good return code - transfer authorized*/
+         /* 3            no rec found - applicaton non-existant*/
+         /* 4            no rec found - transfer not authorized*/
+         /* 9            unknown file error*/
+
+   /* **********************************************************/
+
+  COMMAREA.CASECRC = 0; /* set return code to zero for no error*/
+
+   /* set up file key for inquiry read*/
+
+  MN1REC.MN1KEY = " "; /* clear key area*/
+  MN1REC.MN1TYPE1 = "3"; /* set record type*/
+  MN1REC.MN1USER = COMMAREA.CAUSERID; /* set user field in key*/
+  MN1REC.MN1TYPE2 = "3"; /* set record type*/
+  MN1REC.MN1APPL = COMMAREA.CATOAP; /* set application field in key*/
+  MN0SW01.MN0SWSKY = MN1REC.MN1KEY; /* SAVE ACCESS KEY*/
+
+
+
+  try
+    get MN1REC ;
+    onException MN0SS01() ;
+  end
+
+
+
+  if (COMMAREA.CASECRC == 0) /* if record found then*/
+    COMMAREA.CAMSG = " "; /* clear message*/
+    COMMAREA.CAADD = MN1REC.MN1ADD; /* set add levels*/
+    COMMAREA.CACHG = MN1REC.MN1CHG; /* set chg levels*/
+    COMMAREA.CADEL = MN1REC.MN1DEL; /* set del levels*/
+    COMMAREA.CAINQ = MN1REC.MN1INQ; /* set inq levels*/
+  end
+
+
+
+   /* *********test override*************/
+   /* FOLLOWING TEXT "COMMENTED OUT" ON 3-17-93 BY VERN COWAN*/
+   /*  */
+    /* IF COMMAREA.CAUSERID = 'JWOOD';*/
+      /* MOVE 'YYYYYYYYYYY' TO COMMAREA.CAADD;*/
+      /* MOVE 'YYYYYYYYYYY' TO COMMAREA.CACHG;*/
+      /* MOVE 'YYYYYYYYYYY' TO COMMAREA.CADEL;*/
+      /* MOVE 'YYYYYYYYYYY' TO COMMAREA.CAINQ;*/
+    /* END;*/
+end // end MN0S001
+
+// read user/group record
+Function MN0S003()
+
+
+
+
+   /* ************************************************************/
+      /* if no menu record found for user/appl combination*/
+   /* check for a menu record for the user/&grp.  if record*/
+   /* found check for &grp/appl record.  if found ok else*/
+   /* authorization does not exist.*/
+   /* ************************************************************/
+
+
+  COMMAREA.CASECRC = 0; /* INIT RETURN CODE TO ZERO*/
+
+  MN0SW01.MN0SWGRP = " "; /* INIT W/S GROUP APPL TO SPACES*/
+
+   /* set up file key for inquiry read*/
+
+  MN1REC.MN1KEY = " "; /* clear key area*/
+  MN1REC.MN1TYPE1 = "3"; /* set record type*/
+  MN1REC.MN1USER = COMMAREA.CAUSERID; /* set user field in key*/
+  MN1REC.MN1TYPE2 = "3"; /* set record type*/
+  MN0SW01.MN0SWAPP = COMMAREA.CATOAP; /* move appl to work record*/
+  MN0SW01.MN0SWGPX = MN0SW01.MN0SWAPX;
+  MN0SW01.MN0SWGCH = "&";
+  MN1REC.MN1APPL = MN0SW01.MN0SWGRP;
+  MN0SW01.MN0SWSKY = MN1REC.MN1KEY; /* SAVE ACCES KEY*/
+
+
+  set MN1REC position;
+
+
+  try
+    get next MN1REC ;
+    onException MN0SS03() ;
+  end
+
+
+  if (COMMAREA.CASECRC == 0)
+    if (MN1REC.MN1GRP == MN0SW01.MN0SWGCP)
+      exit stack;
+    else
+      MN0S300(); /* lookup default inquiry table*/
+      COMMAREA.CASECRC = 3; /* &GRP NOT VALID*/
+      MN0SW01.MN0SWMNO = "MN0S0031A";
+      MN0SW01.MN0SWSER = "CSP SECURITY ERROR - CALL HOTLINE";
+      COMMAREA.CAMSG = MN0SW01.MN0SWM2;
+      exit stack;
+    end
+  else
+    exit stack;
+  end
+
+end // end MN0S003
+
+// read grp/appl record
+Function MN0S004()
+  MN1REC.MN1USER = MN1REC.MN1APPL;
+  MN1REC.MN1APPL = COMMAREA.CATOAP;
+  COMMAREA.CASECRC = 0;
+  MN0SW01.MN0SWSKY = MN1REC.MN1KEY; /* SAVE ACCESS KEY*/
+  try
+    get MN1REC ;
+    onException MN0SS04() ;
+  end
+
+
+
+
+  if (COMMAREA.CASECRC == 0) /* if record found then*/
+    COMMAREA.CAMSG = " "; /* clear message*/
+    COMMAREA.CAADD = MN1REC.MN1ADD; /* set add levels*/
+    COMMAREA.CACHG = MN1REC.MN1CHG; /* set chg levels*/
+    COMMAREA.CADEL = MN1REC.MN1DEL; /* set del levels*/
+    COMMAREA.CAINQ = MN1REC.MN1INQ; /* set inq levels*/
+  end
+
+
+
+   /* ***********test override ****************/
+   /* THE FOLLOWING TEXT "COMMENTED OUT" ON 3-17-93 BY VERN COWAN*/
+   /*  */
+    /* IF COMMAREA.CAUSERID = 'JWOOD';*/
+      /* MOVE 'YYYYYYYYYYY' TO COMMAREA.CAADD;*/
+      /* MOVE 'YYYYYYYYYYY' TO COMMAREA.CACHG;*/
+      /* MOVE 'YYYYYYYYYYY' TO COMMAREA.CADEL;*/
+      /* MOVE 'YYYYYYYYYYY' TO COMMAREA.CAINQ;*/
+    /* END;*/
+end // end MN0S004
+
+// set values from table 1
+Function MN0S100()
+  COMMAREA.CAMSG = " ";
+  COMMAREA.CASECRC = 0;
+  COMMAREA.CAADD = "NNNNNNNNNNN";
+  COMMAREA.CACHG = "NNNNNNNNNNN";
+  COMMAREA.CADEL = "NNNNNNNNNNN";
+  MN0SW01.MN1INQFL = MN0ST01.MN1INQFL[sysVar.arrayIndex];
+  MN0SW01.MN1INQTB = MN0ST01.MN1INQTB[sysVar.arrayIndex];
+  COMMAREA.CAINQ = MN0SW01.CAINQ;
+end // end MN0S100
+
+// lookup default scty table
+Function MN0S300()
+  sysVar.arrayIndex = 0;
+  if (COMMAREA.CATOAP in MN0ST02.CATOAP)
+    COMMAREA.CAMSG = " ";
+    COMMAREA.CASECRC = 0;
+    MN0SW01.MN1INQFL = MN0ST02.MN1INQFL[sysVar.arrayIndex];
+    MN0SW01.MN1INQTB = MN0ST02.MN1INQTB[sysVar.arrayIndex];
+    COMMAREA.CAINQ = MN0SW01.CAINQ;
+    MN0SW01.MN1ADDFL = MN0ST02.MN1ADDFL[sysVar.arrayIndex];
+    MN0SW01.MN1ADDTB = MN0ST02.MN1ADDTB[sysVar.arrayIndex];
+    COMMAREA.CAADD = MN0SW01.CAADD;
+    MN0SW01.MN1CHGFL = MN0ST02.MN1CHGFL[sysVar.arrayIndex];
+    MN0SW01.MN1CHGTB = MN0ST02.MN1CHGTB[sysVar.arrayIndex];
+    COMMAREA.CACHG = MN0SW01.CACHG;
+    MN0SW01.MN1DELFL = MN0ST02.MN1DELFL[sysVar.arrayIndex];
+    MN0SW01.MN1DELTB = MN0ST02.MN1DELTB[sysVar.arrayIndex];
+    COMMAREA.CADEL = MN0SW01.CADEL;
+    exit program;
+  else
+    return;
+  end
+end // end MN0S300
+
+// MENU FILE READ ERROR
+Function MN0SS01()
+
+
+
+   /* ************************************************************/
+      /* this statement group is invoked when an error*/
+      /* had occured when reading the menu file*/
+   /* ************************************************************/
+
+  if (MN1REC is noRecordFound) /* not found condition*/
+    COMMAREA.CASECRC = 4; /* set return code to 4*/
+  else
+    COMMAREA.CASECRC = 9; /* set return code to 9*/
+    MN0SW01.MN0SWCRC = 9; /* set return code to 9*/
+    MN0SW01.MN0SWMNO = "MN0SS011A";
+    MN0SW01.MN0SWSER = "CSP SECURITY ERROR - CALL HOTLINE";
+    COMMAREA.CAMSG = MN0SW01.MN0SWM2;
+  end
+
+
+
+end // end MN0SS01
+
+// MSG FILE READ ERROR
+Function MN0SS03()
+
+
+
+   /* ************************************************************/
+      /* this statement group is invoked when an error*/
+      /* had occured when reading the menu file*/
+   /* ************************************************************/
+
+  if (MN1REC is endOfFile) /* not found condition*/
+    /* PERFORM MN0S300               ; lookup table*/
+    MN0SW01.MN0SWMNO = "MN0SS031A";
+    MN0SW01.MN0SWSER = "CSP SECURITY ERROR - CALL HOTLINE";
+    COMMAREA.CASECRC = 4; /* set return code to 4*/
+    COMMAREA.CAMSG = MN0SW01.MN0SWM2;
+  else
+    MN0SW01.MN0SWMNO = "MN0SS032A";
+    MN0SW01.MN0SWSER = "CSP SECURITY ERROR - CALL HOTLINE";
+    COMMAREA.CASECRC = 9; /* set return code to 9*/
+    COMMAREA.CAMSG = MN0SW01.MN0SWM2;
+  end
+
+
+
+end // end MN0SS03
+
+// MENU FILE READ ERROR
+Function MN0SS04()
+
+
+
+   /* ************************************************************/
+      /* this statement group is invoked when an error*/
+      /* had occured when reading the menu file*/
+   /* ************************************************************/
+
+  if (MN1REC is noRecordFound) /* not found condition*/
+    MN0S300(); /* lookup default table*/
+    COMMAREA.CASECRC = 4;
+    MN0SW01.MN0SWMNO = "MN0SS041A";
+    MN0SW01.MN0SWSER = "CSP SECURITY ERROR - CALL HOTLINE";
+    COMMAREA.CAMSG = MN0SW01.MN0SWM2;
+  else
+    COMMAREA.CASECRC = 9;
+    MN0SW01.MN0SWMNO = "MN0SS042A";
+    MN0SW01.MN0SWSER = "CSP SECURITY ERROR - CALL HOTLINE";
+    COMMAREA.CAMSG = MN0SW01.MN0SWM2;
+  end
+
+
+
+end // end MN0SS04
+
+//*** RECORD=MN0SW01 ****
+// ************************************************************
+// ***  WORKING STORAGE RECORD FOR MN0S PROCESSING          ***
+// ***------------------------------------------------------***
+// *** 01/15/87: ADDED MN0SWMSG AREA TO INCLUDE ERROR CODES ***
+// ***           AS A RESULT OF FILE ACCESSING - JWOOD      ***
+// ************************************************************
+// ***********************
+Record MN0SW01 type basicRecord
+  5 MN0SWLNG MN0SWLNG ; 
+    10 MN0SWAPP MN0SWAPP ; 
+      20 MN0SWAPX MN0SWAPX ; 
+      20 * char(2) ; 
+    10 MN0SWGRP MN0SWGRP ; 
+      20 MN0SWGCP MN0SWGCP ; 
+        30 MN0SWGCH MN0SWGCH ; 
+        30 MN0SWGPX MN0SWGPX ; 
+      20 MN0SWGLV MN0SWGLV ; 
+    10 MN0SWSKY MN0SWSKY ; 
+    10 MN0SWMSG MN0SWMSG ; 
+      20 MN0SWCRC MN0SWCRC ; 
+      20 MN0SWHYP MN0SWHYP ; 
+      20 MN0SWEZR MN0SWEZR ; 
+      20 * char(1) ; 
+      20 MN0SWMKY MN0SWMKY ; 
+      20 * char(1) ; 
+      20 MN0SWERR MN0SWERR ; 
+    10 MN0SWM2 MN0SWM2 ; 
+      20 MN0SWMNO MN0SWMNO ; 
+      20 * char(1) ; 
+      20 MN0SWSER MN0SWSER ; 
+        30 MN0SWM2A MN0SWM2A ; 
+        30 MN0SWM2B MN0SWM2B ; 
+          40 MN0SWMTC MN0SWMTC ; 
+          40 MN0SWMMS MN0SWMMS ; 
+    10 CAINQ CAINQ ; 
+      15 MN1INQFL MN1INQFL ; 
+      15 MN1INQTB MN1INQTB ; 
+    10 CAADD CAADD ; 
+      15 MN1ADDFL MN1ADDFL ; 
+      15 MN1ADDTB MN1ADDTB ; 
+    10 CACHG CACHG ; 
+      15 MN1CHGFL MN1CHGFL ; 
+      15 MN1CHGTB MN1CHGTB ; 
+    10 CADEL CADEL ; 
+      15 MN1DELFL MN1DELFL ; 
+      15 MN1DELTB MN1DELTB ; 
+end // end MN0SW01
+
+// application code
+DataItem MN0SWAPP char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// application prefix
+DataItem MN0SWAPX char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// MN0S READ ERROR RETURN CODE
+DataItem MN0SWCRC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ERROR MSG
+DataItem MN0SWERR char(51)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// EZERT8 ERROR CODEVALUE
+DataItem MN0SWEZR char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// special character (& or #)
+DataItem MN0SWGCH char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// group code
+DataItem MN0SWGCP char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// group level
+DataItem MN0SWGLV char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// application prefix
+DataItem MN0SWGPX char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// group application
+DataItem MN0SWGRP char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// HYPHEN LITERAL
+DataItem MN0SWHYP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record
+DataItem MN0SWLNG char(222)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ERROR MSG WORK AREA 2
+DataItem MN0SWM2 char(78)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ER MSG PART A
+DataItem MN0SWM2A char(22)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ER MSG PART B
+DataItem MN0SWM2B char(46)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// MN1REC.MN1KEY VALUE
+DataItem MN0SWMKY char(14)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ER MSG PART B - MESSAGE
+DataItem MN0SWMMS char(42)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ER MSG SEQ NUMBER & ACTION CD
+DataItem MN0SWMNO char(9)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ERROR MSG WORK AREA
+DataItem MN0SWMSG char(78)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ER MSG PART B - TRANS CODE
+DataItem MN0SWMTC char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SECRTY ERROR MSG AREA
+DataItem MN0SWSER char(68)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// MN1KEY VALUE BEFORE READ
+DataItem MN0SWSKY char(14)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

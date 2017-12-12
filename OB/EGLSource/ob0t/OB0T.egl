@@ -1,0 +1,4005 @@
+package ob0t;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import dg.common.*;
+import fk.common.*;
+import fy.common.*;
+import ku.common.*;
+import ob.common.*;
+import op.common.*;
+import pc.common.*;
+import pg.common.*;
+import pw.common.*;
+import sm.common.*;
+import sp.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import vv.common.*;
+import ww.common.*;
+//*** PROGRAM=OB0T ****
+// THIS APPLCATION WILL DECREMENT, LOAD, AND ALLOCATE SELECTED
+// AIRSPEED ORDERS ON-LINE AS APPROPRIATE.  IT IS CALLED BY
+// OB0B AND WILL RETURN TO OB0B OR TO OB0L (TO SHOW NEW ERRORS
+// RELATING TO AVAILABILITY).
+// 
+// ************************************************************
+// *                  MAINTENANCE LOG                         *
+// ************************************************************
+// * REF    DATE  USERID  COMMENTS                            *
+// * ----- ------ ------- ----------------------------------- *
+// * V.A.  080194 DMEIER  INSTALLED                           *
+// * V.A.  080994 schase  added update of ob3rec for reserved *
+// *                      qty when decrementing from bulk.    *
+// *                      ob0ts-decr-bulk, ob0ts-upd-ob3rec   *
+// * v.a.  081994 craine  added update of op1rec bulk header  *
+// *                      value and units. ob0ts-upd-bulk-hdr,
+// *                      ob0ts-sel-op1rec, ob0ts-upd-op1rec,
+// *                      and chg to ob0ts-dec-subord, ob0ts-
+// *                      dec-bulk, ob0ts-init-recs
+// * v.a.  082594 craine  commented out call to al1500 -
+// *                      (allocate item qty). temporary !!!
+// *                      ob0t300
+// * v.a.  090694 craine  change to obwrec
+// * v.a.  102494 schase  added logic to evaluate flag for push
+// *                      ing availability (temp using ob3rec.
+// *                      xbrcd field). chgd: ob0ts-decr-subord
+// *                      ,ob0ts-init-oborec, w01. added:
+// *                      ob0ts-set-for-push, ob0ts-upd-fa-qty,
+// *                      ob0ts-split-ca-qty.
+// * v.a.  110194 dbruih  changed call to al1500 to ob1780
+// *                      (clone of al1500) and changed ob1780
+// *                      return code processing.
+// * v.a   111694 craine  fix ob0t230 to decrement whem yobcd
+// *                      is 'cl' or 'fa'.
+// * v.a.  120594 craine  chg to obqrec to decrement only rsrv
+// *                      bulk qtys and alw partial bulk decre
+// *                      ment.
+// *                      also chg to ob0ts-split-ca and ob0ts-
+// *                      update-fa to not write or update an
+// *                      item when nothing was decremented and
+// *                      push avail is 'y'.
+// *v.a.   020795 craine chg ob0ts-check-rsrv to set obqrec
+// *                      rsrv only to 'y' for smart draws
+// *v.a.   021795 craine don't allocate if xahcd ne ' '
+// *v.a.   042795 craine allow for new yobcd 'pd' and 'lp'.
+// *       080195 dliddl modified to incorporate Nike Canada
+// *                     into AIRSPEED - OB0TS-SEL-SYCREC.
+// *       080795 CRAINE Database changes.
+// *CANADA 120695 CBRINE Added XDZ-DATA-DIST-CD to pass record
+// *                     OBUREC for call to OB1640.
+// *v.a.   081396 nfield Changed OB0TS-CHECK-RSRV to handle
+// *                     NIKE bulk/draws.
+// *       082797 jnaemu added changes for whse 27
+// *       100298 svargh added changes to the ob0ts-upd-ob1rec
+//                       ,ob0ts-check-vbulk,ob0ts-update-vbulk
+//                       so that the when bulk quantities are
+//                       updated , the corresponding vbulks02
+//                       table is also updated.
+//         032299 kramse Modified stat.group OB0TS-SEL-SYREC
+//                       to call SY2000 for apparel GPC 03
+//                       orders.
+//         032999 mgoel  Added changes to the statement groups
+//                       OB0TS-SPLIT-CA-DRW, OB0TS-SPLIT-CA-QTY
+//                       to update the OCD item and size tables
+//                       for line items that are partial
+//                       allocated. The OCD updates were not
+//                       being done in situations where a line
+//                       item is partially allocated.
+// TT#6319 122600 dfrede To check for the availability of
+//                       the order in the extract database
+//                       DORDER.VOBEXT01 before loading
+//                       into the DORDER database.
+//                       Changes made in OB0T300,OB0T400
+//                       (statement groups) and OB0TW01(record)
+//                       Introduced OB0TS-CALL-OB2310
+//                       (statement group) and OB10REC(Record).
+// 
+//         021201 gsunda This application is modified to
+//         TT#10153      avoid customer prepack ('CU') atonce
+//                       PROP orders getting allocated.
+//                       New validation is introduced in
+//                       OB0TS-SET-ALOC-FL.
+// *********************
+Program OB0T type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OB00", inputRecord = COMMAREA, segmented = no
+  }
+
+  // Data Declarations
+  AL5REC AL5REC; // record
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  OB0TW01 OB0TW01; // record
+  OB10REC OB10REC; // record
+  OB1REC OB1REC; // record
+  OB2REC OB2REC; // record
+  OB3REC OB3REC; // record
+  OB7REC OB7REC; // record
+  OBABREC OBABREC; // record
+  OBALREC OBALREC; // record
+  OBAREC OBAREC; // record
+  OBBREC OBBREC; // record
+  OBCREC OBCREC; // record
+  OBDREC OBDREC; // record
+  OBEREC OBEREC; // record
+  OBFREC OBFREC; // record
+  OBKREC OBKREC; // record
+  OBOREC OBOREC; // record
+  OBQREC OBQREC; // record
+  OBSFREC OBSFREC; // record
+  OBSSREC OBSSREC; // record
+  OBUREC OBUREC; // record
+  OBWREC OBWREC; // record
+  OP1REC OP1REC; // record
+  SQLCA SQLCA; // record
+  SYCREC SYCREC; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  VBULKS02 VBULKS02; // record
+  VOCITM01 VOCITM01; // record
+  VOCSIZ01 VOCSIZ01; // record
+  WSY2000 WSY2000; // record
+  XSOBW01 XSOBW01; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XBDTBL {deleteAfterUse = yes}; // table
+  use XOTTBL {deleteAfterUse = yes}; // table
+  //  use  OB0TM // VAGen Info - unused formGroup    {
+  //    pfKeyEquate = no
+  //  };
+  
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OB0T000: OB0T000();
+
+
+    goto OB0T010; /* flow to main process*/
+
+
+    OB0T010: OB0T010();
+
+
+    exit program;
+
+
+  end // end main
+end // end OB0T
+
+// INITIALIZE
+Function OB0T000()
+
+
+  XSENTRY(); /* check security*/
+  XSOBS01(); /* check order batch security*/
+  XSOBT1R(); /* read temp storage 1 - orders*/
+
+  OB0TS-INIT-RECS(); /* initialize application*/
+
+
+end // end OB0T000
+
+// MAIN PROCESS
+Function OB0T010()
+
+
+  OB0TW01.OB0TW-ROLLBACK-FL = "N";
+  OB0TW01.OB0TW-RETURN-FL = "N";
+  OB0TW01.OB0TW-ABEND-FL = "N";
+
+  OB0T100(); /* get viewed suborder*/
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+    if (OB1REC.YOBCD == "CL" /* current order status is 'cleared',*/
+     || OB1REC.YOBCD == "DP" /* 'delayed for priority',*/
+     || OB1REC.YOBCD == "DW" /* 'delayed for deadweek', or*/
+     || OB1REC.YOBCD == "FA") /* 'failed availability'*/
+      OB0T200(); /* decrement process*/
+    end
+  end
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+    if (OB1REC.YOBCD == "CA") /* status = 'cleared availability'*/
+      OB0T300(); /* load process*/
+    end
+  end
+
+  OB0T400(); /* clean-up process*/
+
+
+end // end OB0T010
+
+// GET VIEWED SUBORDER
+Function OB0T100()
+
+
+  OB0TW01.OP1NORID = OB0TW01.OB0TW-ORG-OP1NORID;
+
+  OB0TS-SEL-OB1REC(); /* select original suborder*/
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+
+    OB0TW01.YOBCD = OB1REC.YOBCD;
+
+    if (OB1REC.YOBCD == "CA" /* check airspeed order status*/
+     || OB1REC.YOBCD == "CL" 
+     || OB1REC.YOBCD == "DP" 
+     || OB1REC.YOBCD == "DW" 
+     || OB1REC.YOBCD == "FA")
+      OB0TS-SET-DRAW-FL(); /* set draw order flag*/
+    else
+      OBWREC.CAMSG = "ORDER STATUS DOES NOT ALLOW DECREMENT AND/OR LOAD PROCESS";
+      OBWREC.OB6MSGNB = 181;
+    end
+  end
+
+
+end // end OB0T100
+
+// DECREMENT PROCESS
+Function OB0T200()
+
+
+  OB0T210(); /* DELETE EXISTING ERROR MESSAGES*/
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+
+    if (OB0TW01.OB0TW-DRAW-FL == "N")
+      OB0T220(); /* PRE-DECREMENT EVALUATION*/
+    end
+
+    if (OB0TW01.OB0TW-RETURN-FL == "N"
+     && OB0TW01.OB0TW-ABEND-FL == "N")
+      OB0T230(); /* DECREMENT ORDER*/
+    end
+
+    if (OB0TW01.OB0TW-RETURN-FL == "N"
+     && OB0TW01.OB0TW-ABEND-FL == "N")
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.commit(); /* commit database changes*/
+    end
+  end
+
+
+end // end OB0T200
+
+// DELETE EXISTING AVAIL ERRORS
+Function OB0T210()
+
+
+  set OB7REC empty;
+  set OBKREC empty;
+  set SQLCA empty;
+
+  OB7REC.OP1PARTN = OB1REC.OP1PARTN; /* part char*/
+  OB7REC.OP1CUOID = OB1REC.OP1CUOID; /* cust order id*/
+  OB7REC.OP1NORID = OB1REC.OP1NORID; /* nike order id*/
+  OB7REC.OB7MSGTP = "E"; /* message type*/
+
+  OBKREC.OBKTASK = "D2";
+
+  call "IO5210" (OBKREC, SQLCA, OB7REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* successful delete*/
+   || SQLCA.VAGen_SQLCODE == 100) /* no errors to delete*/
+    OB1REC.OB1ERRFL = "N";
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy - rollback occurred*/
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESSES";
+    else /* database error*/
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      move SQLCA to ERRSQLCA withV60Compat;
+
+      TA1REC.TA1DBASE = "DORDB   ";
+      TA1REC.TA1TBLVU = "VOBMSG01";
+      TA1REC.TA1LOC = "D2 IO5210 E OB0TS-DEL-ALL-ERRS";
+    end
+  end
+
+
+end // end OB0T210
+
+// PRE-DECREMENT EVALUATION
+Function OB0T220()
+
+
+  OB0TS-CALL-OB1640(); /* pre decrement evaluation subprogram*/
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+    OBWREC.CAMSG = OBUREC.OBU-RETURN-MSG;
+
+    OB1REC.YOBCD = OBUREC.YOBCD;
+    OB1REC.OB1ERRFL = OBUREC.OB1ERRFL;
+    OBWREC.YOBCD = OB1REC.YOBCD;
+
+    OB0TS-UPD-OB1REC(); /* update order header*/
+  end
+
+
+end // end OB0T220
+
+// DECREMENT ORDER
+Function OB0T230()
+
+
+  if (OB1REC.YOBCD == "CL" /* airspeed status = 'cleared'*/
+   || OB1REC.YOBCD == "FA") /* airspeed status = 'failed avail'*/
+
+    OB0TW01.OB0TW-EOF-FL = "N";
+    OB0TW01.OB0TW-FA-FL = "N";
+    OB0TW01.OB0TW-CA-FL = "N";
+    OB0TW01.OB6MSGNB = " ";
+
+    OB0TS-OPN-OB3REC(); /* open cursor for item/size recs*/
+
+    OB0TS-DECR-SUBORD(); /* decrement all or specific item(s)*/
+    OB0TS-EVAL-STATUS(); /* evaluate decrement status*/
+
+    OB0TS-CLS-OB3REC(); /* close cursor for item/size recs*/
+  end
+
+
+end // end OB0T230
+
+// LOAD PROCESS
+Function OB0T300()
+
+
+  /* TT#6319 Wipro Changes begin*/
+  OB0TS-CALL-OB2310(); /* check if order is present in the*/
+                                   /* extract database.*/
+
+  if (OB0TW01.OB0TW-ORDR-FOUND == "N")
+  /* TT#6319 Wipro Changes end*/
+    OB0TS-CALL-OB1710(); /* load to DORDER via OB1710*/
+  /* TT#6319 Wipro Changes begin*/
+  end
+  /* TT#6319 Wipro Changes end*/
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N"
+   /* TT#6319 Wipro Changes begin*/
+   && OB0TW01.OB0TW-ORDR-FOUND == "N")
+  /* TT#6319 Wipro Changes end*/
+    OB0TW01.OB0TW-SUB = OB0TW01.OBWTSF1S;
+    OBAREC.YOBCD[OB0TW-SUB] = OB1REC.YOBCD;
+
+    if (OB1REC.YOBCD == "LD")
+      OBAREC.OBAMSEL[OB0TW-SUB] = "*";
+    end
+
+    XSOBT1U(); /* update temp storage 1 (orders)*/
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.commit(); /* commit database changes*/
+
+    if (OB1REC.YOBCD == "LD") /* airspeed order was loaded*/
+      if (OB0TW01.OB0TW-FA-FL == "Y")
+        OBWREC.CAMSG = "PART OF THIS ORDER HAS LOADED";
+      end
+
+      OB0TW01.OB0TW-ALOC-FL = "N";
+
+      OB0TS-SET-ALOC-FL(); /* set allocation flag*/
+
+      if (OB0TW01.OB0TW-ALOC-FL == "Y")
+        OB0TS-CALL-OB1780(); /* allocate order via ob1780*/
+      end
+    end
+  end
+
+
+end // end OB0T300
+
+// CLEAN-UP PROCESS
+Function OB0T400()
+
+
+  if (OB0TW01.OB0TW-ROLLBACK-FL == "Y"
+   || OB0TW01.OB0TW-ABEND-FL == "Y"
+   /* TT#6319 Wipro Changes begin*/
+   || OB0TW01.OB0TW-ORDR-FOUND == "Y")
+                                   /* TT#6319 Wipro Changes end*/
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* rollback db2 changes*/
+  end
+
+  OB0T410(); /* update temp storage 1 - orders*/
+  OB0T420(); /* check for original suborder*/
+
+  if (OB0TW01.OB0TW-ABEND-FL == "N"
+   && OB0TW01.OB0TW-RETURN-FL == "N")
+    OB0T430(); /* normal exit routine*/
+  else
+    OB0T440(); /* abnormal exit routine*/
+  end
+
+
+end // end OB0T400
+
+// UPDATE TEMP STORAGE 1 - ORDERS
+Function OB0T410()
+
+
+  if (OB0TW01.OB0TW-ABEND-FL == "N")
+    if (OBWREC.OBWTSF1P != OB0TW01.OBWTSF1P)
+      /* restore current page of temp storage*/
+
+      OBWREC.OBWTSF1P = OB0TW01.OBWTSF1P;
+
+      XSOBT1R(); /* read temp storage 1 (orders)*/
+    end
+
+    OB0TS-UPD-SEL-CD(); /* update temp storage select code*/
+  end
+
+
+end // end OB0T410
+
+// RE-READ ORIGINAL SUBORDER
+Function OB0T420()
+
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+
+    if (OBWREC.OP1NORID != OB1REC.OP1NORID)
+      OB0TW01.OP1NORID = OBWREC.OP1NORID;
+
+      OB0TS-SEL-OB1REC(); /* select original suborder*/
+    end
+  end
+
+
+end // end OB0T420
+
+// NORMAL EXIT ROUTINE
+Function OB0T430()
+
+
+  if (OB1REC.YOBCD == "FA") /* original subord status = 'FA'*/
+    OBWREC.OBW-GET-ERRORS-FL = "Y";
+    COMMAREA.CATOAP = "OB0L";
+  else
+    COMMAREA.CATOAP = "OB0B";
+  end
+
+  COMMAREA.CAUSERA = OBWREC.OBWGROUP;
+  XSEXIT();
+
+
+end // end OB0T430
+
+// ABNORMAL EXIT ROUTINE
+Function OB0T440()
+
+
+  if (OB0TW01.OB0TW-RETURN-FL == "Y")
+    COMMAREA.CAUSERA = OBWREC.OBWGROUP;
+    COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+
+    XSEXIT(); /* return to calling application*/
+  else
+    if (OB0TW01.OB0TW-ABEND-TYP-CD == "APPL")
+      TA1REC.TA1TYPE = "APPL";
+      TA1REC.TA1FUNC = "RETN";
+      TA1PGMNM = COMMAREA.CACURRAP;
+
+      call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes};
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = COMMAREA.CACURRAP;
+      TA1REC.TA1TBLKE = OBWREC.OBWSYSKE;
+
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+    end
+
+    XSOBT1P(); /* purge orders*/
+    XSOBT2P(); /* purge errors*/
+    XSOBT3P(); /* purge holds*/
+    XSOBT4P(); /* purge items*/
+    XSOBT5P(); /* purge comments*/
+
+    XSPF4(); /* xfer to main menu*/
+  end
+
+
+end // end OB0T440
+
+// ADD SUBORD TO TEMP STORAGE
+Function OB0TS-ADD-OBAREC()
+
+
+  OB0TW01.OB0TW-LAST-PG = OBWREC.OBWTSF1M;
+
+  OB0TS-GET-LAST-PG(); /* get last page of temp storage*/
+
+  OB0TW01.OB0TW-SUB = OB0TW01.OBWTSF1S;
+  OBAREC.OBAMSEL[OB0TW-SUB] = "X"; /* select option*/
+  OBAREC.OBAORDER[OB0TW-SUB] = OBWREC.OBWORDER; /* formatted order*/
+  OBAREC.OBANORID[OB0TW-SUB] = OB1REC.OP1NORID; /* nike order id*/
+  OBAREC.OP1PARTN[OB0TW-SUB] = OB1REC.OP1PARTN; /* part char*/
+  OBAREC.OB1PARLF[OB0TW-SUB] = OB1REC.OB1PARLF; /* partial load flag*/
+  OBAREC.SP1ID[OB0TW-SUB] = OB1REC.SP1ID; /* sales program*/
+  OBAREC.XOBCD[OB0TW-SUB] = OB1REC.XOBCD; /* base ot code*/
+  OBAREC.YOBCD[OB0TW-SUB] = OB1REC.YOBCD; /* yob code*/
+  OBAREC.OB1ERRFL[OB0TW-SUB] = OB1REC.OB1ERRFL; /* error flag*/
+  OBAREC.OB1HLDFL[OB0TW-SUB] = OB1REC.OB1HLDFL; /* hold flag*/
+  OBAREC.OBAFILL[OB0TW-SUB] = "/"; /* slash*/
+  OBAREC.OBACUNDT[OB0TW-SUB] = OBWREC.OBWDT6; /* formatted need date*/
+  OBAREC.OBACUST[OB0TW-SUB] = OBWREC.OBWCUST; /* formatted cust*/
+  OBAREC.KUMSTSNM[OB0TW-SUB] = "NEW SUBORD"; /* short store name*/
+
+  if (OB0TW01.OB0TW-LAST-PG == OBWREC.OBWTSF1M)
+    XSOBT1U(); /* update temp storage record*/
+  else
+    XSOBT1W(); /* add temp storage record*/
+  end
+
+  OBWREC.YOBCD = OB1REC.YOBCD; /* yob code*/
+
+end // end OB0TS-ADD-OBAREC
+
+// DECREMENT ITEM/SIZE VIA OB1090
+Function OB0TS-CALL-OB1090()
+
+
+  call "OB1090" (OBOREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (OBOREC.OBO-RETURN-CD == 0) /* good return*/
+    OB0TS-EVAL-AVL-QTY(); /* check returned quantities*/
+  else
+    OB0TW01.OB0TW-ITM-DECR-FL = "N";
+
+    if (OBOREC.OBO-RETURN-CD == 1)
+      /* row not found*/
+
+      OB0TW01.OB6MSGNB = "080";
+    else
+      if (OBOREC.OBO-RETURN-CD == 6)
+      /* avalilabilty update row not found*/
+
+        OB0TW01.OB6MSGNB = "080";
+      else
+        if (OBOREC.OBO-RETURN-CD == 3)
+        /* corp table error*/
+
+          OB0TW01.OB6MSGNB = "070";
+        else
+          if (OBOREC.OBO-RETURN-CD == 4)
+          /* non db2 bad return*/
+
+            OB0TW01.OB6MSGNB = "079";
+          else
+            OB0TW01.OB0TW-SKIP-ITM-FL = "Y";
+
+            if (OBOREC.OBO-RETURN-CD == 5)
+            /* database busy - rollback occurred*/
+
+              OB0TW01.OB0TW-RETURN-FL = "Y";
+              OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+            else
+              OB0TW01.OB0TW-ABEND-FL = "Y";
+              OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+              OBOREC.OBO-DIAG-LIT1 = "ORD ";
+              OBOREC.OBO-DIAG-CUST-ORD-ID = OB1REC.OP1CUOID;
+              OBOREC.OBO-DIAG-LIT2 = ".";
+              OBOREC.OBO-DIAG-NIKE-ORD-ID = OB1REC.OP1NORID;
+              OBOREC.OBO-DIAG-LIT3 = "ITEM ";
+              OBOREC.OBO-DIAG-LINE-ITM-NBR = OB3REC.OP2LNINB;
+              OBOREC.OBO-DIAG-LIT4 = "RTN ";
+              OBOREC.OBO-DIAG-RETN-CD = OBOREC.OBO-RETURN-CD;
+
+              TA1REC.TA1LOC = "OB1090 OB0TS-CALL-OB1090";
+              TAEREC.TAEDESC1 = OBOREC.OBO-DIAG-KEY;
+              TAEREC.TAEDESC2 = "SEE ERROR DIAGS FOR OB1090";
+            end
+          end
+        end
+      end
+    end
+  end
+
+
+end // end OB0TS-CALL-OB1090
+
+// DECREMENT QTYS VIA OB1130
+Function OB0TS-CALL-OB1130()
+
+
+  call "OB1130" (OBQREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (OBQREC.OBQ-RETURN-CD == 0) /* good return*/
+    OB0TS-EVAL-BLK-QTY(); /* evaluate bulk quantities*/
+  else
+    if (OBQREC.OBQ-RETURN-CD == 1) /* record not found*/
+      OB0TW01.OB0TW-ITM-DECR-FL = "N";
+      OB0TW01.OB6MSGNB = "054";
+    else
+      OB0TW01.OB0TW-SKIP-ITM-FL = "Y";
+
+      if (OBQREC.OBQ-RETURN-CD == 3) /* database busy - rollback occurred*/
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+      else
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+        OBQREC.OBQ-DIAG-LIT1 = "ORD ";
+        OBQREC.OBQ-DIAG-CUST-ORD-ID = OB1REC.OP1CUOID;
+        OBQREC.OBQ-DIAG-LIT2 = ".";
+        OBQREC.OBQ-DIAG-NIKE-ORD-ID = OB1REC.OP1NORID;
+        OBQREC.OBQ-DIAG-LIT3 = "ITEM ";
+        OBQREC.OBQ-DIAG-LINE-ITM-NBR = OB3REC.OP2LNINB;
+        OBQREC.OBQ-DIAG-LIT4 = "RTN ";
+        OBQREC.OBQ-DIAG-RETN-CD = OBQREC.OBQ-RETURN-CD;
+
+        TA1REC.TA1LOC = "OB1130 OB0TS-CALL-OB1130";
+        TAEREC.TAEDESC1 = OBQREC.OBQ-DIAG-KEY;
+        TAEREC.TAEDESC2 = "SEE ERROR DIAGS FOR OB1130";
+      end
+    end
+  end
+
+
+end // end OB0TS-CALL-OB1130
+
+// MOVE 'CA' ITEM/SIZE VIA OB1620
+Function OB0TS-CALL-OB1620()
+
+
+  set OBSSREC empty;
+
+  OBSSREC.OP1PARTN = OB1REC.OP1PARTN;
+  OBSSREC.OP1CUOID = OB1REC.OP1CUOID;
+  OBSSREC.OP1NORID = OB1REC.OP1NORID;
+  OBSSREC.OP2LNINB = OB3REC.OP2LNINB;
+  OBSSREC.KUCCOID = OB1REC.KUCCOID;
+  OBSSREC.KUMSTRID = OB1REC.KUMSTRID;
+  OBSSREC.XNXCD = OB1REC.XNXCD;
+  OBSSREC.XGPCD = OB1REC.XGPCD;
+  OBSSREC.XDVCD = OB1REC.XDVCD;
+  OBSSREC.XBCCD = OB1REC.XBCCD;
+  OBSSREC.XSOCD = OB1REC.XSOCD;
+  OBSSREC.XOTCD = OB1REC.XOTCD;
+  OBSSREC.XOBCD = OB1REC.XOBCD;
+  OBSSREC.OB1ACCSF = OB1REC.OB1ACCSF;
+  OBSSREC.XOCCD = OB1REC.XOCCD;
+  OBSSREC.SP1ID = OB1REC.SP1ID;
+  OBSSREC.SM1AGYID = OB1REC.SM1AGYID;
+  OBSSREC.SM4REPID = OB1REC.SM4REPID;
+  OBSSREC.XBDCD = OB1REC.XBDCD;
+  OBSSREC.XWHCD = OB1REC.XWHCD;
+  OBSSREC.OP1CUNDT = OB1REC.OP1CUNDT;
+  OBSSREC.XDSCD = OB1REC.XDSCD;
+  OBSSREC.OP1BLKID = OB1REC.OP1BLKID;
+  OBSSREC.ZZZCHGDT = OBWREC.ZZZCHGDT;
+  OBSSREC.ZZZCHGTM = OBWREC.ZZZCHGTM;
+  OBSSREC.OBSS-SPLIT-TO-CA-STAT-FL = "Y";
+
+  call "OB1620" (OBSSREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (OBSSREC.OBSS-RETURN-CODE == 0) /* good return*/
+     /* continue*/
+  else
+    if (OBSSREC.OBSS-RETURN-CODE == 3 /* database busy - rollback occurred*/
+     || OBSSREC.OBSS-RETURN-CODE == 5)
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+    else
+       /* appl error - no rollback occurred*/
+
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+      TA1REC.TA1LOC = "OB1620 OB0TS-CALL-OB1620";
+      TAEREC.TAEDESC1 = OBSSREC.OBSS-ERRDIAG-KEY;
+      TAEREC.TAEDESC2 = OBSSREC.OBSS-RETURN-MSG;
+    end
+  end
+
+
+end // end OB0TS-CALL-OB1620
+
+// CALL OB1640 (PRE-DECREMENT)
+Function OB0TS-CALL-OB1640()
+
+
+  set OBUREC empty;
+
+  OBUREC.OP1CUOID = OB1REC.OP1CUOID;
+  OBUREC.OP1NORID = OB1REC.OP1NORID;
+  OBUREC.XDVCD = OB1REC.XDVCD;
+  OBUREC.XBCCD = OB1REC.XBCCD;
+  OBUREC.XGPCD = OB1REC.XGPCD;
+  OBUREC.XOBCD = OB1REC.XOBCD;
+  OBUREC.XOTCD = OB1REC.XOTCD;
+  OBUREC.XDSCD = OB1REC.XDSCD;
+  OBUREC.XBDCD = OB1REC.XBDCD;
+  OBUREC.XDZ-DATA-DIST-CD = OB1REC.XDZ-DATA-DIST-CD;
+  OBUREC.SP1ID = OB1REC.SP1ID;
+  OBUREC.ZZZCHGDT = OBWREC.ZZZCHGDT;
+  OBUREC.ZZZCHGTM = OBWREC.ZZZCHGTM;
+
+  call "OB1640" (OBUREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (OBUREC.OBU-RETURN-CD == 0) /* good return*/
+     /* continue*/
+  else
+    if (OBUREC.OBU-RETURN-CD == 8) /* database busy - rollback occured*/
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESSES";
+    else
+      if (OBUREC.OBU-RETURN-CD == 9) /* database error*/
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+        OBUREC.OBU-DIAG-LIT1 = "ORD";
+        OBUREC.OBU-DIAG-CUST-ORD-ID = OB1REC.OP1CUOID;
+        OBUREC.OBU-DIAG-LIT2 = ".";
+        OBUREC.OBU-DIAG-NIKE-ORD-ID = OB1REC.OP1NORID;
+        OBUREC.OBU-DIAG-LIT3 = "RTN";
+        OBUREC.OBU-DIAG-RETURN-CD = OBUREC.OBU-RETURN-CD;
+
+        TA1REC.TA1LOC = "OB1640 OB0TS-CALL-OB1640";
+        TAEREC.TAEDESC1 = OBUREC.OBU-DIAG-KEY;
+        TAEREC.TAEDESC2 = OBUREC.OBU-RETURN-MSG;
+      else
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+        OBUREC.OBU-DIAG-LIT1 = "ORD";
+        OBUREC.OBU-DIAG-CUST-ORD-ID = OB1REC.OP1CUOID;
+        OBUREC.OBU-DIAG-LIT2 = ".";
+        OBUREC.OBU-DIAG-NIKE-ORD-ID = OB1REC.OP1NORID;
+        OBUREC.OBU-DIAG-LIT3 = "RTN";
+        OBUREC.OBU-DIAG-RETURN-CD = OBUREC.OBU-RETURN-CD;
+
+        TA1REC.TA1LOC = "OB1640 OB0TS-CALL-OB1640";
+        TAEREC.TAEDESC1 = OBUREC.OBU-DIAG-KEY;
+        TAEREC.TAEDESC2 = OBUREC.OBU-RETURN-MSG;
+      end
+    end
+  end
+
+
+end // end OB0TS-CALL-OB1640
+
+// LOAD TO DORDER VIA OB1710
+Function OB0TS-CALL-OB1710()
+
+
+  set OBABREC empty; /* initialize load passing rec*/
+
+  OBABREC.OBAB-CALLER-LOCATION = "OB1710 OB0TS-CALL-OB1710";
+  OBABREC.OBAB-CALLING-APPL = "OB0T";
+  OBABREC.OB1GROUP = OB1REC.OB1GROUP;
+  OBABREC.ZZZCHGDT = OBWREC.ZZZCHGDT;
+  OBABREC.ZZZCHGTM = OBWREC.ZZZCHGTM;
+
+  OBABREC.OBAB-RETURN-CD = 99;
+  call "OB1710" (OBABREC) {isNoRefresh = yes, isExternal = yes};
+
+  OB1REC.OB1GROUP = OBABREC.OB1GROUP;
+  OP1REC.OP1GROUP = OBABREC.OP1GROUP;
+
+  if (OBABREC.OBAB-RETURN-CD == 0) /* good return*/
+     /* continue*/
+  else
+    if (OBABREC.OBAB-RETURN-CD == 8) /* db2 deadlock occurred*/
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - CA ITEMS WILL LOAD WITH NEXT BATCH PROCESS";
+    else
+      if (OBABREC.OBAB-RETURN-CD == 9)
+         /* fatal error occurred in OB1710*/
+
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+        OBABREC.OBAB-DIAG-LIT1 = "ORD";
+        OBABREC.OBAB-DIAG-CUST-ORD-ID = OB1REC.OP1CUOID;
+        OBABREC.OBAB-DIAG-LIT2 = ".";
+        OBABREC.OBAB-DIAG-NIKE-ORD-ID = OB1REC.OP1NORID;
+        OBABREC.OBAB-DIAG-LIT3 = "RTN";
+        OBABREC.OBAB-DIAG-RETN-CD = OBABREC.OBAB-RETURN-CD;
+
+        TA1REC.TA1LOC = "OB1710 OB0TS-CALL-OB1710";
+        TAEREC.TAEDESC1 = OBABREC.OBAB-DIAG-KEY;
+        TAEREC.TAEDESC2 = "SEE ERROR DIAGS FOR OB1710";
+      else
+        if (OBABREC.OBAB-RETURN-CD == 10)
+          /* database update conflict occurred in OB1710*/
+
+          OB0TW01.OB0TW-RETURN-FL = "Y";
+          OB0TW01.OB0TW-ROLLBACK-FL = "Y";
+          OBWREC.CAMSG = "UPDATE CONFLICT - CA ITEMS WILL LOAD IN NEXT BATCH PROCESS";
+        else
+          OB0TW01.OB0TW-ABEND-FL = "Y";
+          OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+          OBABREC.OBAB-DIAG-LIT1 = "ORD";
+          OBABREC.OBAB-DIAG-CUST-ORD-ID = OB1REC.OP1CUOID;
+          OBABREC.OBAB-DIAG-LIT2 = ".";
+          OBABREC.OBAB-DIAG-NIKE-ORD-ID = OB1REC.OP1NORID;
+          OBABREC.OBAB-DIAG-LIT3 = "RTN";
+          OBABREC.OBAB-DIAG-RETN-CD = OBABREC.OBAB-RETURN-CD;
+
+          TA1REC.TA1LOC = "OB1710 OB0TS-CALL-OB1710";
+          TAEREC.TAEDESC1 = OBABREC.OBAB-DIAG-KEY;
+          TAEREC.TAEDESC2 = "SEE ERROR DIAGS FOR OB1710";
+        end
+      end
+    end
+  end
+
+end // end OB0TS-CALL-OB1710
+
+// ALLOCATE ORDER VIA ob1780
+Function OB0TS-CALL-OB1780()
+
+  XX0XS01(); /* get the current time*/
+
+  set OBALREC empty;
+
+  OBALREC.OP1PARTN = OP1REC.OP1PARTN;
+  OBALREC.OP1CUOID = OP1REC.OP1CUOID;
+  OBALREC.OP1NORID = OP1REC.OP1NORID;
+
+  OBALREC.ZZZCHGDT = OBWREC.ZZZCHGDT;
+  OBALREC.ZZZCHGTM = OBWREC.ZZZCHGTM;
+  OBALREC.OBAL-HMS = XX0XW01.XX0XWHMS;
+
+  OBALREC.OBAL-RETURN-CD = 99;
+
+  call "OB1780" (OBALREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (OBALREC.OBAL-RETURN-CD == 00) /* good return*/
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.commit(); /* commit database changes*/
+  else
+    TA1REC.TA1LOC = "OB1780 OB0TS-CALL-OB1780";
+    OBALREC.OBAL-ERRDIAG-LIT = "OB1780 RETURN CODE: ";
+    OBAL-ERRDIAG-RET-CD = OBALREC.OBAL-RETURN-CD;
+    TAEREC.TAEDESC1 = OBALREC.OBAL-ERRDIAG-INFO;
+    TAEREC.TAEDESC2 = "SEE ERROR DIAGS FOR OB1780";
+
+    if (OBALREC.OBAL-RETURN-CD == 01) /* error is ob1780 subpgm*/
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+    else
+      if (OBALREC.OBAL-RETURN-CD == 02) /* error is ob1780 subpgm*/
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "CANNOT ALLOCATE FOR INVENTORY OR CREDIT REASONS-USE AL0I";
+        XSOBENP();
+      else
+          /* database update conflict occurred in ob1780*/
+        if (OBALREC.OBAL-RETURN-CD == 03)
+          OB0TW01.OB0TW-ROLLBACK-FL = "Y";
+          OB0TW01.OB0TW-RETURN-FL = "Y";
+          OBWREC.CAMSG = "UPDATE CONFLICT - PLEASE TRY AGAIN";
+          XSOBENP();
+        else
+          if (OBALREC.OBAL-RETURN-CD == 04 /* db2 deadlock occurred*/
+           || OBALREC.OBAL-RETURN-CD == 06)
+            OB0TW01.OB0TW-RETURN-FL = "Y";
+            OBWREC.CAMSG = "ORDER NOT ALLOCATED - DATABASE BUSY - USE AL0I";
+          else
+            if (OBALREC.OBAL-RETURN-CD == 05
+             || OBALREC.OBAL-RETURN-CD == 07
+             || OBALREC.OBAL-RETURN-CD == 08
+            ) /* fatal error occurred in ob1780*/
+              OB0TW01.OB0TW-ABEND-TYP-CD = "DB2 ";
+              OB0TW01.OB0TW-ABEND-FL = "Y";
+            end
+          end
+        end
+      end
+    end
+  end
+
+
+end // end OB0TS-CALL-OB1780
+
+// text avail check thru OB2310.
+Function OB0TS-CALL-OB2310()
+   /* TT#6319 Wipro Changes begin*/
+   /* To check for the availability of the order in the extract database*/
+   /* DORDER.VOBEXT01 before loading into the DORDER database by*/
+   /* calling a OB2310.*/
+
+  set OB10REC empty; /* initialize load passing rec*/
+
+  OB10REC.OPCUOID = OB1REC.OP1CUOID;
+  OB10REC.NORID = OB1REC.OP1NORID;
+  OB10REC.PARTN = OB1REC.OP1PARTN;
+  OB10REC.OB10TASK = "S";
+  OB0TW01.OB0TW-ORDR-FOUND = "N";
+
+  OB10REC.RETCD = 99;
+
+  try
+    call "OB2310" (OB10REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+
+  if (OB10REC.RETCD == 0) /* good return*/
+    OBWREC.OBWERRFL = "Y"; /* error because order loading*/
+    OB0TW01.OB0TW-ORDR-FOUND = "Y"; /* in to dorder database.*/
+    OBWREC.CAMSG = "ORDER IS LOADING INTO DORDERS.PLEASE TRY LATER.";
+    OBWREC.OB6MSGNB = 261; /* err msg to denote order loading*/
+                               /* into DORDER database.*/
+  else
+    if (OB10REC.RETCD == 1) /* no row found*/
+        /* CONTINUE;*/
+    else
+      if (OB10REC.RETCD == 2) /* db2 deadlock occurred*/
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY";
+      else
+        if (OB10REC.RETCD == 3)
+            /* fatal error occurred in OB2310*/
+
+          OB0TW01.OB0TW-ABEND-FL = "Y";
+          OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+          OBABREC.OBAB-DIAG-LIT1 = "ORD";
+          OBABREC.OBAB-DIAG-CUST-ORD-ID = OB1REC.OP1CUOID;
+          OBABREC.OBAB-DIAG-LIT2 = ".";
+          OBABREC.OBAB-DIAG-NIKE-ORD-ID = OB1REC.OP1NORID;
+          OBABREC.OBAB-DIAG-LIT3 = "RTN";
+          OBABREC.OBAB-DIAG-RETN-CD = OB10REC.RETCD;
+
+          TA1REC.TA1LOC = "OB2310 OB0T-CALL-OB2310";
+          TAEREC.TAEDESC1 = OBABREC.OBAB-DIAG-KEY;
+        end
+      end
+    end
+  end
+
+   /* TT#6319 Wipro Changes end*/
+end // end OB0TS-CALL-OB2310
+
+Function OB0TS-CHECK-RSRV()
+
+
+  if (OBWREC.OBW-RSRV-QTY-ONLY == "Y")
+    OBQREC.OBQ-GET-RSRV-QTY-FL = "Y";
+  else
+    OBQREC.OBQ-GET-RSRV-QTY-FL = "N";
+  end
+
+  if (OB1REC.XBDCD == "6") /* smart draws must use rsrv qty*/
+    OBQREC.OBQ-GET-RSRV-QTY-FL = "Y";
+  else
+    sysVar.arrayIndex = 1;
+    if (OB1REC.XOTCD in XOTTBL.XOTCD from sysVar.arrayIndex) /* nike draws which are also*/
+      if (XOTTBL.XOTATONF[sysVar.arrayIndex] == "Y" /* at once (footwear)*/
+       && OB1REC.XBDCD == "K")                      /* must use rsrv qty*/
+        OBQREC.OBQ-GET-RSRV-QTY-FL = "Y";
+      end
+    end
+  end
+end // end OB0TS-CHECK-RSRV
+
+Function OB0TS-CHECK-VBULK()
+
+   /* ******** TCS INCLUDE BEGIN ****************/
+
+  /* STATEMENT GROUP TO UPDATE BULK TABLE*/
+
+  set SQLCA empty;
+  set OBFREC empty;
+  OBFREC.OBFTASK = "S";
+  call "VBULKS02" (OBFREC, SQLCA, VBULKS02) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OB0TS-UPDTE-VBULK();
+  else
+
+    if (SQLCA.VAGen_SQLCODE == 100)
+
+    else
+      TA1REC.TA1LOCAT[1] = "S ";
+      TA1REC.TA1LOCAT[2] = "VBULKS02";
+      TA1REC.TA1LOCAT[3] = "OB0TS-CHECK-VBULK";
+      TA1REC.TA1DBASE = "DORDB  "; /* data base name*/
+      TA1REC.TA1TBLVU = "VBULKS02"; /* data base view*/
+      if (SQLCA.VAGen_SQLCODE == -911)
+        XSOBS04();
+      else
+        XSOBEDC();
+      end
+    end
+  end
+
+   /* ******** TCS INCLUDE END ******************/
+
+end // end OB0TS-CHECK-VBULK
+
+// CLOSE ITEM/SIZE CURSOR
+Function OB0TS-CLS-OB3REC()
+
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+
+    set OB3REC empty;
+    set OBSFREC empty;
+
+    OB3REC.OP1PARTN = OB1REC.OP1PARTN; /* part char*/
+    OB3REC.OP1CUOID = OB1REC.OP1CUOID; /* customer order id*/
+    OB3REC.OP1NORID = OB1REC.OP1NORID; /* nike order id*/
+
+    OBSFREC.OBSF-TASK = "CS";
+    OBSFREC.OBSF-CALLER-LOCATION = "CS OB1690 OB0TS-CLS-OB3REC";
+    OBSFREC.OBSF-CALLING-APPL = "OB0T";
+    OBSFREC.OB3GROUP = OB3REC.OB3GROUP;
+    OBSFREC.OBSF-RETURN-CD = 99;
+
+    call "OB1690" (OBSFREC) {isNoRefresh = yes, isExternal = yes};
+
+    OB3REC.OB3GROUP = OBSFREC.OB3GROUP;
+
+    if (OBSFREC.OBSF-RETURN-CD == 0)
+          /* successful close - continue*/
+    else
+      if (OBSFREC.OBSF-RETURN-CD == 14
+       || OBSFREC.OBSF-RETURN-CD == 15)
+          /* -911 on item or size*/
+
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+      else /* bad return code*/
+         /* bad return code*/
+
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+        TA1REC.TA1LOC = "CS OB1690 OB0TS-CLS-OB3REC";
+        TAEREC.TAEDESC1 = OBSFREC.OBSF-DIAG-KEY;
+      end
+    end
+  end
+
+
+end // end OB0TS-CLS-OB3REC
+
+// CHECK FOR CUSTOMIZED PRODUCT
+Function OB0TS-CUSTOM-PROD()
+
+
+  if (OB1REC.XWHCD == "51"
+   || OB1REC.XWHCD == "25"
+   || OB1REC.XWHCD == "27")
+
+    if (SYCREC.XPRCD == "22") /* custom logo*/
+      OBOREC.SY1STNBR = SYCREC.SY1BSTNB;
+      OBOREC.SY2CLRID = SYCREC.SY2BCLCD;
+    end
+  end
+
+
+end // end OB0TS-CUSTOM-PROD
+
+// DECREMENT AVAILABILITY
+Function OB0TS-DECR-AVAIL()
+
+
+  OB0TW01.OB0TW-ITM-DECR-FL = "Y";
+  OB0TW01.OB0TW-SKIP-ITM-FL = "N";
+
+  OB0TS-SEL-SYCREC(); /* select SYCREC (VCOLOR02)*/
+
+  if (OB0TW01.OB0TW-SKIP-ITM-FL == "N")
+    OB0TS-INIT-OBOREC(); /* initialize OB1090 passing rec*/
+    OB0TS-GET-XLCCD(); /* set life cycle code*/
+    OB0TS-CUSTOM-PROD(); /* prepare customized product*/
+    OB0TS-CALL-OB1090(); /* decr qtys via OB1090*/
+  end
+
+
+  if (OB0TW01.OB0TW-SKIP-ITM-FL == "N")
+    if (OB0TW01.OB0TW-ITM-DECR-FL == "Y")
+      OB0TS-SET-CA-STAT(); /* setup cleared avail status*/
+    else
+      if (OBOREC.OBO-TOT-QTY-REQ-FL == "N") /* not all qty is reqrd*/
+        OB0TS-SET-FOR-PUSH(); /* setup both cleared and failed stat*/
+        OB0TS-SET-FA-STAT(); /* setup failed avail status*/
+      else
+        OB0TS-SET-FA-STAT(); /* setup failed avail status*/
+      end
+    end
+  end
+
+
+
+end // end OB0TS-DECR-AVAIL
+
+// DECREMENT BULK
+Function OB0TS-DECR-BULK()
+
+
+  OB0TW01.OB0TW-BULK-ID = OB1REC.OP1BLKID;
+
+  OB0TS-INIT-OBQREC(); /* initialize OB1130 passing rec*/
+  OB0TS-CALL-OB1130(); /* decr qtys via OB1130*/
+
+  if (OB0TW01.OB0TW-SKIP-ITM-FL == "N")
+    if (OB0TW01.OB0TW-ITM-DECR-FL == "Y")
+      OB0TS-UPD-OB3REC();
+      OB0TS-SET-CA-STAT();
+      OB0TS-UPD-BULK-HDR();
+    else
+      if (OBQREC.OBQ-TTL-DRAW-QTY > 0)
+        OB0TS-DRAW-PUSH(); /* setup both cleared and failed stat*/
+        OB0TS-SET-FA-STAT(); /* setup failed avail status*/
+      else
+        OB0TS-SET-FA-STAT(); /* setup failed avail status*/
+      end
+    end
+  end
+
+
+
+end // end OB0TS-DECR-BULK
+
+// DECREMENT SUBORDER ITEMS
+Function OB0TS-DECR-SUBORD()
+
+
+  while (OB0TW01.OB0TW-EOF-FL == "N"
+   && OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+
+    OB0TS-NXT-OB3REC(); /* fetch next item-size rec*/
+
+    if (OB0TW01.OB0TW-EOF-FL == "N" /* item/size rec found*/
+     && OB0TW01.OB0TW-RETURN-FL == "N"
+     && OB0TW01.OB0TW-ABEND-FL == "N")
+
+      OB0TW01.OB0TW-SKIP-ITM-FL = "N";
+      OB0TW01.OB0TW-ITM-DECR-FL = "Y";
+
+      if (OB0TW01.OB0TW-DRAW-FL == "N")
+        OB0TS-DECR-AVAIL(); /* decrement availablity*/
+      else
+        OB0TS-DECR-BULK(); /* decrement bulk*/
+      end
+
+    end
+  end
+
+   /* UPDATE BULK HEADER FOR LAST SUBORDER DECREMENTED*/
+
+  if (OB0TW01.OB0TW-EOF-FL == "Y"    /* no more items*/
+   && OB0TW01.OB0TW-RETURN-FL == "N" /* no db2 problems*/
+   && OB0TW01.OB0TW-ABEND-FL == "N") /* or abends*/
+    if (OB0TW01.OB0TW-DRAW-FL != "N"       /* order is a draw*/
+     && OBQREC.OP1CUOID == OP1REC.OP1CUOID /* bulk header selected*/
+     && OBQREC.OP1NORID == OP1REC.OP1NORID /* qtys changed*/
+     && OP1REC.OP1CUOID > 0                /* BULK HEADER EXISTS*/
+     && OP1REC.OP1NORID > 0)              
+      OB0TS-UPD-OP1REC(); /* then update it*/
+    end
+  end
+
+
+end // end OB0TS-DECR-SUBORD
+
+Function OB0TS-DRAW-PUSH()
+
+
+  OB0TW01.OB3GROUP = OB3REC.OB3GROUP; /* save ob3rec*/
+
+  OB0TS-GET-MAX-NBR(); /* get the max line item number*/
+
+  OB0TS-SPLIT-CA-DRW(); /* split 'CA' item qty*/
+
+  OB0TS-UPD-BULK-HDR();
+
+  OB3REC.OB3GROUP = OB0TW01.OB3GROUP; /* restore ob3rec*/
+
+  OB0TS-UPD-FA-DRW(); /* update 'FA' item qty*/
+
+
+end // end OB0TS-DRAW-PUSH
+
+// EVALUATE RETURNED AVAIL QTYS
+Function OB0TS-EVAL-AVL-QTY()
+
+
+  if (OBOREC.OBO-SMART-RSRV-FL == "Y")
+    OB0TW01.OB0TW-ITM-DECR-FL = "N";
+    OB0TW01.OB6MSGNB = "012";
+  else
+    OB0TW01.OB0TW-SUB = 1;
+    while (OB0TW01.OB0TW-SUB <= 40
+     && OB0TW01.OB0TW-ITM-DECR-FL == "Y")
+
+      if (OB3REC.OP3ONOQT[OB0TW-SUB] == OBOREC.OP3ONOQT[OB0TW-SUB])
+        OB0TW01.OB0TW-SUB = OB0TW01.OB0TW-SUB + 1;
+      else
+        OB0TW01.OB0TW-ITM-DECR-FL = "N";
+        OB0TW01.OB6MSGNB = "007";
+      end
+    end
+  end
+
+
+end // end OB0TS-EVAL-AVL-QTY
+
+// EVALUATE RETURNED BULK QTYS
+Function OB0TS-EVAL-BLK-QTY()
+
+
+  if (OBQREC.OBQ-BULK-QTY-FND-FL == "Y")
+    if (OBQREC.OBQ-TTL-DRAW-QTY == OB3REC.OP2TONOQ)
+      /* continue*/
+    else
+      OB0TW01.OB0TW-ITM-DECR-FL = "N"; /* partial decremented*/
+      OB0TW01.OB6MSGNB = "010";
+    end
+  else
+    OB0TW01.OB0TW-ITM-DECR-FL = "N";
+    OB0TW01.OB6MSGNB = "010";
+  end
+
+
+end // end OB0TS-EVAL-BLK-QTY
+
+// EVALUATE DECREMENT STATUS
+Function OB0TS-EVAL-STATUS()
+
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+    if (OB0TW01.OB0TW-FA-FL == "Y") /* some items failed decrement*/
+      OB0TS-UPD-FA-ORD(); /* update failed avail subord*/
+    end
+  end
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+    if (OB0TW01.OB0TW-CA-FL == "Y") /* some items cleared decrement*/
+      OB0TW01.OP1NORID = OB0TW01.OB0TW-NEW-OP1NORID;
+
+      OB0TS-SEL-OB1REC(); /* read new suborder*/
+
+      if (OB0TW01.OB0TW-RETURN-FL == "N"
+       && OB0TW01.OB0TW-ABEND-FL == "N")
+        if (OB0TW01.OB0TW-FA-FL == "N")
+          /* no items failed decrement*/
+
+          OB0TW01.OB0TW-SUB = OBWREC.OBWTSF1S;
+          OBAREC.OBANORID[OB0TW-SUB] = OB1REC.OP1NORID;
+          OBAREC.YOBCD[OB0TW-SUB] = OB1REC.YOBCD;
+          OBAREC.OB1ERRFL[OB0TW-SUB] = OB1REC.OB1ERRFL;
+          OBAREC.OB1PARLF[OB0TW-SUB] = OB1REC.OB1PARLF;
+
+          OBWREC.OP1NORID = OB1REC.OP1NORID;
+          OBWREC.OBWNOID = OB1REC.OP1NORID;
+          OBWREC.YOBCD = OB1REC.YOBCD;
+        end
+      end
+    end
+
+    if (OB0TW01.OB0TW-RETURN-FL == "N"
+     && OB0TW01.OB0TW-ABEND-FL == "N")
+      XSOBT1U(); /* update temp storage 1 - orders*/
+
+      if (OB0TW01.OB0TW-CA-FL == "Y"
+       && OB0TW01.OB0TW-FA-FL == "Y")
+        OB0TS-ADD-OBAREC(); /* add 'CA' subord to temp storage*/
+
+        OBWREC.CAMSG = "PART OF THIS ORDER HAS CLEARED AVAILABILITY";
+      end
+    end
+  end
+
+
+end // end OB0TS-EVAL-STATUS
+
+// GET LAST PAGE OF TEMP STORAGE
+Function OB0TS-GET-LAST-PG()
+
+
+  if (OBWREC.OBWTSF1M != OBWREC.OBWTSF1P)
+    OBWREC.OBWTSF1P = OBWREC.OBWTSF1M;
+
+    XSOBT1R(); /* read temp storage 1 (orders)*/
+  end
+
+  sysVar.arrayIndex = 1; /* init subscript*/
+  if (0 in OBAREC.OBACUOID from sysVar.arrayIndex) /* vacant slot on last page*/
+    OB0TW01.OBWTSF1S = sysVar.arrayIndex;
+  else
+    OB0TW01.OB0TW-LAST-PG = OB0TW01.OB0TW-LAST-PG + 1;
+    OB0TW01.OBWTSF1S = 1; /* set subscript to first line*/
+    set OBAREC empty; /* clear for new page*/
+  end
+
+
+end // end OB0TS-GET-LAST-PG
+
+// GET THE MAX LINE ITEM NUMBER
+Function OB0TS-GET-MAX-NBR()
+
+
+  set OB2REC empty;
+  set OBKREC empty;
+  set SQLCA empty;
+
+  OB2REC.OP1PARTN = OB1REC.OP1PARTN;
+  OB2REC.OP1CUOID = OB1REC.OP1CUOID;
+  OB2REC.OP1NORID = -1;
+
+  OBKREC.OBKTASK = "MC";
+
+  call "IO5170" (OBKREC, SQLCA, OB2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy - rollback occurred*/
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY, PRESS ENTER TO RETRY DECREMENT/LOAD PROCESSES";
+    else /* db2 error - no rollback has occurred*/
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      move SQLCA to ERRSQLCA withV60Compat;
+
+      TA1REC.TA1DBASE = "DORDB   "; /* data base name*/
+      TA1REC.TA1TBLVU = "VBITEM01"; /* table view*/
+      TA1REC.TA1LOC = "MC IO5170 OB0TS-GET-MAX-NBR";
+    end
+  end
+
+
+end // end OB0TS-GET-MAX-NBR
+
+// SET LIFE CYCLE CODE
+Function OB0TS-GET-XLCCD()
+
+
+  if (SYCREC.SY2CEDT1 <= OBWREC.ZZZCHGDT
+   && SYCREC.XLCCD1 != "  ")
+    OBOREC.XLCCD = SYCREC.XLCCD1;
+  else
+    if (SYCREC.SY2CEDT2 <= OBWREC.ZZZCHGDT
+     && SYCREC.XLCCD2 != "  ")
+      OBOREC.XLCCD = SYCREC.XLCCD2;
+    else
+      if (SYCREC.SY2CEDT3 <= OBWREC.ZZZCHGDT
+       && SYCREC.XLCCD3 != "  ")
+        OBOREC.XLCCD = SYCREC.XLCCD3;
+      else
+        if (SYCREC.SY2CEDT4 <= OBWREC.ZZZCHGDT
+         && SYCREC.XLCCD4 != "  ")
+          OBOREC.XLCCD = SYCREC.XLCCD4;
+        end
+      end
+    end
+  end
+
+
+end // end OB0TS-GET-XLCCD
+
+// INITIALIZE OB1090 PASSING REC
+Function OB0TS-INIT-OBOREC()
+
+
+  set OBOREC empty; /* initialize decrement passing rec*/
+
+  if (OB3REC.OB-PART-AVAL-FL == "Y")
+    OBOREC.OBO-TOT-QTY-REQ-FL = "N";
+  else
+    OBOREC.OBO-TOT-QTY-REQ-FL = "Y";
+  end
+
+  OBOREC.OP1CUNDT = OB1REC.OP1CUNDT;
+  OBOREC.XOTCD = OB1REC.XOTCD;
+  OBOREC.XOCCD = OB1REC.XOCCD;
+  OBOREC.XBCCD = OB1REC.XBCCD;
+  OBOREC.XDSCD = OB1REC.XDSCD;
+  OBOREC.XWHCD = OB1REC.XWHCD;
+  OBOREC.XGPCD = OB1REC.XGPCD;
+  OBOREC.SY1STNBR = OB3REC.SY1STNBR;
+  OBOREC.SY2CLRID = OB3REC.SY2CLRID;
+  OBOREC.XDMCD = OB3REC.XDMCD;
+  OBOREC.XQACD = OB3REC.XQACD;
+  OBOREC.XOWCD = OB3REC.XOWCD;
+  OBOREC.PC2INSEG = OB3REC.PC2INSEG;
+  OBOREC.XEGCD = OB3REC.XEGCD;
+  OBOREC.XPGCD = OB3REC.XPGCD;
+  OBOREC.XUMCD = OB3REC.XUMCD;
+
+  OB0TW01.OB0TW-SUB = 1;
+  while (OB0TW01.OB0TW-SUB <= 40)
+    if (OB3REC.OP3SZAFL[OB0TW-SUB] == "Y")
+      OBOREC.OP3ONOQT[OB0TW-SUB] = OB3REC.OP3ONOQT[OB0TW-SUB];
+    end
+
+    OB0TW01.OB0TW-SUB = OB0TW01.OB0TW-SUB + 1;
+  end
+
+  OBOREC.ZZZCHGDT = OBWREC.ZZZCHGDT;
+  OBOREC.ZZZCHGTM = OBWREC.ZZZCHGTM;
+
+
+end // end OB0TS-INIT-OBOREC
+
+// INITIALIZE OB1130 PASSING REC
+Function OB0TS-INIT-OBQREC()
+
+
+  set OBQREC empty;
+
+  if (OB3REC.OB-PART-AVAL-FL == "Y")
+    OBQREC.OBQ-PARTIAL-QTY-ALW-FL = "Y";
+  else
+    OBQREC.OBQ-PARTIAL-QTY-ALW-FL = "N";
+  end
+
+  OB0TS-CHECK-RSRV();
+
+  OBQREC.OP1PARTN = OB0TW01.OB0TW-BULK-PART-CHAR;
+  OBQREC.OP1CUOID = OB1REC.OP1BLKID;
+  OBQREC.OP1NORID = OB3REC.OPRBNOID;
+  OBQREC.XGPCD = OB3REC.XGPCD;
+  OBQREC.SY1STNBR = OB3REC.SY1STNBR;
+  OBQREC.SY2CLRID = OB3REC.SY2CLRID;
+  OBQREC.XDMCD = OB3REC.XDMCD;
+  OBQREC.XOWCD = OB3REC.XOWCD;
+  OBQREC.XUMCD = OB3REC.XUMCD;
+
+  OB0TW01.OB0TW-SUB = 1;
+  while (OB0TW-SUB <= 40)
+    OBQREC.OBQ-REQ-QTY[OB0TW-SUB] = OB3REC.OP3ONOQT[OB0TW-SUB];
+    OB0TW01.OB0TW-SUB = OB0TW01.OB0TW-SUB + 1;
+  end
+
+  OBQREC.ZZZCHGDT = OBWREC.ZZZCHGDT;
+  OBQREC.ZZZCHGTM = OBWREC.ZZZCHGTM;
+
+
+end // end OB0TS-INIT-OBQREC
+
+// INITIALIZE APPLICATION
+Function OB0TS-INIT-RECS()
+
+
+  set OP1REC empty;
+  set OBQREC empty;
+  set TAEREC empty;
+  set TA1REC empty;
+  set TA5REC empty;
+
+  set OB0TW01 empty; /* initialize appl w/s records*/
+
+  OB0TW01.OBWTSF1P = OBWREC.OBWTSF1P;
+  OB0TW01.OBWTSF1S = OBWREC.OBWTSF1S;
+
+  OB0TW01.OP1PARTN = OBWREC.OP1PARTN;
+  OB0TW01.OP1CUOID = OBWREC.OP1CUOID;
+  OB0TW01.OP1NORID = OBWREC.OP1NORID;
+
+  OB0TW01.OB0TW-ORG-OP1NORID = OBWREC.OP1NORID;
+
+  OB0TW01.OBAMSEL = "V";
+
+
+end // end OB0TS-INIT-RECS
+
+// FETCH NEXT ITEM/SIZE REC
+Function OB0TS-NXT-OB3REC()
+
+
+  set OB3REC empty;
+  set OBSFREC empty;
+
+  OB3REC.OP1PARTN = OB1REC.OP1PARTN; /* part char*/
+  OB3REC.OP1CUOID = OB1REC.OP1CUOID; /* customer order id*/
+  OB3REC.OP1NORID = OB1REC.OP1NORID; /* nike order id*/
+
+  OBSFREC.OBSF-TASK = "SN";
+  OBSFREC.OBSF-CALLER-LOCATION = "SN OB1690 OB0TS-NXT-OB3REC";
+  OBSFREC.OBSF-CALLING-APPL = "OB0T";
+  OBSFREC.OB3GROUP = OB3REC.OB3GROUP;
+  OBSFREC.OBSF-RETURN-CD = 99;
+
+  call "OB1690" (OBSFREC) {isNoRefresh = yes, isExternal = yes};
+
+  OB3REC.OB3GROUP = OBSFREC.OB3GROUP;
+
+  if (OBSFREC.OBSF-RETURN-CD == 0) /* good return*/
+     /* continue*/
+  else
+    if (OBSFREC.OBSF-RETURN-CD == 1) /* end of file*/
+      OB0TW01.OB0TW-EOF-FL = "Y";
+    else
+      if (OBSFREC.OBSF-RETURN-CD == 14
+       || OBSFREC.OBSF-RETURN-CD == 15)
+         /* -911 on item or size*/
+
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+      else
+         /* bad return code*/
+
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+        TA1REC.TA1LOC = "SN OB1690 OB0TS-NXT-OB3REC";
+        TAEREC.TAEDESC1 = OBSFREC.OBSF-DIAG-KEY;
+      end
+    end
+  end
+
+
+end // end OB0TS-NXT-OB3REC
+
+// OCD DEL ORIG ITM-Partial Alloc
+Function OB0TS-OCD-DEL-ITEM()
+
+  if (OB0TW01.OB0TW-OCD-FOUND-FL == "Y") /* original OCD item was found*/
+
+    /* --- Delete the Original OCD Item row ---*/
+
+    set VOCITM01 empty;
+    set SQLCA empty;
+
+    /* --- Get original line item nbr ---*/
+    OB3REC.OP2LNINB = OB0TW01.OB0TW-ORIG-OP2LNINB;
+
+    VOCITM01.OP1PARTN = OB3REC.OP1PARTN; /* ord part char*/
+    VOCITM01.OP1CUOID = OB3REC.OP1CUOID; /* cust ord id*/
+    VOCITM01.OP1NORID = OB3REC.OP1NORID; /* nike ord id*/
+    VOCITM01.OP2LNINB = OB3REC.OP2LNINB; /* line item nbr*/
+    VOCITM01.SOCD-APPL-SRC-CD = "OB";
+
+    call "VOCITM01" ("D ", SQLCA, VOCITM01) {isNoRefresh = yes, isExternal = yes};
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* OCD Item row deleted*/
+      /* --- continue ---*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+      else
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        move SQLCA to ERRSQLCA withV60Compat;
+
+        TA1REC.TA1DBASE = "DORDCD  "; /* database name*/
+        TA1REC.TA1TBLVU = "VOCITM01"; /* table view*/
+        TA1REC.TA1LOC = "D VOCITM01 OB0TS-OCD-DEL-ITEM";
+      end
+    end
+
+    /* --- Delete the Original OCD Size rows ---*/
+    OB0TS-OCD-DEL-SIZE();
+  end
+
+end // end OB0TS-OCD-DEL-ITEM
+
+// OCD DEL ORIG SIZ-Partial Alloc
+Function OB0TS-OCD-DEL-SIZE()
+
+   /* --- Delete the Original OCD Size rows ---*/
+
+  set VOCSIZ01 empty;
+  set SQLCA empty;
+
+  VOCSIZ01.OP1PARTN = OB3REC.OP1PARTN; /* ord part char*/
+  VOCSIZ01.OP1CUOID = OB3REC.OP1CUOID; /* cust ord id*/
+  VOCSIZ01.OP1NORID = OB3REC.OP1NORID; /* nike ord id*/
+  VOCSIZ01.OP2LNINB = OB3REC.OP2LNINB; /* line item nbr*/
+  VOCSIZ01.SOCD-APPL-SRC-CD = "OB";
+
+  while (OB0TW-SZ-ROW-CNT > 0)
+
+    VOCSIZ01.OP-SZ-GRP-SEQ = OB0TW-SZ-ROW-CNT-CHAR;
+
+    call "VOCSIZ01" ("D ", SQLCA, VOCSIZ01) {isNoRefresh = yes, isExternal = yes};
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* OCD Size row deleted*/
+      /* --- continue ---*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+      else
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        move SQLCA to ERRSQLCA withV60Compat;
+
+        TA1REC.TA1DBASE = "DORDCD  "; /* database name*/
+        TA1REC.TA1TBLVU = "VOCSIZ01"; /* table view*/
+        TA1REC.TA1LOC = "D VOCSIZ01 OB0TS-OCD-DEL-SIZE";
+      end
+    end
+
+    OB0TW-SZ-ROW-CNT = OB0TW-SZ-ROW-CNT - 1; /* decrement size row cnt*/
+  end
+
+end // end OB0TS-OCD-DEL-SIZE
+
+// OCD GET SIZ ROW-Partial Alloc
+Function OB0TS-OCD-GET-SIZE()
+
+   /* --- Fetch the next Original size row ---*/
+
+  set SQLCA empty;
+
+  call "VOCSIZ01" ("N1", SQLCA, VOCSIZ01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* OCD Size row found*/
+   || SQLCA.VAGen_SQLCODE == 100) /* no more OCD size rows*/
+
+    /* --- continue ---*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+    else
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      move SQLCA to ERRSQLCA withV60Compat;
+
+      TA1REC.TA1DBASE = "DORDCD  "; /* database name*/
+      TA1REC.TA1TBLVU = "VOCSIZ01"; /* table view*/
+      TA1REC.TA1LOC = "N1 VOCSIZ01 OB0TS-OCD-GET-SIZE";
+    end
+  end
+
+end // end OB0TS-OCD-GET-SIZE
+
+// OCD INS NEW ITM-Partial Alloc
+Function OB0TS-OCD-INS-ITEM()
+   /* ------------------------------------------------------------*/
+   /* Insert the Original item row with the new line item number.*/
+   /* Then for each original size row insert a size row with the*/
+   /* new line item number.*/
+   /* ------------------------------------------------------------*/
+
+  if (OB0TW01.OB0TW-OCD-FOUND-FL == "Y") /* original OCD item was found*/
+    set SQLCA empty;
+
+    /* --- Insert new line item row ---*/
+    VOCITM01.OP2LNINB = OB3REC.OP2LNINB; /* new line item nbr*/
+
+    call "VOCITM01" ("A ", SQLCA, VOCITM01) {isNoRefresh = yes, isExternal = yes};
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* OCD Item inserted*/
+
+      /* --- OCD size processing ---*/
+      OB0TS-OCD-NEW-SIZE();
+    else
+      if (SQLCA.VAGen_SQLCODE == -803) /* duplicate row msg is allowed*/
+        /* --- continue ---*/
+      else
+        if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+
+          OB0TW01.OB0TW-RETURN-FL = "Y";
+          OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOADPROCESS";
+        else
+          OB0TW01.OB0TW-ABEND-FL = "Y";
+          move SQLCA to ERRSQLCA withV60Compat;
+
+          TA1REC.TA1DBASE = "DORDCD  "; /* database name*/
+          TA1REC.TA1TBLVU = "VOCITM01"; /* table view*/
+          TA1REC.TA1LOC = "A VOCITM01 OB0TS-OCD-INS-ITEM";
+        end
+      end
+    end
+  end
+
+end // end OB0TS-OCD-INS-ITEM
+
+// OCD INS NEW SIZ-Partial Alloc
+Function OB0TS-OCD-INS-SIZE()
+   /* ------------------------------------------------------------*/
+   /* Insert the Original size row with the new line item number.*/
+   /* ------------------------------------------------------------*/
+
+  set SQLCA empty;
+  VOCSIZ01.OP2LNINB = OB3REC.OP2LNINB; /* new line item nbr*/
+  VOCSIZ01.OP-SZ-GRP-SEQ = OB0TW01.OB0TW-SZ-ROW-CNT; /* size seq*/
+
+  call "VOCSIZ01" ("A ", SQLCA, VOCSIZ01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0    /* OCD Item inserted*/
+   || SQLCA.VAGen_SQLCODE == -803 /* duplicate row msg is allowed*/
+  )                              
+    /* --- continue ---*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+    else
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      move SQLCA to ERRSQLCA withV60Compat;
+
+      TA1REC.TA1DBASE = "DORDCD  "; /* database name*/
+      TA1REC.TA1TBLVU = "VOCSIZ01"; /* table view*/
+      TA1REC.TA1LOC = "A VOCSIZ01 OB0TS-OCD-INS-SIZE";
+    end
+  end
+
+end // end OB0TS-OCD-INS-SIZE
+
+// OCD NEW SIZES - Partial Alloc
+Function OB0TS-OCD-NEW-SIZE()
+   /* ------------------------------------------------------------*/
+   /* Select the Original OCD size rows. For each row selected*/
+   /* insert a size row with new line item number.*/
+   /* ------------------------------------------------------------*/
+
+  set VOCSIZ01 empty;
+  set SQLCA empty;
+
+   /* --- Get the original OCD size rows ---*/
+  OB3REC.OP2LNINB = OB0TW01.OB0TW-ORIG-OP2LNINB;
+
+  VOCSIZ01.OP1PARTN = OB3REC.OP1PARTN; /* ord part char*/
+  VOCSIZ01.OP1CUOID = OB3REC.OP1CUOID; /* cust ord id*/
+  VOCSIZ01.OP1NORID = OB3REC.OP1NORID; /* nike ord id*/
+  VOCSIZ01.OP2LNINB = OB3REC.OP2LNINB; /* line item nbr*/
+  VOCSIZ01.SOCD-APPL-SRC-CD = "OB";
+
+  call "VOCSIZ01" ("S1", SQLCA, VOCSIZ01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* --- continue ---*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+    else
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      move SQLCA to ERRSQLCA withV60Compat;
+
+      TA1REC.TA1DBASE = "DORDCD  "; /* database name*/
+      TA1REC.TA1TBLVU = "VOCSIZ01"; /* table view*/
+      TA1REC.TA1LOC = "S1 VOCSIZ01 OB0TS-OCD-NEW-SIZE";
+    end
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OB0TS-OCD-GET-SIZE(); /* fetch original size row*/
+    OB3REC.OP2LNINB = OBKREC.OBKMAX + 1; /* max line item number + 1*/
+  end
+
+  while (SQLCA.VAGen_SQLCODE == 0)
+
+    OB0TW-SZ-ROW-CNT = OB0TW-SZ-ROW-CNT + 1; /* increment size row cnt*/
+
+    OB0TS-OCD-INS-SIZE(); /* insert new size row*/
+    OB0TS-OCD-GET-SIZE(); /* fetch next size row*/
+  end
+
+   /* --- Close OCD Original size csr ---*/
+
+  set SQLCA empty;
+  call "VOCSIZ01" ("C1", SQLCA, VOCSIZ01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* --- continue ---*/
+  else
+    OB0TW01.OB0TW-ABEND-FL = "Y";
+    move SQLCA to ERRSQLCA withV60Compat;
+
+    TA1REC.TA1DBASE = "DORDCD  "; /* database name*/
+    TA1REC.TA1TBLVU = "VOCSIZ01"; /* table view*/
+    TA1REC.TA1LOC = "C1 VOCSIZ01 OB0TS-OCD-NEW-SIZE";
+  end
+
+end // end OB0TS-OCD-NEW-SIZE
+
+// OCD SEL ORIG ITM-Partial Alloc
+Function OB0TS-OCD-SEL-ITEM()
+
+   /* --- Select the Original OCD Item row ---*/
+
+  set VOCITM01 empty;
+  set SQLCA empty;
+
+  OB0TW01.OB0TW-OCD-FOUND-FL = "N";
+  OB0TW01.OB0TW-SZ-ROW-CNT = 0;
+  OB0TW01.OB0TW-ORIG-OP2LNINB = 0;
+
+   /* --- Get the original OCD Item row ---*/
+  VOCITM01.OP1PARTN = OB3REC.OP1PARTN; /* ord part char*/
+  VOCITM01.OP1CUOID = OB3REC.OP1CUOID; /* cust ord id*/
+  VOCITM01.OP1NORID = OB3REC.OP1NORID; /* nike ord id*/
+  VOCITM01.OP2LNINB = OB3REC.OP2LNINB; /* line item nbr*/
+  VOCITM01.SOCD-APPL-SRC-CD = "OB";
+
+  call "VOCITM01" ("S ", SQLCA, VOCITM01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* OCD Item row found*/
+
+    /* --- set OCD item record found flag ---*/
+    OB0TW-OCD-FOUND-FL = "Y";
+    OB0TW01.OB0TW-ORIG-OP2LNINB = OB3REC.OP2LNINB;
+
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* OCD Item row not found*/
+      /* --- continue ---*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+      else
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        move SQLCA to ERRSQLCA withV60Compat;
+
+        TA1REC.TA1DBASE = "DORDCD  "; /* database name*/
+        TA1REC.TA1TBLVU = "VOCITM01"; /* table view*/
+        TA1REC.TA1LOC = "S VOCITM01 OB0TS-OCD-SEL-ITEM";
+      end
+    end
+  end
+
+end // end OB0TS-OCD-SEL-ITEM
+
+// OPEN ITEM/SIZE CURSOR
+Function OB0TS-OPN-OB3REC()
+
+
+  set OB3REC empty;
+  set OBSFREC empty;
+
+  OB3REC.OP1PARTN = OB1REC.OP1PARTN; /* part char*/
+  OB3REC.OP1CUOID = OB1REC.OP1CUOID; /* customer order id*/
+  OB3REC.OP1NORID = OB1REC.OP1NORID; /* nike order id*/
+
+  OBSFREC.OBSF-TASK = "SS";
+  OBSFREC.OBSF-CALLER-LOCATION = "SS OB1690 OB0TS-OPN-OB3REC";
+  OBSFREC.OBSF-CALLING-APPL = "OB0T";
+  OBSFREC.OB3GROUP = OB3REC.OB3GROUP;
+  OBSFREC.OBSF-RETURN-CD = 99;
+
+  call "OB1690" (OBSFREC) {isNoRefresh = yes, isExternal = yes};
+
+  OB3REC.OB3GROUP = OBSFREC.OB3GROUP;
+
+  if (OBSFREC.OBSF-RETURN-CD == 0) /* good return*/
+     /* continue*/
+  else
+    if (OBSFREC.OBSF-RETURN-CD == 14 /* -911 on item or size*/
+     || OBSFREC.OBSF-RETURN-CD == 15)
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESSES";
+    else
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+      TA1REC.TA1LOC = "SS OB1690 OB0TS-OPN-OB3REC";
+      TAEREC.TAEDESC1 = OBSFREC.OBSF-DIAG-KEY;
+    end
+  end
+
+
+end // end OB0TS-OPN-OB3REC
+
+// SELECT ORDER HEADER VIA IO5160
+Function OB0TS-SEL-OB1REC()
+
+
+  set OBFREC empty;
+  set OB1REC empty;
+  set SQLCA empty;
+
+  OB1REC.OP1PARTN = OB0TW01.OP1PARTN;
+  OB1REC.OP1CUOID = OB0TW01.OP1CUOID;
+  OB1REC.OP1NORID = OB0TW01.OP1NORID;
+
+  OBFREC.OBFTASK = "S ";
+
+  call "IO5160" (OBFREC, SQLCA, OB1REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy - rollback occurred*/
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY, PRESS ENTER TO RETRY DECREMENT/LOAD PROCESSES";
+    else /* db2 error - no rollback has occurred*/
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      move SQLCA to ERRSQLCA withV60Compat;
+
+      TA1REC.TA1DBASE = "DORDB   "; /* data base name*/
+      TA1REC.TA1TBLVU = "VOBHDR01"; /* table view*/
+      TA1REC.TA1LOC = "S IO5160 OB0TS-SEL-OB1REC";
+    end
+  end
+
+
+end // end OB0TS-SEL-OB1REC
+
+// SELECT OP1REC VIA IO0430
+Function OB0TS-SEL-OP1REC()
+
+  OP1REC.OP1PARTN = OBQREC.OP1PARTN;
+  OP1REC.OP1CUOID = OBQREC.OP1CUOID;
+  OP1REC.OP1NORID = OBQREC.OP1NORID;
+
+  set SQLCA empty;
+
+  call "IO0430" ("S ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* i/o mod-select scan*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* somebody else has changed order*/
+      OB0TW01.OB0TW-ROLLBACK-FL = "Y";
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OB0TW01.OBAMSEL = "C";
+      OBWREC.CAMSG = "ORDER CHANGED BY OTHER PROCESS - RESELECT TO VIEW CHANGES";
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+      else
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        move SQLCA to ERRSQLCA withV60Compat;
+
+        TA1REC.TA1DBASE = "DORDER  "; /* data base name*/
+        TA1REC.TA1TBLVU = "VORHDR01"; /* table view*/
+        TA1REC.TA1LOC = "S IO0430 OB0TS-SEL-OP1REC";
+      end
+    end
+  end
+
+
+end // end OB0TS-SEL-OP1REC
+
+// SELECT SYCREC (VCOLOR02)
+Function OB0TS-SEL-SYCREC()
+
+
+  set SYCREC empty;
+  set SQLCA empty;
+
+  SYCREC.XGPCD = OB3REC.XGPCD; /* gpc code*/
+  SYCREC.SY1STNBR = OB3REC.SY1STNBR; /* style*/
+  SYCREC.SY2CLRID = OB3REC.SY2CLRID; /* color*/
+  SYCREC.XDMCD = OB3REC.XDMCD; /* dimension*/
+
+  call "IO0560" ("S ", SQLCA, SYCREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* good return*/
+
+    /* CANADA 08/02/95*/
+    /* Added call to SY2000 for all apparel GPC 03 orders - 03/22/99*/
+    /* - kramse*/
+
+    if (OB1REC.XDZ-DATA-DIST-CD == "CA" /* CANA Canadian customer*/
+     || SYCREC.XGPCD == "03")          
+
+      /* format ta1rec in case of bad return code from call to SY2000*/
+
+      TA1REC.TA1PGMNM = "OB0T"; /* program name*/
+      TA1REC.TA1LOC = "OB0TS-SEL-SYCREC"; /* sgrp name*/
+
+      XSOB-CALL-SY2000(); /* call SY2000 to get*/
+                                   /* product/region record*/
+
+      if (WSY2000.WSY2000-RETURN-CODE == 0) /* row found*/
+        /* continue*/
+      else
+        OB0TW01.OB0TW-SKIP-ITM-FL = "Y";
+        if (WSY2000.WSY2000-RETURN-CODE == 98) /* database busy*/
+          OB0TW01.OB0TW-RETURN-FL = "Y";
+          OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+        else
+          if (WSY2000.WSY2000-RETURN-CODE == 02) /* row not found*/
+            /* continue*/
+          else /* CANA DB2 fatal error*/
+            OB0TW01.OB0TW-ABEND-FL = "Y";
+            move SQLCA to ERRSQLCA withV60Compat;
+
+            TA1REC.TA1DBASE = "DPROD   "; /* data base name*/
+            TA1REC.TA1TBLVU = "VSYREG02"; /* table view*/
+            TA1REC.TA1LOC = "S SY2000 OB0TS-SEL-SYCREC";
+          end
+        end
+      end
+    else /* product found on DPROD.VCOLOR02*/
+      /* continue*/
+    end
+  else
+    OB0TW01.OB0TW-SKIP-ITM-FL = "Y";
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* rec not found*/
+       /* continue*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+      else
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        move SQLCA to ERRSQLCA withV60Compat;
+
+        TA1REC.TA1DBASE = "DPROD   "; /* data base name*/
+        TA1REC.TA1TBLVU = "VCOLOR02"; /* table view*/
+        TA1REC.TA1LOC = "S IO0560 OB0TS-SEL-SYCREC";
+      end
+    end
+  end
+end // end OB0TS-SEL-SYCREC
+
+// SET ALLOCATION FLAG
+Function OB0TS-SET-ALOC-FL()
+
+  if (OB1REC.OP1CUNDT <= OBWREC.ZZZCHGDT
+   && OP1REC.XAHCD == " ")
+     /* need date = today's date*/
+
+    sysVar.arrayIndex = 1;
+    if (OP1REC.XOTCD in XOTTBL.XOTCD from sysVar.arrayIndex)
+      if (XOTTBL.XOTOALOC[sysVar.arrayIndex] == "Y"
+       && XOTTBL.XOTATONF[sysVar.arrayIndex] == "Y"
+       /* TT10153      02/12/01     GSUNDA  start***/
+       && OP1REC.XPACD != "CU")
+  /* TT10153      02/12/01     GSUNDA  end  ***/
+         /* order type allows on-line allocation*/
+         /* order type is an at-once*/
+
+        sysVar.arrayIndex = 1;
+        if (OP1REC.XBDCD in XBDTBL.XBDCD from sysVar.arrayIndex)
+          if (XBDTBL.XBDBKOFL[sysVar.arrayIndex] == "N"
+          ) /* order is not a bulk order*/
+
+            OB0TW01.OB0TW-ALOC-FL = "Y";
+          end
+        end
+      end
+    end
+  end
+
+
+end // end OB0TS-SET-ALOC-FL
+
+// SETUP CLEARED AVAIL STATUS
+Function OB0TS-SET-CA-STAT()
+
+
+  OB0TW01.OB0TW-CA-FL = "Y";
+
+  OB0TS-CALL-OB1620(); /* split item to 'CA' suborder*/
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+    OB0TW01.OB0TW-NEW-OP1NORID = OBSSREC.OBSS-NEW-NIKE-ORD-ID;
+  end
+
+
+end // end OB0TS-SET-CA-STAT
+
+// SET DRAW ORDER FLAG
+Function OB0TS-SET-DRAW-FL()
+
+
+  OB0TW01.OB0TW-DRAW-FL = "N";
+
+  sysVar.arrayIndex = 1;
+  if (OB1REC.XBDCD in XBDTBL.XBDCD from sysVar.arrayIndex)
+    OB0TW01.OB0TW-DRAW-FL = XBDTBL.XBDRWOFL[sysVar.arrayIndex];
+  end
+
+
+end // end OB0TS-SET-DRAW-FL
+
+// SETUP FAILED AVAIL STATUS
+Function OB0TS-SET-FA-STAT()
+
+
+  OB0TW01.OB0TW-FA-FL = "Y";
+
+  set OB7REC empty;
+  set OBKREC empty;
+  set SQLCA empty;
+
+  OB7REC.OP1PARTN = OB1REC.OP1PARTN; /* part char*/
+  OB7REC.OP1CUOID = OB1REC.OP1CUOID; /* cust order id*/
+  OB7REC.OP1NORID = OB1REC.OP1NORID; /* nike order id*/
+  OB7REC.OP2LNINB = OB3REC.OP2LNINB; /* line item*/
+  OB7REC.OB6MSGNB = OB0TW01.OB6MSGNB; /* messg nbr*/
+  OB7REC.OB7MSGTP = "E"; /* message type*/
+  OB7REC.ZZZSDT = OBWREC.ZZZCHGDT;
+  OB7REC.ZZZSTM = OBWREC.ZZZCHGTM;
+  OB7REC.ZZZCHGDT = OBWREC.ZZZCHGDT;
+  OB7REC.ZZZCHGTM = OBWREC.ZZZCHGTM;
+
+  OBKREC.OBKTASK = "A ";
+
+  call "IO5210" (OBKREC, SQLCA, OB7REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* successful add*/
+   || SQLCA.VAGen_SQLCODE == -803) /* duplicate messg*/
+     /* continue*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* database busy - rollback occurred*/
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+    else /* database error*/
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      move SQLCA to ERRSQLCA withV60Compat;
+
+      TA1REC.TA1DBASE = "DORDB   ";
+      TA1REC.TA1TBLVU = "VOBMSG01";
+      TA1REC.TA1LOC = "A IO5210 OB0TS-SET-FA-STAT ";
+    end
+  end
+
+
+end // end OB0TS-SET-FA-STAT
+
+// SETUP FOR PUSHING AVAIL
+Function OB0TS-SET-FOR-PUSH()
+
+
+  OB0TW01.OB3GROUP = OB3REC.OB3GROUP; /* save ob3rec*/
+
+  OB0TS-GET-MAX-NBR(); /* get the max line item number*/
+
+  OB0TS-SPLIT-CA-QTY(); /* split 'CA' item qty*/
+
+  OB3REC.OB3GROUP = OB0TW01.OB3GROUP; /* restore ob3rec*/
+
+  OB0TS-UPD-FA-QTY(); /* update 'FA' item qty*/
+
+
+end // end OB0TS-SET-FOR-PUSH
+
+Function OB0TS-SPLIT-CA-DRW()
+
+
+  set OBSFREC empty;
+
+  OB3REC.OB-PART-AVAL-FL = " "; /* PARTIAL AVAIL OK FLAG*/
+
+  OB0TW01.OB0TW-CA-FL = "N";
+
+  OB0TW01.OB0TW-SUB = 1;
+  while (OB0TW-SUB <= 40)
+    OB3REC.OP3ONOQT[OB0TW-SUB] = 0;
+    if (OBQREC.OBQ-REQ-QTY[OB0TW-SUB] > 0)
+      OB3REC.OP3OHRQT[OB0TW-SUB] = OBQREC.OP3OHRQT[OB0TW-SUB];
+      OB3REC.OP3ONOQT[OB0TW-SUB] = OBQREC.OBQ-REQ-QTY[OB0TW-SUB];
+      OB3REC.OP3ORGQT[OB0TW-SUB] = OBQREC.OBQ-AVAIL-QTY[OB0TW-SUB];
+      OB0TW01.OB0TW-CA-FL = "Y";
+    end
+    if (OB3REC.OP3ONOQT[OB0TW-SUB] <= 0)
+      OB3REC.OP3SZAFL[OB0TW-SUB] = "N";
+    else
+      OB3REC.OP3SZAFL[OB0TW-SUB] = "Y";
+    end
+    OB0TW01.OB0TW-SUB = OB0TW01.OB0TW-SUB + 1;
+  end
+
+  if (OB0TW01.OB0TW-CA-FL == "N") /* nothing was decremented*/
+    return;
+  end
+
+   /* --- OCD Processing ---*/
+  OB0TS-OCD-SEL-ITEM(); /* Get original OCD item row*/
+  OB3REC.OP2LNINB = OBKREC.OBKMAX + 1; /* max line item number + 1*/
+
+   /* --- insert new OCD item row ---*/
+  OB0TS-OCD-INS-ITEM();
+
+   /* --- delete original OCD item row ---*/
+  OB0TS-OCD-DEL-ITEM();
+
+  OB3REC.OP2LNINB = OBKREC.OBKMAX + 1; /* max line item number + 1*/
+
+
+  OBSFREC.OBSF-TASK = "A ";
+  OBSFREC.OBSF-CALLER-LOCATION = "A OB1690 OB0TS-SPLIT-CA-QTY";
+  OBSFREC.OBSF-CALLING-APPL = "OB0T";
+  OBSFREC.OB3GROUP = OB3REC.OB3GROUP;
+  OBSFREC.OBSF-RETURN-CD = 99;
+
+  call "OB1690" (OBSFREC) {isNoRefresh = yes, isExternal = yes};
+
+  OB3REC.OB3GROUP = OBSFREC.OB3GROUP;
+
+  if (OBSFREC.OBSF-RETURN-CD == 0) /* good return*/
+    OB0TS-SET-CA-STAT(); /* setup cleared availability status*/
+  else
+    if (OBSFREC.OBSF-RETURN-CD == 14 /* -911 on item or size*/
+     || OBSFREC.OBSF-RETURN-CD == 15)
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESSES";
+    else
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+      TA1REC.TA1LOC = "A OB1690 OB0TS-SPLIT-CA-QTY";
+      TAEREC.TAEDESC1 = OBSFREC.OBSF-DIAG-KEY;
+    end
+  end
+
+
+end // end OB0TS-SPLIT-CA-DRW
+
+// SPLIT 'CA' ITEM QTY
+Function OB0TS-SPLIT-CA-QTY()
+
+  set OBSFREC empty;
+
+  OB3REC.OB-PART-AVAL-FL = " "; /* partial avail ok  flag*/
+
+  OB0TW01.OB0TW-CA-FL = "N";
+
+  OB0TW01.OB0TW-SUB = 1;
+  while (OB0TW-SUB <= 40)
+    OB3REC.OP3ONOQT[OB0TW-SUB] = 0;
+    if (OBOREC.OP3ONOQT[OB0TW-SUB] > 0)
+      OB3REC.OP3ONOQT[OB0TW-SUB] = OBOREC.OP3ONOQT[OB0TW-SUB];
+      OB0TW01.OB0TW-CA-FL = "Y";
+    end
+    if (OB3REC.OP3ONOQT[OB0TW-SUB] <= 0)
+      OB3REC.OP3SZAFL[OB0TW-SUB] = "N";
+    else
+      OB3REC.OP3SZAFL[OB0TW-SUB] = "Y";
+    end
+    OB0TW01.OB0TW-SUB = OB0TW01.OB0TW-SUB + 1;
+  end
+
+  if (OB0TW01.OB0TW-CA-FL == "N") /* nothing was decremented*/
+    return;
+  end
+
+   /* --- OCD Processing ---*/
+  OB0TS-OCD-SEL-ITEM(); /* Get original OCD item row*/
+  OB3REC.OP2LNINB = OBKREC.OBKMAX + 1; /* max line item number + 1*/
+
+   /* --- insert new OCD item row ---*/
+  OB0TS-OCD-INS-ITEM();
+
+   /* --- delete original OCD item row ---*/
+  OB0TS-OCD-DEL-ITEM();
+
+  OB3REC.OP2LNINB = OBKREC.OBKMAX + 1; /* max line item number + 1*/
+
+  OBSFREC.OBSF-TASK = "A ";
+  OBSFREC.OBSF-CALLER-LOCATION = "A OB1690 OB0TS-SPLIT-CA-QTY";
+  OBSFREC.OBSF-CALLING-APPL = "OB0T";
+  OBSFREC.OB3GROUP = OB3REC.OB3GROUP;
+  OBSFREC.OBSF-RETURN-CD = 99;
+
+  call "OB1690" (OBSFREC) {isNoRefresh = yes, isExternal = yes};
+
+  OB3REC.OB3GROUP = OBSFREC.OB3GROUP;
+
+  if (OBSFREC.OBSF-RETURN-CD == 0) /* good return*/
+    OB0TS-SET-CA-STAT(); /* setup cleared availability status*/
+  else
+    if (OBSFREC.OBSF-RETURN-CD == 14 /* -911 on item or size*/
+     || OBSFREC.OBSF-RETURN-CD == 15)
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESSES";
+    else
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+      TA1REC.TA1LOC = "A OB1690 OB0TS-SPLIT-CA-QTY";
+      TAEREC.TAEDESC1 = OBSFREC.OBSF-DIAG-KEY;
+    end
+  end
+
+
+end // end OB0TS-SPLIT-CA-QTY
+
+// UPDATE BULK HEADER
+Function OB0TS-UPD-BULK-HDR()
+
+  if (OP1REC.OP1CUOID == OBQREC.OP1CUOID
+   && OP1REC.OP1NORID == OBQREC.OP1NORID)
+    OP1REC.OP1OVALU = OP1REC.OP1OVALU - OB3REC.OP2LNIVL; /* ORDER VALUE*/
+    OP1REC.OP1OTUNT = OP1REC.OP1OTUNT - OB3REC.OP2TONOQ; /* ORDER UNITS*/
+  else
+    if (OP1REC.OP1CUOID == 0 /* FIRST ITEM SO SELECT HEADER*/
+     && OP1REC.OP1NORID == 0)
+      OB0TS-SEL-OP1REC();
+      OP1REC.OP1OVALU = OP1REC.OP1OVALU - OB3REC.OP2LNIVL; /* ORDER VALUE*/
+      OP1REC.OP1OTUNT = OP1REC.OP1OTUNT - OB3REC.OP2TONOQ; /* ORDER UNITS*/
+    else
+      OB0TS-UPD-OP1REC(); /* NIKE ORD ID CHANGED SO UPDATE OLD*/
+                                   /* BULK*/
+      OB0TS-SEL-OP1REC(); /* SELECT THE NEW BULK SUBORDER*/
+      OP1REC.OP1OVALU = OP1REC.OP1OVALU - OB3REC.OP2LNIVL; /* ORDER VALUE*/
+      OP1REC.OP1OTUNT = OP1REC.OP1OTUNT - OB3REC.OP2TONOQ; /* ORDER UNITS*/
+    end
+  end
+
+
+end // end OB0TS-UPD-BULK-HDR
+
+Function OB0TS-UPD-FA-DRW()
+
+
+  set OBSFREC empty;
+
+  OB3REC.OB-PART-AVAL-FL = " "; /* partial-avail-of flag*/
+  OB0TW01.OB0TW-CA-FL = "N";
+
+  OB0TW01.OB0TW-SUB = 1;
+  while (OB0TW-SUB <= 40)
+    if (OBQREC.OBQ-REQ-QTY[OB0TW-SUB] > 0)
+      OB3REC.OP3ONOQT[OB0TW-SUB] = OB3REC.OP3ONOQT[OB0TW-SUB] -       OBQREC.OBQ-REQ-QTY[OB0TW-SUB];
+      OB3REC.OP3ORGQT[OB0TW-SUB] = OB3REC.OP3ORGQT[OB0TW-SUB] -       OBQREC.OBQ-AVAIL-QTY[OB0TW-SUB];
+      if (OB3REC.OP3ORGQT[OB0TW-SUB] < 0)
+        OB3REC.OP3ORGQT[OB0TW-SUB] = 0;
+      end
+      OB0TW01.OB0TW-CA-FL = "Y";
+    end
+    if (OB3REC.OP3ONOQT[OB0TW-SUB] <= 0)
+      OB3REC.OP3SZAFL[OB0TW-SUB] = "N";
+    else
+      OB3REC.OP3SZAFL[OB0TW-SUB] = "Y";
+    end
+    OB0TW01.OB0TW-SUB = OB0TW01.OB0TW-SUB + 1;
+  end
+
+  if (OB0TW01.OB0TW-CA-FL == "N") /* nothing was decremented*/
+    return;
+  end
+
+  OBSFREC.OBSF-TASK = "U ";
+  OBSFREC.OBSF-CALLER-LOCATION = "U  OB1690 OB0TS-UPD-FA-QTY";
+  OBSFREC.OBSF-CALLING-APPL = "OB0T";
+  OBSFREC.OB3GROUP = OB3REC.OB3GROUP;
+  OBSFREC.OBSF-RETURN-CD = 99;
+
+  call "OB1690" (OBSFREC) {isNoRefresh = yes, isExternal = yes};
+
+  OB3REC.OB3GROUP = OBSFREC.OB3GROUP;
+
+  if (OBSFREC.OBSF-RETURN-CD == 0) /* good return*/
+    /* next sentence*/
+  else
+    if (OBSFREC.OBSF-RETURN-CD == 14 /* -911 on item or size*/
+     || OBSFREC.OBSF-RETURN-CD == 15)
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESSES";
+    else
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+      TA1REC.TA1LOC = "U  OB1690 OB0TS-UPD-FA-QTY";
+      TAEREC.TAEDESC1 = OBSFREC.OBSF-DIAG-KEY;
+    end
+  end
+
+
+end // end OB0TS-UPD-FA-DRW
+
+// UPDATE FAILED AVAIL SUBORDER
+Function OB0TS-UPD-FA-ORD()
+
+
+  OB1REC.YOBCD = "FA"; /* order status*/
+  OB1REC.OB1ERRFL = "Y"; /* error flag*/
+
+  if (OB0TW01.OB0TW-CA-FL == "Y") /* some items cleared decrement*/
+    OB1REC.OB1PARLF = "Y"; /* partial load flag*/
+  end
+
+  OB0TS-UPD-OB1REC(); /* update ob1rec status*/
+
+  if (OB0TW01.OB0TW-RETURN-FL == "N"
+   && OB0TW01.OB0TW-ABEND-FL == "N")
+     /* load temp storage with updated suborder information*/
+
+    OB0TW01.OB0TW-SUB = OBWREC.OBWTSF1S;
+    OBAREC.YOBCD[OB0TW-SUB] = OB1REC.YOBCD;
+    OBAREC.OB1ERRFL[OB0TW-SUB] = OB1REC.OB1ERRFL;
+    OBAREC.OB1PARLF[OB0TW-SUB] = OB1REC.OB1PARLF;
+    OBWREC.YOBCD = OB1REC.YOBCD;
+  end
+
+
+end // end OB0TS-UPD-FA-ORD
+
+// UPDATE 'FA' ITEM QTY
+Function OB0TS-UPD-FA-QTY()
+
+
+  set OBSFREC empty;
+
+  OB3REC.OB-PART-AVAL-FL = " "; /* partial avail ok flag*/
+  OB0TW01.OB0TW-CA-FL = "N";
+
+  OB0TW01.OB0TW-SUB = 1;
+  while (OB0TW-SUB <= 40)
+    if (OBOREC.OP3ONOQT[OB0TW-SUB] > 0)
+      OB3REC.OP3ONOQT[OB0TW-SUB] = OB3REC.OP3ONOQT[OB0TW-SUB] -       OBOREC.OP3ONOQT[OB0TW-SUB];
+      OB0TW01.OB0TW-CA-FL = "Y";
+    end
+    if (OB3REC.OP3ONOQT[OB0TW-SUB] <= 0)
+      OB3REC.OP3SZAFL[OB0TW-SUB] = "N";
+    else
+      OB3REC.OP3SZAFL[OB0TW-SUB] = "Y";
+    end
+    OB0TW01.OB0TW-SUB = OB0TW01.OB0TW-SUB + 1;
+  end
+
+  if (OB0TW01.OB0TW-CA-FL == "N") /* nothing was decremented*/
+    return;
+  end
+
+  OBSFREC.OBSF-TASK = "U ";
+  OBSFREC.OBSF-CALLER-LOCATION = "U  OB1690 OB0TS-UPD-FA-QTY";
+  OBSFREC.OBSF-CALLING-APPL = "OB0T";
+  OBSFREC.OB3GROUP = OB3REC.OB3GROUP;
+  OBSFREC.OBSF-RETURN-CD = 99;
+
+  call "OB1690" (OBSFREC) {isNoRefresh = yes, isExternal = yes};
+
+  OB3REC.OB3GROUP = OBSFREC.OB3GROUP;
+
+  if (OBSFREC.OBSF-RETURN-CD == 0) /* good return*/
+    /* next sentence*/
+  else
+    if (OBSFREC.OBSF-RETURN-CD == 14 /* -911 on item or size*/
+     || OBSFREC.OBSF-RETURN-CD == 15)
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESSES";
+    else
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+      TA1REC.TA1LOC = "U  OB1690 OB0TS-UPD-FA-QTY";
+      TAEREC.TAEDESC1 = OBSFREC.OBSF-DIAG-KEY;
+    end
+  end
+
+
+end // end OB0TS-UPD-FA-QTY
+
+// UPDATE OB1REC VIA IO5160
+Function OB0TS-UPD-OB1REC()
+
+
+  set OBFREC empty;
+  set SQLCA empty;
+  set VBULKS02 empty;
+
+  OBFREC.OBFTASK = "U ";
+
+  OB1REC.ZZZCHGDT = OBWREC.ZZZCHGDT; /* change date*/
+  OB1REC.ZZZCHGTM = OBWREC.ZZZCHGTM; /* change time*/
+
+  call "IO5160" (OBFREC, SQLCA, OB1REC) {isNoRefresh = yes, isExternal = yes}; /* i/o mod-select scan*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* next sentence*/
+
+    /* ********* TCS INCLUDE BEGIN *************/
+
+    VBULKS02.OP1PARTN = OB1REC.OP1PARTN;
+    VBULKS02.OP1CUOID = OB1REC.OP1CUOID;
+    VBULKS02.OP1NORID = OB1REC.OP1NORID;
+    OB0TS-CHECK-VBULK();
+
+    /* ********* TCS INCLUDE END ***************/
+
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* somebody else has changed order*/
+      OB0TW01.OB0TW-ROLLBACK-FL = "Y";
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OB0TW01.OBAMSEL = "C";
+      OBWREC.CAMSG = "ORDER CHANGED BY OTHER PROCESS - RESELECT TO VIEW CHANGES";
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+      else
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        move SQLCA to ERRSQLCA withV60Compat;
+
+        TA1REC.TA1DBASE = "DORDB   "; /* data base name*/
+        TA1REC.TA1TBLVU = "VOBHDR01"; /* table view*/
+        TA1REC.TA1LOC = "U IO5160 OB0TS-UPD-OB1REC";
+      end
+    end
+  end
+end // end OB0TS-UPD-OB1REC
+
+// OPEN ITEM/SIZE CURSOR
+Function OB0TS-UPD-OB3REC()
+
+
+  set OBSFREC empty;
+
+  OB3REC.OP1PARTN = OB1REC.OP1PARTN; /* part char*/
+  OB3REC.OP1CUOID = OB1REC.OP1CUOID; /* customer order id*/
+  OB3REC.OP1NORID = OB1REC.OP1NORID; /* nike order id*/
+
+  OB0TW01.OB0TW-SUB = 1;
+  while (OB0TW-SUB <= 40)
+    OB3REC.OP3OHRQT[OB0TW-SUB] = OBQREC.OP3OHRQT[OB0TW-SUB];
+    OB3REC.OP3ORGQT[OB0TW-SUB] = OBQREC.OBQ-AVAIL-QTY[OB0TW-SUB];
+    OB0TW01.OB0TW-SUB = OB0TW01.OB0TW-SUB + 1;
+  end
+
+  OBSFREC.OBSF-TASK = "U ";
+  OBSFREC.OBSF-CALLER-LOCATION = "U  OB1690 OB0TS-UPD-OB3REC";
+  OBSFREC.OBSF-CALLING-APPL = "OB0T";
+  OBSFREC.OB3GROUP = OB3REC.OB3GROUP;
+  OBSFREC.OBSF-RETURN-CD = 99;
+
+  call "OB1690" (OBSFREC) {isNoRefresh = yes, isExternal = yes};
+
+  OB3REC.OB3GROUP = OBSFREC.OB3GROUP;
+
+  if (OBSFREC.OBSF-RETURN-CD == 0) /* good return*/
+     /* continue*/
+  else
+    if (OBSFREC.OBSF-RETURN-CD == 14 /* -911 on item or size*/
+     || OBSFREC.OBSF-RETURN-CD == 15)
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESSES";
+    else
+      OB0TW01.OB0TW-ABEND-FL = "Y";
+      OB0TW01.OB0TW-ABEND-TYP-CD = "APPL";
+
+      TA1REC.TA1LOC = "U  OB1690 OB0TS-UPD-OB3REC";
+      TAEREC.TAEDESC1 = OBSFREC.OBSF-DIAG-KEY;
+    end
+  end
+
+
+end // end OB0TS-UPD-OB3REC
+
+// UPDATE OP1REC VIA IO0430
+Function OB0TS-UPD-OP1REC()
+
+
+  set SQLCA empty;
+
+  OP1REC.ZZZCHGDT = OBWREC.ZZZCHGDT; /* change date*/
+  OP1REC.ZZZCHGTM = OBWREC.ZZZCHGTM; /* change time*/
+
+  call "IO0430" ("U ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* i/o mod-select scan*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* somebody else has changed order*/
+      OB0TW01.OB0TW-ROLLBACK-FL = "Y";
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OB0TW01.OBAMSEL = "C";
+      OBWREC.CAMSG = "ORDER CHANGED BY OTHER PROCESS - RESELECT TO VIEW CHANGES";
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+      else
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        move SQLCA to ERRSQLCA withV60Compat;
+
+        TA1REC.TA1DBASE = "DORDER  "; /* data base name*/
+        TA1REC.TA1TBLVU = "VORHDR01"; /* table view*/
+        TA1REC.TA1LOC = "U IO0430 OB0TS-UPD-OP1REC";
+      end
+    end
+  end
+
+
+end // end OB0TS-UPD-OP1REC
+
+// UPDATE TEMP STORAGE SELECT CD
+Function OB0TS-UPD-SEL-CD()
+
+
+  OB0TW01.OB0TW-SUB = OBWREC.OBWTSF1S;
+  if (OB0TW01.OB0TW-RETURN-FL == "Y")
+    OBAREC.OBAMSEL[OB0TW-SUB] = OB0TW01.OBAMSEL;
+  else
+    if (OBAREC.YOBCD[OB0TW-SUB] == "LD"
+     || OBAREC.YOBCD[OB0TW-SUB] == "DL")
+      OBAREC.OBAMSEL[OB0TW-SUB] = "*";
+    else
+      OBAREC.OBAMSEL[OB0TW-SUB] = "X";
+    end
+  end
+
+  XSOBT1U(); /* update temp storage 1 - orders*/
+
+
+end // end OB0TS-UPD-SEL-CD
+
+Function OB0TS-UPDTE-VBULK()
+
+   /* ******* TCS INCLUDE BEGIN **************/
+
+  /* STATEMENT GROUP TO UPDATE BULK TABLE*/
+
+  set SQLCA empty;
+  set OBFREC empty;
+  VBULKS02.KUMSTRID = OB1REC.KUMSTRID;
+  VBULKS02.XNXCD = OB1REC.XNXCD;
+  VBULKS02.XBDCD = OB1REC.XBDCD;
+  VBULKS02.OP1CUPO = OB1REC.OP1CUPO;
+  VBULKS02.XDVCD = OB1REC.XDVCD;
+  VBULKS02.XGPCD = OB1REC.XGPCD;
+  VBULKS02.XSOCD = OB1REC.XSOCD;
+  VBULKS02.XWHCD = OB1REC.XWHCD;
+  VBULKS02.OP1CUNDT = OB1REC.OP1CUNDT;
+  VBULKS02.OP1DSADT = OB1REC.OP1DSADT;
+  VBULKS02.SP1ID = OB1REC.SP1ID;
+  VBULKS02.SM4REPID = OB1REC.SM4REPID;
+
+  OBFREC.OBFTASK = "U";
+  call "VBULKS02" (OBFREC, SQLCA, VBULKS02) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+
+  else
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* somebody else has changed order*/
+      OB0TW01.OB0TW-ROLLBACK-FL = "Y";
+      OB0TW01.OB0TW-RETURN-FL = "Y";
+      OB0TW01.OBAMSEL = "C";
+      OBWREC.CAMSG = "ORDER CHANGED BY OTHER PROCESS - RESELECT TO VIEW CHANGES";
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* database busy*/
+        OB0TW01.OB0TW-RETURN-FL = "Y";
+        OBWREC.CAMSG = "DATABASE BUSY - PRESS ENTER TO RETRY DECREMENT/LOAD PROCESS";
+      else
+        OB0TW01.OB0TW-ABEND-FL = "Y";
+        move SQLCA to ERRSQLCA withV60Compat;
+
+        TA1REC.TA1DBASE = "DORDB   "; /* data base name*/
+        TA1REC.TA1TBLVU = "VOBHDR01"; /* table view*/
+        TA1REC.TA1LOC = "U IO5160 OB0TS-UPDTE-VBULK";
+      end
+    end
+  end
+
+   /* ******* TCS INCLUDE END ****************/
+
+end // end OB0TS-UPDTE-VBULK
+
+//*** RECORD=AL5REC ****
+//                   PASSING RECORD FOR AL1500
+// 
+// THIS IS A NIKEBOTH INCLUDE. RECORD LENGTH MUST BE 2500**
+// 
+// CORRESPONDING CSP RECORD FOR WAL1501 IS ALAREC
+// 
+//                  PROGRAM PARAMETERS FOR AL1501
+// 
+// DESCRIPTION:
+// THIS INCLUDE CONTAINS THE PARAMETERS FOR PASSING
+// INFORMATION TO AND FROM AL1500 (ALLOCATION OF AN ORDER)
+// FIELDS RETURNED BY AL1500 ARE:
+//   RETURN CODE
+//          00 -  (NORMAL)
+//          88 -  (DB2 ERROR CHECK SQLCA)
+//          99 -  (DB2 ERROR CHECK SZRUN-RETURN-CODE)
+// 
+// **********************
+Record AL5REC type basicRecord
+  5 AL5-PASSING-REC AL5-PASSING-REC ; 
+    10 AL5-PASSING-INFO AL5-PASSING-INFO ; 
+      15 OP1PARTN OP1PARTN ; 
+      15 OP1CUOID OP1CUOID ; 
+      15 OP1NORID OP1NORID ; 
+    10 AL5-RETURN-INFO AL5-RETURN-INFO ; 
+      15 AL5-RETURN-CD AL5-RETURN-CD ; 
+      15 AL5-PROBLEM-INFO AL5-PROBLEM-INFO ; 
+      15 AL5-ERROR-INFO AL5-ERROR-INFO ; 
+    10 AL5-FILLER AL5-FILLER ; 
+      15 AL5-DIAG-KEY AL5-DIAG-KEY ; 
+        20 AL5-DIAG-LIT1 AL5-DIAG-LIT1 ; 
+        20 AL5-DIAG-CUST-ORD-ID AL5-DIAG-CUST-ORD-ID ; 
+        20 AL5-DIAG-LIT2 AL5-DIAG-LIT2 ; 
+        20 AL5-DIAG-NIKE-ORD-ID AL5-DIAG-NIKE-ORD-ID ; 
+        20 * char(1) ; 
+        20 AL5-DIAG-LIT3 AL5-DIAG-LIT3 ; 
+        20 AL5-DIAG-RETN-CD AL5-DIAG-RETN-CD ; 
+      15 * char(2176) ; 
+end // end AL5REC
+
+Record OB0TW01 type basicRecord
+  10 YOBCD YOBCD ; 
+  10 OP1PARTN OP1PARTN ; 
+  10 OP1CUOID OP1CUOID ; 
+  10 OP1NORID OP1NORID ; 
+  10 OBAMSEL OBAMSEL ; 
+  10 OBWTSF1P OBWTSF1P ; 
+  10 OBWTSF1S OBWTSF1S ; 
+  10 OB0TW-LAST-PG OB0TW-LAST-PG ; 
+  10 OB0TW-DRAW-FL OB0TW-DRAW-FL ; 
+  10 OB0TW-ABEND-FL OB0TW-ABEND-FL ; 
+  10 OB0TW-RETURN-FL OB0TW-RETURN-FL ; 
+  10 OB0TW-ROLLBACK-FL OB0TW-ROLLBACK-FL ; 
+  10 OB0TW-EOF-FL OB0TW-EOF-FL ; 
+  10 OB0TW-SKIP-ITM-FL OB0TW-SKIP-ITM-FL ; 
+  10 OB0TW-ITM-DECR-FL OB0TW-ITM-DECR-FL ; 
+  10 OB0TW-CA-FL OB0TW-CA-FL ; 
+  10 OB0TW-FA-FL OB0TW-FA-FL ; 
+  10 OB0TW-ALOC-FL OB0TW-ALOC-FL ; 
+  10 OB0TW-OCD-FOUND-FL OB0TW-OCD-FOUND-FL ; 
+  10 OB0TW-SZ-ROW-CNT OB0TW-SZ-ROW-CNT ; 
+    15 OB0TW-SZ-ROW-CNT-CHAR OB0TW-SZ-ROW-CNT-CHAR ; 
+  10 OB0TW-ORIG-OP2LNINB OB0TW-ORIG-OP2LNINB ; 
+  10 OB0TW-SUB OB0TW-SUB ; 
+  10 OB0TW-ABEND-TYP-CD OB0TW-ABEND-TYP-CD ; 
+  10 OB0TW-BULK-ID OB0TW-BULK-ID ; 
+    15 * char(8) ; 
+    15 OB0TW-BULK-PART-CHAR OB0TW-BULK-PART-CHAR ; 
+  10 OB6MSGNB OB6MSGNB ; 
+  10 OB0TW-NEW-OP1NORID OB0TW-NEW-OP1NORID ; 
+  10 OB0TW-ORG-OP1NORID OB0TW-ORG-OP1NORID ; 
+  10 OB3GROUP OB3GROUP ; 
+  10 OB0TW-ORDR-FOUND OB0TW-ORDR-FOUND ; 
+end // end OB0TW01
+
+//*** RECORD=OB10REC ****
+// *   TT#6319.
+// *
+// *This record introduced as pas part of TT#6319 changes.This
+// *record will be passed to Ob2310 program. This is same as
+// *WOB2310. Any changes to this  will effect WOB2310
+// *
+// ***********************
+Record OB10REC type basicRecord
+  5 OB10-PASSING-REC OB10-PASSING-REC ; 
+    10 OB10TASK OB10TASK ; 
+    10 OB10GROUP OB10GROUP ; 
+      15 OPCUOID OPCUOID ; 
+      15 NORID NORID ; 
+      15 PARTN PARTN ; 
+    10 OB11GROUP OB11GROUP ; 
+      15 RETCD RETCD ; 
+    10 OB10-FILLER OB10-FILLER ; 
+end // end OB10REC
+
+//*** RECORD=OBABREC ****
+//                   PASSING RECORD FOR OB1710
+// 
+// THIS IS A NIKEBOTH INCLUDE. RECORD LENGTH MUST BE 2500**
+// 
+// CORRESPONDING CSP RECORD FOR WOB1710 IS OPABREC
+// 
+//                ****READ FOR DB2 CHANGES******
+// IF DORDB.VOBHDR01 IS CHANGED THE SIZE OF OB1710-VOBHDR01
+// MUST ALSO CHANGE.
+// 
+// IF DORDER.VORHDR01 IS CHANGED THE SIZE OF OB1710-VORHDR01
+// MUST ALSO CHANGE.
+// 
+// PLEASE READ THIS BEFORE USING OB1710.
+// 
+// OB1710-PASSING-INFO:
+// 
+// OB1710-CALLER-PROFILE IS INFORMATION NEEDED WHEN DISPLAYING
+// DB2 ERROR MESSAGES IN OB1710 VIA TA0010 OR TA0020.
+// 
+//  LOCATION    IS ONE 24 CHARACTER FIELD
+//              OR THREE 8 CHARACTER FIELDS
+//  CALLER APPL IS THE CALLING PROGRAM NAME
+// 
+// NOTE ON CALLER LOCATION. THESE 32 CHARACTERS ARE MOVED
+// TO ERRDIAG-LOCATION WHEN DISPLAYING AN ERROR. THE LAST
+// 8 CHARACTERS OF ERRDIAG-LOCATION ARE RESERVED FOR THE
+// OB1710 ROUTINE LOCATION. THE 1ST 24 CHARACTERS CAN BE
+// USED BY THE APPLICATION IN ANY WAY, AND IT IS STRONGLY
+// RECOMMENDED TO INCLUDE AT LEAST THE CALLING PROGRAMS
+// PARAGRAPH NAME.
+// 
+// OB1710-VOBHDR01 IS AN EXACT COPY OF DORDB.VOBHDR01.
+// USE VOBHDR01 IN THE CALLING APPLICATION AND MOVE IT
+// TO OB1710-VOBHDR01 BEFORE CALLING OB1710.  MOVE
+// OB1710-VOBHDR01 BACK TO VOBHDR01 IN THE CALLING APPLICATION
+// AFTER RETURNING FROM OB1710. OB1REC IS THE CORRESPONDINNG
+// CSP RECORD.
+// 
+// 
+// OB1710-RETURN-INFO:
+// 
+// OB1710-RETURN-CODE WILL HAVE ONE OF THE FOLLOWING VALUES:
+// 
+//        TASK-PERFORMED                 VALUE      0
+//        GOT-A-911                      VALUE      8
+//        FATAL-ERROR                    VALUE      9
+//        chng-cnt-out-of-sync           VALUE     10
+// 
+// OB1710-VORHDR01 IS AN EXACT COPY OF DORDER.VORHDR01.  MOVE
+// OB1710-VORHDR01 BACK TO VORHDR01 IN THE CALLING APPLICATION
+// AFTER RETURNING FROM OB1710. OP1REC IS THE CORRESPONDING
+// CSP RECORD.
+// ***********************
+Record OBABREC type basicRecord
+  5 OBAB-PASSING-REC OBAB-PASSING-REC ; 
+    10 OBAB-PASSING-INFO OBAB-PASSING-INFO ; 
+      15 OBAB-CALLER-PROFILE OBAB-CALLER-PROFILE ; 
+        20 OBAB-CALLER-LOCATION OBAB-CALLER-LOCATION ; 
+          25 OBAB-CALLER-LOC-1 OBAB-CALLER-LOC-1 ; 
+          25 OBAB-CALLER-LOC-2 OBAB-CALLER-LOC-2 ; 
+          25 OBAB-CALLER-LOC-3 OBAB-CALLER-LOC-3 ; 
+          25 * char(8) ; 
+        20 OBAB-CALLING-APPL OBAB-CALLING-APPL ; 
+      15 OB1GROUP OB1GROUP ; 
+      15 ZZZCHGDT ZZZCHGDT ; 
+      15 ZZZCHGTM ZZZCHGTM ; 
+    10 OBAB-RETURN-INFO OBAB-RETURN-INFO ; 
+      15 OBAB-RETURN-CD OBAB-RETURN-CD ; 
+      15 OP1GROUP OP1GROUP ; 
+      15 OBAB-UPD-OP-HDR-FL OBAB-UPD-OP-HDR-FL ; 
+      15 OBAB-NEW-OP-HDR-FL OBAB-NEW-OP-HDR-FL ; 
+      15 OBAB-UPD-OP-HDR-CNT OBAB-UPD-OP-HDR-CNT ; 
+      15 OBAB-UPD-OP-ITM-CNT OBAB-UPD-OP-ITM-CNT ; 
+      15 OBAB-NEW-OP-HDR-CNT OBAB-NEW-OP-HDR-CNT ; 
+      15 OBAB-NEW-OP-ITM-CNT OBAB-NEW-OP-ITM-CNT ; 
+      15 OBAB-NEW-OP-ADDR-CNT OBAB-NEW-OP-ADDR-CNT ; 
+      15 OBAB-NEW-OP-TEXT-CNT OBAB-NEW-OP-TEXT-CNT ; 
+      15 OBAB-ITEM-INPUT-CNT OBAB-ITEM-INPUT-CNT ; 
+      15 OBAB-ADDR-INPUT-CNT OBAB-ADDR-INPUT-CNT ; 
+      15 OBAB-TEXT-INPUT-CNT OBAB-TEXT-INPUT-CNT ; 
+      15 OBAB-OP-ORD-UNITS-ADDED OBAB-OP-ORD-UNITS-ADDED ; 
+      15 OBAB-OP-ORD-VALUE-ADDED OBAB-OP-ORD-VALUE-ADDED ; 
+    10 OBAB-FILLER OBAB-FILLER ; 
+      15 OBAB-DIAG-KEY OBAB-DIAG-KEY ; 
+        20 OBAB-DIAG-LIT1 OBAB-DIAG-LIT1 ; 
+        20 OBAB-DIAG-CUST-ORD-ID OBAB-DIAG-CUST-ORD-ID ; 
+        20 OBAB-DIAG-LIT2 OBAB-DIAG-LIT2 ; 
+        20 OBAB-DIAG-NIKE-ORD-ID OBAB-DIAG-NIKE-ORD-ID ; 
+        20 * char(1) ; 
+        20 OBAB-DIAG-LIT3 OBAB-DIAG-LIT3 ; 
+        20 OBAB-DIAG-RETN-CD OBAB-DIAG-RETN-CD ; 
+      15 * char(1564) ; 
+end // end OBABREC
+
+//*** RECORD=OBALREC ****
+//                        OBALREC
+//              PASSING RECORD FOR OB1780
+// 
+// OBALREC IS A PASSING RECORD FOR NIKEBOTH PROGRAM OB1780.
+// ITS TOTAL LENGTH MUST BE 2500 BYTES.
+// 
+// THE CORRESPOND PASS RECORD FOR BATCH PROCESSING IS WOB1780.
+// 
+// THIS INCLUDE CONTAINS THE PARAMETERS FOR PASSING
+// INFORMATION TO AND FROM OB1780 (ALLOCATION OF AN ORDER).
+// FIELDS RETURNED BY OB1780 ARE:
+// 
+//   RETURN CODE:
+//   0 - GOOD RETURN
+//   1 - ERROR RETURNED FROM A CALLED SUBPROGRAM - POST ONLY
+//   2 - ERROR RETURNED FROM A CALLED SUBPROGRAM - ABEND
+//   3 - RECORD NOT FOUND IN DATABASE WHEN UPDATING
+//   4 - DEADLOCK OR TIME-OUT IN A DATABASE
+//   5 - ANY OTHER SQL RETURN CODE IN A DATABASE
+//   6 - DEADLOCK IN A SUBPROGRAM CALLED FROM OB1780
+//   7 - ANY OTHER SQL RETURN CODE IN A SUBPROGRAM CALLED BY
+//       OB1780
+//   8 - DORDER RECORD NOT FOUND ON SELECT
+// ***********************
+Record OBALREC type basicRecord
+  5 OBAL-PASSING-REC OBAL-PASSING-REC ; 
+    10 OBAL-PASSING-INFO OBAL-PASSING-INFO ; 
+      15 OP1PARTN OP1PARTN ; 
+      15 OP1CUOID OP1CUOID ; 
+      15 OP1NORID OP1NORID ; 
+      15 ZZZCHGDT ZZZCHGDT ; 
+      15 ZZZCHGTM ZZZCHGTM ; 
+      15 OBAL-HMS OBAL-HMS ; 
+    10 OBAL-RETURN-CD OBAL-RETURN-CD ; 
+    10 OBAL-ERRDIAG-INFO OBAL-ERRDIAG-INFO ; 
+      15 OBAL-ERRDIAG-LIT OBAL-ERRDIAG-LIT ; 
+      15 OBAL-ERRDIAG-RET-CD OBAL-ERRDIAG-RET-CD ; 
+    10 OBAL-FILLER OBAL-FILLER ; 
+end // end OBALREC
+
+//*** RECORD=OBOREC ****
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+//             PANVALET INCLUDE WOB1090
+//  - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// 
+//  THIS INCLUDE MUST BE USED IN ALL PROGRAMS THAT CALL THE
+//  AIRSPEED DECREMENT AVAILABILITY SUBPROGRAM (OB1090). ORDER
+//  ITEM INFORMATION (INCLUDING QUANTITIES) WILL BE PASSED
+//  TO OB1090 WITH THIS INCLUDE. DECREMENTED QUANTITIES ARE
+//  THEN RETURNED TO THE CALLING PROGRAM.
+// 
+//  POSSIBLE RETURN STATUS CODES:
+//    00 GOOD RETURN    -  DOES NOT MEAN ALL QTY'S DECREMENTED
+//                         DOES MEAN NO DB2 PROBLEMS
+//    01 BAD KEY/NOT FND-  AVAILABILITY ROWS NOT FOUND
+//    02 OTHER DB2 ERRS -  ANY DB2 RETURN CODES OTHER THAN
+//                         ZERO OR 100 OR -911
+//    03 CORP TBL ERROR -  ANY RETURN CODE OTHER THAN ZERO
+//                         FOR CORPORATE TABLES
+//    04 NON DB2 BAD    -  ANY BAD RETURN FROM A CALLED PROGRAM
+//                         RETURN (TA0030).
+//    05 -911 DB2 ERROR -  ANY -911 DB2 RETURN CODE
+//    06 UPDATE CONFLICT-  CHANGE COUNT OUT OF SYNC ON UPDATE
+//                         ERROR (RECORD HAS CHANGED BETWEEN
+//                         FETCH AND UPDATE).
+// **********************
+Record OBOREC type basicRecord
+  5 OBO-PASS-RECORD OBO-PASS-RECORD ; 
+    10 OBO-RETURN-DATA OBO-RETURN-DATA ; 
+      15 OBO-RETURN-CD OBO-RETURN-CD ; 
+      15 OBO-SMART-RSRV-FL OBO-SMART-RSRV-FL ; 
+    10 OBO-PASS-DATA OBO-PASS-DATA ; 
+      15 OBO-TOT-QTY-REQ-FL OBO-TOT-QTY-REQ-FL ; 
+      15 OP1CUNDT OP1CUNDT ; 
+      15 XOTCD XOTCD ; 
+      15 XOCCD XOCCD ; 
+      15 XBCCD XBCCD ; 
+      15 XDSCD XDSCD ; 
+      15 XWHCD XWHCD ; 
+      15 XGPCD XGPCD ; 
+      15 SY1STNBR SY1STNBR ; 
+      15 SY2CLRID SY2CLRID ; 
+      15 OBO-2ND-SY-STY-NBR OBO-2ND-SY-STY-NBR ; 
+      15 OBO-2ND-COLR-CD-ID OBO-2ND-COLR-CD-ID ; 
+      15 XDMCD XDMCD ; 
+      15 XQACD XQACD ; 
+      15 XOWCD XOWCD ; 
+      15 PC2INSEG PC2INSEG ; 
+      15 XEGCD XEGCD ; 
+      15 XPGCD XPGCD ; 
+      15 XUMCD XUMCD ; 
+      15 XLCCD XLCCD ; 
+      15 OP3ONOQT OP3ONOQT [40] ; 
+    10 ZZZCHGDT ZZZCHGDT ; 
+    10 ZZZCHGTM ZZZCHGTM ; 
+    10 OBO-DIAG-KEY OBO-DIAG-KEY ; 
+      15 OBO-DIAG-LIT1 OBO-DIAG-LIT1 ; 
+      15 OBO-DIAG-CUST-ORD-ID OBO-DIAG-CUST-ORD-ID ; 
+      15 OBO-DIAG-LIT2 OBO-DIAG-LIT2 ; 
+      15 OBO-DIAG-NIKE-ORD-ID OBO-DIAG-NIKE-ORD-ID ; 
+      15 * char(1) ; 
+      15 OBO-DIAG-LIT3 OBO-DIAG-LIT3 ; 
+      15 OBO-DIAG-LINE-ITM-NBR OBO-DIAG-LINE-ITM-NBR ; 
+      15 * char(1) ; 
+      15 OBO-DIAG-LIT4 OBO-DIAG-LIT4 ; 
+      15 OBO-DIAG-RETN-CD OBO-DIAG-RETN-CD ; 
+    10 OBO-FILLER OBO-FILLER ; 
+end // end OBOREC
+
+//*** RECORD=OBQREC ****
+//                  PROGRAM PARAMETERS FOR OB1130
+// 
+// DESCRIPTION:
+// 
+// THIS INCLUDE CONTAINS THE ALL THE PARAMETERS FOR PASSING
+// INFORMATION TO AND FROM OB1130 (SUBTRACT DRAW QUANTITIES
+// FROM BULK ORDERS).
+// 
+// FIELDS RETURNED BY OB1130 ARE:
+// 
+//   RETURN-STATUS
+//    00 - NO I/O ERRORS OCCURRED.
+//    01 - A NEEDED RECORD WAS NOT FOUND.
+//    02 - AN I/O ERROR OCCURED.
+// 
+//   BULK-QTYS-FOUND-FL
+//     Y - THERE ARE ENOUGH BULK QUANTITIES TO COVER THE DRAW.
+//     N - DRAW QUANTITIES EXCEED THE BULK QUNATITIES.
+// 
+//   TOTAL-DRAW-QTY AND TOTAL-DRAW-VALUE
+//     CONTAINS THE TOTAL QUANTITY AND VALUE FOR THIS DRAW ITEM
+// 
+//   ORIG-QTY
+//     CONTAINS THE ORIGINAL ORDER AMOUNTS TO USE FOR THE DRAW
+//     LINE ITEM.
+// **********************
+Record OBQREC type basicRecord
+  5 OBQ-PASS-RECORD OBQ-PASS-RECORD ; 
+    10 OBQ-RETURN-DATA OBQ-RETURN-DATA ; 
+      15 OBQ-RETURN-CD OBQ-RETURN-CD ; 
+      15 OBQ-BULK-QTY-FND-FL OBQ-BULK-QTY-FND-FL ; 
+    10 OBQ-PASS-DATA OBQ-PASS-DATA ; 
+      15 OBQ-GET-RSRV-QTY-FL OBQ-GET-RSRV-QTY-FL ; 
+      15 OBQ-PARTIAL-QTY-ALW-FL OBQ-PARTIAL-QTY-ALW-FL ; 
+      15 OP1PARTN OP1PARTN ; 
+      15 OP1CUOID OP1CUOID ; 
+      15 OP1NORID OP1NORID ; 
+      15 XGPCD XGPCD ; 
+      15 SY1STNBR SY1STNBR ; 
+      15 SY2CLRID SY2CLRID ; 
+      15 XDMCD XDMCD ; 
+      15 XOWCD XOWCD ; 
+      15 XUMCD XUMCD ; 
+      15 OBQ-TTL-DRAW-QTY OBQ-TTL-DRAW-QTY ; 
+      15 OBQ-TTL-DRAW-VALUE OBQ-TTL-DRAW-VALUE ; 
+      15 OBQ-QTY-ARRAY OBQ-QTY-ARRAY [40] ; 
+        20 OBQ-REQ-QTY OBQ-REQ-QTY ; 
+        20 OBQ-AVAIL-QTY OBQ-AVAIL-QTY ; 
+        20 OP3OHRQT OP3OHRQT ; 
+      15 ZZZCHGDT ZZZCHGDT ; 
+      15 ZZZCHGTM ZZZCHGTM ; 
+    10 OBQ-FILLER OBQ-FILLER ; 
+      15 OBQ-DIAG-KEY OBQ-DIAG-KEY ; 
+        20 OBQ-DIAG-LIT1 OBQ-DIAG-LIT1 ; 
+        20 OBQ-DIAG-CUST-ORD-ID OBQ-DIAG-CUST-ORD-ID ; 
+        20 OBQ-DIAG-LIT2 OBQ-DIAG-LIT2 ; 
+        20 OBQ-DIAG-NIKE-ORD-ID OBQ-DIAG-NIKE-ORD-ID ; 
+        20 * char(1) ; 
+        20 OBQ-DIAG-LIT3 OBQ-DIAG-LIT3 ; 
+        20 OBQ-DIAG-LINE-ITM-NBR OBQ-DIAG-LINE-ITM-NBR ; 
+        20 * char(1) ; 
+        20 OBQ-DIAG-LIT4 OBQ-DIAG-LIT4 ; 
+        20 OBQ-DIAG-RETN-CD OBQ-DIAG-RETN-CD ; 
+      15 * char(1926) ; 
+end // end OBQREC
+
+//*** RECORD=OBUREC ****
+// ************************************************************
+// *
+// * passing record for ob1640 - airspeed pre-decrement eval
+// *
+// *   This record must have a total record length of 2500 and
+// *   will require modification when Wob1640 is changed.
+// *
+// *  Passing options:
+// *
+// *              Send: op-cust-ord-id
+// *                    op-nike-ord-id
+// *                    xgp-gpc-cd
+// *                    xdv-div-cd
+// *                    xbc-brand-cd
+// *                    xob-base-ot-cd
+// *                    xot-ord-typ-cd
+// *                    xds-dir-ship-cd
+// *                    xbd-bulk-draw-cd
+// *                    sp-spgm-id
+// *
+// *           Receive: return-code
+// *                    return-msg-nbr
+// *                    return-message
+// *                    yob-ob-stat-cd
+// *                    ob-ord-err-fl
+// *
+// *
+// *   See ob1640 for RETURN CODE values
+// *
+// *------------------MODIFICATIONS----------------------------
+// * 12/06/95   CBRINE   ADDED XDZ-DATA-DIST-CD FOR CANADA
+// ***********************************************************
+// *
+// **********************
+Record OBUREC type basicRecord
+  5 OBU-PASS-RECORD OBU-PASS-RECORD ; 
+    10 OBU-PASS-DATA OBU-PASS-DATA ; 
+      15 OP1CUOID OP1CUOID ; 
+      15 OP1NORID OP1NORID ; 
+      15 XDVCD XDVCD ; 
+      15 XBCCD XBCCD ; 
+      15 XGPCD XGPCD ; 
+      15 XOBCD XOBCD ; 
+      15 XOTCD XOTCD ; 
+      15 XDSCD XDSCD ; 
+      15 XBDCD XBDCD ; 
+      15 XDZ-DATA-DIST-CD XDZ-DATA-DIST-CD ; 
+      15 SP1ID SP1ID ; 
+      15 ZZZCHGDT ZZZCHGDT ; 
+      15 ZZZCHGTM ZZZCHGTM ; 
+    10 OBU-RETURN-DATA OBU-RETURN-DATA ; 
+      15 OBU-RETURN-CD OBU-RETURN-CD ; 
+      15 OBU-RETURN-MSG-NBR OBU-RETURN-MSG-NBR ; 
+      15 OBU-RETURN-MSG OBU-RETURN-MSG ; 
+      15 YOBCD YOBCD ; 
+      15 OB1ERRFL OB1ERRFL ; 
+    10 OBU-DIAG-KEY OBU-DIAG-KEY ; 
+      15 OBU-DIAG-LIT1 OBU-DIAG-LIT1 ; 
+      15 OBU-DIAG-CUST-ORD-ID OBU-DIAG-CUST-ORD-ID ; 
+      15 OBU-DIAG-LIT2 OBU-DIAG-LIT2 ; 
+      15 OBU-DIAG-NIKE-ORD-ID OBU-DIAG-NIKE-ORD-ID ; 
+      15 * char(1) ; 
+      15 OBU-DIAG-LIT3 OBU-DIAG-LIT3 ; 
+      15 OBU-DIAG-RETURN-CD OBU-DIAG-RETURN-CD ; 
+    10 OBU-FILLER OBU-FILLER ; 
+end // end OBUREC
+
+// error diag order nbr
+DataItem AL5-DIAG-CUST-ORD-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AL5-DIAG-KEY char(27)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal 'ord '
+DataItem AL5-DIAG-LIT1 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal '.'
+DataItem AL5-DIAG-LIT2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal 'rtn '
+DataItem AL5-DIAG-LIT3 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error diag subord nbr
+DataItem AL5-DIAG-NIKE-ORD-ID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error diag return code
+DataItem AL5-DIAG-RETN-CD num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error information
+DataItem AL5-ERROR-INFO char(136)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// filler required for nike both
+DataItem AL5-FILLER char(2203)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// passing information
+DataItem AL5-PASSING-INFO char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AL5-PASSING-REC char(2500)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// problem information
+DataItem AL5-PROBLEM-INFO char(152)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// return code
+DataItem AL5-RETURN-CD smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// return information
+DataItem AL5-RETURN-INFO char(290)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem NORID smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// db2 abend flag
+DataItem OB0TW-ABEND-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// abend type code
+DataItem OB0TW-ABEND-TYP-CD char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// allocate order flag
+DataItem OB0TW-ALOC-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// op-bulk-ord-id
+DataItem OB0TW-BULK-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op-ord-part-char
+DataItem OB0TW-BULK-PART-CHAR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// cleared avail status flag
+DataItem OB0TW-CA-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// draw flag
+DataItem OB0TW-DRAW-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end of file flag
+DataItem OB0TW-EOF-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// failed avail status flag
+DataItem OB0TW-FA-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// item was decremented flag
+DataItem OB0TW-ITM-DECR-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// last temp storage page
+DataItem OB0TW-LAST-PG smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// new nike order id (from split)
+DataItem OB0TW-NEW-OP1NORID smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// OCD item record found flag
+DataItem OB0TW-OCD-FOUND-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// order found flag
+DataItem OB0TW-ORDR-FOUND char(1)  {
+  align = none, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// original nike order id
+DataItem OB0TW-ORG-OP1NORID smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op-line-item-nbr
+DataItem OB0TW-ORIG-OP2LNINB smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// db2 deadlock flag
+DataItem OB0TW-RETURN-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// rollback flag
+DataItem OB0TW-ROLLBACK-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// skip item flag
+DataItem OB0TW-SKIP-ITM-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// subscript
+DataItem OB0TW-SUB smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// OCD size row count
+DataItem OB0TW-SZ-ROW-CNT num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// OCD size row count (char)
+DataItem OB0TW-SZ-ROW-CNT-CHAR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Error diag key op1690
+DataItem OB10-FILLER char(2490)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OB10-PASSING-REC char(2500)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record group level
+DataItem OB10GROUP char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record group level
+DataItem OB10TASK char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OB11GROUP char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ob address rec input count
+DataItem OBAB-ADDR-INPUT-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// caller location 1
+DataItem OBAB-CALLER-LOC-1 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// caller location 2
+DataItem OBAB-CALLER-LOC-2 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// caller location 3
+DataItem OBAB-CALLER-LOC-3 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// caller location
+DataItem OBAB-CALLER-LOCATION char(32)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// caller profile
+DataItem OBAB-CALLER-PROFILE char(40)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// calling application
+DataItem OBAB-CALLING-APPL char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error diag order nbr
+DataItem OBAB-DIAG-CUST-ORD-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error diag key
+DataItem OBAB-DIAG-KEY char(25)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal 'ord '
+DataItem OBAB-DIAG-LIT1 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal '.'
+DataItem OBAB-DIAG-LIT2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal 'rtn '
+DataItem OBAB-DIAG-LIT3 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error diag subord nbr
+DataItem OBAB-DIAG-NIKE-ORD-ID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error diag return code
+DataItem OBAB-DIAG-RETN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// filler required for nike both
+DataItem OBAB-FILLER char(1589)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ob item rec input count
+DataItem OBAB-ITEM-INPUT-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// new op address rec count
+DataItem OBAB-NEW-OP-ADDR-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// new op header rec count
+DataItem OBAB-NEW-OP-HDR-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// added new op header flag
+DataItem OBAB-NEW-OP-HDR-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// new op item rec count
+DataItem OBAB-NEW-OP-ITM-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// new op text rec count
+DataItem OBAB-NEW-OP-TEXT-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op order units added
+DataItem OBAB-OP-ORD-UNITS-ADDED decimal(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// op order value added
+DataItem OBAB-OP-ORD-VALUE-ADDED decimal(15,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// passing information
+DataItem OBAB-PASSING-INFO char(414)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OBAB-PASSING-REC char(2500)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// return code
+DataItem OBAB-RETURN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// return information
+DataItem OBAB-RETURN-INFO char(497)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ob text rec input count
+DataItem OBAB-TEXT-INPUT-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// updated op header rec count
+DataItem OBAB-UPD-OP-HDR-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// updated op header flag
+DataItem OBAB-UPD-OP-HDR-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// updated op item rec count
+DataItem OBAB-UPD-OP-ITM-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// return information
+DataItem OBAL-ERRDIAG-INFO char(22)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OBAL-ERRDIAG-LIT char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OBAL-ERRDIAG-RET-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// filler required for nike both
+DataItem OBAL-FILLER char(2459)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OBAL-HMS int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// passing information
+DataItem OBAL-PASSING-INFO char(17)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OBAL-PASSING-REC char(2500)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// return code
+DataItem OBAL-RETURN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 2nd color code id
+DataItem OBO-2ND-COLR-CD-ID char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 2nd style number
+DataItem OBO-2ND-SY-STY-NBR char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error diag order nbr
+DataItem OBO-DIAG-CUST-ORD-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// errorrr diag key
+DataItem OBO-DIAG-KEY char(35)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error diag item nbr
+DataItem OBO-DIAG-LINE-ITM-NBR num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// literal 'ord '
+DataItem OBO-DIAG-LIT1 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal '.'
+DataItem OBO-DIAG-LIT2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal 'item '
+DataItem OBO-DIAG-LIT3 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal 'rtn '
+DataItem OBO-DIAG-LIT4 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error diag subord nbr
+DataItem OBO-DIAG-NIKE-ORD-ID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error diag return code
+DataItem OBO-DIAG-RETN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// filler required for nike both
+DataItem OBO-FILLER char(2244)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OBO-PASS-DATA char(212)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 01 group level
+DataItem OBO-PASS-RECORD char(2500)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// return code
+DataItem OBO-RETURN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem OBO-RETURN-DATA char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// smart reservation flag
+DataItem OBO-SMART-RSRV-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// total quantity required flag
+DataItem OBO-TOT-QTY-REQ-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// available quantity
+DataItem OBQ-AVAIL-QTY decimal(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// smart reservation flag
+DataItem OBQ-BULK-QTY-FND-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error diag order nbr
+DataItem OBQ-DIAG-CUST-ORD-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// errorrr diag key
+DataItem OBQ-DIAG-KEY char(35)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error diag item nbr
+DataItem OBQ-DIAG-LINE-ITM-NBR num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// literal 'ord '
+DataItem OBQ-DIAG-LIT1 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal '.'
+DataItem OBQ-DIAG-LIT2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal 'item '
+DataItem OBQ-DIAG-LIT3 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal 'rtn '
+DataItem OBQ-DIAG-LIT4 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error diag subord nbr
+DataItem OBQ-DIAG-NIKE-ORD-ID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error diag return code
+DataItem OBQ-DIAG-RETN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// filler required for nike both
+DataItem OBQ-FILLER char(1961)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// smart reservation flag
+DataItem OBQ-GET-RSRV-QTY-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// smart reservation flag
+DataItem OBQ-PARTIAL-QTY-ALW-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OBQ-PASS-DATA char(536)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 01 group level
+DataItem OBQ-PASS-RECORD char(2500)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// quantity array
+DataItem OBQ-QTY-ARRAY char(12)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// requested quantity
+DataItem OBQ-REQ-QTY decimal(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// return code
+DataItem OBQ-RETURN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem OBQ-RETURN-DATA char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// total draw quantity
+DataItem OBQ-TTL-DRAW-QTY num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// total draw value
+DataItem OBQ-TTL-DRAW-VALUE num(15,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error diag order num
+DataItem OBU-DIAG-CUST-ORD-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// diag key
+DataItem OBU-DIAG-KEY char(26)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Literal 'ORD'
+DataItem OBU-DIAG-LIT1 char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal '.'
+DataItem OBU-DIAG-LIT2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// literal 'rtn '
+DataItem OBU-DIAG-LIT3 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error diag nike ord id
+DataItem OBU-DIAG-NIKE-ORD-ID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error diag ob1640 return cd
+DataItem OBU-DIAG-RETURN-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// filler required for nike both
+DataItem OBU-FILLER char(2358)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OBU-PASS-DATA char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 01 group level
+DataItem OBU-PASS-RECORD char(2500)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// return code
+DataItem OBU-RETURN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem OBU-RETURN-DATA char(86)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// return error message
+DataItem OBU-RETURN-MSG char(78)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// return message number
+DataItem OBU-RETURN-MSG-NBR char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem OPCUOID int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem PARTN char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// return code
+DataItem RETCD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

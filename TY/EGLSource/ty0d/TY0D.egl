@@ -1,0 +1,3527 @@
+package ty0d;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import ta.common.*;
+import ty.common.*;
+import vv.common.*;
+//*** PROGRAM=TY0D ****
+// This application allows a user to inquire and maintain rows
+// in the Treasury Exchange Rates Table.
+// 
+// If the user has sufficient security to change the data and
+// the maintenance option was selected, the modifiable fields
+// remain unprotected. Otherwise, they are protected from
+// modification by the user.
+// 
+// The user in maintenance mode can update the following
+// fields:
+//             1. exchange rate
+//             2. exchange ratge approval flag
+// 
+// Both destination and currency description are always
+// protected.
+// 
+// If any data is modified, it is verified and, if complete and
+// correct, the table row is updated with the changed data.
+// The screen is redisplayed to the user, indicating that the
+// update is completed.
+// 
+// The user may exit to any allowed application, via FAST PATH
+// or PF key, at any time.
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE    USERID  DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// NEW      04/15/94  jcarey  New application.
+//          05/03/94  jcarey  Changed code to take off alarm
+//                            on several informational messages
+//          05/05/94  jcarey  Changed code to always perform
+//                            edits on an enter, even if the
+//                            page number is 0. Also changed
+//                            an add/update problem to an
+//                            ezemno msg rather than xxx-msg.
+//                            ty0d-40000 & ty0d-50000
+//          06/22/94  jcarey  Added code to create an audit
+//                            record every time ad add, change
+//                            or delete occurs. Para ty0d-50000
+//                            create-aft,create-bfr,init-select
+//                            iotyaud-a,write-audit.
+//          09/22/94  jcarey  Renamed and changed value for the
+//                            exchange rate (in TY1REC), so
+//                            had to change the reference in
+//                            10300 to point at the new name.
+// -------  --------  ------  ---------------------------------
+// Y2KCHG   03/04/98  NGANGO  RECOMPLIED TO PICKUP THE CHANGES
+//                            FOR XX0XS01.
+// -------  --------  ------  ---------------------------------
+//          05/03/00  BPARAN  CHANGED TY0D-10300 FOR NOT
+//                            DISPLAYING SOME UNWANTED ROWS OF
+//                            EXCHANGE RATE CONVERSIONS.CHANGED
+//                            THE NAME OF THE PROCESSES
+//                            TY0D-10100 AND TY0D-10300 TO
+//                            TY0DS-10100 AND TY0DS-10300
+//                            RESPECTIVELY TO FOLLOW THE
+//                            NAMING STANDARDS.
+//          03/08/01  MHALST  CORRECT SIZE OF RATE FIELD ON MAP
+//          05/31/01  MHALST  CORRECT TRL RATE PROCESSING
+// *********************
+Program TY0D type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "TY00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  TY0DW00 TY0DW00; // record
+  TY0DW01 TY0DW01; // record
+  TY0DW02 TY0DW02; // record
+  TY0DW03 TY0DW03; // record
+  TY1REC TY1REC; // record
+  TYWREC TYWREC; // record
+  VEXCHG01 VEXCHG01; // record
+  VTYAUD01 VTYAUD01; // record
+  VZFC0001 VZFC0001; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use TY0DM.TY0DM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPTY-00000: XPTY-00000();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and display storage areas.*/
+     /* ------------------------------------------------------------*/
+
+    set TY0DM001 initial; /* M001 input/output*/
+    set TY0DW00 empty; /* Working storage*/
+    set TY0DW01 empty; /* M001 display storage*/
+    set SQLCA empty; /* SQL communication area*/
+    set TAEREC empty; /* Error diagnosis information*/
+    set TA1REC empty; /* Error diagnosis parameters*/
+    set TA5REC empty; /* Temporary storage parameters*/
+    set XX0XW01 empty; /* Date/time subroutine parameters*/
+
+    TY0DW00.XXX-RQT-DATA-FL = "Y"; /* Request for data flag*/
+    TY0DW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    TY0DW00.XXX-TEMP-STG-LNTH = 1261; /* Temporary storage length*/
+    TY0DW00.XXX-INX-LMT-NBR = 13; /* Number of lines on a page*/
+    TY0DW00.TY-INDEX-NBR = 1; /* Index for screen authority*/
+    TY0DW00.TY0D-HIGH-PCT-FCT = 1.05; /* High variance percent*/
+    TY0DW00.TY0D-LOW-PCT-FCT = .95; /* Low variance percent*/
+    TYWREC.XXX-MSG-NBR = 60; /* Call Treasury for missing crcy*/
+
+     /* ------------------------------------------------------------*/
+     /* Initialize any fields passed from another application.*/
+     /* ------------------------------------------------------------*/
+
+    if (COMMAREA.CAITEM > " ") /* Data was passed*/
+
+      COMMAREA.CAITEM = " "; /* Clear passed data*/
+
+    end
+
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto TY0D-00000; /* Converse the main process*/
+
+
+    TY0D-00000: TY0D-00000();
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto TY0D-00000; /* Converse the main process*/
+
+
+  end // end main
+end // end TY0D
+
+// Determine which map to display
+Function TY0D-00000()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) If specified, display the map that was requested.*/
+   /* 2) Otherwise, indicate error and exit to System Menu.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+  TY0D-10000(); /* Obtain the data to display*/
+
+  TY0D-20000(); /* Format and display the map*/
+
+  TY0D-30000(); /* Check Attention identifier*/
+
+  TY0D-40000(); /* Verify the entered data*/
+
+  TY0D-50000(); /* Process valid input request*/
+
+end // end TY0D-00000
+
+// Obtain the data to display
+Function TY0D-10000()
+   /* ------------------------------------------------------------*/
+   /* If data was not requested or an error was found, return to*/
+   /* the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (TY0DW00.XXX-RQT-DATA-FL != "Y" /* Data was not requested*/
+   || converseVar.validationMsgNum != 0) /* or an error was found*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If no message to display, reset the page number to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (TYWREC.XXX-MSG-NBR == 0 /* No message to display*/
+   || TYWREC.XXX-MSG-NBR == 60) /* Call Treasury for missing currency*/
+
+    TY0DW00.XXX-CURR-PAGE-NBR = 1; /* Page number to display*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Purge any pages from temporary storage and save key fields.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DS-TA0050-P(); /* Purge any temporary storage*/
+
+  TY0DW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+   /* -----------------------------------------------------------*/
+   /* Determine which selection routine to execute.*/
+   /* -----------------------------------------------------------*/
+
+  TY0DW00.XXX-INX-FLD-NBR = 1; /* Initialize index*/
+
+  if (TYWREC.TY-SOURCE-CURRENCY == "USD" /* U.S. dollars is the source*/
+  )                                     
+    if (TYWREC.TY-DEST-CURRENCY == "ALL" /* There is a multiple destination*/
+     || TYWREC.TY-DEST-REGION != " ")    /* currency*/
+
+      TY0DS-10300(); /* Do the smart routine*/
+
+    else
+
+      TY0DS-10100(); /* Do the dumb routine*/
+
+    end
+
+  else
+
+    TY0DS-10300(); /* Do the smart routine*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If no pages were formatted, indicate no data to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (TY0DW00.XXX-HI-PAGE-NBR == 0) /* No pages formatted*/
+
+    TYWREC.XXX-MSG-LOC-ID = "11000"; /* Message location*/
+    converseLib.validationFailed(18); /* No data was found to display*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the request for data is complete.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+
+
+end // end TY0D-10000
+
+// Format and converse the map
+Function TY0D-20000()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, save the error message number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    TYWREC.XXX-MSG-NBR = converseVar.validationMsgNum; /* Message number*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If the map must be formatted, format the data in the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (TY0DW00.XXX-MAP-FMAT-FL == "Y") /* Map must be formatted*/
+    TY0D-21000(); /* Format the data in the map*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Protect the fields that cannot be altered.*/
+   /* ------------------------------------------------------------*/
+
+  TY0D-22000(); /* Protect unauthorized fields*/
+
+   /* ------------------------------------------------------------*/
+   /* Format the current date and any FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DM001.XXX-CURR-DT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  TY0DM001.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  TY0DM001.CAITEM = COMMAREA.CAITEM; /* Application data*/
+
+   /* ------------------------------------------------------------*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /* ------------------------------------------------------------*/
+
+  if (TYWREC.XXX-MSG-NBR != 0 /* Message to display*/
+   || COMMAREA.CAMSG != " ")  /* or message text*/
+
+    if (TYWREC.XXX-MSG-NBR != 0) /* Message to display*/
+
+      if (TYWREC.XXX-MSG-NBR == 9999)
+        converseLib.validationFailed();
+      else
+        converseLib.validationFailed(TYWREC.XXX-MSG-NBR);
+      end /* Message number*/
+    else
+      TY0DM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Message text*/
+
+    end
+
+    TY0DM001.XXX-MSG-LOC-ID = TYWREC.XXX-MSG-LOC-ID;
+                                   /* Message location*/
+
+    if (converseVar.validationMsgNum == 60 /* Non fatal messages*/
+     || converseVar.validationMsgNum == 2  
+     || converseVar.validationMsgNum == 3)
+      /* next sentence*/
+    else
+      set TY0DM001 alarm; /* Indicate sound alarm*/
+
+    end
+
+  end
+
+  converse TY0DM001 ;
+
+   /* ------------------------------------------------------------*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  TYWREC.XXX-MSG-LOC-ID = " "; /* Message location*/
+  TYWREC.XXX-MSG-NBR = 0; /* Message number*/
+  COMMAREA.CAMSG = " "; /* Message text*/
+
+  COMMAREA.CATOAP = TY0DM001.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = TY0DM001.CAITEM; /* Application data*/
+
+   /* ------------------------------------------------------------*/
+   /* Set the warning flag to the second level if if was just*/
+   /* given. That will bypass the variance edit on this round.*/
+   /* ------------------------------------------------------------*/
+
+  if (TY0DW00.TY0D-WARNING-LEVEL == 1) /* Warning was given*/
+    TY0D-WARNING-LEVEL = 2; /* Set to second time position*/
+  else
+    if (TY0DW00.TY0D-WARNING-LEVEL == 2) /* Reinitialize to go*/
+      TY0D-WARNING-LEVEL = 0; /* through edits again*/
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Reset modifiable field attributes to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DW00.XXX-INX-FLD-NBR = 1; /* Initialize line index*/
+
+  while (TY0DW00.XXX-INX-FLD-NBR <= TY0DW00.XXX-INX-LMT-NBR
+   /* Until end of screen*/
+   && TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] > " ")
+                                   /* or end of formatted lines*/
+
+    set TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] normal;
+                                  /* Currency code*/
+
+    set TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] normal;
+                                  /* Rate exchange amount*/
+
+    set TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] normal;
+                                   /* Rate approval flag*/
+
+    TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR + 1;
+                                   /* Increment line index*/
+
+  end
+
+  set TY0DM001.CATOAP normal; /* TO application*/
+  set TY0DM001.CAITEM normal; /* Application data*/
+
+
+end // end TY0D-20000
+
+// Format the data in the map
+Function TY0D-21000()
+   /* ------------------------------------------------------------*/
+   /* Clear the fields in the map storage area to be formatted.*/
+   /* ------------------------------------------------------------*/
+
+  set TY0DM001 initial; /* M001 input/output area*/
+
+  TY0DW00.XXX-MAP-FMAT-FL = "N"; /* Format the map flag*/
+
+   /* ------------------------------------------------------------*/
+   /* If the page in storage is not the page to be displayed,*/
+   /* obtain the desired page from temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  if (TY0DW00.XXX-HI-PAGE-NBR > 0) /* Pages were formatted*/
+
+    if (TY0DW00.XXX-CURR-PAGE-NBR != TA5REC.TA5TSQIX)
+                                   /* Desired page not current*/
+
+      /* ------------------------------------------------------------*/
+      /* If the current page has been changed, update the page in*/
+      /* storage before obtaining the next one to display.*/
+      /* ------------------------------------------------------------*/
+
+      if (TY0DW00.XXX-PAGE-UPD-FL == "Y") /* Current page was changed*/
+
+        TY0DS-TA0050-U(); /* Update temporary storage page*/
+
+        TY0DW00.XXX-PAGE-UPD-FL = "N"; /* Page update flag*/
+
+      end
+
+      /* ------------------------------------------------------------*/
+      /* If the desired page number is greater than the highest page*/
+      /* in storage, default to the highest page number.*/
+      /* ------------------------------------------------------------*/
+
+      if (TY0DW00.XXX-CURR-PAGE-NBR > TY0DW00.XXX-HI-PAGE-NBR)
+                                   /* Desired greater highest*/
+        set TY0DW01 empty;
+        TY0DS-TA0050-A(); /* Add page to temporary storage*/
+        TY0DW00.XXX-INX-FLD-NBR = 1;
+
+      end
+
+      TY0DS-TA0050-R(); /* Read temporary storage page*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+    /* Display the page information on the screen.*/
+    /* ------------------------------------------------------------*/
+
+    set TY0DM001.XXX-CURR-PAGE-DESC skip; /* "PAGE" literal*/
+    TY0DM001.XXX-CURR-PAGE-NBR = TY0DW00.XXX-CURR-PAGE-NBR;
+                                   /* Current page*/
+    set TY0DM001.XXX-HI-PAGE-DESC skip; /* "OF" literal*/
+    TY0DM001.XXX-HI-PAGE-NBR = TY0DW00.XXX-HI-PAGE-NBR;
+                                   /* Highest page*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Format the heading information.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DS-HEADINGS(); /* Move headings*/
+
+   /* ------------------------------------------------------------*/
+   /* Format the map fields from the display storage area.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DW00.XXX-INX-FLD-NBR = 1; /* Initialize line index*/
+
+  while (TY0DW00.XXX-INX-FLD-NBR <= TY0DW00.XXX-INX-LMT-NBR)
+                                   /* Until screen is full*/
+    if (TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] > " ") /* or end of data*/
+
+      TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] = TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR]; /* Currency to map*/
+
+      TY0DM001.ZFC-CRCY-DESC[XXX-INX-FLD-NBR] = TY0DW01.ZFC-CRCY-DESC[XXX-INX-FLD-NBR]; /* Currency desc to map*/
+
+      TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] = TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR]; /* Rate to map*/
+
+      TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] = TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR]; /* Approval flag to map*/
+
+      if (TY0DM001.TY-EXCHG-RATE-CD == "SC") /* If standard cost, darken date*/
+        set TY0DM001.TY-RATE-CLNDR-DATE[XXX-INX-FLD-NBR] invisible, protect;
+      else
+        TY0DM001.TY-RATE-CLNDR-DATE[XXX-INX-FLD-NBR] = TY0DW01.TY-RATE-CLNDR-DATE[XXX-INX-FLD-NBR]; /* Date to map*/
+      end
+
+    end
+
+    TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR + 1;
+                                   /* Increment line index*/
+
+  end
+
+
+end // end TY0D-21000
+
+// Protect unmodifiable fields
+Function TY0D-22000()
+   /* -------------------------------------------------------------*/
+   /* Protect the fields that cannot be entered by the user.*/
+   /* -------------------------------------------------------------*/
+
+  TY0DW00.XXX-INX-FLD-NBR = 1; /* Initialize line index*/
+
+  while (TY0DW00.XXX-INX-FLD-NBR <= TY0DW00.XXX-INX-LMT-NBR)
+
+    if (TYWREC.TY-SCREEN-MODE == "CHG" /* In maintenance mode*/
+     && TYWREC.TY-SOURCE-CURRENCY == "USD") /* From U.S. dollars*/
+
+      if (COMMAREA.CACLVL[TY-INDEX-NBR] == "Y"             /* User has approval auth*/
+       && TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y" /* rcd approved*/
+       && converseVar.validationMsgNum == 0)               /* There are no errors to fix*/
+
+        set TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] skip; /* Block curr &*/
+        set TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] skip; /* amount*/
+
+      end
+
+      if (COMMAREA.CACLVL[TY-INDEX-NBR] != "Y") /* No approval authority*/
+        set TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] skip;
+        /* Block approval rate at all times*/
+        if (TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y")
+          /* Block remaining fields if approval is yes*/
+          set TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] skip;
+          set TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] skip;
+        end
+      end
+
+    else
+
+      /* Inquiry mode or non USD source requires a block on all fields*/
+      set TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] skip;
+      set TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] skip;
+      set TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] skip;
+
+    end
+
+    TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR + 1;
+                                   /* Increment line index*/
+
+  end
+
+  if (TYWREC.TY-SCREEN-MODE == "CHG" /* Change mode*/
+   && TYWREC.TY-SOURCE-CURRENCY == "USD") /* Source is US dollars*/
+
+    if (converseVar.validationMsgNum == 0 /* There are no errors*/
+     && TYWREC.XXX-MSG-NBR == 0)         
+      set TY0DM001.ZFC-CRCY-CD[1] cursor;
+    else
+      /* next sentence*/
+    end
+
+  else
+    set TY0DM001.CATOAP cursor; /* Inquiry mode position*/
+  end
+
+end // end TY0D-22000
+
+// Check attention identifier
+Function TY0D-30000()
+   /* ------------------------------------------------------------*/
+   /* If CANCEL was requested, clear the map fields and exit.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+
+    if (TY0DW00.XXX-RQT-DATA-FL == "Y") /* Request for data pending*/
+      set TY0DW01 empty; /* M001 display storage*/
+    end
+
+    TY0DW00.XXX-RQT-DATA-FL = "N"; /* Request for data flag*/
+    TY0DW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    COMMAREA.CATOAP = " "; /* TO application*/
+    COMMAREA.CAITEM = " "; /* Application data*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If FAST PATH was requested, transfer to the application.*/
+   /* ------------------------------------------------------------*/
+
+  if (TY0DM001.CATOAP > " ") /* FAST PATH was requested*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      TY0DS-TA0050-P(); /* Purge any temporary storage*/
+
+      XSTYS-EXIT(); /* Exit to another application*/
+
+      set TY0DM001.CATOAP cursor, bold; /* Highlight*/
+
+    else
+
+      TYWREC.XXX-MSG-LOC-ID = "13000"; /* Message location*/
+      converseLib.validationFailed(5); /* PA/PF key may not be used*/
+
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If a PF key transfer requested, exit to another application.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf1 /* PF1 was pressed*/
+   || converseVar.eventKey is pf3 /* or PF3 was pressed*/
+   || converseVar.eventKey is pf4 /* or PF4 was pressed*/
+   || converseVar.eventKey is pf5) /* or PF5 was pressed*/
+
+    if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+      converseLib.validationFailed(21); /* Not available at this time*/
+      exit stack;
+   /* MOVE 'TY0DM001' TO COMMAREA.CAITEM;/* Application find code*/
+    end
+
+    if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+      COMMAREA.CATOAP = "TY0A"; /* System Menu*/
+    end
+
+    if (converseVar.eventKey is pf5) /* PF3 was pressed*/
+      COMMAREA.CATOAP = "TY0C"; /* System Menu*/
+    end
+
+    TY0DS-TA0050-P(); /* Purge any temporary storage*/
+
+    XSTYS-EXIT(); /* Exit to another application*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf7   /* and PF7 was not pressed*/
+   && converseVar.eventKey not pf8   /* and PF8 was not pressed*/
+   && converseVar.eventKey not pf12) /* and PF12 was not pressed*/
+
+    TYWREC.XXX-MSG-LOC-ID = "13000"; /* Message location*/
+    converseLib.validationFailed(4); /* PA/PF key pressed is not valid*/
+
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+end // end TY0D-30000
+
+// Verify data that was entered
+Function TY0D-40000()
+   /* ------------------------------------------------------------*/
+   /* Highlight any application data that was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (TY0DM001.CAITEM > " ") /* Application data was entered*/
+
+    TYWREC.XXX-MSG-LOC-ID = "14000"; /* Message location*/
+    converseLib.validationFailed(7); /* Enter only with FAST PATH*/
+    set TY0DM001.CAITEM cursor, bold; /* Highlight*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll requested, determine if any other field changed.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   || converseVar.eventKey is pf8) /* or scroll forward request*/
+
+    TY0D-41000(); /* Highlight other changed fields*/
+
+    /* ------------------------------------------------------------*/
+    /* Determine whether a valid request to scroll was entered.*/
+    /* ------------------------------------------------------------*/
+
+    TY0D-42000(); /* Verify scroll request*/
+
+  else
+
+    /* ------------------------------------------------------------*/
+    /* Otherwise, verify any modifiable data that was changed.*/
+    /* ------------------------------------------------------------*/
+
+    TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-LMT-NBR;
+                               /* Line index*/
+    while (TY0DW00.XXX-INX-FLD-NBR > 0) /* Until end of lines*/
+
+      TY0D-43000(); /* Verify data in the line*/
+
+      TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR - 1;
+                               /* Decrement line number*/
+    end
+
+    /* -----------------------------------------------------------*/
+    /* If there are no errors, we then check for the 5% variance.*/
+    /* We set it as an error the first time, then on the second*/
+    /* pass we update the information. All variances are highlighted*/
+    /* as a separate, and last pass.*/
+    /* -----------------------------------------------------------*/
+
+    if (converseVar.validationMsgNum == 0 /* There are no errors*/
+    )                                    
+      TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-LMT-NBR;
+                                 /* Line index*/
+      while (TY0DW00.XXX-INX-FLD-NBR > 0) /* Until end of lines*/
+
+        TY0D-44000(); /* Verify data in the line*/
+
+        TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR - 1;
+                                 /* Decrement line number*/
+      end
+
+    end
+
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* If any error was found, exit to display the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    exit stack; /* Exit to display map*/
+  end
+
+
+end // end TY0D-40000
+
+// Highlight other changed fields
+Function TY0D-41000()
+   /* ------------------------------------------------------------*/
+   /* If a modifiable field was changed, indicate that field may*/
+   /* not be changed when key is changed or a pf key is pressed.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-LMT-NBR; /* Line index*/
+
+  while (TY0DW00.XXX-INX-FLD-NBR > 0) /* Until end of lines*/
+
+    if (TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] !=  /* Currency has changed*/
+    TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR])        
+
+      TYWREC.XXX-MSG-LOC-ID = "41000"; /* Message location*/
+      converseLib.validationFailed(14); /* Field may not change*/
+      set TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] cursor, bold;
+                                                /* Highlight*/
+    end
+
+    if (TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] != 
+    TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR]) /* Rate changed*/
+
+      TYWREC.XXX-MSG-LOC-ID = "41000"; /* Message location*/
+      converseLib.validationFailed(14); /* Field may not change*/
+      set TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] cursor, bold;
+                                                 /* Highlight*/
+    end
+
+    if (TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] != 
+    TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR]) /* Rate approval changed*/
+
+      TYWREC.XXX-MSG-LOC-ID = "41000"; /* Message location*/
+      converseLib.validationFailed(14); /* Field may not change*/
+      set TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] cursor, bold;
+                                                 /* Highlight*/
+    end
+
+    TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR - 1;
+                                                 /* Decrement line number*/
+
+  end
+
+
+end // end TY0D-41000
+
+// Verify scroll request
+Function TY0D-42000()
+   /* ------------------------------------------------------------*/
+   /* If scroll back was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   && TY0DW00.XXX-CURR-PAGE-NBR < 2) /* and no previous pages*/
+
+    TYWREC.XXX-MSG-LOC-ID = "14200"; /* Message location*/
+    converseLib.validationFailed(2); /* No previous page to display*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll forward was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf8 /* Scroll forward request*/
+   && TY0DW00.XXX-CURR-PAGE-NBR >= TY0DW00.XXX-HI-PAGE-NBR)
+                                          /* and no more pages*/
+
+    TYWREC.XXX-MSG-LOC-ID = "14200"; /* Message location*/
+    if (TY-SCREEN-MODE == "INQ")
+      converseLib.validationFailed(3); /* No more pages-error*/
+    else
+      TYWREC.XXX-MSG-NBR = 3; /* No more pages-informational*/
+    end
+
+  end
+
+end // end TY0D-42000
+
+// Verify data in the line
+Function TY0D-43000()
+   /* ------------------------------------------------------------*/
+   /* If there was no change in the four variable fields, we*/
+   /* exit the module to look at the next record.*/
+   /* ------------------------------------------------------------*/
+
+  if (TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] ==  /* Currency is same*/
+  TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR]          
+   && TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] == 
+  TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] /* Rate same*/
+   && TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == 
+  TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR])     /* Approval is same*/
+    return;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If this was a blank line and no currency has been entered,*/
+   /* all the other fields should be blank.*/
+   /* ------------------------------------------------------------*/
+
+  if (TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] == " " /* Currency map*/
+   && TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] == " ") /* and store blank*/
+
+    if (TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] != 0) /* There is a rate*/
+      TYWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+      converseLib.validationFailed(48); /* Invalid request*/
+      set TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] cursor, bold;
+    end
+
+    if (TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] != " ") /* There is a apvl*/
+      TYWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+      converseLib.validationFailed(48); /* Invalid request*/
+      set TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] cursor, bold;
+    end
+
+    return;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If the record was not approved, it can be deleted by erasing*/
+   /* the whole line.*/
+   /* ------------------------------------------------------------*/
+
+  if (TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] == " " /* User wants to*/
+   && TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] == 0) /* delete entry*/
+
+    if (TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y") /* This is an*/
+                                                      /* approved record*/
+      TYWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+      converseLib.validationFailed(52); /* Cannot delete*/
+      set TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] cursor, bold;
+
+      return;
+
+    else
+
+      TY0DW01.TY-DELETE-FLAG[XXX-INX-FLD-NBR] = "Y"; /* Tag rcd*/
+      return;
+
+    end
+  end
+
+   /* -----------------------------------------------------------*/
+   /* Approval flag must be y, n, or blank if the record is new.*/
+   /* -----------------------------------------------------------*/
+
+  if (TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y" /* Valid values*/
+   || TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "N")
+
+    /* next sentence*/
+
+  else
+
+    if (TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == " " /* Field is blank*/
+     && TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == " ") /* A new record*/
+      /* next sentence*/
+    else
+
+      TYWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+      converseLib.validationFailed(49); /* Must be 'y' or 'n'*/
+      set TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] cursor, bold;
+
+    end
+  end
+
+   /* -----------------------------------------------------------*/
+   /* Only authorized people can approve the rates.*/
+   /* -----------------------------------------------------------*/
+
+  if (TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] != "Y" /* Record not apvd*/
+   && TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y") /* Map field apvd*/
+
+    if (COMMAREA.CACLVL[TY-INDEX-NBR] == "Y" /* Full approval authority*/
+     && TYWREC.TY-SCREEN-MODE == "CHG")     
+
+      /* next sentence*/
+
+    else
+
+      TYWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+      converseLib.validationFailed(50); /* No approval authority*/
+      set TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] cursor, bold;
+
+    end
+
+  end
+
+   /* -----------------------------------------------------------*/
+   /* Rate must be greater than 0.*/
+   /* -----------------------------------------------------------*/
+
+  if (TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] > 0)
+    /* next sentence*/
+  else
+
+    TYWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+    converseLib.validationFailed(58); /* Amount greater than 0*/
+    set TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] cursor, bold;
+
+  end
+
+   /* -----------------------------------------------------------*/
+   /* Existing currencies cannot be changed, and a new currency*/
+   /* must be validated.*/
+   /* -----------------------------------------------------------*/
+
+  if (TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] !=  /* Currency has*/
+  TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR])         /* changed*/
+
+    if (TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] != " ") /* There was a currency*/
+
+      TYWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+      converseLib.validationFailed(52); /* Currency cannot be changed*/
+      set TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] cursor, bold;
+      return;
+
+    else
+
+      set VZFC0001 empty;
+      VZFC0001.ZFC-CRCY-CD = TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR];
+      TY0DS-DC0060-S(); /* Verify currency*/
+
+      if (SQLCA.VAGen_SQLCODE == 0) /* Record found*/
+
+        TY0DM001.ZFC-CRCY-DESC[XXX-INX-FLD-NBR] = VZFC0001.ZFC-CRCY-DESC;
+
+      else
+
+        TYWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+        converseLib.validationFailed(51); /* Invalid currency*/
+        set TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] cursor, bold;
+        return;
+
+      end
+    end
+  end
+
+  if (converseVar.validationMsgNum != 0) /* If there is an error, return*/
+    return;
+  end
+
+   /* -----------------------------------------------------------*/
+   /* If this is an add, verify that the record does not already*/
+   /* exist.*/
+   /* -----------------------------------------------------------*/
+
+  if (TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] != " " /* There is a code*/
+   && TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] == " ") /* and it is new*/
+
+    TY0DS-INIT-SELECT(); /* Initialize key fields*/
+
+    TY0DS-IO7120-S(); /* Select the record*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* There is a record*/
+
+      TYWREC.XXX-MSG-LOC-ID = "43000"; /* Message location*/
+      converseLib.validationFailed(16); /* Currency cannot be changed*/
+      set TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] cursor, bold;
+      return;
+
+    end
+
+  end
+
+end // end TY0D-43000
+
+// Amount variance edit
+Function TY0D-44000()
+   /* ---------------------------------------------------------------*/
+   /* Determine whether a changed amount field is more than 5%*/
+   /* variance from the last record. A warning is given the first time*/
+   /* and we accept it on the second pass.*/
+   /* ---------------------------------------------------------------*/
+
+  if (TY0DW00.TY0D-WARNING-LEVEL == 2) /* Warning has been given*/
+    /* next sentence*/
+  else
+    if (TY0DM001.TY-EXCHG-RATE-CD != "SC") /* Not a standard cost*/
+      if (TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] /* and amt has changed*/
+       != TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR])
+
+        set VEXCHG01 empty; /* Initialize record*/
+        VEXCHG01.TY-EXCHG-RATE-CD = TY0DM001.TY-EXCHG-RATE-CD;
+        VEXCHG01.ZFC-CRCY-CD = TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR];
+        VEXCHG01.TY-RATE-APVL-FL = "Y";
+
+        TY0DS-IO7120-S1(); /* Open cursor*/
+
+        TY0DS-IO7120-N1(); /* Get current record*/
+
+        if (SQLCA.VAGen_SQLCODE == 0) /* Previous record fnd*/
+          TY0D-45000(); /* Check variance*/
+        end
+
+        TY0DS-IO7120-C1(); /* Close cursor*/
+
+      end
+    end
+  end
+
+end // end TY0D-44000
+
+// Check for 5% variance
+Function TY0D-45000()
+   /* ------------------------------------------------------------*/
+   /* Check to see whether the amount entered has more than 5*/
+   /* percent variance.*/
+   /* ------------------------------------------------------------*/
+
+   /* Calculate high range*/
+  TY0DW00.TY-HIGH-AMT = VEXCHG01.TY-EXCHG-RATE-AMT                      * TY0DW00.TY0D-HIGH-PCT-FCT;
+
+   /* Calculate low range*/
+  TY0DW00.TY-LOW-AMT = VEXCHG01.TY-EXCHG-RATE-AMT                      * TY0DW00.TY0D-LOW-PCT-FCT;
+
+  if (VEXCHG01.ZFC-CRCY-CD == "TRL"
+   && VEXCHG01.TY-EXCHG-CLNDR-DT > 20010500)
+    TY0DW00.TY-HIGH-AMT = TY0DW00.TY-HIGH-AMT * 100;
+    TY0DW00.TY-LOW-AMT = TY0DW00.TY-LOW-AMT * 100;
+  end
+
+  if ((TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] > TY0DW00.TY-HIGH-AMT)
+   || (TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] < TY0DW00.TY-LOW-AMT)
+  ) /* Out of range*/
+
+    TYWREC.XXX-MSG-LOC-ID = "44000"; /* Message location*/
+    converseLib.validationFailed(59); /* Outside of variance*/
+    set TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] cursor, bold;
+    TY0DW00.TY0D-WARNING-LEVEL = 1; /* Set the warning flag*/
+
+  end
+
+end // end TY0D-45000
+
+// Process valid input request
+Function TY0D-50000()
+   /* ------------------------------------------------------------*/
+   /* If edit function was pressed (PF12), return screen.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf12) /* Edit function requested*/
+
+    TYWREC.XXX-MSG-NBR = 54; /* No errors found*/
+    return;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll backward was requested, decrement the page number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7) /* Scroll back requested*/
+
+    TY0DW00.XXX-CURR-PAGE-NBR = TY0DW00.XXX-CURR-PAGE-NBR - 1;
+                                   /* Decrement page number*/
+
+    TY0DW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll forward was requested, increment the page number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf8) /* Scroll forward requested*/
+
+    TY0DW00.XXX-CURR-PAGE-NBR = TY0DW00.XXX-CURR-PAGE-NBR + 1;
+                                   /* Increment page number*/
+
+    TY0DW00.XXX-MAP-FMAT-FL = "Y"; /* Format the map flag*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If edit was pressed or the mode is inquiry, return.*/
+   /* ------------------------------------------------------------*/
+
+  if (TYWREC.TY-SCREEN-MODE == "INQ") /* Inquiry mode*/
+
+    return;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Save any field that was changed in the map display storage.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DW00.XXX-INX-FLD-NBR = 1; /* Initialize line index*/
+
+  while (TY0DW00.XXX-INX-FLD-NBR <= TY0DW00.XXX-INX-LMT-NBR)
+                                      /* Until end of lines*/
+    TY0DW00.TY0D-UPDATE-FL = "N"; /* Initialize update flag*/
+    TY0DW00.TY0D-ADD-FL = "N"; /* Initialize add flag*/
+
+    if (TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] == " ")
+      if (TY0DW01.TY-DELETE-FLAG[XXX-INX-FLD-NBR] == "Y") /* Delete request*/
+        TY0DS-INIT-DELETE(); /* Initialize a delete record*/
+
+        if (TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y") /* Was approved*/
+          TY0DS-IO7120-S(); /* Select exchg record*/
+          TY0DS-WRITE-AUDIT(); /* Write audit record*/
+        end
+
+        TY0DS-IO7120-D(); /* Delete the record*/
+
+        TY0DW00.XXX-RQT-DATA-FL = "Y";
+      end
+    else
+
+      TY0DS-SCAN-CHANGES(); /* Check for a an update or add*/
+
+    end
+
+    if (TY0DW00.TY0D-UPDATE-FL == "Y" /* There is an add or update*/
+     || TY0DW00.TY0D-ADD-FL == "Y")   /* request*/
+
+      TY0DS-INIT-SELECT(); /* Initialize record for select*/
+      TY0DS-IO7120-S(); /* See if record exists*/
+
+      if (TY0DW00.TY0D-UPDATE-FL == "Y") /* If this is an update*/
+        if (SQLCA.VAGen_SQLCODE == 100) /* but record not found*/
+          VGVar.handleSysLibraryErrors = 0;
+          sysLib.rollback(); /* rollback*/
+          TY0DW00.XXX-RQT-DATA-FL = "Y";
+          TYWREC.XXX-MSG-LOC-ID = "IO7120U";
+          converseLib.validationFailed(12); /* Data updated by another*/
+          exit stack;
+        else
+
+          TY0DS-INIT-FIELDS(); /* Initialize other fields*/
+          TY0DS-IO7120-U(); /* Update rate exchange record*/
+        end
+      else
+        if (SQLCA.VAGen_SQLCODE == 0) /* record found*/
+          VGVar.handleSysLibraryErrors = 0;
+          sysLib.rollback(); /* rollback*/
+          TY0DW00.XXX-RQT-DATA-FL = "Y";
+          TYWREC.XXX-MSG-LOC-ID = "IO7120A";
+          converseLib.validationFailed(16); /* Duplicate row*/
+          exit stack;
+        end
+
+        TY0DS-INIT-FIELDS(); /* Initialize other fields*/
+        TY0DS-IO7120-A(); /* Add rate exchange record*/
+
+      end
+
+      /* If record was approved or is now approved, write an audit rcd*/
+      if (TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y"
+       || TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y")
+
+        TY0DS-WRITE-AUDIT();
+
+      end
+
+      TY0DW00.XXX-RQT-DATA-FL = "Y";
+
+    end
+
+    TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR + 1;
+                                     /* Increment line index*/
+
+  end
+
+  TY0DW00.TY0D-UPDATE-FL = "N"; /* Reset the flags before leaving*/
+  TY0DW00.TY0D-ADD-FL = "N"; /* because edits use the init para*/
+
+   /* * -------------------------------------------------------------*/
+   /* If a change has been made, commit all changes*/
+   /* -------------------------------------------------------------*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.commit(); /* Commit all changes*/
+
+  TYWREC.XXX-MSG-LOC-ID = "50000"; /* Message location*/
+  TYWREC.XXX-MSG-NBR = 1; /* Table update was completed*/
+
+end // end TY0D-50000
+
+// Obtain USD/Curr display data
+Function TY0DS-10100()
+   /* --------------------------------------------------------------------*/
+   /* Obtain the data for a USD/Currency call. This means the user has*/
+   /* entered U.S. Dollars as the source and requested a specific*/
+   /* currency as the destination. The IO7120 (also called the dumb mod)*/
+   /* is used to select USD to currency figures.*/
+   /* --------------------------------------------------------------------*/
+
+  set VEXCHG01 empty;
+
+  VEXCHG01.TY-EXCHG-RATE-CD = TYWREC.TY-EXCHG-RATE-CD; /* Rate code*/
+  VEXCHG01.ZFC-CRCY-CD = TYWREC.TY-DEST-CURRENCY; /* Currency*/
+
+  if (VEXCHG01.TY-EXCHG-RATE-CD == "SC") /* Standard cost*/
+    VEXCHG01.XSN-SESN-RNG-ABRV = TYWREC.XSN-SESN-RNG-ABRV; /* Season*/
+    VEXCHG01.XGP-GPC-CD = TYWREC.XGP-GPC-CD; /* GPC*/
+  else
+    VEXCHG01.TY-EXCHG-CLNDR-DT = TYWREC.TY-FROM-DATE; /* Calendar date*/
+  end
+
+  VEXCHG01.TY-RATE-APVL-FL = TYWREC.TY-APP-UNAPP-IND; /* Approval flag*/
+
+  TY0DS-IO7120-S(); /* Select unique*/
+
+   /* --------------------------------------------------------------------*/
+   /* If record found, format the data.*/
+   /* --------------------------------------------------------------------*/
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* No record found*/
+
+    TYWREC.XXX-MSG-LOC-ID = "10100";
+    TYWREC.XXX-MSG-NBR = 42; /* No data found*/
+
+  else
+    TY0DW00.XXX-INX-FLD-NBR = 1; /* Display line index*/
+
+    TY0DS-STORE-RATE(); /* Store the data in work record*/
+
+    set VZFC0001 empty; /* Init for currency description*/
+    VZFC0001.ZFC-CRCY-CD = TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR];
+    TY0DS-DC0060-S(); /* Get crcy descirption*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Description found*/
+
+      TY0DW01.ZFC-CRCY-DESC[XXX-INX-FLD-NBR] = VZFC0001.ZFC-CRCY-DESC; /* Move desc to store*/
+
+    else
+
+      TY0DW01.ZFC-CRCY-DESC[XXX-INX-FLD-NBR] = "UNKNOWN";
+
+    end
+
+    TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR + 1;
+
+  end
+
+   /* -------------------------------------------------------------*/
+   /* Add any partially formatted last page to the queue.*/
+   /* -------------------------------------------------------------*/
+
+  if (TY0DW00.XXX-INX-FLD-NBR > 1) /* Page was formatted*/
+    TY0DS-TA0050-A(); /* Add page to temporary storage*/
+  end
+
+end // end TY0DS-10100
+
+// Obtain currency display data
+Function TY0DS-10300()
+   /* ------------------------------------------------------------------*/
+   /* Obtain the data when the user request is a non USD source or the*/
+   /* destination has multiple currencies. In this case we do the 'smart'*/
+   /* mod call that calculates cross exchange rates.*/
+   /*  */
+   /* 09/22/94 jcarey changed name of ty1rec amount field to the expanded*/
+   /* amount field.*/
+   /* ------------------------------------------------------------------*/
+
+  set TY1REC empty; /* Clear row storage area*/
+
+  TY1REC.TY1-OPTION-CODE = "GR"; /* Do a get-rate*/
+  TY1REC.TY-EXCHG-RATE-CD = TYWREC.TY-EXCHG-RATE-CD;
+
+  if (TYWREC.TY-SOURCE-CURRENCY != " ") /* There is a source currency*/
+
+    if (TYWREC.TY-SOURCE-CURRENCY == "ALL") /* Source is all curriencies*/
+      TY0DW00.TY-SWITCH-SRCE-DEST = "Y"; /* Throw switch*/
+      TY1REC.TY1-SRC-ZFC-CRCY-CD = "***"; /* Represents 'all'*/
+    else
+      TY1REC.TY1-SRC-ZFC-CRCY-CD = TYWREC.TY-SOURCE-CURRENCY;
+    end
+
+  else
+
+    TY0DW00.TY-SWITCH-SRCE-DEST = "Y"; /* Region was selected*/
+    TY1REC.XDR-PROD-REG-CD = TYWREC.TY-SOURCE-REGION;
+    TY1REC.TY1-SRC-ZFC-CRCY-CD = "***";
+
+  end
+
+  if (TYWREC.TY-DEST-CURRENCY != " ") /* There is a destination currency*/
+
+    if (TYWREC.TY-DEST-CURRENCY == "ALL") /* All currencies requested*/
+      TY1REC.TY1-DEST-ZFC-CRCY-CD = "***";
+    else
+      TY1REC.TY1-DEST-ZFC-CRCY-CD = TYWREC.TY-DEST-CURRENCY;
+    end
+
+  else
+
+    TY1REC.XDR-PROD-REG-CD = TYWREC.TY-DEST-REGION;
+    TY1REC.TY1-DEST-ZFC-CRCY-CD = "***";
+
+  end
+
+
+  if (TYWREC.TY-EXCHG-RATE-CD == "SC") /* Standard cost requires*/
+
+    TY1REC.XSN-SESN-RNG-ABRV = TYWREC.XSN-SESN-RNG-ABRV; /* sesn/gpc*/
+    TY1REC.XGP-GPC-CD = TYWREC.XGP-GPC-CD;
+
+  else
+
+    TY1REC.TY-EXCHG-CLNDR-DT = TYWREC.TY-FROM-DATE; /* Calendar date*/
+
+  end
+
+  TY1REC.TY-RATE-APVL-FL = TYWREC.TY-APP-UNAPP-IND;
+
+  TY0DS-TY1000-GR(); /* Do a get-rate call to ty1000*/
+
+  if (TY1REC.TY1-PROGRAM-STATUS == 01) /* No rates found*/
+
+    converseLib.validationFailed(18); /* No data found*/
+    TYWREC.XXX-MSG-LOC-ID = "10300"; /* Message location*/
+    return;
+
+  end
+
+  if (TY1REC.TY1-PROGRAM-STATUS == 02 /* Invalid option*/
+   || TY1REC.TY1-PROGRAM-STATUS == 03) /* Invalid combination*/
+
+    converseLib.validationFailed(48); /* Invalid request*/
+    TYWREC.XXX-MSG-LOC-ID = "10300"; /* Message location*/
+
+    return;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Fetch and format the data into pages until end of cursor.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DW00.XXX-INX-FLD-NBR = 1; /* Display line idex*/
+  TY1REC.TY1-TBL-PTR = 1; /* Table index*/
+
+  TY0DW00.TY0DW-RATE-EOF-FL = "N"; /* End of cursor flag*/
+
+  while (TY0DW00.TY0DW-RATE-EOF-FL == "N") /* Until end of cursor*/
+    /* ----------------------------------------------------------*/
+    /* if not end of cursor, save the data in display storage.*/
+    /* ----------------------------------------------------------*/
+
+    if (TY0DW00.TY0DW-RATE-EOF-FL == "N") /* Not end of cursor*/
+
+      /* --------------------------------------------------------*/
+      /* Save the data from the table row in display storage.*/
+      /* --------------------------------------------------------*/
+
+
+      /* Tcs change - 04/24/00.*/
+      if (TYWREC.TY-DEST-CURRENCY == "ALL"
+       || TYWREC.TY-DEST-REGION != " ")
+        if (TY1REC.TY1-DEST-ZFC-CRCY-CD-T[TY1-TBL-PTR] == "EUR"
+         && TY1REC.TY1-TBL-PTR == 1)
+   /* Movedest*/
+          TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] = TY1REC.TY1-DEST-ZFC-CRCY-CD-T[TY1-TBL-PTR]; /* curr to store*/
+
+   /* Move dest curr*/
+          VZFC0001.ZFC-CRCY-CD = TY1REC.TY1-DEST-ZFC-CRCY-CD-T[TY1-TBL-PTR]; /* to get desc*/
+
+   /* Round rate*/
+   /* amount*/
+          TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] = mathLib.round(TY1REC.TY1-EXCHG-RATE-EXPND-AMT[TY1-TBL-PTR], -mathLib.decimals(TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR]));
+
+   /* Move apvl flag*/
+          TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] = TY1REC.TY1-RATE-APVL-FL-T[TY1-TBL-PTR]; /* to store*/
+
+   /* Move date*/
+          TY0DW01.TY-EXCHG-CLNDR-DT[XXX-INX-FLD-NBR] = TY1REC.TY1-CLNDR-DT-FND[TY1-TBL-PTR]; /* to store*/
+
+          TY0DW00.TY0D-OLD-DATE = TY1REC.TY1-CLNDR-DT-FND[TY1-TBL-PTR];
+
+          TY0DS-CLNDR-DATE(); /* Set date to mm-dd-yy*/
+
+          set VZFC0001 empty;
+          VZFC0001.ZFC-CRCY-CD = TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR];
+          TY0DS-DC0060-S(); /* Get descriptions*/
+
+          if (SQLCA.VAGen_SQLCODE == 0
+          )
+   /* Move descriptions*/
+            TY0DW01.ZFC-CRCY-DESC[XXX-INX-FLD-NBR] = VZFC0001.ZFC-CRCY-DESC; /* to map*/
+
+          else
+            TY0DM001.ZFC-CRCY-DESC[XXX-INX-FLD-NBR] = "UNKNOWN";
+
+          end
+
+          TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR + 1;
+
+        end
+
+      end
+
+      if (TYWREC.TY-SOURCE-CURRENCY != "ALL"
+       && TYWREC.TY-DEST-CURRENCY != "ALL")
+        if (TYWREC.TY-SOURCE-REGION == " "
+         && TYWREC.TY-DEST-REGION == " ")
+          if (TY1REC.TY1-TBL-PTR == 1)
+   /* Movedest*/
+            TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] = TY1REC.TY1-DEST-ZFC-CRCY-CD-T[TY1-TBL-PTR]; /* curr to store*/
+
+   /* Move dest*/
+            VZFC0001.ZFC-CRCY-CD = TY1REC.TY1-DEST-ZFC-CRCY-CD-T[TY1-TBL-PTR]; /* to get desc*/
+
+
+   /* Round rate*/
+   /* amount*/
+            TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] = mathLib.round(TY1REC.TY1-EXCHG-RATE-EXPND-AMT[TY1-TBL-PTR], -mathLib.decimals(TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR]));
+
+   /* Move apvl flag*/
+            TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] = TY1REC.TY1-RATE-APVL-FL-T[TY1-TBL-PTR]; /* to store*/
+
+   /* Move date*/
+            TY0DW01.TY-EXCHG-CLNDR-DT[XXX-INX-FLD-NBR] = TY1REC.TY1-CLNDR-DT-FND[TY1-TBL-PTR]; /* to store*/
+
+            TY0DW00.TY0D-OLD-DATE = TY1REC.TY1-CLNDR-DT-FND[TY1-TBL-PTR];
+
+            TY0DS-CLNDR-DATE(); /* Set date to mm-dd-yy*/
+
+            set VZFC0001 empty;
+            VZFC0001.ZFC-CRCY-CD = TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR];
+            TY0DS-DC0060-S(); /* Get descriptions*/
+
+            if (SQLCA.VAGen_SQLCODE == 0
+            )
+   /* Move descriptions*/
+              TY0DW01.ZFC-CRCY-DESC[XXX-INX-FLD-NBR] = VZFC0001.ZFC-CRCY-DESC; /* to map*/
+
+            else
+              TY0DM001.ZFC-CRCY-DESC[XXX-INX-FLD-NBR] = "UNKNOWN";
+
+            end
+
+            if (TY1REC.TY1-TBL-SIZE != 01)
+              TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR + 1;
+            end
+            /* Tcs addition - 04/24/00.*/
+          end
+
+        end
+
+      end
+
+      if (TY1REC.TY1-SRC-ZFC-CRCY-CD-T[TY1-TBL-PTR] != "EUR")
+        if (TY1REC.TY1-DEST-ZFC-CRCY-CD-T[TY1-TBL-PTR] != "EUR")
+          if (TY0DW00.TY-SWITCH-SRCE-DEST == "Y") /* Switch source & dest*/
+   /* Movedest*/
+            TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] = TY1REC.TY1-SRC-ZFC-CRCY-CD-T[TY1-TBL-PTR]; /* curr to store*/
+
+   /* Move dest curr*/
+            VZFC0001.ZFC-CRCY-CD = TY1REC.TY1-SRC-ZFC-CRCY-CD-T[TY1-TBL-PTR]; /* to get desc*/
+
+          else
+
+   /* Move srce*/
+            TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] = TY1REC.TY1-DEST-ZFC-CRCY-CD-T[TY1-TBL-PTR]; /* curr to store*/
+
+   /* Move srce cur*/
+            VZFC0001.ZFC-CRCY-CD = TY1REC.TY1-DEST-ZFC-CRCY-CD-T[TY1-TBL-PTR]; /* to get desc*/
+
+          end
+
+   /* Round rate*/
+   /* amount*/
+          TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] = mathLib.round(TY1REC.TY1-EXCHG-RATE-EXPND-AMT[TY1-TBL-PTR], -mathLib.decimals(TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR]));
+
+   /* Move apvl flag*/
+          TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] = TY1REC.TY1-RATE-APVL-FL-T[TY1-TBL-PTR]; /* to store*/
+
+   /* Move date*/
+          TY0DW01.TY-EXCHG-CLNDR-DT[XXX-INX-FLD-NBR] = TY1REC.TY1-CLNDR-DT-FND[TY1-TBL-PTR]; /* to store*/
+
+          TY0DW00.TY0D-OLD-DATE = TY1REC.TY1-CLNDR-DT-FND[TY1-TBL-PTR];
+
+          /* Tcs addition - 04/24/00.*/
+        end
+
+      end
+
+      /* *//*Tcs addition - 04/24/00.*/
+      if (TYWREC.TY-SOURCE-CURRENCY == "ALL"
+       || TYWREC.TY-SOURCE-REGION != " ")
+        if (TY1REC.TY1-SRC-ZFC-CRCY-CD-T[TY1-TBL-PTR] == "EUR"
+         && TY1REC.TY1-TBL-SIZE == TY1REC.TY1-TBL-PTR)
+   /* Movedest*/
+          TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] = TY1REC.TY1-SRC-ZFC-CRCY-CD-T[TY1-TBL-PTR]; /* curr to store*/
+
+   /* Move dest curr*/
+          VZFC0001.ZFC-CRCY-CD = TY1REC.TY1-SRC-ZFC-CRCY-CD-T[TY1-TBL-PTR]; /* to get desc*/
+
+   /* Round rate*/
+   /* amount*/
+          TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] = mathLib.round(TY1REC.TY1-EXCHG-RATE-EXPND-AMT[TY1-TBL-PTR], -mathLib.decimals(TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR]));
+
+   /* Move apvl flag*/
+          TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] = TY1REC.TY1-RATE-APVL-FL-T[TY1-TBL-PTR]; /* to store*/
+
+   /* Move date*/
+          TY0DW01.TY-EXCHG-CLNDR-DT[XXX-INX-FLD-NBR] = TY1REC.TY1-CLNDR-DT-FND[TY1-TBL-PTR]; /* to store*/
+
+          TY0DW00.TY0D-OLD-DATE = TY1REC.TY1-CLNDR-DT-FND[TY1-TBL-PTR];
+
+        end
+
+      end
+
+      TY0DS-CLNDR-DATE(); /* Set date to mm-dd-yy*/
+
+      set VZFC0001 empty;
+      VZFC0001.ZFC-CRCY-CD = TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR];
+      TY0DS-DC0060-S(); /* Get descriptions*/
+
+      if (SQLCA.VAGen_SQLCODE == 0
+      )
+   /* Move descriptions*/
+        TY0DW01.ZFC-CRCY-DESC[XXX-INX-FLD-NBR] = VZFC0001.ZFC-CRCY-DESC; /* to map*/
+
+      else
+        TY0DM001.ZFC-CRCY-DESC[XXX-INX-FLD-NBR] = "UNKNOWN";
+
+      end
+
+      /* ------------------------------------------------------------*/
+      /* Increment the line index to the next row in display storage.*/
+      /* ------------------------------------------------------------*/
+
+      /* Tcs change - 04/24/00.*/
+      if (TY1REC.TY1-DEST-ZFC-CRCY-CD-T[TY1-TBL-PTR] != "EUR")
+        if (TY1REC.TY1-SRC-ZFC-CRCY-CD-T[TY1-TBL-PTR] != "EUR")
+          TY0DW00.XXX-INX-FLD-NBR = TY0DW00.XXX-INX-FLD-NBR + 1;
+        end
+      end
+                                   /* Increment line index*/
+      /* ------------------------------------------------------------*/
+      /* Increment the table index to the next row in display storage.*/
+      /* ------------------------------------------------------------*/
+
+      TY1REC.TY1-TBL-PTR = TY1REC.TY1-TBL-PTR + 1;
+                                   /* Increment table index*/
+
+      if (TY1REC.TY1-TBL-PTR > TY1REC.TY1-TBL-SIZE) /* All entries are*/
+        TY0DW00.TY0DW-RATE-EOF-FL = "Y"; /* processed*/
+      end
+
+    end
+
+    /* ------------------------------------------------------------*/
+    /* If the page if full, add the page to the storage queue.*/
+    /* ------------------------------------------------------------*/
+
+    if (TY0DW00.XXX-INX-FLD-NBR > TY0DW00.XXX-INX-LMT-NBR) /* Page is full*/
+
+      TY0DS-TA0050-A(); /* Add page to temporary storage*/
+
+      TY0DW00.XXX-INX-FLD-NBR = 1; /* Display line index*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------------*/
+   /* Add any partially formatted last page to the queue.*/
+   /* ------------------------------------------------------------------*/
+
+  if (TY0DW00.XXX-INX-FLD-NBR > 1) /* Page was formatted*/
+    TY0DS-TA0050-A(); /* Add page to temporary storage*/
+  end
+
+
+end // end TY0DS-10300
+
+// Set up the calendar date
+Function TY0DS-CLNDR-DATE()
+   /* ------------------------------------------------------------------*/
+   /* Move the table information for the exchange rates into storage.*/
+   /* ------------------------------------------------------------------*/
+
+  move TY0D-OLD-YEAR to TY0D-NEW-YEAR withV60Compat; /* to mm-dd-yy*/
+  move TY0D-OLD-MONTH to TY0D-NEW-MONTH withV60Compat;
+  move TY0D-OLD-DAY to TY0D-NEW-DAY withV60Compat;
+  TY0D-NEW-DASH1 = "-";
+  TY0D-NEW-DASH2 = "-";
+  TY0DW01.TY-RATE-CLNDR-DATE[XXX-INX-FLD-NBR] = TY0D-NEW-DATE;
+
+
+end // end TY0DS-CLNDR-DATE
+
+// Create audit after picture
+Function TY0DS-CREATE-AFT()
+   /* ------------------------------------------------------------------*/
+   /* Move the fields from the vexchg01 record into the after picture.*/
+   /* ------------------------------------------------------------------*/
+
+  TY0DW03.ZFC-CRCY-CD = VEXCHG01.ZFC-CRCY-CD; /* Currency code*/
+
+  TY0DW03.TY-EXCHG-RATE-CD = VEXCHG01.TY-EXCHG-RATE-CD; /* Exchange rate*/
+
+  TY0DW03.TY-EXCHG-CLNDR-DT = VEXCHG01.TY-EXCHG-CLNDR-DT; /* Calendar date*/
+
+  TY0DW03.XSN-SESN-RNG-ABRV = VEXCHG01.XSN-SESN-RNG-ABRV; /* Season abbreviation*/
+
+  TY0DW03.XGP-GPC-CD = VEXCHG01.XGP-GPC-CD; /* GPC code*/
+
+  TY0DW03.TY-EXCHG-RATE-AMT = VEXCHG01.TY-EXCHG-RATE-AMT; /* Exchange rate amount*/
+
+  TY0DW03.NL-CONV-IND = VEXCHG01.NL-CONV-IND; /* Multiplier/Divisor*/
+
+  TY0DW03.TY-RATE-APVL-FL = VEXCHG01.TY-RATE-APVL-FL; /* Rate approval flag*/
+
+  TY0DW03.TY-RATE-APVL-DT = VEXCHG01.TY-RATE-APVL-DT; /* Rate approval date*/
+
+  TY0DW03.TY-CRT-USER-ID = VEXCHG01.TY-CRT-USER-ID; /* Record creator*/
+
+  TY0DW03.ZZ-SDT = VEXCHG01.ZZ-SDT; /* Setup date*/
+
+  TY0DW03.ZZ-SETUP-HHMM = VEXCHG01.ZZ-SETUP-HHMM; /* Setup time*/
+
+  TY0DW03.TY-UPD-USER-ID = VEXCHG01.TY-UPD-USER-ID; /* Updated by*/
+
+  TY0DW03.ZZ-CHNG-DT = VEXCHG01.ZZ-CHNG-DT; /* Change date*/
+
+  TY0DW03.ZZ-CHNG-HHMM = VEXCHG01.ZZ-CHNG-HHMM; /* Change time*/
+
+  TY0DW03.ZZ-CHNG-CNT = VEXCHG01.ZZ-CHNG-CNT; /* Change count*/
+
+end // end TY0DS-CREATE-AFT
+
+// Create audit before picture
+Function TY0DS-CREATE-BFR()
+   /* ------------------------------------------------------------------*/
+   /* Move the fields from the work storage area into the before picture.*/
+   /* ------------------------------------------------------------------*/
+
+  TY0DW02.ZFC-CRCY-CD = VEXCHG01.ZFC-CRCY-CD; /* Currency code*/
+
+  TY0DW02.TY-EXCHG-RATE-CD = VEXCHG01.TY-EXCHG-RATE-CD; /* Exchange rate*/
+
+  TY0DW02.TY-EXCHG-CLNDR-DT = VEXCHG01.TY-EXCHG-CLNDR-DT; /* Calendar date*/
+
+  TY0DW02.XSN-SESN-RNG-ABRV = VEXCHG01.XSN-SESN-RNG-ABRV; /* Season abbreviation*/
+
+  TY0DW02.XGP-GPC-CD = VEXCHG01.XGP-GPC-CD; /* GPC code*/
+
+  TY0DW02.TY-EXCHG-RATE-AMT = VEXCHG01.TY-EXCHG-RATE-AMT; /* Exchange rate amount*/
+
+  TY0DW02.NL-CONV-IND = VEXCHG01.NL-CONV-IND; /* Multiplier/Divisor*/
+
+  TY0DW02.TY-RATE-APVL-FL = VEXCHG01.TY-RATE-APVL-FL; /* Rate approval flag*/
+
+  TY0DW02.TY-RATE-APVL-DT = VEXCHG01.TY-RATE-APVL-DT; /* Rate approval date*/
+
+  TY0DW02.TY-CRT-USER-ID = VEXCHG01.TY-CRT-USER-ID; /* Record creator*/
+
+  TY0DW02.ZZ-SDT = VEXCHG01.ZZ-SDT; /* Setup date*/
+
+  TY0DW02.ZZ-SETUP-HHMM = VEXCHG01.ZZ-SETUP-HHMM; /* Setup time*/
+
+  TY0DW02.TY-UPD-USER-ID = VEXCHG01.TY-UPD-USER-ID; /* Updated by*/
+
+  TY0DW02.ZZ-CHNG-DT = VEXCHG01.ZZ-CHNG-DT; /* Change date*/
+
+  TY0DW02.ZZ-CHNG-HHMM = VEXCHG01.ZZ-CHNG-HHMM; /* Change time*/
+
+  TY0DW02.ZZ-CHNG-CNT = VEXCHG01.ZZ-CHNG-CNT; /* Change count*/
+
+end // end TY0DS-CREATE-BFR
+
+// Select the table row
+Function TY0DS-DC0060-S()
+   /* ------------------------------------------------------------*/
+   /* Select the requested row from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "DC0060" ("S ", SQLCA, VZFC0001) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  TYWREC.XXX-MSG-LOC-ID = "DC0060S"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DCORP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VZFC0001"; /* Table view name*/
+  TA1REC.TA1TBLKE = VZFC0001.ZFC-CRCY-CD; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-DC0060-S
+
+// Move headings to map
+Function TY0DS-HEADINGS()
+   /* ---------------------------------------------------------*/
+   /* Move headings to map.*/
+   /* ---------------------------------------------------------*/
+
+  if (TYWREC.TY-SCREEN-MODE == "INQ")
+    TY0DM001.TY-SCREEN-FUNCTION = "INQUIRY";
+  end
+
+  TY0DM001.TY-EXCHG-RATE-CD = TYWREC.TY-EXCHG-RATE-CD;
+  TY0DM001.TY-EXCHG-RATE-DESC = TYWREC.TY-EXCHG-RATE-DESC;
+
+  if (TYWREC.TY-SOURCE-CURRENCY == "ALL" /* There is no single source*/
+   || TYWREC.TY-SOURCE-REGION != " ")    /* Move destination into hdr*/
+
+    TY0DM001.TY-SOURCE-DEST-DESC = "  DEST:";
+    TY0DM001.TY-FROM-CD = TYWREC.TY-DEST-CURRENCY;
+    TY0DM001.TY-FROM-DESC = TYWREC.TY-DEST-CURRENCY-DESC;
+    TY0DM001.TY-TO-CD = "  SOURCE  ";
+
+  else
+
+    TY0DM001.TY-FROM-CD = TYWREC.TY-SOURCE-CURRENCY; /* Move source*/
+    TY0DM001.TY-FROM-DESC = TYWREC.TY-SOURCE-CURRENCY-DESC; /* to hdr*/
+
+  end
+
+  if (TYWREC.TY-EXCHG-RATE-CD == "SC")
+
+    TY0DM001.TY-GPC-TITLE = "GPC:";
+    TY0DM001.XGP-GPC-CD = TYWREC.XGP-GPC-CD;
+    TY0DM001.XGP-GPC-ABRV = TYWREC.XGP-GPC-ABRV;
+    TY0DM001.TY-CALENDAR-FROM-DATE = TYWREC.XSN-SESN-RNG-ABRV;
+
+  else
+
+    set TY0DM001.TY-GPC-TITLE invisible, protect;
+    TY0DM001.TY-CALENDAR-FROM-DATE = TYWREC.TY-CALENDAR-FROM-DATE;
+
+  end
+
+end // end TY0DS-HEADINGS
+
+// Initialize record for delete
+Function TY0DS-INIT-DELETE()
+   /* -------------------------------------------------------------------*/
+   /* Initialize vexchg01 for a select unique*/
+   /* -------------------------------------------------------------------*/
+
+  set VEXCHG01 empty;
+
+   /* Move currency*/
+  VEXCHG01.ZFC-CRCY-CD = TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR]; /* code*/
+
+   /* Move rate type*/
+  VEXCHG01.TY-EXCHG-RATE-CD = TY0DM001.TY-EXCHG-RATE-CD; /* code*/
+
+  if (TY0DM001.TY-EXCHG-RATE-CD == "SC") /* Standard cost uses*/
+                                              /* season/gpc*/
+    VEXCHG01.TY-EXCHG-CLNDR-DT = 0;
+    VEXCHG01.XSN-SESN-RNG-ABRV = TY0DM001.TY-CALENDAR-FROM-DATE;
+    VEXCHG01.XGP-GPC-CD = TY0DM001.XGP-GPC-CD;
+
+  else
+                                              /* Move calendar date*/
+    VEXCHG01.TY-EXCHG-CLNDR-DT = TY0DW01.TY-EXCHG-CLNDR-DT[XXX-INX-FLD-NBR];
+    VEXCHG01.XSN-SESN-RNG-ABRV = " ";
+    VEXCHG01.XGP-GPC-CD = " ";
+
+  end
+
+end // end TY0DS-INIT-DELETE
+
+// Initialize remaining fields
+Function TY0DS-INIT-FIELDS()
+   /* -------------------------------------------------------------------*/
+   /* Initialize the remaining fields for an add or update. There is no*/
+   /* need to initialize setup information on an update since we already*/
+   /* have the record.*/
+   /* -------------------------------------------------------------------*/
+
+  if (VEXCHG01.ZFC-CRCY-CD == "TRL"
+   && VEXCHG01.TY-EXCHG-CLNDR-DT > 20010500)
+    VEXCHG01.TY-EXCHG-RATE-AMT = TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] / 100;
+  else
+   /* Move rate*/
+    VEXCHG01.TY-EXCHG-RATE-AMT = TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR];
+  end
+
+  if (TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == " " /* Unapproved new*/
+  )                                                   
+    TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] = "N"; /* Initialize*/
+    TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] = "N";
+    VEXCHG01.TY-RATE-APVL-FL = "N";
+  else
+   /* Approval flag*/
+    VEXCHG01.TY-RATE-APVL-FL = TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR];
+  end
+
+  XX0XS01(); /* Obtain date and time*/
+
+  if (TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y") /* We have an apvl*/
+
+    if (TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y") /* Apvl is old*/
+      /* next sentence                      /* Use date in existing rcd*/
+    else
+      VEXCHG01.TY-RATE-APVL-DT = XX0XW01.XX0XWDAT; /* New apvl date*/
+      VEXCHG01.TY-CRT-USER-ID = COMMAREA.CAUSERID; /* Init setup user*/
+    end
+
+  else
+    VEXCHG01.TY-RATE-APVL-DT = 0; /* Record not approved*/
+  end
+
+  if (TY0DW00.TY0D-ADD-FL == "Y") /* An add*/
+
+    VEXCHG01.NL-CONV-IND = "D"; /* Initialize to divisor*/
+    VEXCHG01.ZZ-SETUP-HHMM = XX0XW01.XX0XWTIM; /* Initialize setup*/
+    VEXCHG01.ZZ-SDT = XX0XW01.XX0XWDAT; /* date, time and*/
+    VEXCHG01.ZZ-CHNG-CNT = 0; /* change count*/
+    VEXCHG01.TY-CRT-USER-ID = COMMAREA.CAUSERID; /* Init setup user*/
+
+  end
+
+  VEXCHG01.ZZ-CHNG-DT = XX0XW01.XX0XWDAT; /* Update change date*/
+  VEXCHG01.ZZ-CHNG-HHMM = XX0XW01.XX0XWTIM; /* and time*/
+  VEXCHG01.TY-UPD-USER-ID = COMMAREA.CAUSERID; /* Init update user*/
+
+end // end TY0DS-INIT-FIELDS
+
+// Initialize record for select
+Function TY0DS-INIT-SELECT()
+   /* -------------------------------------------------------------------*/
+   /* Initialize vexchg01 for a select unique*/
+   /* -------------------------------------------------------------------*/
+
+  set VEXCHG01 empty;
+
+   /* Move currency*/
+  VEXCHG01.ZFC-CRCY-CD = TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR]; /* code*/
+
+   /* Move rate type*/
+  VEXCHG01.TY-EXCHG-RATE-CD = TY0DM001.TY-EXCHG-RATE-CD; /* code*/
+
+  if (TY0DM001.TY-EXCHG-RATE-CD == "SC") /* Standard cost uses*/
+                                              /* season/gpc*/
+    VEXCHG01.TY-EXCHG-CLNDR-DT = 0;
+    VEXCHG01.XSN-SESN-RNG-ABRV = TY0DM001.TY-CALENDAR-FROM-DATE;
+    VEXCHG01.XGP-GPC-CD = TY0DM001.XGP-GPC-CD;
+
+  else
+
+    if (TY0DW00.TY0D-UPDATE-FL == "Y")
+      VEXCHG01.TY-EXCHG-CLNDR-DT = TY0DW01.TY-EXCHG-CLNDR-DT[XXX-INX-FLD-NBR];
+    else
+      VEXCHG01.TY-EXCHG-CLNDR-DT = TYWREC.TY-FROM-DATE;
+    end
+
+    VEXCHG01.XSN-SESN-RNG-ABRV = " ";
+    VEXCHG01.XGP-GPC-CD = " ";
+
+  end
+
+end // end TY0DS-INIT-SELECT
+
+// Add record to vfxtyp01
+Function TY0DS-IO7120-A()
+   /* ------------------------------------------------------------*/
+   /* Add record to the exchange table*/
+   /* ------------------------------------------------------------*/
+
+  VEXCHG01.ZZ-CHNG-CNT = 0; /* Initialize change count*/
+  VEXCHG01.ZZ-SDT = XX0XW01.XX0XWDAT; /* Initialize setup date*/
+  set SQLCA empty;
+
+  call "IO7120" ("A ", SQLCA, VEXCHG01) {isNoRefresh = yes, isExternal = yes};
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* Normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If there is a database contention, terminate function*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* Resource not available*/
+
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "ADD VEXCHG01"; /* Description*/
+  TA1REC.TA1DBASE = "DTREAS  "; /* Database name*/
+  TA1REC.TA1TBLVU = "VEXCHG01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VEXCHG01.VEXCHG01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+end // end TY0DS-IO7120-A
+
+// Close selected set cursor
+Function TY0DS-IO7120-C1()
+   /* ------------------------------------------------------------*/
+   /* Close the cursor for the selected set of table rows.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO7120" ("C1", SQLCA, VEXCHG01) {isNoRefresh = yes, isExternal = yes};
+  end /* Close cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TYWREC.XXX-MSG-LOC-ID = "IO7120C1"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "CLOSE SELECTED SET CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DTREAS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VEXCHG01"; /* Table view name*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-IO7120-C1
+
+// Update the table row
+Function TY0DS-IO7120-D()
+   /* ------------------------------------------------------------*/
+   /* Delete the specified row in the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO7120" ("D ", SQLCA, VEXCHG01) {isNoRefresh = yes, isExternal = yes};
+  end /* Delete row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+    /* ------------------------------------------------------------*/
+    /* If row not found, indicate the data was updated by another.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback(); /* Roll back all changes*/
+
+      TY0DW00.XXX-RQT-DATA-FL = "Y"; /* Request for data flag*/
+
+      TYWREC.XXX-MSG-LOC-ID = "IO7120D"; /* Message location*/
+      TYWREC.XXX-MSG-NBR = 12; /* Data was deleted by another*/
+
+      exit stack; /* Exit to display map*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TYWREC.XXX-MSG-LOC-ID = "IO7120D"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "DELETE THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DTREAS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VEXCHG01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VEXCHG01.VEXCHG01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-IO7120-D
+
+// Fetch next row in cursor
+Function TY0DS-IO7120-N1()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row that was selected from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO7120" ("N1", SQLCA, VEXCHG01) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* No records found*/
+      return; /* Return to previous process*/
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TYWREC.XXX-MSG-LOC-ID = "IO7120N1"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "FETCH NEXT ROW IN CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DTREAS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VEXCHG01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VEXCHG01.VEXCHG01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-IO7120-N1
+
+// Select unique for vexchg01
+Function TY0DS-IO7120-S()
+   /* ------------------------------------------------------------*/
+   /* Select the record requested*/
+   /* ------------------------------------------------------------*/
+
+  set SQLCA empty;
+
+  try
+    call "IO7120" ("S ", SQLCA, VEXCHG01) {isNoRefresh = yes, isExternal = yes};
+  end /* Select set*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && (SQLCA.VAGen_SQLCODE == 0      /* and normal return code*/
+   || SQLCA.VAGen_SQLCODE == 100))   /* or record not found*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TYWREC.XXX-MSG-LOC-ID = "IO7120S "; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT SET AND OPEN CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DTREAS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VEXCHG01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VEXCHG01.VEXCHG01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-IO7120-S
+
+// Select set and open cursor
+Function TY0DS-IO7120-S1()
+   /* ------------------------------------------------------------*/
+   /* Select the requested set of rows from the table.*/
+   /* ------------------------------------------------------------*/
+
+  try
+    call "IO7120" ("S1", SQLCA, VEXCHG01) {isNoRefresh = yes, isExternal = yes};
+  end /* Select set*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TYWREC.XXX-MSG-LOC-ID = "IO7120S1"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "SELECT SET AND OPEN CURSOR"; /* Description*/
+  TA1REC.TA1DBASE = "DTREAS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VEXCHG01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VEXCHG01.VEXCHG01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-IO7120-S1
+
+// Update the table row
+Function TY0DS-IO7120-U()
+   /* ------------------------------------------------------------*/
+   /* Update the specified row in the table.*/
+   /* ------------------------------------------------------------*/
+                                                      /* Add 1 to cnt*/
+  try
+    call "IO7120" ("U ", SQLCA, VEXCHG01) {isNoRefresh = yes, isExternal = yes};
+  end /* Add row*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+    /* ------------------------------------------------------------*/
+    /* If row not found, indicate the data was updated by another.*/
+    /* ------------------------------------------------------------*/
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback(); /* Roll back all changes*/
+
+      TY0DW00.XXX-RQT-DATA-FL = "Y"; /* Request for data flag*/
+
+      TYWREC.XXX-MSG-LOC-ID = "IO7120U"; /* Message location*/
+      TYWREC.XXX-MSG-NBR = 12; /* Data was updated by another*/
+
+      exit stack; /* Exit to display map*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  TYWREC.XXX-MSG-LOC-ID = "IO7120U"; /* Message location*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "UPDATE THE TABLE ROW"; /* Description*/
+  TA1REC.TA1DBASE = "DTREAS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VEXCHG01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VEXCHG01.VEXCHG01-KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-IO7120-U
+
+// Add record to vtyaud01
+Function TY0DS-IOTYAUD-A()
+   /* ------------------------------------------------------------*/
+   /* Add record to the exchange audit table.*/
+   /* ------------------------------------------------------------*/
+
+  call "IO7210" ("A ", SQLCA, VTYAUD01) {isNoRefresh = yes, isExternal = yes};
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* Normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If there is a database contention, terminate function*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* Resource not available*/
+
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "ADD VTYAUD01"; /* Description*/
+  TA1REC.TA1DBASE = "DTREAS  "; /* Database name*/
+  TA1REC.TA1TBLVU = "VTYAUD01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VTYAUD01.ZFC-CRCY-CD; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+end // end TY0DS-IOTYAUD-A
+
+// Scan for adds or changes
+Function TY0DS-SCAN-CHANGES()
+   /* --------------------------------------------------------------------*/
+   /* If both the map and work record currency codes are blank, there is*/
+   /* no need for an add or update.*/
+   /* --------------------------------------------------------------------*/
+
+  if (TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] == " " /* There is no*/
+   && TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] == " ") /* / entry*/
+
+    return;
+
+  end
+
+   /* --------------------------------------------------------------------*/
+   /* If the map has an entry, but the work record is empty, we need*/
+   /* to add the map record.*/
+   /* --------------------------------------------------------------------*/
+
+  if (TY0DM001.ZFC-CRCY-CD[XXX-INX-FLD-NBR] != " " /* Only the map*/
+   && TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] == " ") /* has an entry*/
+
+    TY0DW00.TY0D-ADD-FL = "Y"; /* Add the record*/
+    return;
+
+  end
+
+   /* --------------------------------------------------------------------*/
+   /* If any of the enterable fields has changed, we need to update*/
+   /* the record.*/
+   /* --------------------------------------------------------------------*/
+
+  if (TY0DM001.TY-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] !=  /* Description*/
+  TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR])      /* has changed*/
+
+    TY0DW00.TY0D-UPDATE-FL = "Y";
+    return;
+  end
+
+  if (TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] !=  /* Future flag*/
+  TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR])         /* has changed*/
+
+    TY0DW00.TY0D-UPDATE-FL = "Y";
+    return;
+  end
+
+
+end // end TY0DS-SCAN-CHANGES
+
+// Store the rate information
+Function TY0DS-STORE-RATE()
+   /* ------------------------------------------------------------------*/
+   /* Move the table information for the exchange rates into storage.*/
+   /* ------------------------------------------------------------------*/
+
+  TY0DW01.ZFC-CRCY-CD[XXX-INX-FLD-NBR] = VEXCHG01.ZFC-CRCY-CD;
+
+  TY0DW01.TY-EXCHG-RATE-CD[XXX-INX-FLD-NBR] = VEXCHG01.TY-EXCHG-RATE-CD;
+
+  TY0DW01.TY-EXCHG-CLNDR-DT[XXX-INX-FLD-NBR] = VEXCHG01.TY-EXCHG-CLNDR-DT; /* Calendar date*/
+
+  TY0DW00.TY0D-OLD-DATE = VEXCHG01.TY-EXCHG-CLNDR-DT; /* Convert date*/
+  TY0DS-CLNDR-DATE(); /* to mm-dd-yy*/
+
+  TY0DW01.XSN-SESN-RNG-ABRV[XXX-INX-FLD-NBR] = VEXCHG01.XSN-SESN-RNG-ABRV; /* Season*/
+
+  TY0DW01.XGP-GPC-CD[XXX-INX-FLD-NBR] = VEXCHG01.XGP-GPC-CD; /* General product code*/
+
+  if (VEXCHG01.ZFC-CRCY-CD == "TRL" /* If Turkey*/
+   && VEXCHG01.TY-EXCHG-CLNDR-DT > 20010500)
+    TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] = VEXCHG01.TY-EXCHG-RATE-AMT * 100;
+  else
+    TY0DW01.TY0DM-EXCHG-RATE-AMT[XXX-INX-FLD-NBR] = VEXCHG01.TY-EXCHG-RATE-AMT; /* Rate amount*/
+  end
+
+  TY0DW01.NL-CONV-IND[XXX-INX-FLD-NBR] = VEXCHG01.NL-CONV-IND; /* Multiplier*/
+
+  TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] = VEXCHG01.TY-RATE-APVL-FL; /* Rate approval flag*/
+
+  TY0DW01.TY-RATE-APVL-DT[XXX-INX-FLD-NBR] = VEXCHG01.TY-RATE-APVL-DT; /* Rate approval date*/
+
+  TY0DW01.TY-CRT-USER-ID[XXX-INX-FLD-NBR] = VEXCHG01.TY-CRT-USER-ID; /* User id at creation*/
+
+  TY0DW01.ZZ-SDT[XXX-INX-FLD-NBR] = VEXCHG01.ZZ-SDT; /* Setup date*/
+
+  TY0DW01.ZZ-SETUP-HHMM[XXX-INX-FLD-NBR] = VEXCHG01.ZZ-SETUP-HHMM; /* Setup time*/
+
+  TY0DW01.TY-UPD-USER-ID[XXX-INX-FLD-NBR] = VEXCHG01.TY-UPD-USER-ID; /* Update user id*/
+
+  TY0DW01.ZZ-CHNG-DT[XXX-INX-FLD-NBR] = VEXCHG01.ZZ-CHNG-DT; /* Change date*/
+
+  TY0DW01.ZZ-CHNG-HHMM[XXX-INX-FLD-NBR] = VEXCHG01.ZZ-CHNG-HHMM; /* Change time*/
+
+  TY0DW01.ZZ-CHNG-CNT[XXX-INX-FLD-NBR] = VEXCHG01.ZZ-CHNG-CNT; /* Change count*/
+
+
+end // end TY0DS-STORE-RATE
+
+// Add page to temporary storage
+Function TY0DS-TA0050-A()
+   /* ------------------------------------------------------------*/
+   /* Add the next page to the temporary storage queue.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DW01.XXX-TEMP-STG-LNTH = TY0DW00.XXX-TEMP-STG-LNTH;
+                                   /* Temporary storage length*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+
+  TA5REC.TA5FNCCD = "A"; /* Function code*/
+
+  try
+    call "TA0050" (TY0DW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Add page*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, initialize the storage area and*/
+   /* indicators to be used and return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    set TY0DW01 empty; /* M001 display storage*/
+
+    TY0DW00.XXX-HI-PAGE-NBR = TA5REC.TA5TSQIX; /* Highest page number*/
+
+    TA5REC.TA5TSQIX = 0; /* Clear last page number*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TYWREC.XXX-MSG-LOC-ID = "TA0050A"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-TA0050-A
+
+// Purge any temporary storage
+Function TY0DS-TA0050-P()
+   /* ------------------------------------------------------------*/
+   /* Initialize the storage areas and indicators to be used.*/
+   /* ------------------------------------------------------------*/
+
+  set TY0DW01 empty; /* M001 display storage*/
+
+  TY0DW00.XXX-PAGE-UPD-FL = "N"; /* Page update flag*/
+
+  TA5REC.TA5TSQIX = 0; /* Displayed page number*/
+  TY0DW00.XXX-HI-PAGE-NBR = 0; /* Highest page number*/
+
+   /* ------------------------------------------------------------*/
+   /* Purge any temporary storage for this application.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+
+  TA5REC.TA5FNCCD = "P"; /* Function code*/
+
+  try
+    call "TA0050" (TY0DW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Purge storage*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TYWREC.XXX-MSG-LOC-ID = "TA0050P"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-TA0050-P
+
+// Read temporary storage page
+Function TY0DS-TA0050-R()
+   /* ------------------------------------------------------------*/
+   /* Read the next page from the temporary storage queue.*/
+   /* ------------------------------------------------------------*/
+
+  TY0DW01.XXX-TEMP-STG-LNTH = TY0DW00.XXX-TEMP-STG-LNTH;
+                                   /* Temporary storage length*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+  TA5REC.TA5TSQIX = TY0DW00.XXX-CURR-PAGE-NBR; /* Page number*/
+
+  TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+  try
+    call "TA0050" (TY0DW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Read page*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TYWREC.XXX-MSG-LOC-ID = "TA0050R"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "READ TEMPORARY STORAGE PAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-TA0050-R
+
+// Update temporary storage page
+Function TY0DS-TA0050-U()
+   /* ------------------------------------------------------------*/
+   /* Update the page in the temporary storage queue.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5FNCCD = "U"; /* Function code*/
+
+  try
+    call "TA0050" (TY0DW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Update page*/
+
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  TYWREC.XXX-MSG-LOC-ID = "TA0050U"; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "UPDATE TEMPORARY STORAGE PAGE"; /* Description*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-TA0050-U
+
+// Select rates using smart mod
+Function TY0DS-TY1000-GR()
+   /* ------------------------------------------------------------*/
+   /* Select the record(s) requested*/
+   /* ------------------------------------------------------------*/
+
+  call "TY1000" (TY1REC) {isNoRefresh = yes, isExternal = yes};
+   /* ------------------------------------------------------------*/
+   /* If the call was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+
+  if (TY1REC.TY1-PROGRAM-STATUS == 00 /* Call successful*/
+   || TY1REC.TY1-PROGRAM-STATUS == 01 /* no records found*/
+   || TY1REC.TY1-PROGRAM-STATUS == 02 /* invalid option requested*/
+   || TY1REC.TY1-PROGRAM-STATUS == 03) /* invalid combination request*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* At this point we have a fatal db2 error. We indicate that*/
+   /* there is an unexpected error.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = TY1REC.TY1-PROGRAM-STATUS; /* CSP return code*/
+
+  TYWREC.XXX-MSG-LOC-ID = "TY1000  "; /* Message location*/
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Roll back all changes*/
+
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+  converseLib.clearScreen();
+   /* Clear screen before display*/
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1PGMNM = TYWREC.XXX-MSG-LOC-ID; /* Message location*/
+  TA1REC.TA1LOC = "SMART MODULE SELECT PROBLM"; /* Description*/
+  TA1REC.TA1DBASE = "DTREAS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VEXCHG01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VEXCHG01.VEXCHG01-KEY; /* Table key*/
+
+  if (TY1REC.TY1-PROGRAM-STATUS == 98 /* In ty1000 call mod, db2*/
+   || TY1REC.TY1-PROGRAM-STATUS == 99) /* unavailable or fatal error*/
+
+    SQLCA.SQLCAREC = TY1REC.SQLCAREC; /* Ty1000 problem*/
+
+  end
+
+  call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end TY0DS-TY1000-GR
+
+// Create audit record
+Function TY0DS-WRITE-AUDIT()
+   /* ------------------------------------------------------------------*/
+   /* Move the information into the vtyaud01 record. For the audit*/
+   /* records, the type code can only be an 'add' or a 'delete'. A*/
+   /* change to an existing record always forces two records: an add*/
+   /* and a change.*/
+   /* ------------------------------------------------------------------*/
+
+  set VTYAUD01 empty; /* Initialize audit rcd*/
+
+  if (TY0DW01.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "Y" /* A delete*/
+   && TY0DM001.TY-RATE-APVL-FL[XXX-INX-FLD-NBR] == "N")
+
+    TY0DS-CREATE-BFR(); /* Do 'before' picture*/
+                                                  /* Move before picture*/
+    VTYAUD01.TY-AUDIT-BFR = TY0DW02.TY-AUDIT-BFR;
+    VTYAUD01.TY-AUDIT-TYP-CD = "D"; /* Delete type code*/
+  end
+
+  if (VTYAUD01.TY-AUDIT-TYP-CD == "D"
+  ) /* next sentence*/
+  else
+
+    TY0DS-CREATE-AFT(); /* Do 'after' picture*/
+                                                   /* Move after picture*/
+    VTYAUD01.TY-AUDIT-AFT = TY0DW03.TY-AUDIT-AFT;
+    VTYAUD01.TY-AUDIT-TYP-CD = "A"; /* Add type code*/
+  end
+
+  VTYAUD01.TY-EXCHG-RATE-CD = VEXCHG01.TY-EXCHG-RATE-CD;
+  VTYAUD01.ZFC-CRCY-CD = VEXCHG01.ZFC-CRCY-CD;
+  VTYAUD01.TY-EXCHG-CLNDR-DT = VEXCHG01.TY-EXCHG-CLNDR-DT;
+  VTYAUD01.XSN-SESN-RNG-ABRV = VEXCHG01.XSN-SESN-RNG-ABRV;
+  VTYAUD01.XGP-GPC-CD = VEXCHG01.XGP-GPC-CD;
+
+  VTYAUD01.XXX-USER-ID = COMMAREA.CAUSERID;
+
+  XX0XS01(); /* Get date and time*/
+
+  VTYAUD01.ZZ-SDT = XX0XW01.XX0XWDAT; /* Current date*/
+  VTYAUD01.ZZ-SETUP-HHMMSS = XX0XW01.XX0XWHMS; /* Current hr/min/sec*/
+
+  TY0DS-IOTYAUD-A(); /* Add to audit tble*/
+
+end // end TY0DS-WRITE-AUDIT
+
+//*** RECORD=TY0DW00 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// ***********************
+Record TY0DW00 type basicRecord
+  10 XXX-RQT-DATA-FL XXX-RQT-DATA-FL ; 
+  10 XXX-MAP-FMAT-FL XXX-MAP-FMAT-FL ; 
+  10 XXX-MAP-DSP-CD XXX-MAP-DSP-CD ; 
+  10 XXX-TEMP-STG-LNTH XXX-TEMP-STG-LNTH ; 
+  10 XXX-INX-LMT-NBR XXX-INX-LMT-NBR ; 
+  10 XXX-INX-FLD-NBR XXX-INX-FLD-NBR ; 
+  10 XXX-CURR-PAGE-NBR XXX-CURR-PAGE-NBR ; 
+  10 XXX-HI-PAGE-NBR XXX-HI-PAGE-NBR ; 
+  10 XXX-PAGE-UPD-FL XXX-PAGE-UPD-FL ; 
+  10 TY0DW-RATE-EOF-FL TY0DW-RATE-EOF-FL ; 
+  10 TY0D-UPDATE-FL TY0D-UPDATE-FL ; 
+  10 TY0D-ADD-FL TY0D-ADD-FL ; 
+  10 TY-SWITCH-SRCE-DEST TY-SWITCH-SRCE-DEST ; 
+  10 TY-INDEX-NBR TY-INDEX-NBR ; 
+  10 TY0D-OLD-DATE TY0D-OLD-DATE ; 
+    15 TY0D-OLD-CENT TY0D-OLD-CENT ; 
+    15 TY0D-OLD-YEAR TY0D-OLD-YEAR ; 
+    15 TY0D-OLD-MONTH TY0D-OLD-MONTH ; 
+    15 TY0D-OLD-DAY TY0D-OLD-DAY ; 
+  10 TY0D-NEW-DATE TY0D-NEW-DATE ; 
+    15 TY0D-NEW-MONTH TY0D-NEW-MONTH ; 
+    15 TY0D-NEW-DASH1 TY0D-NEW-DASH1 ; 
+    15 TY0D-NEW-DAY TY0D-NEW-DAY ; 
+    15 TY0D-NEW-DASH2 TY0D-NEW-DASH2 ; 
+    15 TY0D-NEW-YEAR TY0D-NEW-YEAR ; 
+  10 TY0D-HIGH-PCT-FCT TY0D-HIGH-PCT-FCT ; 
+  10 TY0D-LOW-PCT-FCT TY0D-LOW-PCT-FCT ; 
+  10 TY-HIGH-AMT TY-HIGH-AMT ; 
+  10 TY-LOW-AMT TY-LOW-AMT ; 
+  10 TY0D-WARNING-LEVEL TY0D-WARNING-LEVEL ; 
+end // end TY0DW00
+
+//*** RECORD=TY0DW01 ****
+// ------------------------
+// Map 001 display storage.
+// ------------------------
+// ***********************
+Record TY0DW01 type basicRecord
+  5 XXX-TEMP-STG-LNTH XXX-TEMP-STG-LNTH ; 
+  5 * char(1261) ; 
+    10 ZFC-CRCY-CD ZFC-CRCY-CD [13] ; 
+    10 ZFC-CRCY-DESC ZFC-CRCY-DESC [13] ; 
+    10 TY-EXCHG-RATE-CD TY-EXCHG-RATE-CD [13] ; 
+    10 TY-EXCHG-CLNDR-DT TY-EXCHG-CLNDR-DT [13] ; 
+    10 TY-RATE-CLNDR-DATE TY-RATE-CLNDR-DATE [13] ; 
+    10 XSN-SESN-RNG-ABRV XSN-SESN-RNG-ABRV [13] ; 
+    10 XGP-GPC-CD XGP-GPC-CD [13] ; 
+    10 TY0DM-EXCHG-RATE-AMT TY0DM-EXCHG-RATE-AMT [13] ; 
+    10 NL-CONV-IND NL-CONV-IND [13] ; 
+    10 TY-RATE-APVL-FL TY-RATE-APVL-FL [13] ; 
+    10 TY-RATE-APVL-DT TY-RATE-APVL-DT [13] ; 
+    10 TY-CRT-USER-ID TY-CRT-USER-ID [13] ; 
+    10 ZZ-SDT ZZ-SDT [13] ; 
+    10 ZZ-SETUP-HHMM ZZ-SETUP-HHMM [13] ; 
+    10 TY-UPD-USER-ID TY-UPD-USER-ID [13] ; 
+    10 ZZ-CHNG-DT ZZ-CHNG-DT [13] ; 
+    10 ZZ-CHNG-HHMM ZZ-CHNG-HHMM [13] ; 
+    10 ZZ-CHNG-CNT ZZ-CHNG-CNT [13] ; 
+    10 TY-DELETE-FLAG TY-DELETE-FLAG [13] ; 
+end // end TY0DW01
+
+//*** RECORD=TY0DW02 ****
+// ----------------------------------------------------------
+// Storage for audit before picture. This information will be
+// transferred to the vtyaud01 field called ty-audit-bfr.
+// ----------------------------------------------------------
+// ***********************
+Record TY0DW02 type basicRecord
+  5 TY-AUDIT-BFR TY-AUDIT-BFR ; 
+    10 ZFC-CRCY-CD ZFC-CRCY-CD ; 
+    10 TY-EXCHG-RATE-CD TY-EXCHG-RATE-CD ; 
+    10 TY-EXCHG-CLNDR-DT TY-EXCHG-CLNDR-DT ; 
+    10 XSN-SESN-RNG-ABRV XSN-SESN-RNG-ABRV ; 
+    10 XGP-GPC-CD XGP-GPC-CD ; 
+    10 TY-EXCHG-RATE-AMT TY-EXCHG-RATE-AMT ; 
+    10 NL-CONV-IND NL-CONV-IND ; 
+    10 TY-RATE-APVL-FL TY-RATE-APVL-FL ; 
+    10 TY-RATE-APVL-DT TY-RATE-APVL-DT ; 
+    10 TY-CRT-USER-ID TY-CRT-USER-ID ; 
+    10 ZZ-SDT ZZ-SDT ; 
+    10 ZZ-SETUP-HHMM ZZ-SETUP-HHMM ; 
+    10 TY-UPD-USER-ID TY-UPD-USER-ID ; 
+    10 ZZ-CHNG-DT ZZ-CHNG-DT ; 
+    10 ZZ-CHNG-HHMM ZZ-CHNG-HHMM ; 
+    10 ZZ-CHNG-CNT ZZ-CHNG-CNT ; 
+    10 * char(3) ; 
+end // end TY0DW02
+
+//*** RECORD=TY0DW03 ****
+// ----------------------------------------------------------
+// Storage for audit after picture. This information will be
+// transferred to the vtyaud01 field called ty-audit-aft.
+// ----------------------------------------------------------
+// ***********************
+Record TY0DW03 type basicRecord
+  5 TY-AUDIT-AFT TY-AUDIT-AFT ; 
+    10 ZFC-CRCY-CD ZFC-CRCY-CD ; 
+    10 TY-EXCHG-RATE-CD TY-EXCHG-RATE-CD ; 
+    10 TY-EXCHG-CLNDR-DT TY-EXCHG-CLNDR-DT ; 
+    10 XSN-SESN-RNG-ABRV XSN-SESN-RNG-ABRV ; 
+    10 XGP-GPC-CD XGP-GPC-CD ; 
+    10 TY-EXCHG-RATE-AMT TY-EXCHG-RATE-AMT ; 
+    10 NL-CONV-IND NL-CONV-IND ; 
+    10 TY-RATE-APVL-FL TY-RATE-APVL-FL ; 
+    10 TY-RATE-APVL-DT TY-RATE-APVL-DT ; 
+    10 TY-CRT-USER-ID TY-CRT-USER-ID ; 
+    10 ZZ-SDT ZZ-SDT ; 
+    10 ZZ-SETUP-HHMM ZZ-SETUP-HHMM ; 
+    10 TY-UPD-USER-ID TY-UPD-USER-ID ; 
+    10 ZZ-CHNG-DT ZZ-CHNG-DT ; 
+    10 ZZ-CHNG-HHMM ZZ-CHNG-HHMM ; 
+    10 ZZ-CHNG-CNT ZZ-CHNG-CNT ; 
+    10 * char(3) ; 
+end // end TY0DW03
+
+//*** RECORD=TY1REC ****
+// ************************************************************
+// *   TY1REC - Passing parameter record for TY1000.
+// *
+// * Purpose:
+// *    This record is used with the sub-program TY1000 to
+// *    convert amounts for one currency to another or to
+// *    retrieve rate information for user display.
+// *
+// * Maintenance History:
+// *      Date    Who     Remarks
+// *    --------  ------  ------------------------------------
+// *    03-21-94  MHALST  Record created.
+// *    05-09-01  MHALST  Increase size of rate amount.
+// *                      Decrease number of occurances to 175
+// *
+// * Operation:
+// *    CALL TY1000 SQLCA,TY1REC (NOMAPS,NONCSP
+// *
+// * Field Definitions:
+// *
+// *    TY1-OPTION-CODE
+// *        CA = Convert amount
+// *             Will convert source amount from one currency
+// *             to another. Both source and destination
+// *             currency and rate type are required. Fiscal
+// *             date or season extract must also be specified.
+// *
+// *        GR = Get Rate Information
+// *             Will return rate information in table. Either
+// *             source or destination currency can be '***',
+// *             but at least one currency must be entered.
+// *             Rate type is required. Fiscal date or season
+// *             extract must also be specified. Region may be
+// *             to narrow rows returned.
+// *
+// *    TY1-PROGRAM-STATUS
+// *        00 = Good return
+// *        01 = No rates found in exchange table
+// *        02 = Invalid option requested
+// *        03 = Invalid combination of input data
+// *        99 = Fatal DB2 error
+// *
+// ************************************************************
+// **********************
+Record TY1REC type basicRecord
+  5 TY1-GROUP TY1-GROUP ; 
+    10 TY1-INPUT-PARAMETERS TY1-INPUT-PARAMETERS ; 
+      15 TY1-OPTION-CODE TY1-OPTION-CODE ; 
+      15 TY1-SRC-ZFC-CRCY-CD TY1-SRC-ZFC-CRCY-CD ; 
+      15 TY1-DEST-ZFC-CRCY-CD TY1-DEST-ZFC-CRCY-CD ; 
+      15 TY-EXCHG-RATE-CD TY-EXCHG-RATE-CD ; 
+      15 TY-RATE-APVL-FL TY-RATE-APVL-FL ; 
+      15 TY-EXCHG-CLNDR-DT TY-EXCHG-CLNDR-DT ; 
+      15 XDR-PROD-REG-CD XDR-PROD-REG-CD ; 
+      15 TY1-SESN-EXTRACT-INFO TY1-SESN-EXTRACT-INFO ; 
+        20 XGP-GPC-CD XGP-GPC-CD ; 
+        20 XSN-SESN-RNG-ABRV XSN-SESN-RNG-ABRV ; 
+      15 TY1-SRC-AMOUNT TY1-SRC-AMOUNT ; 
+    10 TY1-PROGRAM-STATUS TY1-PROGRAM-STATUS ; 
+    10 TY1-ERROR-MSG TY1-ERROR-MSG ; 
+    10 TY1-LOCATION TY1-LOCATION ; 
+    10 TY1-DATABASE TY1-DATABASE ; 
+    10 TY1-TABLE-VIEW TY1-TABLE-VIEW ; 
+    10 SQLCAREC SQLCAREC ; 
+    10 TY1-OUTPUT-INFORMATION TY1-OUTPUT-INFORMATION ; 
+      15 TY1-DEST-AMOUNT TY1-DEST-AMOUNT ; 
+      15 ZFC-STD-PRCSN-IND ZFC-STD-PRCSN-IND ; 
+      15 ZFC-EXT-PRCSN-IND ZFC-EXT-PRCSN-IND ; 
+      15 ZFC-MIN-ACCT-IND ZFC-MIN-ACCT-IND ; 
+      15 TY1-TBL-PTR TY1-TBL-PTR ; 
+      15 TY1-TBL-SIZE TY1-TBL-SIZE ; 
+      15 TY1-TABLE-ENTRIES TY1-TABLE-ENTRIES [175] ; 
+        20 TY1-SRC-ZFC-CRCY-CD-T TY1-SRC-ZFC-CRCY-CD-T ; 
+        20 TY1-DEST-ZFC-CRCY-CD-T TY1-DEST-ZFC-CRCY-CD-T ; 
+        20 TY1-EXCHG-RATE-EXPND-AMT TY1-EXCHG-RATE-EXPND-AMT ; 
+        20 TY1-CLNDR-DT-FND TY1-CLNDR-DT-FND ; 
+        20 TY1-RATE-APVL-FL-T TY1-RATE-APVL-FL-T ; 
+      15 TY1-MULT-DIV-IND TY1-MULT-DIV-IND [175] ; 
+    10 * char(311) ; 
+end // end TY1REC
+
+//*** RECORD=VEXCHG01 ****
+// ****************  EXCHANGE (FX) TABLE  *********************
+// 
+// DB2 TABLE:           DTREAS.TEXCHG01
+// 
+// COPYLIB MEMBER:      DEXCHG01
+// IO MODULE:           IO7120
+// 
+// KEY TO DB2 TABLE:    ZFC_CRCY_CD
+//                      TY_EXCHG_RATE_CD
+//                      TY_EXCHG_FISCAL_DT
+//                      XSN_SESN_RNG_ABRV
+//                      XGP_GPC_CD
+// 
+// DATE CREATED:        MARCH 22, 1994
+// 
+// MAINTENANCE LOG:
+// 
+// DATE      INIT    COMMENTS
+// --------  ------  ------------------------------------------
+// 03-22-94  MHALST  Created csp record
+// ************************************************************
+// ************************
+Record VEXCHG01 type basicRecord
+  5 VEXCHG01-GROUP VEXCHG01-GROUP ; 
+    10 VEXCHG01-KEY VEXCHG01-KEY ; 
+      15 ZFC-CRCY-CD ZFC-CRCY-CD ; 
+      15 TY-EXCHG-RATE-CD TY-EXCHG-RATE-CD ; 
+      15 TY-EXCHG-CLNDR-DT TY-EXCHG-CLNDR-DT ; 
+      15 XSN-SESN-RNG-ABRV XSN-SESN-RNG-ABRV ; 
+      15 XGP-GPC-CD XGP-GPC-CD ; 
+    10 TY-EXCHG-RATE-AMT TY-EXCHG-RATE-AMT ; 
+    10 NL-CONV-IND NL-CONV-IND ; 
+    10 TY-RATE-APVL-FL TY-RATE-APVL-FL ; 
+    10 TY-RATE-APVL-DT TY-RATE-APVL-DT ; 
+    10 TY-CRT-USER-ID TY-CRT-USER-ID ; 
+    10 ZZ-SDT ZZ-SDT ; 
+    10 ZZ-SETUP-HHMM ZZ-SETUP-HHMM ; 
+    10 TY-UPD-USER-ID TY-UPD-USER-ID ; 
+    10 ZZ-CHNG-DT ZZ-CHNG-DT ; 
+    10 ZZ-CHNG-HHMM ZZ-CHNG-HHMM ; 
+    10 ZZ-CHNG-CNT ZZ-CHNG-CNT ; 
+end // end VEXCHG01
+
+Record VTYAUD01 type basicRecord
+  10 TY-AUDIT-TYP-CD TY-AUDIT-TYP-CD ; 
+  10 TY-EXCHG-RATE-CD TY-EXCHG-RATE-CD ; 
+  10 ZFC-CRCY-CD ZFC-CRCY-CD ; 
+  10 TY-EXCHG-CLNDR-DT TY-EXCHG-CLNDR-DT ; 
+  10 XSN-SESN-RNG-ABRV XSN-SESN-RNG-ABRV ; 
+  10 XGP-GPC-CD XGP-GPC-CD ; 
+  10 ZZ-SDT ZZ-SDT ; 
+  10 ZZ-SETUP-HHMMSS ZZ-SETUP-HHMMSS ; 
+  10 XXX-USER-ID XXX-USER-ID ; 
+  10 TY-AUDIT-BFR TY-AUDIT-BFR ; 
+  10 TY-AUDIT-AFT TY-AUDIT-AFT ; 
+end // end VTYAUD01
+
+// NL_CONV_IND
+DataItem NL-CONV-IND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// exchg after picture
+DataItem TY-AUDIT-AFT char(60)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// exchg before picture
+DataItem TY-AUDIT-BFR char(60)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// audit action type code
+DataItem TY-AUDIT-TYP-CD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TY_CRT_USER_ID
+DataItem TY-CRT-USER-ID char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TY_EXCHG_FISC_DT
+DataItem TY-EXCHG-CLNDR-DT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// TY_EXCHG_RATE_AMT
+DataItem TY-EXCHG-RATE-AMT decimal(11,5)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// High range limit
+DataItem TY-HIGH-AMT num(12,5)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Low amount limit
+DataItem TY-LOW-AMT num(12,5)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// TY_RATE_APVL_DT
+DataItem TY-RATE-APVL-DT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// TY_RATE_APVL_FL
+DataItem TY-RATE-APVL-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// rate appvl date mm-dd-yy
+DataItem TY-RATE-CLNDR-DATE char(8)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// switch source/dest positions
+DataItem TY-SWITCH-SRCE-DEST char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TY_CRT_USER_ID
+DataItem TY-UPD-USER-ID char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Add vexchg01 flag
+DataItem TY0D-ADD-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// High range percent factor
+DataItem TY0D-HIGH-PCT-FCT num(3,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Low range percent factor
+DataItem TY0D-LOW-PCT-FCT num(3,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Dash in mm-dd-yy
+DataItem TY0D-NEW-DASH1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Dash in mm-dd-yy
+DataItem TY0D-NEW-DASH2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// New date mm-dd-yy format
+DataItem TY0D-NEW-DATE char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Day in mm-dd-yy format
+DataItem TY0D-NEW-DAY char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Month in mm-dd-yy format
+DataItem TY0D-NEW-MONTH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Year in mm-dd-yy format
+DataItem TY0D-NEW-YEAR char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Century in 0ccyymmdd format
+DataItem TY0D-OLD-CENT char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Date in 0ccyymmdd format
+DataItem TY0D-OLD-DATE num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Day in 0ccyymmdd format
+DataItem TY0D-OLD-DAY char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Month in 0ccyymmdd format
+DataItem TY0D-OLD-MONTH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Year in 0ccyymmdd format
+DataItem TY0D-OLD-YEAR char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Update vexchg01 flag
+DataItem TY0D-UPDATE-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Variance warning
+DataItem TY0D-WARNING-LEVEL num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// TY_EXCHG_RATE_AMT
+DataItem TY0DM-EXCHG-RATE-AMT decimal(13,5)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Cursor end of file flag
+DataItem TY0DW-RATE-EOF-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TY-EXCHG-FISC-DT
+DataItem TY1-CLNDR-DT-FND int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Data base Name
+DataItem TY1-DATABASE char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Destination Amount
+DataItem TY1-DEST-AMOUNT decimal(17,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ZFC-CRCY-CD
+DataItem TY1-DEST-ZFC-CRCY-CD char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ZFC-CRCY-CD
+DataItem TY1-DEST-ZFC-CRCY-CD-T char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Program Error Msg
+DataItem TY1-ERROR-MSG char(70)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// exchange rate expanded amount
+DataItem TY1-EXCHG-RATE-EXPND-AMT decimal(15,7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Group level item
+DataItem TY1-GROUP char(4096)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Input Parameters
+DataItem TY1-INPUT-PARAMETERS char(32)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Location of Pgm Error
+DataItem TY1-LOCATION char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Multiply/Divide Indicator
+DataItem TY1-MULT-DIV-IND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Option Code
+DataItem TY1-OPTION-CODE char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Output Information
+DataItem TY1-OUTPUT-INFORMATION char(3521)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Program Status Code
+DataItem TY1-PROGRAM-STATUS num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// TY-RATE-APVL-FL
+DataItem TY1-RATE-APVL-FL-T char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Season Extract Info.
+DataItem TY1-SESN-EXTRACT-INFO char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Source Amount
+DataItem TY1-SRC-AMOUNT decimal(17,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ZFC-CRCY-CD
+DataItem TY1-SRC-ZFC-CRCY-CD char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ZFC-CRCY-CD
+DataItem TY1-SRC-ZFC-CRCY-CD-T char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Group for Table Entries
+DataItem TY1-TABLE-ENTRIES char(19)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// View Name
+DataItem TY1-TABLE-VIEW char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Pointer to Table
+DataItem TY1-TBL-PTR smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Number of Table Elements Used
+DataItem TY1-TBL-SIZE smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Data group item entire row
+DataItem VEXCHG01-GROUP char(57)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Key into Table
+DataItem VEXCHG01-KEY char(15)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

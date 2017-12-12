@@ -1,0 +1,1006 @@
+package sm0r;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import sm.common.*;
+import ta.common.*;
+import vv.common.*;
+//*** PROGRAM=SM0R ****
+// SM0R is an inquiry only screen that displays a list of
+// active and inactive sales reps by name in
+// the database.  This application accepts a passed lastname or
+// part of a lastname and searches for matches in the reps
+// table for display on the screen.  The list is sorted
+// by last name.
+// 
+// This screen can be reached by transferring from another
+// Sales Force application.  This is usually done when the
+// current application enters part of the rep's last name.
+// This last name is passed in the subsystem record or the
+// fastpath parameter field in the commarea and control is
+// is then transferred to this application.
+// 
+// After the list is displayed, and a rep id is selected,
+// control is then passed back to the previous application
+// with the selected rep id in the subsystem record.
+// 
+// ************************************************************
+// *                    MAINTENANCE HISTORY                   *
+// ************************************************************
+// 
+// Log #    Date     Name   Description
+// -----  --------  ------  -----------------------------------
+// 
+//   001   1/05/93  RCORON  Created application.
+//   002   4/14/93  GCALKI  Changed the selection process so
+//                          any character can be used to select
+//                          a row.
+// *********************
+Program SM0R type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "SM00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  SM0RW01 SM0RW01; // record
+  SM0RW02 SM0RW02; // record
+  SM0RW03 SM0RW03; // record
+  SM0RW04 SM0RW04; // record
+  SM4REC SM4REC; // record
+  SMWREC SMWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use SM0RM.SM0RM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    SM0R-00000: SM0R-00000();
+    goto SM0R-10000; /* Converse sm0r map*/
+    SM0R-10000: SM0R-10000();
+
+    /* flow to sm0r-10000 which will display the map*/
+
+    goto SM0R-10000;
+
+  end // end main
+end // end SM0R
+
+// Initial Processing
+Function SM0R-00000()
+  XSENTRY(); /* check goal security*/
+
+  XSSEGTR(); /* set segmented transaction id*/
+
+  SM0RS-INITIALIZE(); /* initialize*/
+
+  if (SM0RW01.SM0RW-HIGHEST-PAGE == 1
+   && SM0RW04.XXX-LAST-NM[2] == " ")
+    SM0RW01.SM0RW-SELECT-INDEX = 1;
+    SM0RS-PROC-RETURN();
+  end
+
+end // end SM0R-00000
+
+// Converse SM0R map
+Function SM0R-10000()
+  SM0RM001.SM0RM-CURR-DATE = VGVar.currentShortGregorianDate;
+
+  if (SM0RW01.SM0RW-HIGHEST-PAGE <= 0) /* no data*/
+    set SM0RM001.SM0RM-PAGE-LITERAL invisible, protect;
+    set SM0RM001.SM0RM-CURR-PAGE invisible, protect;
+    set SM0RM001.SM0RM-OF-LITERAL invisible, protect;
+    set SM0RM001.SM0RM-HIGH-PAGE invisible, protect;
+  end
+
+  converse SM0RM001 ;
+
+  SM0RM001.CAMSG = " "; /* program message area*/
+
+  /* Move map fields to current map header record*/
+
+  SM0RW02.SM0RW-CURR-PAGE-NO = SM0RM001.SM0RM-CURR-PAGE;
+  SM0RW02.XXX-LAST-NM = SM0RM001.SM0RM-XXX-LAST-NM;
+
+  SM0RS-RESET-ATTR(); /* Reset field attributes*/
+
+  if (converseVar.eventKey is enter) /* user pressed enter*/
+    SM0RS-PROC-ENTER();
+  else
+    if (converseVar.eventKey is pa2) /* user pressed PA2*/
+      SM0RS-PROC-PA2();
+    else
+      if (converseVar.eventKey is pf7
+       || converseVar.eventKey is pf8) /* user presses PF7 or PF8*/
+        SM0RS-PROC-PF-SCRL();
+      else
+        if (converseVar.eventKey is pf1 /* user presses a valid*/
+         || converseVar.eventKey is pf3 /* PF key*/
+         || converseVar.eventKey is pf4)
+          SM0RS-PROC-PF-KEYS();
+        else
+          converseLib.validationFailed(2); /* invalid key pressed*/
+        end
+      end
+    end
+  end
+
+end // end SM0R-10000
+
+// Add WS page to temp storage
+Function SM0RS-ADD-TMP-STRG()
+  set TA5REC empty; /* clear ts parms*/
+
+  TA5REC.TA5APPID = SM0RW01.TA5APPID; /* application ID*/
+  SM0RW04.SM0RW-TEMP-STRG-LENGTH = SM0RW01.SM0RW-TSQ-REC-LENGTH;
+
+  if (SM0RW01.SM0RW-HIGHEST-PAGE == 0) /* no pages formatted*/
+    TA5REC.TA5FNCCD = "N"; /* function is new (purge & add)*/
+  else
+    TA5REC.TA5FNCCD = "A"; /* function is add*/
+  end
+
+  try
+    call "TA0050" (SM0RW04, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* temp storage*/
+
+  if (sysVar.errorCode == "00000000" /* call was successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return*/
+    SM0RW01.SM0RW-HIGHEST-PAGE = TA5REC.TA5TSQIX; /* page # added*/
+    SM0RW01.SM0RW-SCREEN-INDEX = 0; /* 1st line*/
+    set SM0RW04 empty; /* initialise current detail record*/
+  else /* an error occurred*/
+
+    set TAEREC empty;
+    TAEREC.TAEDESC1 = sysVar.errorCode; /* csp return code*/
+    TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* subroutine parameters*/
+    TA1REC.TA1TYPE = "APPL"; /* application error*/
+    TA1REC.TA1FUNC = "RETN"; /* post*/
+    TA1REC.TA1LOCAT[1] = "ADD TS  "; /* location*/
+    TA1REC.TA1LOCAT[2] = "TA0050  "; /* subroutine*/
+
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end /* message formatter*/
+
+    XSPF4(); /* pass control to menu*/
+
+    converseLib.validationFailed(72); /* system error*/
+
+  end
+
+end // end SM0RS-ADD-TMP-STRG
+
+// Build temporary storage pages
+Function SM0RS-BUILD-DTL()
+  SM0RS-OPEN-REP-CSR(); /* open cursor*/
+
+  SM0RW01.SM0RW-SCREEN-INDEX = 0; /* screen detail line index*/
+
+  SM0RW01.SM0RW-MORE-REPS-FL = "Y";
+
+  while (SM0RW01.SM0RW-MORE-REPS-FL == "Y" /* more reps*/
+   && converseVar.validationMsgNum == 0) /* no errors*/
+
+    SM0RS-FTCH-REP-ROW(); /* fetch a rep row*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* no errors*/
+      SM0RW01.SM0RW-SCREEN-INDEX = SM0RW01.SM0RW-SCREEN-INDEX + 1;
+
+      SM0RW04.SM-SREP-ID[SM0RW-SCREEN-INDEX] = SM4REC.SM4REPID;
+      SM0RW04.XXX-LAST-NM[SM0RW-SCREEN-INDEX] = SM4REC.XXXLSTNM;
+      SM0RW04.XXX-FRST-NM[SM0RW-SCREEN-INDEX] = SM4REC.XXXFSTNM;
+      SM0RW04.XXX-MID-INIT[SM0RW-SCREEN-INDEX] = SM4REC.XXXMDINT;
+      SM0RW04.SM-SREP-CONT-EDT[SM0RW-SCREEN-INDEX] = SM4REC.SM4EDT;
+      SM0RW04.SM-SREP-CONT-TDT[SM0RW-SCREEN-INDEX] = SM4REC.SM4TDT;
+
+      if (converseVar.validationMsgNum == 0) /* no errors*/
+        if (SM0RW01.SM0RW-SCREEN-INDEX == SM0RW01.SM0RW-MAX-PER-PAGE)
+          SM0RS-ADD-TMP-STRG(); /* add page to temp storage*/
+        end
+      end
+
+    else
+      if (SQLCA.VAGen_SQLCODE == 100) /* no more rep rows*/
+        SM0RS-CLSE-REP-CSR(); /* close rep cursor*/
+
+        if (converseVar.validationMsgNum == 0) /* no errors*/
+          if (SM0RW01.SM0RW-SCREEN-INDEX > 0) /* partial page*/
+            SM0RS-ADD-TMP-STRG(); /* add page to temp storage*/
+          end
+
+          if (converseVar.validationMsgNum == 0) /* no errors*/
+            if (SM0RW01.SM0RW-HIGHEST-PAGE <= 0) /* no data*/
+              converseLib.validationFailed(70); /* no data to display*/
+            else
+              SM0RM001.SM0RM-HIGH-PAGE = SM0RW01.SM0RW-HIGHEST-PAGE;
+            end
+
+          end
+        end
+      end
+    end
+  end
+
+end // end SM0RS-BUILD-DTL
+
+// Chk sel column if any's marked
+Function SM0RS-CHECK-SEL()
+  /* ***********************************************************************/
+  /* * This module checks if a detail line select option was marked.      **/
+  /* ***********************************************************************/
+
+  SM0RW01.SM0RW-DTL-SELECTED = "N"; /* reset selected flag*/
+  SM0RW01.SM0RW-SCREEN-INDEX = 1; /* 1st map line*/
+
+  while (SM0RW01.SM0RW-SCREEN-INDEX 
+   <= SM0RW01.SM0RW-MAX-PER-PAGE /* while more map lines*/
+   && SM0RW01.SM0RW-DTL-SELECTED == "N") /* no select option marked*/
+
+    if (SM0RM001.SM0RM-SEL[SM0RW-SCREEN-INDEX] != " ") /* allow update*/
+      SM0RW01.SM0RW-DTL-SELECTED = "Y";
+    end
+
+    SM0RW01.SM0RW-SCREEN-INDEX = SM0RW01.SM0RW-SCREEN-INDEX + 1; /* next map line*/
+
+  end
+
+end // end SM0RS-CHECK-SEL
+
+// Close reps for last name csr
+Function SM0RS-CLSE-REP-CSR()
+  call "IO0020" ("CS", SQLCA, SM4REC) {isNoRefresh = yes, isExternal = yes}; /* close  cursor*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* if an error occured*/
+
+    set ERRSQLCA empty;
+    move SQLCA to ERRSQLCA withV60Compat;
+    TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DSLSMN"; /* data base name*/
+    TA1REC.TA1TBLVU = "VREPS001"; /* table view name*/
+    TA1REC.TA1LOCAT[3] = "CLOSE CS"; /* error location*/
+    TA1REC.TA1LOCAT[4] = "IO0020"; /* i/o mod*/
+
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* message formatter*/
+
+    XSPF4(); /* pass control to menu*/
+
+    converseLib.validationFailed(72); /* system error occurred*/
+
+  end
+
+end // end SM0RS-CLSE-REP-CSR
+
+// Edit the requested page
+Function SM0RS-EDIT-PAGE()
+  if (SM0RW01.SM0RW-REQUESTED-PAGE > SM0RW01.SM0RW-HIGHEST-PAGE)
+    set SM0RM001.SM0RM-CURR-PAGE cursor, bold;
+    converseLib.validationFailed(67); /* invalid page requested*/
+  else
+    if (SM0RW01.SM0RW-REQUESTED-PAGE < 1)
+      set SM0RM001.SM0RM-CURR-PAGE cursor, bold;
+      converseLib.validationFailed(67); /* invalid page requested*/
+    else
+      SM0RW03.SM0RW-PREV-PAGE-NO = SM0RW02.SM0RW-CURR-PAGE-NO;
+    end
+  end
+
+end // end SM0RS-EDIT-PAGE
+
+// Format map detail
+Function SM0RS-FMT-MAP-DTL()
+  SM0RW01.SM0RW-SCREEN-INDEX = 1; /* initialise to 1st map line*/
+
+  while (SM0RW01.SM0RW-SCREEN-INDEX <= SM0RW01.SM0RW-MAX-PER-PAGE)
+
+    SM0RM001.SM0RM-SEL[SM0RW-SCREEN-INDEX] = " ";
+
+    SM0RM001.SM0RM-SM-SREP-ID[SM0RW-SCREEN-INDEX] = SM0RW04.SM-SREP-ID[SM0RW-SCREEN-INDEX];
+
+    SM0RM001.XXX-LAST-NM[SM0RW-SCREEN-INDEX] = SM0RW04.XXX-LAST-NM[SM0RW-SCREEN-INDEX];
+
+    SM0RM001.XXX-FRST-NM[SM0RW-SCREEN-INDEX] = SM0RW04.XXX-FRST-NM[SM0RW-SCREEN-INDEX];
+
+    SM0RM001.XXX-MID-INIT[SM0RW-SCREEN-INDEX] = SM0RW04.XXX-MID-INIT[SM0RW-SCREEN-INDEX];
+
+    SM0RM001.SM0RM-SM-SREP-CONT-EDT[SM0RW-SCREEN-INDEX] = SM0RW04.SM-SREP-CONT-EDT[SM0RW-SCREEN-INDEX];
+
+    SM0RM001.SM0RM-SM-SREP-CONT-TDT[SM0RW-SCREEN-INDEX] = SM0RW04.SM-SREP-CONT-TDT[SM0RW-SCREEN-INDEX];
+
+    SM0RW01.SM0RW-SCREEN-INDEX = SM0RW01.SM0RW-SCREEN-INDEX + 1;
+
+  end
+
+  SM0RS-RESET-ATTR();
+
+end // end SM0RS-FMT-MAP-DTL
+
+// Fetch rep row
+Function SM0RS-FTCH-REP-ROW()
+  set SM4REC empty; /* initialise record*/
+
+  call "IO0020" ("SN", SQLCA, SM4REC) {isNoRefresh = yes, isExternal = yes}; /* fetch rep details*/
+
+  if (SQLCA.VAGen_SQLCODE == 100)
+    SM0RW01.SM0RW-MORE-REPS-FL = "N";
+  else
+    if (SQLCA.VAGen_SQLCODE != 0) /* error occurred*/
+
+      set ERRSQLCA empty;
+      move SQLCA to ERRSQLCA withV60Compat;
+      TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DSLSMN"; /* databse name*/
+      TA1REC.TA1TBLVU = "VREPS001"; /* table view name*/
+      TA1REC.TA1LOCAT[3] = "SELCT SN"; /* error location*/
+      TA1REC.TA1LOCAT[4] = "IO0020"; /* io module*/
+
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* message formatter*/
+
+      XSPF4(); /* pass control to menu*/
+
+      converseLib.validationFailed(72); /* system error occurred*/
+
+    end
+  end
+
+end // end SM0RS-FTCH-REP-ROW
+
+// Initialize screen fields
+Function SM0RS-INIT-SCRN()
+  set SM0RW02 empty; /* initialise current map header record*/
+  set SM0RW03 empty; /* initialise previous map header record*/
+  set SM0RW04 empty; /* initialise map detail record*/
+
+  SM0RS-FMT-MAP-DTL(); /* init map details*/
+
+  SM0RW01.SM0RW-HIGHEST-PAGE = 0; /* initialise highest page*/
+end // end SM0RS-INIT-SCRN
+
+// Initialize
+Function SM0RS-INITIALIZE()
+  set SMWREC empty; /* subsystem record*/
+
+  SM0RW01.SM0RW-MAX-PER-PAGE = 12; /* 12 lines per page*/
+  SM0RW01.SM0RW-TSQ-REC-LENGTH = 612; /* detail page length*/
+  SM0RW01.TA5APPID = "SM0R"; /* application name*/
+  sysVar.errorCode = "00000000";
+
+  SM0RS-INIT-SCRN(); /* initialise screen fields*/
+
+  if (COMMAREA.CAFRMSYS == "SM") /* from same system*/
+    SMWREC.SMW-SUBSYSTEM-RECORD = COMMAREA.CAUSERA;
+  end
+
+  /* ***********************************************************************/
+  /* * Check to see if we are being fastpathed into. if so, load the      **/
+  /* * rep name  to the map and current header record.                    **/
+  /* ***********************************************************************/
+
+  if (COMMAREA.CAITEM != " ")
+    SM0RM001.SM0RM-XXX-LAST-NM = COMMAREA.CAITEM; /* move to map*/
+    SM0RW02.XXX-LAST-NM = COMMAREA.CAITEM; /* curr map header rec*/
+    SM0RS-NEW-NAME();
+  else
+
+  /* ***********************************************************************/
+  /* * Check to see if we are being PF keyed into. if so, load the        **/
+  /* * rep name  to the map and current header record.                    **/
+  /* ***********************************************************************/
+
+    if (SMWREC.XXX-LAST-NM != " ")
+      SM0RM001.SM0RM-XXX-LAST-NM = SMWREC.XXX-LAST-NM; /* move to map*/
+      SM0RW02.XXX-LAST-NM = SMWREC.XXX-LAST-NM; /* curr map header rec*/
+      SM0RS-NEW-NAME();
+    end
+
+  end
+
+end // end SM0RS-INITIALIZE
+
+// Load temp storage to map dtl
+Function SM0RS-LOAD-DTL()
+  TA5REC.TA5TSQIX = SM0RW01.SM0RW-REQUESTED-PAGE;
+
+  SM0RS-RD-TMP-STRG(); /* read requested page from temp storage*/
+
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+
+    SM0RM001.SM0RM-CURR-PAGE = TA5REC.TA5TSQIX; /* move page to map page*/
+    SM0RW02.SM0RW-CURR-PAGE-NO = TA5REC.TA5TSQIX; /* move page no to curr map header rec*/
+    SM0RW03.SM0RW-PREV-PAGE-NO = TA5REC.TA5TSQIX; /* move page no to prev map header rec*/
+
+    SM0RS-FMT-MAP-DTL(); /* move ws detail to map detail*/
+
+  end
+
+end // end SM0RS-LOAD-DTL
+
+// New last name processing
+Function SM0RS-NEW-NAME()
+  set SM0RW04 empty; /* initialise map detail*/
+
+  SM0RW01.SM0RW-HIGHEST-PAGE = 0; /* initialise highest page*/
+
+  SM0RM001.SM0RM-CURR-PAGE = 0; /* initialise current page fields*/
+  SM0RW02.SM0RW-CURR-PAGE-NO = 0;
+  SM0RW03.SM0RW-PREV-PAGE-NO = 0;
+
+  SM0RS-BUILD-DTL(); /* build temp storage for new rep name*/
+
+  SM0RW03.XXX-LAST-NM = SM0RW02.XXX-LAST-NM;
+
+  /* ***********************************************************************/
+  /* * If there are no errors during the build process, we load the first **/
+  /* * temp storage page to the map. If there are errors during the build **/
+  /* * process, we clear the map detail by formatting it from a blank     **/
+  /* * detail record.                                                     **/
+  /* ***********************************************************************/
+
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+    SM0RW01.SM0RW-REQUESTED-PAGE = 1;
+    SM0RS-LOAD-DTL(); /* load 1st page to map*/
+  else /* errors during build*/
+    SM0RS-FMT-MAP-DTL(); /* format the map detail*/
+  end
+
+end // end SM0RS-NEW-NAME
+
+// New page processing
+Function SM0RS-NEW-PAGE()
+  SM0RW01.SM0RW-REQUESTED-PAGE = SM0RW02.SM0RW-CURR-PAGE-NO;
+
+  SM0RS-EDIT-PAGE(); /* check to see if new page is valid*/
+
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+    SM0RS-LOAD-DTL(); /* load requested page to map detail*/
+  end
+
+end // end SM0RS-NEW-PAGE
+
+// Open reps for last name cursor
+Function SM0RS-OPEN-REP-CSR()
+  set SM4REC empty; /* initialise record*/
+
+   /* The following routine will suffix the last name key with the*/
+   /* DB2 wild card character '%'.*/
+
+  SM0RW01.XXX-LAST-NM = SM0RW02.XXX-LAST-NM;
+  SM0RW01.SM0RW-NAME-INDEX = 25; /* max length of last nm*/
+  while (SM0RW-NAME-INDEX >= 1)
+    if (SM0RW01.SM0RW-XXX-LAST-NM-CHAR[SM0RW-NAME-INDEX] != " ")
+       /* If the first non blank char from the right was found,*/
+       /* then we are done.*/
+      SM0RW-NAME-INDEX = 0; /* exit loop*/
+    else
+      SM0RW01.SM0RW-XXX-LAST-NM-CHAR[SM0RW-NAME-INDEX] = "%";
+                                                  /* repl blank /w '%'*/
+      SM0RW-NAME-INDEX = SM0RW-NAME-INDEX - 1; /* decrement 1 char pos*/
+    end
+  end
+  SM4REC.XXXLSTNM = SM0RW01.XXX-LAST-NM;
+
+   /* The following routine will search for all likeness of the passed*/
+   /* last name key*/
+
+  call "IO0020" ("SS", SQLCA, SM4REC) {isNoRefresh = yes, isExternal = yes}; /* open cursor*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* error occurred*/
+
+    set ERRSQLCA empty;
+    move SQLCA to ERRSQLCA withV60Compat;
+    TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DSLSMN"; /* database name*/
+    TA1REC.TA1TBLVU = "VREPS001"; /* table view name*/
+    TA1REC.TA1LOCAT[3] = "OPEN SS"; /* error location*/
+    TA1REC.TA1LOCAT[4] = "IO0020"; /* io module*/
+
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* message formatter*/
+
+    XSPF4(); /* pass control to menu*/
+
+    converseLib.validationFailed(72); /* system error*/
+
+  end
+
+end // end SM0RS-OPEN-REP-CSR
+
+// Purge temp storage queue
+Function SM0RS-PRG-TMP-STRG()
+  set TA5REC empty; /* clear ts parms*/
+
+  TA5REC.TA5FNCCD = "P"; /* purge queue*/
+  TA5REC.TA5APPID = SM0RW01.TA5APPID; /* application ID*/
+
+  try
+    call "TA0050" (SM0RW04, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* temp storage*/
+
+  if (sysVar.errorCode == "00000000" /* call was successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return*/
+  else /* an error occurred*/
+
+    set TAEREC empty;
+    TAEREC.TAEDESC1 = sysVar.errorCode; /* csp return code*/
+    TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* subroutine parameters*/
+    TA1REC.TA1TYPE = "APPL"; /* application error*/
+    TA1REC.TA1FUNC = "RETN"; /* post, no abend*/
+    TA1REC.TA1LOCAT[1] = "PURGE TS"; /* location*/
+    TA1REC.TA1LOCAT[2] = "TA0050  "; /* subroutine*/
+
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end /* message formatter*/
+
+    XSPF4(); /* pass control to menu*/
+
+    converseLib.validationFailed(72); /* system error*/
+
+  end
+
+end // end SM0RS-PRG-TMP-STRG
+
+// Process enter
+Function SM0RS-PROC-ENTER()
+  if (SM0RW02.XXX-LAST-NM == " ") /* blank rep last name*/
+
+    SM0RS-INIT-SCRN(); /* initialise screen fields*/
+
+    set SM0RM001.SM0RM-XXX-LAST-NM cursor, bold;
+    converseLib.validationFailed(39); /* enter rep name*/
+
+  else
+    if (SM0RW02.XXX-LAST-NM != SM0RW03.XXX-LAST-NM) /* name changed*/
+      SM0RS-NEW-NAME(); /* process new name*/
+    else
+
+      if (SM0RW02.SM0RW-CURR-PAGE-NO != 
+      SM0RW03.SM0RW-PREV-PAGE-NO) /* page change*/
+        SM0RS-NEW-PAGE(); /* process page change*/
+      else
+        SM0RS-CHECK-SEL(); /* check if a detail was selected*/
+        if (SM0RW01.SM0RW-DTL-SELECTED == "Y")
+          SM0RS-PROCESS-SEL(); /* process details*/
+          if (converseVar.validationMsgNum == 0) /* no previous errors*/
+            SM0RS-PROC-RETURN(); /* return to prior appl w/ rep/agcy*/
+          end
+        else
+          converseLib.validationFailed(12); /* no changes entered*/
+        end
+      end
+
+    end
+  end
+
+end // end SM0RS-PROC-ENTER
+
+// Process PA2
+Function SM0RS-PROC-PA2()
+  SM0RS-INIT-SCRN(); /* initialise screen*/
+  SM0RM001.SM0RM-XXX-LAST-NM = SM0RW03.XXX-LAST-NM;
+  SM0RM001.SM0RM-CURR-PAGE = SM0RW03.SM0RW-PREV-PAGE-NO;
+
+end // end SM0RS-PROC-PA2
+
+// Process PF keys
+Function SM0RS-PROC-PF-KEYS()
+  if (SM0RW02.SM0RW-CURR-HDR-INPUT-FLDS
+   != SM0RW03.SM0RW-PREV-HDR-INPUT-FLDS)
+    converseLib.validationFailed(68); /* cannot PF key with changes*/
+  else
+    SM0RS-PRG-TMP-STRG(); /* purge temporary storage*/
+    if (converseVar.validationMsgNum != 0) /* error occurred*/
+      return;
+    end
+    if (converseVar.eventKey is pf1) /* help requested*/
+      COMMAREA.CAUSERA = " ";
+      XSPF1(); /* transfer to help system*/
+      SM0RM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+
+    if (converseVar.eventKey is pf3)
+      if (COMMAREA.CAFRMSYS == "SM")
+        COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+        COMMAREA.CAITEM = " ";
+        COMMAREA.CAUSERA = SMWREC.SMW-SUBSYSTEM-RECORD;
+        XSEXIT(); /* pass control*/
+      else
+        COMMAREA.CAITEM = " ";
+        COMMAREA.CAUSERA = " ";
+        XSPF4(); /* pass control*/
+      end
+      SM0RM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+    if (converseVar.eventKey is pf4) /* transfer to MN0M requested*/
+      COMMAREA.CAITEM = " ";
+      COMMAREA.CAUSERA = " ";
+      XSPF4(); /* pass control*/
+      SM0RM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+  end
+
+end // end SM0RS-PROC-PF-KEYS
+
+// Process scroll
+Function SM0RS-PROC-PF-SCRL()
+  if (SM0RW02.SM0RW-CURR-HDR-INPUT-FLDS
+   != SM0RW03.SM0RW-PREV-HDR-INPUT-FLDS)
+    converseLib.validationFailed(68); /* cannot pf key with changes*/
+  else
+    if (converseVar.eventKey is pf7) /* scroll backwards requested*/
+      if (SM0RW02.SM0RW-CURR-PAGE-NO <= 1) /* no previous pages*/
+        converseLib.validationFailed(3); /* cannot page up any further*/
+      else
+        SM0RW01.SM0RW-REQUESTED-PAGE = SM0RW02.SM0RW-CURR-PAGE-NO - 1;
+      end
+    end
+
+    if (converseVar.eventKey is pf8) /* scroll forwards requested*/
+      if (SM0RW02.SM0RW-CURR-PAGE-NO >= SM0RW01.SM0RW-HIGHEST-PAGE)
+        converseLib.validationFailed(7); /* cannot page down any further*/
+      else
+        SM0RW01.SM0RW-REQUESTED-PAGE = SM0RW02.SM0RW-CURR-PAGE-NO + 1;
+      end
+    end
+
+    if (converseVar.validationMsgNum == 0)
+      SM0RS-LOAD-DTL(); /* load requested page to map detail*/
+    end
+
+  end
+
+end // end SM0RS-PROC-PF-SCRL
+
+// Transfer back w/ selected code
+Function SM0RS-PROC-RETURN()
+  COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+  COMMAREA.CAITEM = " ";
+  SMWREC.SM-SREP-ID = SM0RM001.SM0RM-SM-SREP-ID[SM0RW-SELECT-INDEX];
+  SMWREC.XXX-LAST-NM = " ";
+  COMMAREA.CAUSERA = SMWREC.SMW-SUBSYSTEM-RECORD;
+  XSEXIT(); /* pass control*/
+  SM0RM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+
+end // end SM0RS-PROC-RETURN
+
+// Edit select option
+Function SM0RS-PROCESS-SEL()
+  /* ***********************************************************************/
+  /* * This edits the select option.                                      **/
+  /* ***********************************************************************/
+
+  SM0RW01.SM0RW-SEL-COUNT = 0; /* set select option count to 0*/
+  SM0RW01.SM0RW-SCREEN-INDEX = SM0RW01.SM0RW-MAX-PER-PAGE; /* last line*/
+
+  while (SM0RW01.SM0RW-SCREEN-INDEX >= 1) /* until first line*/
+
+    if (SM0RM001.SM0RM-SEL[SM0RW-SCREEN-INDEX] != " ")
+      SM0RW01.SM0RW-SELECT-INDEX = SM0RW01.SM0RW-SCREEN-INDEX;
+      SM0RW01.SM0RW-SEL-COUNT = SM0RW01.SM0RW-SEL-COUNT + 1;
+       /* count the number of selected detail lines*/
+    end
+    SM0RW01.SM0RW-SCREEN-INDEX = SM0RW01.SM0RW-SCREEN-INDEX - 1; /* prev map line*/
+
+  end
+
+  if (SM0RW01.SM0RW-SEL-COUNT > 1
+   && converseVar.validationMsgNum == 0)
+    converseLib.validationFailed(0008); /* only one selection allowed*/
+  end
+
+end // end SM0RS-PROCESS-SEL
+
+// Read temp storage page
+Function SM0RS-RD-TMP-STRG()
+  TA5REC.TA5FNCCD = "R"; /* retrieve temp storage*/
+  TA5REC.TA5APPID = SM0RW01.TA5APPID; /* application ID*/
+  SM0RW04.SM0RW-TEMP-STRG-LENGTH = SM0RW01.SM0RW-TSQ-REC-LENGTH;
+
+  try
+    call "TA0050" (SM0RW04, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* temp storage*/
+
+  if (sysVar.errorCode == "00000000" /* call was successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return*/
+    /* next sentence*/
+  else /* an error occurred*/
+
+    set TAEREC empty;
+    TAEREC.TAEDESC1 = sysVar.errorCode; /* csp return code*/
+    TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* subroutine parameters*/
+    TA1REC.TA1TYPE = "APPL"; /* application error*/
+    TA1REC.TA1FUNC = "RETN"; /* post, no abend*/
+    TA1REC.TA1LOCAT[1] = "READ TS "; /* location*/
+    TA1REC.TA1LOCAT[2] = "TA0050  "; /* subroutine*/
+
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end /* message formatter*/
+
+    XSPF4(); /* pass control to menu*/
+
+    converseLib.validationFailed(72); /* system error*/
+
+  end
+
+end // end SM0RS-RD-TMP-STRG
+
+// Reset map attributes
+Function SM0RS-RESET-ATTR()
+  /* Reset field attributes*/
+
+  set SM0RM001.SM0RM-PAGE-LITERAL initialAttributes;
+  set SM0RM001.SM0RM-CURR-PAGE initialAttributes;
+  set SM0RM001.SM0RM-OF-LITERAL initialAttributes;
+  set SM0RM001.SM0RM-HIGH-PAGE initialAttributes;
+
+  set SM0RM001.SM0RM-XXX-LAST-NM cursor, initialAttributes;
+
+  SM0RW01.SM0RW-SCREEN-INDEX = 1; /* 1st map line*/
+  while (SM0RW01.SM0RW-SCREEN-INDEX
+   <= SM0RW01.SM0RW-MAX-PER-PAGE) /* while more map lines*/
+
+    if (SM0RW04.XXX-LAST-NM[SM0RW-SCREEN-INDEX] != " ") /* allow select*/
+      set SM0RM001.SM0RM-SEL[SM0RW-SCREEN-INDEX] initialAttributes;
+    else
+      set SM0RM001.SM0RM-SEL[SM0RW-SCREEN-INDEX] skip, invisible;
+    end
+    SM0RW01.SM0RW-SCREEN-INDEX = SM0RW01.SM0RW-SCREEN-INDEX + 1; /* next map line*/
+
+  end
+
+end // end SM0RS-RESET-ATTR
+
+//*** RECORD=SM0RW01 ****
+// Working storage record for application SM0R.
+// 
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    1/05/93  RCORON    Created record.
+// 
+// ***********************
+Record SM0RW01 type basicRecord
+  10 SM0RW-MAX-PER-PAGE SM0RW-MAX-PER-PAGE ; 
+  10 SM0RW-HIGHEST-PAGE SM0RW-HIGHEST-PAGE ; 
+  10 SM0RW-REQUESTED-PAGE SM0RW-REQUESTED-PAGE ; 
+  10 SM0RW-SCREEN-INDEX SM0RW-SCREEN-INDEX ; 
+  10 TA5APPID TA5APPID ; 
+  10 SM0RW-TSQ-REC-LENGTH SM0RW-TSQ-REC-LENGTH ; 
+  10 SM0RW-MORE-REPS-FL SM0RW-MORE-REPS-FL ; 
+  10 SM0RW-DTL-SELECTED SM0RW-DTL-SELECTED ; 
+  10 SM0RW-SEL-COUNT SM0RW-SEL-COUNT ; 
+  10 SM0RW-NAME-INDEX SM0RW-NAME-INDEX ; 
+  10 XXX-LAST-NM XXX-LAST-NM ; 
+    15 SM0RW-XXX-LAST-NM-CHAR SM0RW-XXX-LAST-NM-CHAR [25] ; 
+  10 SM0RW-SELECT-INDEX SM0RW-SELECT-INDEX ; 
+end // end SM0RW01
+
+//*** RECORD=SM0RW02 ****
+// Current map header record.
+// 
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    1/05/93  RCORON    Created record.
+// 
+// ***********************
+Record SM0RW02 type basicRecord
+  5 SM0RW-CURR-HDR-REC SM0RW-CURR-HDR-REC ; 
+    10 SM0RW-CURR-HDR-INPUT-FLDS SM0RW-CURR-HDR-INPUT-FLDS ; 
+      15 XXX-LAST-NM XXX-LAST-NM ; 
+      15 SM0RW-CURR-PAGE-NO SM0RW-CURR-PAGE-NO ; 
+end // end SM0RW02
+
+//*** RECORD=SM0RW03 ****
+// Previous map header record.
+// 
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    1/05/93  RCORON    Created record.
+// 
+// ***********************
+Record SM0RW03 type basicRecord
+  5 SM0RW-PREV-HDR-REC SM0RW-PREV-HDR-REC ; 
+    10 SM0RW-PREV-HDR-INPUT-FLDS SM0RW-PREV-HDR-INPUT-FLDS ; 
+      15 XXX-LAST-NM XXX-LAST-NM ; 
+      15 SM0RW-PREV-PAGE-NO SM0RW-PREV-PAGE-NO ; 
+end // end SM0RW03
+
+//*** RECORD=SM0RW04 ****
+// Current map detail record.
+// 
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    1/05/93  RCORON    Created record.
+// 
+// ***********************
+Record SM0RW04 type basicRecord
+  5 SM0RW-TEMP-STRG-LENGTH SM0RW-TEMP-STRG-LENGTH ; 
+  5 SM0RW-CURR-DTL-REC SM0RW-CURR-DTL-REC ; 
+    10 SM0RW-CURR-DTL-LINE SM0RW-CURR-DTL-LINE [12] ; 
+      15 SM-SREP-ID SM-SREP-ID ; 
+      15 XXX-LAST-NM XXX-LAST-NM ; 
+      15 XXX-FRST-NM XXX-FRST-NM ; 
+      15 XXX-MID-INIT XXX-MID-INIT ; 
+      15 SM-SREP-CONT-EDT SM-SREP-CONT-EDT ; 
+      15 SM-SREP-CONT-TDT SM-SREP-CONT-TDT ; 
+end // end SM0RW04
+
+// current map detail line
+DataItem SM0RW-CURR-DTL-LINE char(51)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current map detail record
+DataItem SM0RW-CURR-DTL-REC char(612)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current map hdr input flds
+DataItem SM0RW-CURR-HDR-INPUT-FLDS char(27)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current map hdr record
+DataItem SM0RW-CURR-HDR-REC char(27)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current page number
+DataItem SM0RW-CURR-PAGE-NO num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// more rep rows flag
+DataItem SM0RW-DTL-SELECTED char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// highest page number
+DataItem SM0RW-HIGHEST-PAGE num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// max lines per page
+DataItem SM0RW-MAX-PER-PAGE num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// more rep rows flag
+DataItem SM0RW-MORE-REPS-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// more rep rows flag
+DataItem SM0RW-NAME-INDEX num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// previous map hdr input flds
+DataItem SM0RW-PREV-HDR-INPUT-FLDS char(27)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// previous map hdr record
+DataItem SM0RW-PREV-HDR-REC char(27)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// previous page number
+DataItem SM0RW-PREV-PAGE-NO num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// requested page number
+DataItem SM0RW-REQUESTED-PAGE num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// screen index
+DataItem SM0RW-SCREEN-INDEX num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// more rep rows flag
+DataItem SM0RW-SEL-COUNT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// selected row index
+DataItem SM0RW-SELECT-INDEX num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// temp storage record length
+DataItem SM0RW-TEMP-STRG-LENGTH num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// temp storage record length
+DataItem SM0RW-TSQ-REC-LENGTH num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SM0RW-XXX-LAST-NM-CHAR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

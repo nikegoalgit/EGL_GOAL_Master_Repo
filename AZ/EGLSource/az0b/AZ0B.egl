@@ -1,0 +1,2673 @@
+package az0b;
+import az.common.*;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import fy.common.*;
+import in1.common.*;
+import iv.common.*;
+import op.common.*;
+import pc.common.*;
+import pk.common.*;
+import sr.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+import vv.common.*;
+import ww.common.*;
+//*** PROGRAM=AZ0B ****
+// OVERVIEW:  The ASN select screen lists all the BOLS that
+//    were selected and loaded to temp storage by AZ0A, the
+//    ASN Inquiry application.  When a BOL is selected from
+//    the list, AZ0B gathers information for the ASN and loads
+//    it to several different temporary storage files.
+//    The files are used throughout the Online ASN session
+//    until control is returned to AZ0B.  Data for the next
+//    selected ASN is then gathered and loaded or the AZ0B
+//    screen is displayed to allow the user to make additional
+//    selections.  AZ0B keeps track of updates and inquiries
+//    for each BOL selected.    Most ASN applications can
+//    return to AZ0B using PF3.
+// 
+// POSSIBLE STATEMENT GROUP MEANINGS:
+//    AZ0BSSx = select or select set
+//    AZ0BSNx = select next
+//    AZ0BSCx = close set
+//    AZ0BSBx = build record
+//    AZ0BSLx = load (temp storage load drivers)
+//    AZ0BSUx = update record
+// 
+// **  statement group naming is flexible and may not have
+//     any meaning especially after several enhancements.
+// 
+// ********************************************************
+// *     M A I N T E N A N C E     L O G                  *
+// ********************************************************
+// *
+// * DATE        NAME          DESCRIPTION OF CHANGE
+// *
+// * 09/20/97   kdenne     Created.
+// *
+// * 03/04/98   dkesle     added pf5 to xfer to sr0r/sr0t,
+// *                       made release all msgs more descrip-
+// *                       tive and eliminated job sub'd screen
+// * 03/13/98   dkesle     checks small carr flag to determine
+// *                       release
+// * 04/27/98   dkesle     separate small package carrier flag
+// *                       from release flag
+// * 08/10/98   dkesle     if whse = 42, add step to JCL to
+// *                       FTP movers file
+// * 08/27/98   dkesle     if whse = 07, add steps to JCL
+// *                       to FTP movers file and start RSH
+// *                       & send old movers file to class Z
+// * 09/17/98   dkesle     if whse = 04, add steps to JCL
+// *                       to FTP movers file and start RSH
+// *                       & send old movers file to class Z
+// * 10/21/98   dkesle     chg ftp target for whse 42
+// * 10/23/98   dkesle     if whse = 02, add steps to JCL
+// *                       to FTP movers file and start RSH
+// *                       & send old movers file to class Z
+// * 05/19/99   snaidu     commented the FTP proc step - rmt230
+// *                       for whse 42 in az0b-30010 proc.
+// *                       Look for comments -
+// *                       /* Deactivate MOVERS for Canada
+// * 03/20/01   rnunna     AZ0B is being modified to include
+// *                       processes in determining the ASN
+// *                       release.
+// *                       AZ0B-120 and AZ00ENU modified.
+// *                       1) ASN/BOL data check and balance
+// *                       process.
+// *                       2) Verify if the OTP header has its
+// *                       GOAL SO number populated.
+// *********************
+Program AZ0B type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "AZ00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  AZ0BW01 AZ0BW01; // record
+  AZ0BW02 AZ0BW02; // record
+  AZAREC AZAREC; // record
+  AZDREC AZDREC; // record
+  AZFREC AZFREC; // record
+  AZOREC AZOREC; // record
+  AZWREC AZWREC; // record
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  SQLCA SQLCA; // record
+  SRWREC SRWREC; // record
+  TA1REC TA1REC; // record
+  TA3REC TA3REC; // record
+  TA5REC TA5REC; // record
+  TA6REC TA6REC; // record
+  TAEREC TAEREC; // record
+  VAZHDR01 VAZHDR01; // record
+  VAZORD01 VAZORD01; // record
+  WAZ1000 WAZ1000; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use AZ0BTP1 {deleteAfterUse = yes}; // table
+  use AZ0BTT1 {deleteAfterUse = yes}; // table
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use AZ0BM.AZ0BM001,  // forms
+      AZ0BM.TA0PM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    AZ0B-000: AZ0B-000();
+    goto AZ0B-100;
+    AZ0B-100: AZ0B-100();
+    goto AZ0B-100;
+  end // end main
+end // end AZ0B
+
+// MAIN execute process
+Function AZ0B-000()
+     /* Check csp and ASN batch security*/
+
+  XSENTRY();
+  XSAZS01();
+
+     /* Initialize application - init records, get zz date/time,*/
+                              /* save map name for diagnostics*/
+  AZ0BS-00001();
+
+     /* Set -911 processing flag*/
+
+  AZWREC.AZWER911 = "N";
+
+     /* Read current temp storage page*/
+
+  XSAZT1R();
+  if (TA5REC.TA5RTNCD == 4) /* temp storage not found*/
+    set AZWREC empty; /* send message to screen saying that fastpath*/
+    XSNOWAY(); /* not allowed to this screen (from AZ0A)*/
+  end
+
+       /* Process selections execute*/
+
+   /* commented out because not allowing multiple selects per page*/
+   /* IF AZWREC.CAMSG EQ ' '           /* msg is empty, no errors to display*/
+   /* AND AZWREC.AZW-RELEASE-ALL-FL NE 'Y';/* Release 'ALL' not selected*/
+   /* PERFORM AZ0B-00010;*/
+   /* END;*/
+
+     /* Display commarea message*/
+
+  AZ0BM001.CAMSG = AZWREC.CAMSG;
+  AZWREC.CAMSG = " ";
+
+     /* Build map for display*/
+
+  AZ0BS-00002();
+
+
+
+end // end AZ0B-000
+
+// converse/ after process
+Function AZ0B-100()
+
+  converseLib.clearScreen();
+   /* set map to scroll properly*/
+  converseVar.segmentedMode = 1; /* force segmented converse mode*/
+  AZWREC.AZWER911 = "Y"; /* -911 processing flag*/
+
+  converse AZ0BM001 ;
+  AZWREC.AZWERRFL = "N"; /* init error flag*/
+  converseLib.validationFailed(0); /* init error msg*/
+
+  if (converseVar.eventKey is enter)
+
+    if (AZ0BM001.CATOAP != " "
+    )
+      SRWREC.SRWXWHCD = AZWREC.XWHCD;
+      SRWREC.PK1BLLAD[1] = 0;
+      SRWREC.SR2BLLSU[1] = 0;
+      SRWREC.SRWMISCF[2] = "U";
+      SRWREC.SRWRETOP = "M";
+      SRWREC.SRWRETFL = "N";
+
+      COMMAREA.CATOAP = AZ0BM001.CATOAP;
+
+      COMMAREA.CAITEM = AZ0BM001.CAITEM;
+
+      COMMAREA.CAUSERA = SRWREC.SRWGRP;
+
+      XSAZT1P();
+
+      XSEXIT();
+
+      set AZ0BM001.CATOAP cursor, bold;
+
+      AZ0BM001.CAMSG = COMMAREA.CAMSG;
+
+      COMMAREA.CATOAP = " ";
+
+      AZWREC.AZWERRFL = "Y";
+
+      return;
+
+    end
+
+  end
+
+     /* Init error stuff*/
+
+  AZWREC.AZWERRFL = "N";
+  converseLib.validationFailed(0);
+  AZ0BM001.CAMSG = " ";
+
+     /* Reset field attributes*/
+
+  AZ0BS-10001();
+
+     /* Edit map(no matter what pfkey is used)*/
+
+  AZ0B-115();
+
+     /* Process Selections or Release 'ALL' Option*/
+
+  if (converseVar.eventKey is enter)
+    if (AZWREC.AZWERRFL == "N")
+      if (AZ0BM001.AZW-RELEASE-ALL-FL == "Y")
+        if (AZWREC.AZW-PROMPT-FL == "Y") /* user has been prompted*/
+          AZ0B-130(); /* do release all*/
+        else
+          AZWREC.AZWERRFL = "Y";
+          AZWREC.AZW-PROMPT-FL = "Y"; /* set flag that prompt sent*/
+          converseLib.validationFailed(065); /* send prompt message*/
+        end
+      else
+        if (AZ0BW01.AZ0BWSELR == "Y")
+          if (AZ0BW01.AZ0BW-REL-CNT > 1)
+            if (AZWREC.AZW-PROMPT-FL == "Y") /* user has been prompted*/
+              AZ0B-140();
+            else
+              AZWREC.AZWERRFL = "Y";
+              AZWREC.AZW-PROMPT-FL = "Y"; /* set flag that prompt sent*/
+              converseLib.validationFailed(066); /* send prompt message*/
+            end
+          else
+            AZ0B-140();
+          end
+        else
+          if (AZ0BW01.AZ0BWSELQ == "Y")
+            AZ0B-150();
+          end
+        end
+      end
+    else
+      AZWREC.AZW-PROMPT-FL = "N"; /* re-set prompt flag*/
+    end
+  else
+    AZWREC.AZW-PROMPT-FL = "N"; /* re-set prompt flag*/
+  end
+
+     /* Edit PF Keys*/
+
+  if (AZWREC.AZWERRFL == "N")
+    AZ0BS-10002();
+  end
+
+  AZ0BS-10003(); /* transfer to requested application.*/
+end // end AZ0B-100
+
+// EDIT MAP
+Function AZ0B-115()
+  /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * **/
+  /* EDIT MAP & PFKEYS*/
+  /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * **/
+
+     /* edit map top to bottom - select codes, page nbr,*/
+       /* pf7/pf8, pf5/pf6/pf9 and relational edits for screen*/
+
+     /* edit select codes*/
+
+  if (converseVar.eventKey is enter)
+    if (AZ0BM001.CATOAP != " ")
+
+      COMMAREA.CATOAP = AZ0BM001.CATOAP;
+
+      COMMAREA.CAITEM = AZ0BM001.CAITEM;
+
+      AZWREC.AZWSYSKE = COMMAREA.CAITEM;
+
+      COMMAREA.CAUSERA = AZWREC.AZWGROUP;
+
+      XSAZT1P(); /* Purge TS Queue*/
+
+      XSEXIT(); /* Go! Get outa here!*/
+
+      set AZ0BM001.CATOAP cursor, bold; /* But if you don't go...*/
+
+      AZ0BM001.CAMSG = COMMAREA.CAMSG; /* something...*/
+
+      COMMAREA.CATOAP = " "; /* somewhere...*/
+
+      AZWREC.AZWERRFL = "Y"; /* went wrong, probabaly not authorized*/
+
+      return;
+
+    end
+
+  end
+
+  AZ0BW01.AZ0BWSEL = "N"; /* init selections made flag*/
+  AZ0BW01.AZ0BWSELR = "N"; /* init Release select flag*/
+  AZ0BW01.AZ0BWSELQ = "N"; /* init Inquiry select flag*/
+  AZ0BW01.AZ0BW-SHPMT-ERR-FL = "N"; /* Shipment Error flag*/
+  AZWREC.AZW-RELEASE-ALL-FL = AZ0BM001.AZW-RELEASE-ALL-FL;
+
+     /* edit Release 'ALL' flag values*/
+
+  if (AZ0BM001.AZW-RELEASE-ALL-FL == " "
+   || AZ0BM001.AZW-RELEASE-ALL-FL == "N"
+   || AZ0BM001.AZW-RELEASE-ALL-FL == "Y")
+    /* next sentence*/
+  else
+    AZWREC.AZWERRFL = "Y";
+    converseLib.validationFailed(035);
+    set AZ0BM001.AZW-RELEASE-ALL-FL cursor, bold;
+  end
+
+      /* edit selection codes*/
+
+  AZ0BW01.AZ0BW-REL-CNT = 0; /* init counter*/
+  AZWREC.AZWTSF1S = 12; /* init subscript*/
+  while (AZWREC.AZWTSF1S >= 1) /* process all 12 rows*/
+    AZ0BS-11501();
+    AZWREC.AZWTSF1S = AZWREC.AZWTSF1S - 1;
+  end
+
+      /* check if selection flag entered along with Release 'ALL' option*/
+
+  if (AZ0BW01.AZ0BWSEL == "Y")
+    if (AZ0BM001.AZW-RELEASE-ALL-FL == "Y")
+      AZWREC.AZWERRFL = "Y";
+      converseLib.validationFailed(042);
+      set AZ0BM001.AZW-RELEASE-ALL-FL cursor, bold;
+    end
+  end
+
+     /* edit page number*/
+
+  AZ0BS-11502();
+
+     /* edit PF7/PF8*/
+
+  if (converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8)
+    AZ0BS-11503();
+  end
+
+     /* edit selection flag/PFKEYS*/
+
+  if (AZWREC.AZWERRFL == "N") /* no errors found to this point*/
+    AZ0BS-11504();
+  end
+
+     /* edit ASN for valid Release*/
+
+  if (AZWREC.AZWERRFL == "N" /* no errors found to this point*/
+   && AZ0BW01.AZ0BWSELR == "Y") /* ASN Release Selected*/
+    AZWREC.AZWTSF1S = 1; /* init subscript*/
+    while (AZWREC.AZWTSF1S <= 12) /* check only Release selections*/
+      if (AZ0BM001.AZAMSEL[AZWTSF1S] == "R")
+        AZ0BS-11505(); /* edit ASN for stop, incomplete,*/
+      end /* & pack/hold orders*/
+      AZWREC.AZWTSF1S = AZWREC.AZWTSF1S + 1;
+    end
+  end
+
+     /* edit pf5/PF6/PF9*/
+
+  if (converseVar.eventKey is pf5
+   || converseVar.eventKey is pf6
+   || converseVar.eventKey is pf9)
+    AZ0BS-11506();
+  end
+
+     /* Check if a confirmation is required for any Pack & Hold*/
+     /* shipments when requesting the Release 'ALL' option*/
+     /* If DNSB date is greater than the Current date, requires*/
+     /* a confirmation for the Release*/
+
+  if (AZWREC.AZWERRFL == "N") /* no errors at this point*/
+    if (AZ0BM001.AZW-RELEASE-ALL-FL == "Y")
+      AZ0B-117();
+    end
+  end
+
+
+end // end AZ0B-115
+
+// CONFIRM PACK&HOLDS
+Function AZ0B-117()
+  /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * **/
+  /* CONFIRM PACK & HOLDS FOR RELEASE 'ALL' OPTION*/
+  /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * **/
+
+  AZ0BW01.AZ0BW-LAST-PAGE = AZWREC.AZWTSF1P; /* save TSQ page*/
+  AZWREC.AZWTSF1P = 1; /* set Current page to 1*/
+
+  XSAZT1R(); /* read temp storage 1 - ASNs*/
+
+  while (AZWREC.AZWTSF1P <= AZWREC.AZWTSF1M)
+    AZWREC.AZWTSF1S = 1; /* init subscript*/
+    while (AZWREC.AZWTSF1S <= 12) /* 12 ASNs per page*/
+      if (AZAREC.AZAMSEL[AZWTSF1S] == "*"
+       || AZAREC.AZAMSEL[AZWTSF1S] == "X") /* Shipment OK*/
+        /* next sentence*/
+      else
+        if (AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "RE"
+         || AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "NS"
+         || AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "HD")
+          AZ0B-120(); /* validate Release*/
+        end
+      end
+      AZWREC.AZWTSF1S = AZWREC.AZWTSF1S + 1;
+    end
+
+    XSAZT1U(); /* update temp storage 1 - ASNs*/
+
+    AZWREC.AZWTSF1P = AZWREC.AZWTSF1P + 1; /* increment TSQ page*/
+
+    if (AZWREC.AZWTSF1P <= AZWREC.AZWTSF1M)
+      XSAZT1R(); /* read temp storage 1 - ASNs*/
+    end
+
+  end
+
+    /* reset temp storage page & subscript*/
+
+  AZWREC.AZWTSF1P = AZ0BW-LAST-PAGE;
+  XSAZT1R(); /* read temp storage 1 - ASNs*/
+  AZWREC.AZWTSF1S = 1;
+
+end // end AZ0B-117
+
+// Validate Release - AZ1000
+Function AZ0B-120()
+   /* -----------------------------------------------------------------*/
+   /* VALIDATE RELEASE BY CALLING SUBROUTINE AZ1000*/
+   /* -----------------------------------------------------------------*/
+
+      /* call edit ASN subroutine - AZ1000*/
+
+  AZ0BS-12001();
+
+  AZAREC.AZA-SNP-FL[AZWTSF1S] = " "; /* reset SNP flag*/
+  AZAREC.AZA-SHP-REL-FL[AZWTSF1S] = "Y"; /* O.K. to release*/
+
+  if (WAZ1000.WAZ1000-SR-PICK-STAT-FL == "N")
+    AZAREC.AZA-SNP-FL[AZWTSF1S] = "N"; /* Carton Not Picked*/
+    AZAREC.AZA-SHP-REL-FL[AZWTSF1S] = "N"; /* can't release*/
+    return;
+  end
+
+  if (AZ0BM001.AZW-RELEASE-ALL-FL == "Y") /* if rlse all sml pkg carrier*/
+    if (WAZ1000.WAZ1000-SMALL-PKG-AZ0B-FL == "Y" /* small package carrier*/
+     && WAZ1000.WAZ1000-SHPMT-REL-AZ0B-FL == "Y") /* okay to release*/
+
+    else
+      AZAREC.AZA-SHP-REL-FL[AZWTSF1S] = "N";
+    end
+  else
+    if (WAZ1000.WAZ1000-SHPMT-REL-AZ0B-FL == "Y") /* okay to release*/
+
+    else
+      AZAREC.AZA-SHP-REL-FL[AZWTSF1S] = "N";
+    end
+  end
+
+  if (WAZ1000.WAZ1000-SR-PACK-HLD-FL == "Y")
+    AZAREC.AZA-SNP-FL[AZWTSF1S] = "P"; /* Pack&Hold exists*/
+    if (AZAREC.AZAMSEL[AZWTSF1S] == "*"
+     || AZAREC.AZAMSEL[AZWTSF1S] == "X")
+      /* next sentence*/
+    else
+      AZAREC.AZAMSEL[AZWTSF1S] = "X"; /* set selection to process*/
+      AZWREC.AZWERRFL = "Y"; /* set error flag*/
+      converseLib.validationFailed(040); /* shipment has an order on pack&hold -*/
+                                  /* press enter to confirm release*/
+      return;
+    end
+  end
+
+  if (WAZ1000.WAZ1000-SR-STOP-ORD-SHP-FL == "Y")
+    AZAREC.AZA-SNP-FL[AZWTSF1S] = "S"; /* Stop Ship exists*/
+    AZAREC.AZAMSEL[AZWTSF1S] = "X"; /* Shipment OK*/
+    AZAREC.AZA-SHP-REL-FL[AZWTSF1S] = "N"; /* don't allow release*/
+  end
+
+   /* DLVRUSA CHANGES*/
+
+  if (WAZ1000.WAZ1000-OUT-SYNC-ASN-DATA-FL == "Y")
+    if (AZWREC.XWHCD == "04" || AZWREC.XWHCD == "07"
+     || AZWREC.XWHCD == "42" || AZWREC.XWHCD == "51")
+      AZAREC.AZA-SNP-FL[AZWTSF1S] = "S"; /* Stop Ship exists*/
+      AZAREC.AZAMSEL[AZWTSF1S] = "X";
+                                   /* Shipment units are not in sync*/
+      AZWREC.AZWERRFL = "Y"; /* set error flag*/
+      AZAREC.AZA-SHP-REL-FL[AZWTSF1S] = "N"; /* don't allow release*/
+      converseLib.validationFailed(077); /* Please review the BOL/ASN, data is*/
+                                   /* out-*/
+                                /* of sync and cannot be released*/
+      return;
+    end
+  end
+
+  if (WAZ1000.WAZ1000-OTP-MISSING-GOAL-SO-FL == "Y")
+    if (AZWREC.XWHCD == "04" || AZWREC.XWHCD == "07"
+     || AZWREC.XWHCD == "42" || AZWREC.XWHCD == "51")
+      AZAREC.AZA-SNP-FL[AZWTSF1S] = "S"; /* Stop Ship exists*/
+      AZAREC.AZAMSEL[AZWTSF1S] = "X";
+                                   /* Shipment units are not in sync*/
+      AZWREC.AZWERRFL = "Y"; /* set error flag*/
+      AZAREC.AZA-SHP-REL-FL[AZWTSF1S] = "N"; /* don't allow release*/
+      converseLib.validationFailed(078); /* GOAL SO must exists and Order-to-Post*/
+                                /* is updated with the GOAL SO number*/
+                                /* via GN0A.*/
+      return;
+    end
+  end
+
+   /* END  DLVRUSA CHANGES*/
+
+end // end AZ0B-120
+
+// RELEASE ALL OPTION
+Function AZ0B-130()
+  /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * **/
+  /* RELEASE 'ALL' PROCESS*/
+  /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * **/
+
+  AZWREC.AZWTSF1P = 1; /* set Current page to 1*/
+  AZ0BW01.AZ0BW-PROCESS-FL = "N"; /* init ASN Submit flag*/
+  AZ0BW01.AZ0BW-HDR-UPDT-FL = "N"; /* init AZHDR Update flag*/
+
+  XSAZT1R(); /* read temp storage 1 - ASNs*/
+
+  while (AZWREC.AZWTSF1P <= AZWREC.AZWTSF1M)
+    AZWREC.AZWTSF1S = 1; /* init subscript*/
+    while (AZWREC.AZWTSF1S <= 12) /* 12 ASNs per page*/
+      if ((AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "RE"
+       || AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "HD")
+       && AZAREC.AZA-SHP-REL-FL[AZWTSF1S] == "Y") /* OK to Release*/
+        AZ0B-400();
+      end
+
+      AZWREC.AZWTSF1S = AZWREC.AZWTSF1S + 1;
+
+    end
+
+    AZWREC.AZWTSF1P = AZWREC.AZWTSF1P + 1; /* increment TSQ page*/
+
+    if (AZWREC.AZWTSF1P <= AZWREC.AZWTSF1M)
+      XSAZT1R(); /* read temp storage 1 - ASNs*/
+    end
+
+  end
+
+    /* reset temp storage page & subscript*/
+
+  AZWREC.AZWTSF1P = 1;
+  AZWREC.AZWTSF1S = 1;
+
+    /* If BOL's tagged for processing, submit batch job*/
+
+  if (AZ0BW01.AZ0BW-PROCESS-FL == "Y")
+    AZ0B-300();
+  else
+    AZWREC.CAMSG = "NO SHPMNT HAD CORRECT STATUS OR NO SHPMNT FOR SMALL PACKAGE CARRIER";
+    COMMAREA.CAUSERA = AZWREC.AZWGROUP;
+    XSAZP03();
+  end
+
+
+end // end AZ0B-130
+
+// Process RELEASE Selections
+Function AZ0B-140()
+   /* -----------------------------------------------------------------*/
+   /* PROCESS RELEASE SELECTION OPTIONS*/
+   /* -----------------------------------------------------------------*/
+
+      /* move all selections from map to temp storage*/
+      /* then process first selection using temp storage*/
+
+  AZWREC.AZWTSF1S = 1; /* init subscript*/
+  while (AZWREC.AZWTSF1S <= 12) /* max orders per page*/
+    if (AZAREC.AZAMSEL[AZWTSF1S] == "X"
+     || AZAREC.AZAMSEL[AZWTSF1S] == "*")
+        /* next sentence*/
+    else
+      if (AZ0BM001.AZAMSEL[AZWTSF1S] == "R")
+        AZAREC.AZAMSEL[AZWTSF1S] = AZ0BM001.AZAMSEL[AZWTSF1S];
+      end
+    end
+    AZWREC.AZWTSF1S = AZWREC.AZWTSF1S + 1;
+  end
+
+  XSAZT1U(); /* update temp storage with selections*/
+
+  AZ0BW01.AZ0BW-PROCESS-FL = "N"; /* init ASN Submit flag*/
+  AZ0BW01.AZ0BW-HDR-UPDT-FL = "N"; /* init AZHDR Update flag*/
+
+  AZWREC.AZWTSF1S = 1; /* init subscript*/
+
+  while (AZWREC.AZWTSF1S <= 12) /* max orders per page*/
+    if (AZAREC.AZAMSEL[AZWTSF1S] == "R"
+     || AZAREC.AZAMSEL[AZWTSF1S] == "X"
+     || AZAREC.AZAMSEL[AZWTSF1S] == "*") /* OK to Release*/
+      AZ0B-400(); /* main update*/
+    end
+
+    AZWREC.AZWTSF1S = AZWREC.AZWTSF1S + 1;
+
+  end
+
+    /* If BOL's tagged for processing, submit batch job*/
+
+  if (AZ0BW01.AZ0BW-PROCESS-FL == "Y")
+    AZ0B-300();
+  else
+    AZWREC.CAMSG = "SHIPMENT WAS EITHER ALREADY RELEASED OR IN ERROR - PLEASE VERIFY";
+    COMMAREA.CAUSERA = AZWREC.AZWGROUP;
+    XSAZP03();
+  end
+
+end // end AZ0B-140
+
+// Process INQUERY Selections
+Function AZ0B-150()
+   /* -----------------------------------------------------------------*/
+   /* PROCESS INQUIRY SELECTION OPTIONS*/
+   /* -----------------------------------------------------------------*/
+
+      /* move all selections from map to temp storage*/
+      /* then process first selection using temp storage*/
+
+  AZWREC.AZWTSF1S = 1; /* init subscript*/
+  while (AZWREC.AZWTSF1S <= 12) /* max orders per page*/
+    if (AZ0BM001.AZAMSEL[AZWTSF1S] == "S")
+      AZAREC.AZAMSEL[AZWTSF1S] = AZ0BM001.AZAMSEL[AZWTSF1S];
+    end
+    AZWREC.AZWTSF1S = AZWREC.AZWTSF1S + 1;
+  end
+
+  XSAZT1U(); /* update temp storage with selections*/
+
+  AZ0BW01.AZ0BW-SEL-SUB = 0; /* selected subscript*/
+  AZWREC.AZWTSF1S = 1; /* init subscript*/
+
+  while (AZWREC.AZWTSF1S <= 12 /* max orders per page*/
+   && AZ0BW01.AZ0BW-SEL-SUB == 0)
+
+    if (AZAREC.AZAMSEL[AZWTSF1S] == "S")
+      AZ0BW01.AZ0BW-SEL-SUB = AZWTSF1S;
+      AZAREC.AZAMSEL[AZWTSF1S] = " ";
+    end
+
+    AZWREC.AZWTSF1S = AZWREC.AZWTSF1S + 1;
+
+  end
+
+    /* If BOL selected for inquiry, transfer to AZ0D*/
+
+  if (AZ0BW01.AZ0BW-SEL-SUB > 0)
+    XSAZT1U(); /* update temp storage*/
+    AZWREC.AZWTSF1S = AZ0BW01.AZ0BW-SEL-SUB;
+    AZWREC.PK-BILL-OF-LADING = AZAREC.PK-BILL-OF-LADING[AZWTSF1S];
+    AZWREC.PK-BOL-SUB-NBR = AZAREC.PK-BOL-SUB-NBR[AZWTSF1S];
+    COMMAREA.CAUSERA = AZWREC.AZWGROUP; /* transfer data*/
+    COMMAREA.CATOAP = "AZ0D"; /* transfer to AZ0D*/
+    XSEXIT();
+  end
+
+end // end AZ0B-150
+
+// ASN Send/Resend Process
+Function AZ0B-300()
+  /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * **/
+  /* SEND OR RESEND ASN*/
+  /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * **/
+
+  AZWREC.AZW-PROMPT-FL = "N";
+  AZWREC.AZW-RELEASE-ALL-FL = "N";
+
+  AZ0BS-30001(); /* check for CICS region*/
+
+  if (TA3REC.TA3RGNID == "03") /* PROD Region*/
+    AZ0B-30010(); /* format production jcl ASN create*/
+  else
+    AZ0B-30020(); /* format development jcl ASN create*/
+  end
+
+  XSAZP00();
+
+end // end AZ0B-300
+
+// Format Prod jcl
+Function AZ0B-30010()
+   /* ------------------------------------------------------------*/
+   /* Format the Job Control Language statement from the table.*/
+   /* ------------------------------------------------------------*/
+
+  set TA6REC empty;
+  set AZ0BW02 empty;
+
+  TA6REC.TA6INDEX = 1;
+  AZ0BW02.AZ0BWIDX2 = 1;
+
+  TA6REC.TA6-MAX-COND-CODE = 0004;
+
+  while (AZ0BTP1.TARJCL[AZ0BWIDX2] != "/*EOF")
+
+    if (AZ0BTP1.TARTYPE[AZ0BWIDX2] == "J")
+      AZ0BW02.AZ0BW-JOB-CARD = AZ0BTP1.TARJCL[AZ0BWIDX2];
+      AZ0BW02.XWH-WHSE-CD = AZWREC.XWHCD;
+      TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-JOB-CARD;
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+    end
+
+    if (AZ0BTP1.TARTYPE[AZ0BWIDX2] == "1")
+      if (AZWREC.XWHCD == "02"
+       || AZWREC.XWHCD == "04"
+       || AZWREC.XWHCD == "07"
+       || AZWREC.XWHCD == "42") /* Deactivate MOVERS for Canada*/
+      else
+        AZ0BW02.AZ0BW-OUTPUT-CARD = AZ0BTP1.TARJCL[AZ0BWIDX2];
+        if (AZ0BW-OUTPUT-LIT == "OUTPUT")
+                                  /* IF AZWREC.XWHCD EQ '42';       /**/
+                                   /* Deactivate MOVERS for Canada*/
+          /* MOVE '230' TO AZ0BW02.AZ0BW-OUTPUT-RMT;*/
+          /* END;*/
+          if (AZWREC.XWHCD == "51")
+            AZ0BW02.AZ0BW-OUTPUT-RMT = "123";
+          end
+        end
+        TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-OUTPUT-CARD;
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+      end
+    end
+
+    if (AZ0BTP1.TARTYPE[AZ0BWIDX2] == "W") /* whse statement*/
+      AZ0BW02.AZ0BW-WHSE-CARD = AZ0BTP1.TARJCL[AZ0BWIDX2];
+      AZ0BW02.AZ0BW-WHSE-CD = AZWREC.XWHCD;
+      TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-WHSE-CARD;
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+    end
+
+    if (AZ0BTP1.TARTYPE[AZ0BWIDX2] == "P") /* az1820 parm statement*/
+      AZ0BW02.AZ0BW-AZ1820-PARM-WHSE-CD = AZWREC.XWHCD;
+      TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-AZ1820-PARM-CARD;
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+    end
+
+    if (AZ0BTP1.TARTYPE[AZ0BWIDX2] == "F") /* ftp statements*/
+      if (AZWREC.XWHCD == "02"
+       || AZWREC.XWHCD == "04"
+       || AZWREC.XWHCD == "07"
+       || AZWREC.XWHCD == "42")
+        AZ0BW02.AZ0BW-FTP-CARD = AZ0BTP1.TARJCL[AZ0BWIDX2];
+        if (AZ0BW02.AZ0BW-FTP-LIT == "TARGET")
+          if (AZWREC.XWHCD == "02")
+            AZ0BW02.AZ0BW-FTP-TARGET = "grsun1";
+          end
+          if (AZWREC.XWHCD == "04")
+            AZ0BW02.AZ0BW-FTP-TARGET = "memfware";
+          end
+          if (AZWREC.XWHCD == "07")
+            AZ0BW02.AZ0BW-FTP-TARGET = "wilfware";
+          end
+          if (AZWREC.XWHCD == "42")
+            AZ0BW02.AZ0BW-FTP-TARGET = "SCARBORO-SVR-08";
+          end
+        end
+        if (AZ0BW02.AZ0BW-FTP-LIT == "FTPPAR")
+          AZ0BW02.AZ0BW-FTPPARMS-WHSE-CD = AZWREC.XWHCD;
+        end
+        TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-FTP-CARD;
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+      end
+    end
+
+    if (AZ0BTP1.TARTYPE[AZ0BWIDX2] == "S") /* RSH statements*/
+      if (AZWREC.XWHCD == "02"
+       || AZWREC.XWHCD == "04"
+       || AZWREC.XWHCD == "07")
+        AZ0BW02.AZ0BW-RSH-CARD = AZ0BTP1.TARJCL[AZ0BWIDX2];
+        if (AZ0BW02.AZ0BW-RSH-LIT == "TAR")
+          if (AZWREC.XWHCD == "02")
+            AZ0BW02.AZ0BW-RSH-TARGET = "grsun1";
+          end
+          if (AZWREC.XWHCD == "04")
+            AZ0BW02.AZ0BW-RSH-TARGET = "memfware";
+          end
+          if (AZWREC.XWHCD == "07")
+            AZ0BW02.AZ0BW-RSH-TARGET = "wilfware";
+          end
+        end
+        if (AZ0BW02.AZ0BW-RSH-LIT == "CMD")
+          AZ0BW02.AZ0BW-RSH-CMD-WHSE-CD = AZWREC.XWHCD;
+        end
+        TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-RSH-CARD;
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+      end
+    end
+
+    /* DLVRUSA START*/
+
+    if (AZ0BTP1.TARTYPE[AZ0BWIDX2] == "G") /* ESP statements*/
+      if (AZWREC.XWHCD == "04"
+       || AZWREC.XWHCD == "07"
+       || AZWREC.XWHCD == "42"
+       || AZWREC.XWHCD == "51")
+        AZ0BW02.AZ0BW-ESP-CARD = AZ0BTP1.TARJCL[AZ0BWIDX2];
+        if (AZ0BW02.AZ0BW-ESP-LIT == "CMD")
+          AZ0BW02.AZ0BW-ESP-CMD-WHSE-CD = AZWREC.XWHCD;
+        end
+        TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-ESP-CARD;
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+      end
+    end
+
+    if (AZ0BTT1.TARTYPE[AZ0BWIDX2] == "G") /* ESP statements*/
+      if (AZWREC.XWHCD == "04"
+       || AZWREC.XWHCD == "07"
+       || AZWREC.XWHCD == "42"
+       || AZWREC.XWHCD == "51")
+        AZ0BW02.AZ0BW-ESP-CARD = AZ0BTT1.TARJCL[AZ0BWIDX2];
+        if (AZ0BW02.AZ0BW-ESP-LIT == "CMD")
+          AZ0BW02.AZ0BW-ESP-CMD-WHSE-CD = AZWREC.XWHCD;
+        end
+        TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-ESP-CARD;
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+      end
+    end
+
+    /* DLVRUSA END*/
+
+    if (AZ0BTP1.TARTYPE[AZ0BWIDX2] == " ")
+      TA6REC.TARJCL[TA6INDEX] = AZ0BTP1.TARJCL[AZ0BWIDX2];
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+    end
+
+    AZ0BW02.AZ0BWIDX2 = AZ0BW02.AZ0BWIDX2 + 1;
+
+  end
+
+  TA6REC.TARJCL[TA6INDEX] = AZ0BTP1.TARJCL[AZ0BWIDX2];
+
+     /* Submit the JCL and parameters for batch execution.*/
+
+  AZ0BS-30011();
+
+     /* Display results of print request.*/
+
+  if (sysVar.errorCode == "00000000" /* If Submission successful*/
+   && SQLCA.VAGen_SQLCODE == 0)     
+
+    AZWREC.CAMSG = COMMAREA.CAMSG; /* ==> Job info message*/
+    AZ0BM001.AZ0BMPRC = "AZ0B301"; /* Process name*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Rollback updates*/
+
+    AZ0BM001.AZ0BMPRC = "AZ0B301"; /* Process name*/
+    converseLib.validationFailed(036); /* Error encountered with JOB submit*/
+
+    exit stack;
+
+  end
+
+end // end AZ0B-30010
+
+// Format Test jcl
+Function AZ0B-30020()
+   /* ------------------------------------------------------------*/
+   /* Format the Job Control Language statement from the table.*/
+   /* ------------------------------------------------------------*/
+
+  set TA6REC empty;
+  set AZ0BW02 empty;
+
+  AZ0BW02.TA3APLID = TA3REC.TA3APLID;
+
+  TA6REC.TA6INDEX = 1;
+  AZ0BW02.AZ0BWIDX2 = 1;
+
+  TA6REC.TA6-MAX-COND-CODE = 0004;
+
+  while (AZ0BTT1.TARJCL[AZ0BWIDX2] != "/*EOF")
+
+    if (AZ0BTT1.TARTYPE[AZ0BWIDX2] == "J")
+      AZ0BW02.AZ0BW-JOB-CARD = AZ0BTT1.TARJCL[AZ0BWIDX2];
+      AZ0BW02.XWH-WHSE-CD = AZWREC.XWHCD;
+      TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-JOB-CARD;
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+    end
+
+    if (AZ0BTT1.TARTYPE[AZ0BWIDX2] == "N")
+      TA6REC.TARJCL[TA6INDEX] = AZ0BTT1.TARJCL[AZ0BWIDX2];
+      TA6REC.TARTYPE[TA6INDEX] = "N";
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+    end
+
+    if (AZ0BTT1.TARTYPE[AZ0BWIDX2] == "1")
+      if (AZWREC.XWHCD == "02"
+       || AZWREC.XWHCD == "04"
+       || AZWREC.XWHCD == "07")
+      else
+        AZ0BW02.AZ0BW-OUTPUT-CARD = AZ0BTT1.TARJCL[AZ0BWIDX2];
+        if (AZ0BW-OUTPUT-LIT == "OUTPUT")
+          AZ0BW02.AZ0BW-OUTPUT-RMT = "950";
+        end
+        TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-OUTPUT-CARD;
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+      end
+    end
+
+    if (AZ0BTT1.TARTYPE[AZ0BWIDX2] == "R")
+      AZ0BW02.AZ0BW-SYSTSIN-CARD = AZ0BTT1.TARJCL[AZ0BWIDX2];
+      if (TA3REC.TA3RGNID == "04"
+       || TA3REC.TA3RGNID == "08")
+        AZ0BW02.AZ0BW-DSN-VALUE = "T";
+      else
+        if (TA3REC.TA3RGNID == "02")
+          AZ0BW02.AZ0BW-DSN-VALUE = "D";
+        else
+          if (TA3REC.TA3RGNID == "05")
+            AZ0BW02.AZ0BW-DSN-VALUE = "F";
+          else
+            if (TA3REC.TA3RGNID == "06")
+              AZ0BW02.AZ0BW-DSN-VALUE = "F";
+            else
+              AZ0BW02.AZ0BW-DSN-VALUE = "T";
+            end
+          end
+        end
+      end
+      TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-SYSTSIN-CARD;
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+    end
+
+    if (AZ0BTT1.TARTYPE[AZ0BWIDX2] == "W")
+      AZ0BW02.AZ0BW-WHSE-CARD = AZ0BTT1.TARJCL[AZ0BWIDX2];
+      AZ0BW-WHSE-CD = AZWREC.XWHCD;
+      TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-WHSE-CARD;
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+    end
+
+    if (AZ0BTT1.TARTYPE[AZ0BWIDX2] == "P") /* az1820 parm statement*/
+      AZ0BW-AZ1820-PARM-WHSE-CD = AZWREC.XWHCD;
+      TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-AZ1820-PARM-CARD;
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+    end
+
+    if (AZ0BTT1.TARTYPE[AZ0BWIDX2] == "F") /* ftp statements*/
+      if (AZWREC.XWHCD == "02"
+       || AZWREC.XWHCD == "04"
+       || AZWREC.XWHCD == "07"
+       || AZWREC.XWHCD == "42")
+        AZ0BW02.AZ0BW-FTP-CARD = AZ0BTT1.TARJCL[AZ0BWIDX2];
+        if (AZ0BW02.AZ0BW-FTP-LIT == "TARGET")
+          if (AZWREC.XWHCD == "02"
+           || AZWREC.XWHCD == "04"
+           || AZWREC.XWHCD == "07")
+            AZ0BW02.AZ0BW-FTP-TARGET = "camware";
+          end
+          if (AZWREC.XWHCD == "42")
+            AZ0BW02.AZ0BW-FTP-TARGET = "SCARBORO-SVR-08";
+          end
+        end
+        if (AZ0BW02.AZ0BW-FTP-LIT == "FTPPAR")
+          AZ0BW02.AZ0BW-FTPPARMS-WHSE-CD = AZWREC.XWHCD;
+        end
+        TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-FTP-CARD;
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+      end
+    end
+
+    if (AZ0BTT1.TARTYPE[AZ0BWIDX2] == "S") /* RSH statements*/
+      if (AZWREC.XWHCD == "02"
+       || AZWREC.XWHCD == "04"
+       || AZWREC.XWHCD == "07")
+        AZ0BW02.AZ0BW-RSH-CARD = AZ0BTT1.TARJCL[AZ0BWIDX2];
+        if (AZ0BW02.AZ0BW-RSH-LIT == "TAR")
+          AZ0BW02.AZ0BW-RSH-TARGET = "camware";
+        end
+        if (AZ0BW02.AZ0BW-RSH-LIT == "CMD")
+          AZ0BW02.AZ0BW-RSH-CMD-WHSE-CD = AZWREC.XWHCD;
+        end
+        TA6REC.TARJCL[TA6INDEX] = AZ0BW02.AZ0BW-RSH-CARD;
+        TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+      end
+    end
+
+    if (AZ0BTT1.TARTYPE[AZ0BWIDX2] == " ")
+      TA6REC.TARJCL[TA6INDEX] = AZ0BTT1.TARJCL[AZ0BWIDX2];
+      TA6REC.TA6INDEX = TA6REC.TA6INDEX + 1; /* Increment index*/
+    end
+
+    AZ0BW02.AZ0BWIDX2 = AZ0BW02.AZ0BWIDX2 + 1;
+
+  end
+
+  TA6REC.TARJCL[TA6INDEX] = AZ0BTT1.TARJCL[AZ0BWIDX2];
+
+     /* Submit the JCL and parameters for batch execution.*/
+
+  AZ0BS-30011();
+
+     /* Display results of print request.*/
+
+  if (sysVar.errorCode == "00000000" /* If Submission successful*/
+   && SQLCA.VAGen_SQLCODE == 0)     
+
+    AZWREC.CAMSG = COMMAREA.CAMSG; /* ==> Job info message*/
+    AZ0BM001.AZ0BMPRC = "AZ0B302"; /* Process name*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Rollback Updates*/
+
+    AZ0BM001.AZ0BMPRC = "AZ0B302"; /* Process name*/
+    converseLib.validationFailed(036); /* Error encountered with JOB submit*/
+
+    exit stack;
+
+  end
+end // end AZ0B-30020
+
+// Main Update for Each Selection
+Function AZ0B-400()
+  /* -----------------------------------------------------------*/
+  /* UPDATE FOR EACH SELECTION*/
+  /* -----------------------------------------------------------*/
+
+  AZ0BW01.PK-BILL-OF-LADING = AZAREC.PK-BILL-OF-LADING[AZWTSF1S];
+  AZ0BW01.PK-BOL-SUB-NBR = AZAREC.PK-BOL-SUB-NBR[AZWTSF1S];
+
+  AZWREC.PK-BILL-OF-LADING = AZAREC.PK-BILL-OF-LADING[AZWTSF1S];
+  AZWREC.PK-BOL-SUB-NBR = AZAREC.PK-BOL-SUB-NBR[AZWTSF1S];
+
+     /* read ASN header by Bill of Lading*/
+
+  XSAZS02();
+
+     /* if the ASN's status has changed since initial selection,*/
+     /* don't go any further, restart AZ0B with a message*/
+
+  if (AZAREC.AZAMSEL[AZWTSF1S] == "X"
+   || AZAREC.AZAMSEL[AZWTSF1S] == "R")
+
+    if (AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] != VAZHDR01.AZ-ASN-STAT-CD)
+      AZWREC.CAMSG = "SHIPMENT HAS BEEN ALREADY RELEASED & SENT";
+      COMMAREA.CAUSERA = AZWREC.AZWGROUP;
+      XSAZP03();
+    end
+
+  end
+
+     /* format AZWREC fields for further use*/
+
+  AZ0BS-40001();
+
+   /* Update VAZHDR01 pertinent fields when requesting SENT/RESEND*/
+
+  if (((AZAREC.AZAMSEL[AZWTSF1S] == "R"       /* SENT/RESEND*/
+   || AZAREC.AZAMSEL[AZWTSF1S] == "X")        /* SENT W/PACK&HOLD CONDITION*/
+   && AZAREC.AZA-SHP-REL-FL[AZWTSF1S] == "Y") /* & OK to release*/
+   || AZWREC.AZW-RELEASE-ALL-FL == "Y")       /* Release 'ALL' requested*/
+    VAZHDR01.AZ-ASN-STAT-CD = "RL";
+    VAZHDR01.PK-SHPMT-RLS-BY-ID = COMMAREA.CAUSERID;
+    VAZHDR01.PK-SHPMT-RLSD-DATE = AZWREC.ZZZCHGDT;
+    VAZHDR01.PK-SHPMT-RLSD-TIME = AZWREC.ZZZCHGTM;
+    XSAZU02();
+    AZAREC.AZAMSEL[AZWTSF1S] = "*"; /* action taken*/
+    AZ0BW01.AZ0BW-HDR-UPDT-FL = "Y"; /* AZHDR updated*/
+  end
+
+  AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] = VAZHDR01.AZ-ASN-STAT-CD;
+
+     /* convert shipment release date to mmddyy format*/
+
+  AZWREC.AZWDT8 = VAZHDR01.PK-SHPMT-RLSD-DATE;
+  XSAZDCM(); /* db2 date conversion*/
+  AZAREC.AZASHPDT[AZWTSF1S] = AZWREC.AZWDT6;
+
+     /* If Selection was processed & AZ Header Updated, submit job*/
+
+  if (AZAREC.AZAMSEL[AZWTSF1S] == "*"
+   && AZ0BW01.AZ0BW-HDR-UPDT-FL == "Y")
+    AZ0BW01.AZ0BW-PROCESS-FL = "Y";
+  end
+
+  XSAZT1U(); /* update ASN temp storage record*/
+
+end // end AZ0B-400
+
+// initialize application
+Function AZ0BS-00001()
+
+  set AZAREC empty; /* ASN temp storage*/
+  set AZFREC empty; /* header parm record*/
+  set SRWREC empty; /* Ship Recon parm record*/
+  set VAZHDR01 empty; /* header record*/
+  set VAZORD01 empty; /* order record*/
+  set WAZ1000 empty; /* ASN Edit parm record*/
+  set SQLCA empty; /* return code from DB2*/
+  set ERRSQLCA empty; /* return code from non-db2*/
+  set TAEREC empty; /* diags for non db2*/
+  set TA1REC empty; /* diagnostic record*/
+  set TA3REC empty; /* TA0230 routine record*/
+  set TA5REC empty; /* temp storage io- record*/
+  set TA6REC empty; /* Internal Reader IO Record*/
+  set AZ0BW01 empty; /* working storage*/
+  set AZ0BW02 empty; /* JCL working storage*/
+  set XX0XW01 empty; /* working storage for date rtn*/
+
+  set AZ0BM001 initial; /* clear map*/
+
+  TA1REC.TA1MAP = "AZ0BM001"; /* map name for diags*/
+
+  XX0XS01(); /* get current date, time for updates*/
+  AZWREC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* change date*/
+  AZWREC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* change time*/
+
+end // end AZ0BS-00001
+
+// build AZ0B Map
+Function AZ0BS-00002()
+
+     /* build map headings*/
+
+  AZ0BS-00003();
+
+     /* build ASN array on screen*/
+
+  AZWREC.AZWTSF1S = 1; /* init subscript*/
+  AZ0BW01.AZ0BW-STAT-CHG-FL = "N"; /* init status change flag*/
+
+  while (AZWREC.AZWTSF1S <= 12) /* process all 12 rows*/
+    AZ0BS-00004();
+    AZWREC.AZWTSF1S = AZWREC.AZWTSF1S + 1;
+  end
+
+     /* Check Status Change to determine if TSQ record needs updated*/
+
+  if (AZ0BW01.AZ0BW-STAT-CHG-FL == "Y")
+    XSAZT1U();
+  end
+
+     /* reset field attributes*/
+
+  AZ0BS-10001();
+
+end // end AZ0BS-00002
+
+// build map headings
+Function AZ0BS-00003()
+
+  AZ0BM001.AZ0BMPRC = "AZ0B010"; /* process name*/
+  AZ0BM001.AZWCDATE = AZWREC.AZWCDATE; /* formatted current date*/
+
+  AZ0BM001.XWHCD = AZWREC.XWHCD; /* move warehouse code*/
+  AZ0BM001.XWHABRV = AZWREC.XWHABRV; /* move warehouse abrev.*/
+
+  if (AZWREC.PK-PICK-SCHED-NBR != 0) /* / check for schedule number*/
+    AZ0BM001.PK-PICK-SCHED-NBR = AZWREC.PK-PICK-SCHED-NBR;
+  end
+
+  AZ0BM001.AZWTSF1P = AZWREC.AZWTSF1P; /* current page*/
+  AZ0BM001.AZWTSF1M = AZWREC.AZWTSF1M; /* maximum page*/
+
+  if (AZWREC.AZWSELPO != " ") /* check for cust po*/
+    AZ0BM001.AZWSELPO = AZWREC.AZWSELPO; /* move cust po*/
+  end
+
+  if (AZWREC.AZWORDID != 0) /* check for order id*/
+    AZ0BM001.AZWSELORD = AZWREC.AZWSELORD; /* move order id*/
+  end
+
+  if (AZWREC.CU-CO-ID != 0)
+  /* iF AZWREC.AZWSELCU NE 0;         /* check for Customer*/
+  /* MOVE AZWREC.AZWSELCU TO AZ0BM001.KUCCOID;*/
+    AZ0BM001.KUCCOID = AZWREC.CU-CO-ID;
+    if (AZWREC.CU-STOR-ID == 0)
+      AZ0BM001.CU-STOR-ID = " ";
+    else
+      AZ0BW01.AZ0BW-CU-STOR-ID-WK-NUM = AZWREC.CU-STOR-ID;
+      AZ0BW01.AZ0BW-WORK-IDX = 1;
+      while (AZ0BW01.AZ0BW-WORK-IDX <= 4)
+        AZ0BW-CU-STOR-ID-IN-NBYT[AZ0BW-WORK-IDX] = AZ0BW-CU-STOR-ID-WK-BYTE[AZ0BW-WORK-IDX];
+        AZ0BW01.AZ0BW-WORK-IDX = AZ0BW01.AZ0BW-WORK-IDX + 1;
+      end
+      AZ0BW01.AZ0BW-CU-STOR-ID-IN-CHA = AZ0BW01.AZ0BW-CU-STOR-ID-IN-NUM;
+      AZ0BM001.CU-STOR-ID = AZ0BW01.AZ0BW-CU-STOR-ID-IN-CHA;
+    end
+    if (AZWREC.XNX-DEPT-ID-XREF == 0)
+      AZ0BM001.XNX-DEPT-ID-XREF = " ";
+    else
+      AZ0BW01.AZ0BW-XNX-DEPT-ID-WK-NUM = AZWREC.XNX-DEPT-ID-XREF;
+      AZ0BW01.AZ0BW-WORK-IDX = 1;
+      while (AZ0BW01.AZ0BW-WORK-IDX <= 4)
+        AZ0BW-XNX-DEPT-ID-IN-NBYT[AZ0BW-WORK-IDX] = AZ0BW-XNX-DEPT-ID-WK-BYTE[AZ0BW-WORK-IDX];
+        AZ0BW01.AZ0BW-WORK-IDX = AZ0BW01.AZ0BW-WORK-IDX + 1;
+      end
+      AZ0BW01.AZ0BW-XNX-DEPT-ID-IN-CHA = AZ0BW01.AZ0BW-XNX-DEPT-ID-IN-NUM;
+      AZ0BM001.XNX-DEPT-ID-XREF = AZ0BW01.AZ0BW-XNX-DEPT-ID-IN-CHA;
+    end
+  end
+
+  if (AZWREC.OP-DNT-SHIP-BFR-DT == 0)
+    AZ0BM001.AZW-DNSB-DT = " ";
+  else
+    AZ0BW01.AZ0BW-NUM-DATE = AZWREC.OP-DNT-SHIP-BFR-DT;
+    AZ0BS-MAP-DT();
+    AZ0BM001.AZW-DNSB-DT = AZ0BW01.AZ0BW-CHA-DATE;
+  end
+
+  if (AZWREC.SR-PICK-STAT-DT-LO == 0)
+    AZ0BM001.SR-PICK-STAT-FR-DT = " ";
+  else
+    AZ0BW01.AZ0BW-NUM-DATE = AZWREC.SR-PICK-STAT-DT-LO;
+    AZ0BS-MAP-DT();
+    AZ0BM001.SR-PICK-STAT-FR-DT = AZ0BW01.AZ0BW-CHA-DATE;
+  end
+
+  if (AZWREC.SR-PICK-STAT-DT-HI == 0)
+    AZ0BM001.SR-PICK-STAT-TO-DT = " ";
+  else
+    AZ0BW01.AZ0BW-NUM-DATE = AZWREC.SR-PICK-STAT-DT-HI;
+    AZ0BS-MAP-DT();
+    AZ0BM001.SR-PICK-STAT-TO-DT = AZ0BW01.AZ0BW-CHA-DATE;
+  end
+
+  if (AZWREC.PK-SHPMNT-RLSD-DT-LO == 0)
+    AZ0BM001.PK-SHPMT-FR-DT = " ";
+  else
+    AZ0BW01.AZ0BW-NUM-DATE = AZWREC.PK-SHPMNT-RLSD-DT-LO;
+    AZ0BS-MAP-DT();
+    AZ0BM001.PK-SHPMT-FR-DT = AZ0BW01.AZ0BW-CHA-DATE;
+  end
+
+  if (AZWREC.PK-SHPMNT-RLSD-DT-HI == 0)
+    AZ0BM001.PK-SHPMT-TO-DT = " ";
+  else
+    AZ0BW01.AZ0BW-NUM-DATE = AZWREC.PK-SHPMNT-RLSD-DT-HI;
+    AZ0BS-MAP-DT();
+    AZ0BM001.PK-SHPMT-TO-DT = AZ0BW01.AZ0BW-CHA-DATE;
+  end
+
+     /* check map for Release 'ALL' option*/
+
+  if (AZ0BM001.AZW-RELEASE-ALL-FL == "Y")
+    AZWREC.AZW-RELEASE-ALL-FL = AZ0BM001.AZW-RELEASE-ALL-FL;
+  end
+
+  if (AZWREC.AZW-RELEASE-ALL-FL == "Y") /* check for release 'ALL' option*/
+    AZ0BM001.AZW-RELEASE-ALL-FL = AZWREC.AZW-RELEASE-ALL-FL;
+  end
+
+
+end // end AZ0BS-00003
+
+// build map ASN array
+Function AZ0BS-00004()
+
+     /* move fields from AZAREC to screen*/
+
+  if (AZAREC.AZAMSEL[AZWTSF1S] == "S")
+    AZ0BM001.AZAMSEL[AZWTSF1S] = "V";
+  else
+    if (AZAREC.AZAMSEL[AZWTSF1S] == "X") /* tagged for SR0R -or- confirm*/
+      /* next sentence*/
+    else
+      AZ0BM001.AZAMSEL[AZWTSF1S] = AZAREC.AZAMSEL[AZWTSF1S];
+    end
+  end
+
+     /* Read ASN Header to check for BOL status change*/
+
+  if (AZAREC.PK-BILL-OF-LADING[AZWTSF1S] > 0) /* bill of lading exists*/
+    AZ0BW01.PK-BILL-OF-LADING = AZAREC.PK-BILL-OF-LADING[AZWTSF1S]; /* bill of lading nbr*/
+    AZ0BW01.PK-BOL-SUB-NBR = AZAREC.PK-BOL-SUB-NBR[AZWTSF1S];
+  /* MOVE AZAREC.PK-BILL-OF-LADING(AZWTSF1S) TO*/
+  /* AZWREC.PK-BILL-OF-LADING;    /* bill of lading nbr*/
+  /* MOVE AZAREC.PK-BOL-SUB-NBR(AZWTSF1S) TO*/
+  /* AZWREC.PK-BOL-SUB-NBR;*/
+
+    XSAZS02();
+
+    if (VAZHDR01.AZ-ASN-STAT-CD != AZAREC.AZ-ASN-STAT-CD[AZWTSF1S])
+      AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] = VAZHDR01.AZ-ASN-STAT-CD;
+      AZ0BW01.AZ0BW-STAT-CHG-FL = "Y";
+    end
+  end
+
+  AZ0BM001.AZ0BM-BOL-AND-SUB[AZWTSF1S] = AZAREC.AZ0AW-EDITED-BOL-SUB[AZWTSF1S];
+
+  AZ0BM001.AZ0BM-STOP-SHIP-IND[AZWTSF1S] = AZAREC.SR-STOP-ORD-SHP-FL[AZWTSF1S];
+
+  AZ0BM001.AZ0BM-PICKED-IND[AZWTSF1S] = AZAREC.SR-PICK-STAT-FL[AZWTSF1S];
+
+  AZ0BM001.AZ-ASN-STAT-CD[AZWTSF1S] = AZAREC.AZ-ASN-STAT-CD[AZWTSF1S]; /* shipment status*/
+
+  if (AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "RL"
+   || AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "ST")
+
+    if (AZAREC.PK-SHPMT-RLSD-DATE[AZWTSF1S] > 0)
+
+      AZ0BW01.AZ0BW-NUM-DATE = AZAREC.PK-SHPMT-RLSD-DATE[AZWTSF1S];
+
+      AZ0BS-MAP-DT();
+
+      AZ0BM001.AZ0BM-EDITED-DT[AZWTSF1S] = AZ0BW01.AZ0BW-CHA-DATE;
+
+    else
+
+      AZ0BM001.AZ0BM-EDITED-DT[AZWTSF1S] = " ";
+
+    end
+
+  end
+
+  if (AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "RE")
+
+    if (AZAREC.SR-PICK-STAT-DT[AZWTSF1S] > 0)
+
+      AZ0BW01.AZ0BW-NUM-DATE = AZAREC.SR-PICK-STAT-DT[AZWTSF1S];
+
+      AZ0BS-MAP-DT();
+
+      AZ0BM001.AZ0BM-EDITED-DT[AZWTSF1S] = AZ0BW01.AZ0BW-CHA-DATE;
+
+    else
+
+      AZ0BM001.AZ0BM-EDITED-DT[AZWTSF1S] = " ";
+
+    end
+
+  end
+
+  if (AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "HD")
+
+    if (AZAREC.OP-DNT-SHIP-BFR-DT[AZWTSF1S] > 0)
+
+      AZ0BW01.AZ0BW-NUM-DATE = AZAREC.OP-DNT-SHIP-BFR-DT[AZWTSF1S];
+
+      AZ0BS-MAP-DT();
+
+      AZ0BM001.AZ0BM-EDITED-DT[AZWTSF1S] = AZ0BW01.AZ0BW-CHA-DATE;
+
+    else
+
+      AZ0BM001.AZ0BM-EDITED-DT[AZWTSF1S] = " ";
+
+    end
+
+  end
+
+  AZ0BM001.TF-CARR-CD[AZWTSF1S] = AZAREC.TF-CARR-CD[AZWTSF1S]; /* carrier code*/
+
+  AZ0BM001.PK-SHP-SPUR-NBR[AZWTSF1S] = AZAREC.PK-SHP-SPUR-NBR[AZWTSF1S]; /* carrier spur nbr*/
+
+  AZ0BM001.CU-CO-ID[AZWTSF1S] = AZAREC.CU-CO-ID[AZWTSF1S]; /* customer id*/
+
+  AZ0BM001.SR-TOT-NBR-CARTONS[AZWTSF1S] = AZAREC.SR-TOT-NBR-CARTONS[AZWTSF1S]; /* total # of cartons*/
+
+  AZ0BM001.AZ-TOT-SHPMT-WT[AZWTSF1S] = AZAREC.AZ-TOT-SHPMT-WT[AZWTSF1S]; /* total shipment weight*/
+
+end // end AZ0BS-00004
+
+// set array attributes
+Function AZ0BS-00006()
+
+     /* set select fields defined*/
+
+
+  set AZ0BM001.AZAMSEL[AZWTSF1S] initialAttributes; /* fields may be set dark*/
+  set AZ0BM001.AZ0BM-BOL-AND-SUB[AZWTSF1S] initialAttributes;
+  set AZ0BM001.AZ0BM-STOP-SHIP-IND[AZWTSF1S] initialAttributes;
+  set AZ0BM001.AZ0BM-PICKED-IND[AZWTSF1S] initialAttributes;
+  set AZ0BM001.AZ0BM-STOP-SHIP-IND[AZWTSF1S] initialAttributes;
+  set AZ0BM001.AZ-ASN-STAT-CD[AZWTSF1S] initialAttributes;
+  set AZ0BM001.TF-CARR-CD[AZWTSF1S] initialAttributes;
+  set AZ0BM001.PK-SHP-SPUR-NBR[AZWTSF1S] initialAttributes;
+  set AZ0BM001.CU-CO-ID[AZWTSF1S] initialAttributes;
+  set AZ0BM001.SR-TOT-NBR-CARTONS[AZWTSF1S] initialAttributes;
+  set AZ0BM001.AZ-TOT-SHPMT-WT[AZWTSF1S] initialAttributes;
+
+     /* set select fields dark if line is empty*/
+
+  if (AZAREC.PK-BILL-OF-LADING[AZWTSF1S] == 0) /* no bill of lading*/
+    set AZ0BM001.AZAMSEL[AZWTSF1S] skip, noHighLight;
+    set AZ0BM001.AZ0BM-BOL-AND-SUB[AZWTSF1S] skip, invisible;
+    set AZ0BM001.AZ0BM-STOP-SHIP-IND[AZWTSF1S] skip, invisible;
+    set AZ0BM001.AZ0BM-PICKED-IND[AZWTSF1S] skip, invisible;
+    set AZ0BM001.AZ0BM-EDITED-DT[AZWTSF1S] skip, invisible;
+    set AZ0BM001.AZ-ASN-STAT-CD[AZWTSF1S] skip, invisible;
+    set AZ0BM001.TF-CARR-CD[AZWTSF1S] skip, invisible;
+    set AZ0BM001.PK-SHP-SPUR-NBR[AZWTSF1S] skip, invisible;
+    set AZ0BM001.CU-CO-ID[AZWTSF1S] skip, invisible;
+    set AZ0BM001.SR-TOT-NBR-CARTONS[AZWTSF1S] skip, invisible;
+    set AZ0BM001.AZ-TOT-SHPMT-WT[AZWTSF1S] skip, invisible;
+  end
+
+    /* Set the cursor at the first enterable select code.*/
+    /* These fields are being looped from bottom to top.*/
+
+  if (AZAREC.AZAMSEL[AZWTSF1S] == "*"
+   || AZAREC.PK-BILL-OF-LADING[AZWTSF1S] == 0)
+    /* next sentence*/
+  else
+    set AZ0BM001.AZAMSEL[AZWTSF1S] cursor, initialAttributes;
+  end
+
+
+end // end AZ0BS-00006
+
+// reset field attributes
+Function AZ0BS-10001()
+
+     /* set heading attributes*/
+
+  if (AZWREC.AZW-STAT-OK-TO-RLSE-ALL-FL != "Y")
+
+    set AZ0BM001.AZ0BRLSL skip, invisible; /* Release ALL literal*/
+
+    set AZ0BM001.AZW-RELEASE-ALL-FL skip, noHighLight; /* Release ALL flag*/
+
+  else
+
+    set AZ0BM001.AZ0BRLSL initialAttributes; /* Release ALL literal*/
+
+    set AZ0BM001.AZW-RELEASE-ALL-FL initialAttributes; /* Release ALL flag*/
+
+  end
+
+     /* Set cursor to page in case of no enterable select codes*/
+
+  set AZ0BM001.AZWTSF1P cursor, initialAttributes; /* page number*/
+
+     /* reset BOL array attributes*/
+
+  AZWREC.AZWTSF1S = 12; /* init subscript*/
+
+  while (AZWREC.AZWTSF1S >= 1) /* process all 12 rows*/
+    AZ0BS-00006(); /* set askip '*' & unused dark*/
+    AZWREC.AZWTSF1S = AZWREC.AZWTSF1S - 1;
+  end
+
+
+end // end AZ0BS-10001
+
+// Edit pf7/pf8 and enter
+Function AZ0BS-10002()
+
+       /* edit pf7/pf8 and enter for next AZ0b map display*/
+
+  if (converseVar.eventKey is pf7)
+    AZWREC.AZWTSF1P = AZWREC.AZWTSF1P - 1; /* prior page*/
+  else
+    if (converseVar.eventKey is pf8)
+      AZWREC.AZWTSF1P = AZWREC.AZWTSF1P + 1; /* next page*/
+    else
+      if (converseVar.eventKey is enter
+       && AZ0BM001.AZWTSF1P != AZWREC.AZWTSF1P) /* page nbr changed*/
+        AZWREC.AZWTSF1P = AZ0BM001.AZWTSF1P; /* move map pg to record*/
+        XSAZP00(); /* restart application*/
+      end
+    end
+  end
+
+end // end AZ0BS-10002
+
+// Edit pfkeys for AZ0B
+Function AZ0BS-10003()
+
+  COMMAREA.CAUSERA = AZWREC.AZWGROUP;
+
+  if (converseVar.eventKey is pf2)
+    XSAZP02();
+  end
+
+  if (converseVar.eventKey is pf3)
+
+    XSAZT1P(); /* purge ASNs*/
+
+    COMMAREA.CATOAP = "AZ0A"; /* ASN Inquiry parms*/
+    COMMAREA.CAUSERA = AZWREC.AZWGROUP;
+    XSEXIT();
+
+  end
+
+
+  if (converseVar.eventKey is pf4)
+    XSAZP04();
+  end
+
+  if (converseVar.eventKey is pf5
+   && AZWREC.AZWERRFL == "N")
+    AZWREC.AZWTSF1S = 1; /* init subscript*/
+    while (AZWREC.AZWTSF1S <= 12 /* check only Release selections*/
+     && AZ0BM001.AZAMSEL[AZWTSF1S] != "S")
+      AZWREC.AZWTSF1S = AZWREC.AZWTSF1S + 1;
+    end
+    SRWREC.SRWXWHCD = AZWREC.XWHCD;
+    SRWREC.PK1BLLAD[1] = AZAREC.PK-BILL-OF-LADING[AZWTSF1S];
+    SRWREC.SR2BLLSU[1] = AZAREC.PK-BOL-SUB-NBR[AZWTSF1S];
+    SRWREC.SRWMISCF[2] = "U";
+    SRWREC.SRWRETOP = "M";
+    SRWREC.SRWRETFL = "Y";
+    XSAZP05(); /* Xfer to BOL Maint (SR0T)*/
+  end
+
+  if (converseVar.eventKey is pf6)
+    if (AZWREC.AZWERRFL == "N")
+      XSAZP06(); /* Xfer to BAL Schedule (SR0G)*/
+    end
+  end
+
+
+  if (converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8)
+    if (AZWREC.AZWERRFL == "N")
+      XSAZP00(); /* restarts application*/
+    end
+  end
+
+
+  if (converseVar.eventKey is pf9)
+    if (AZ0BW-SHPMT-ERR-FL == "Y")
+      XSAZT1U(); /* update ASNs*/
+      XSAZP09(); /* Xfer to Ship Recon (SR0R)*/
+    end
+  end
+
+
+  if (converseVar.eventKey is enter
+   || converseVar.eventKey is pf5
+   || converseVar.eventKey is pf6
+   || converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8
+   || converseVar.eventKey is pf9)
+     /* next sentence - there may be errors*/
+  else
+    converseLib.validationFailed(1); /* invalid pf key*/
+    AZWREC.AZWERRFL = "Y"; /* set 'AZ' error flag*/
+  end
+
+
+end // end AZ0BS-10003
+
+// edit select codes
+Function AZ0BS-11501()
+
+    /* compare select codes on screen with temp storage,*/
+    /* if they are equal - OK*/
+
+  if (AZAREC.AZAMSEL[AZWTSF1S] == AZ0BM001.AZAMSEL[AZWTSF1S])
+     /* next sentence*/
+  else
+    if (AZ0BM001.AZAMSEL[AZWTSF1S] == " " /* blank*/
+     || AZ0BM001.AZAMSEL[AZWTSF1S] == "*" /* ASN Processed*/
+     || AZ0BM001.AZAMSEL[AZWTSF1S] == "V" /* ASN viewed*/
+     || AZ0BM001.AZAMSEL[AZWTSF1S] == "R" /* Release selection*/
+     || AZ0BM001.AZAMSEL[AZWTSF1S] == "S") /* selection made*/
+                                  /* next sentence*/
+    else
+      AZWREC.AZWERRFL = "Y"; /* set err flag*/
+      converseLib.validationFailed(020); /* select option invalid - enter 'S' or*/
+                                   /* 'R'*/
+      set AZ0BM001.AZAMSEL[AZWTSF1S] cursor, bold;
+    end
+  end
+
+    /* set flag to indicate that an option was entered*/
+
+  if (AZ0BM001.AZAMSEL[AZWTSF1S] == "S" /* selection made*/
+   || AZ0BM001.AZAMSEL[AZWTSF1S] == "R") /* release selection*/
+    AZ0BW01.AZ0BWSEL = "Y"; /* set select flag*/
+  end
+
+    /* check for Inquiry selection*/
+
+  if (AZ0BM001.AZAMSEL[AZWTSF1S] == "S") /* Inquiry selection*/
+    if (AZ0BW01.AZ0BWSELQ == "Y") /* ;/* flag is already set*/
+      AZWREC.AZWERRFL = "Y"; /* set err flag*/
+      converseLib.validationFailed(069); /* only on 'S' at a time*/
+    else
+      AZ0BW01.AZ0BWSELQ = "Y"; /* set inquiry select flag*/
+    end
+  end
+
+    /* check for Release selection*/
+
+  if (AZ0BM001.AZAMSEL[AZWTSF1S] == "R") /* RELEASE selection*/
+    if (COMMAREA.CACHGFL == "Y") /* Check chg flag for update*/
+      if (AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "RE" /* Ready*/
+       || AZAREC.AZ-ASN-STAT-CD[AZWTSF1S] == "HD") /* Held*/
+        AZ0BW01.AZ0BWSELR = "Y"; /* set Release select flag*/
+        AZ0BW01.AZ0BW-REL-CNT = AZ0BW01.AZ0BW-REL-CNT + 1;
+      else
+        converseLib.validationFailed(048); /* Release option restricted to status*/
+        AZWREC.AZWERRFL = "Y"; /* set err flag*/
+        set AZ0BM001.AZ-ASN-STAT-CD[AZWTSF1S] skip, bold;
+        set AZ0BM001.AZAMSEL[AZWTSF1S] cursor, bold;
+      end
+    else
+      converseLib.validationFailed(074); /* Release option restricted to security*/
+      AZWREC.AZWERRFL = "Y"; /* set err flag*/
+      set AZ0BM001.AZAMSEL[AZWTSF1S] cursor, bold;
+    end
+  end
+
+    /* check for Inquiry & Release Selected at the same time*/
+
+  if (AZ0BM001.AZAMSEL[AZWTSF1S] == "S" /* Inquiry selection*/
+   && AZ0BW01.AZ0BWSELR == "Y")         /* Release Requested*/
+    AZWREC.AZWERRFL = "Y"; /* set err flag*/
+    converseLib.validationFailed(047); /* Cannot request 'S' & 'R' at the same*/
+                                   /* time*/
+    set AZ0BM001.AZAMSEL[AZWTSF1S] cursor, bold;
+  end
+
+  if (AZ0BM001.AZAMSEL[AZWTSF1S] == "R" /* Release selection*/
+   && AZ0BW01.AZ0BWSELQ == "Y")         /* Inquiry Requested*/
+    AZWREC.AZWERRFL = "Y"; /* set err flag*/
+    converseLib.validationFailed(047); /* Cannot request 'S' & 'R' at the same*/
+                                   /* time*/
+    set AZ0BM001.AZAMSEL[AZWTSF1S] cursor, bold;
+  end
+
+end // end AZ0BS-11501
+
+// edit page number
+Function AZ0BS-11502()
+
+  if (AZ0BM001.AZWTSF1P < 1 /* page must be within valid range*/
+   || AZ0BM001.AZWTSF1P > AZWREC.AZWTSF1M)
+    converseLib.validationFailed(021); /* page nbr must be between 1 & max*/
+    AZWREC.AZWERRFL = "Y"; /* set error*/
+    set AZ0BM001.AZWTSF1P cursor, bold;
+    AZ0BM001.AZWTSF1P = AZWREC.AZWTSF1P; /* recall valid page*/
+  end
+
+end // end AZ0BS-11502
+
+// edit pf7/pf8
+Function AZ0BS-11503()
+
+  if (converseVar.eventKey is pf7
+   && AZ0BM001.AZWTSF1P == 1) /* at first page*/
+    converseLib.validationFailed(023); /* cant scroll backward*/
+    AZWREC.AZWERRFL = "Y"; /* set error*/
+  end
+
+
+  if (converseVar.eventKey is pf8
+   && AZ0BM001.AZWTSF1P >= AZWREC.AZWTSF1M) /* at max page*/
+    converseLib.validationFailed(024); /* cant scroll forward*/
+    AZWREC.AZWERRFL = "Y"; /* set error*/
+  end
+
+
+  if (AZ0BM001.AZWTSF1P != AZWREC.AZWTSF1P) /* pf7/pf8 and pg chg*/
+    converseLib.validationFailed(022); /* cant scroll and chg pg number*/
+    AZWREC.AZWERRFL = "Y"; /* set error*/
+    set AZ0BM001.AZWTSF1P cursor, bold;
+    AZ0BM001.AZWTSF1P = AZWREC.AZWTSF1P; /* reset page number*/
+  end
+
+end // end AZ0BS-11503
+
+// edit selection flag/pfkeys
+Function AZ0BS-11504()
+
+     /* if nothing selected, display error*/
+
+  if (converseVar.eventKey not enter)
+
+    if (AZ0BM001.CATOAP != " ")
+
+      set AZ0BM001.CATOAP cursor, bold;
+      AZWREC.AZWERRFL = "Y";
+      converseLib.validationFailed(064);
+      exit stack;
+
+    end
+
+  end
+
+  if (converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8
+   || AZ0BM001.AZWTSF1P != AZWREC.AZWTSF1P) /* page nbr chgd*/
+    if (AZ0BW01.AZ0BWSEL == "Y" /* selections made or*/
+     || AZ0BM001.AZW-RELEASE-ALL-FL == "Y") /* Requested Release 'ALL'*/
+      converseLib.validationFailed(028); /* cant page and select*/
+      AZWREC.AZWERRFL = "Y"; /* err flag*/
+      AZ0BM001.AZWTSF1P = AZWREC.AZWTSF1P; /* reset with original*/
+      set AZ0BM001.AZWTSF1P cursor, bold;
+    end
+
+  else
+    if (converseVar.eventKey is pf6) /* Xfer to SR0G, no selection necessary*/
+      /* next sentence*/
+    else
+      if (AZ0BW01.AZ0BWSEL == "N" /* not paging and no selections made*/
+       && (AZ0BM001.AZW-RELEASE-ALL-FL == "N"
+       || AZ0BM001.AZW-RELEASE-ALL-FL == " "))
+        converseLib.validationFailed(025); /* pfkey requires selection*/
+        AZWREC.AZWERRFL = "Y"; /* err flag*/
+      end
+    end
+  end
+
+
+end // end AZ0BS-11504
+
+// Check for Valid Release
+Function AZ0BS-11505()
+
+     /* Populate SRWREC work area for transfering to SR0R.*/
+
+  SRWREC.SRWXWHCD = AZWREC.XWHCD;
+  SRWREC.PK1BLLAD[1] = AZAREC.PK-BILL-OF-LADING[AZWTSF1S];
+  SRWREC.SR2BLLSU[1] = AZAREC.PK-BOL-SUB-NBR[AZWTSF1S];
+  SRWREC.SRWMISCF[2] = "U";
+  SRWREC.SRWRETOP = "M";
+  SRWREC.SRWRETFL = "Y";
+
+     /* call subroutine - AZ1000*/
+
+  AZ0B-120();
+
+  if (AZAREC.AZAMSEL[AZWTSF1S] == "*" /* shipment OK to process*/
+   || AZAREC.AZAMSEL[AZWTSF1S] == "X") /* need to confirm P&H*/
+    /* next sentence*/
+  else
+    if (AZAREC.AZA-SNP-FL[AZWTSF1S] == "N") /* shipment order is incomplete*/
+      AZ0BW-SHPMT-ERR-FL = "Y"; /* set shipment error flag*/
+      AZWREC.AZWERRFL = "Y"; /* set error flag*/
+      converseLib.validationFailed(041); /* shipment has an incomplete order -*/
+                                  /* please verify*/
+      set AZ0BM001.AZAMSEL[AZWTSF1S] cursor, bold;
+      return;
+    end
+
+  end
+
+end // end AZ0BS-11505
+
+// edit PF6/PF9
+Function AZ0BS-11506()
+
+     /* check if valid to transfer to SR0G*/
+
+  SRWREC.SRWXWHCD = AZWREC.XWHCD;
+  SRWREC.SRWPKID = AZWREC.PK-PICK-SCHED-NBR;
+
+  if (converseVar.eventKey is pf6
+   && AZWREC.PK-PICK-SCHED-NBR == 0) /* no schedule number provided*/
+    converseLib.validationFailed(044); /* PF6 not allowed when sched# is blank*/
+    AZWREC.AZWERRFL = "Y"; /* set error*/
+  end
+
+     /* check if valid to transfer to SR0R/SR0T*/
+
+  if (converseVar.eventKey is pf5) /* pf5 pressed*/
+    if (AZ0BW01.AZ0BWSEL == "N") /* and no selections made*/
+      converseLib.validationFailed(025); /**/
+                                  /*  */
+      AZWREC.AZWERRFL = "Y"; /* set error*/
+    end
+  end
+
+  if (converseVar.eventKey is pf9)
+    if (AZ0BW01.AZ0BWSELR == "Y" /* Release option entered*/
+     && AZ0BW01.AZ0BW-SHPMT-ERR-FL == "N") /* no shipment errors*/
+      converseLib.validationFailed(039); /* PF9 not allowed without errors*/
+      AZWREC.AZWERRFL = "Y"; /* set error*/
+    end
+  end
+
+  if (converseVar.eventKey is pf9)
+    if (AZ0BW01.AZ0BWSELR == "N") /* Release option not entered*/
+      converseLib.validationFailed(049); /* PF9 restricted for warehouse*/
+                                  /* -or- release option not entered*/
+      AZWREC.AZWERRFL = "Y"; /* set error*/
+    end
+  end
+
+end // end AZ0BS-11506
+
+// Call Subroutine - AZ1000
+Function AZ0BS-12001()
+
+      /* Check for stop, incomplete & pack/hold conditions*/
+      /* against the Ship Recon Order & ASN Order Tables*/
+
+  set WAZ1000 empty;
+
+  WAZ1000.WAZ1000-XWH-WHSE-CD = AZWREC.XWHCD;
+  WAZ1000.WAZ1000-PK-BILL-OF-LADING = AZAREC.PK-BILL-OF-LADING[AZWTSF1S];
+  WAZ1000.WAZ1000-PK-BOL-SUB-NBR = AZAREC.PK-BOL-SUB-NBR[AZWTSF1S];
+
+  WAZ1000.WAZ1000-RETURN-CODE = 99;
+
+  WAZ1000.WAZ1000-CALLING-APPL = "AZ0B";
+
+      /* call edit ASN subroutine - AZ1000*/
+
+  call "AZ1000" (SQLCA, WAZ1000) {isNoRefresh = yes, isExternal = yes};
+
+  if (WAZ1000.WAZ1000-RETURN-CODE == 0 /* Successful return*/
+  )                                    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[2] = "AZ1000";
+    TA1REC.TA1LOCAT[3] = "AZ0BS-12001";
+    TA1REC.TA1LOCAT[4] = WAZ1000.WAZ1000-RETURN-CODE;
+    TAEREC.TAEDESC1 = "BAD RETURN FROM AZ1000 - RETURN CODE = ";
+    TAEREC.TAEDESC2 = WAZ1000.WAZ1000-RETURN-CODE;
+    TA1REC.TA1TBLKE = WAZ1000.WAZ1000-PASSING-INFO;
+    XSAZENR(); /* appl retn - go to main menu*/
+  end
+
+end // end AZ0BS-12001
+
+// Determine CICS region
+Function AZ0BS-30001()
+
+   /* ------------------------------------------------------------*/
+   /* FIND WHICH ENVIRONMENT CURRENT PROGRAM IS RUNNING IN*/
+   /*  */
+   /* PRODUCTION REGION CAUSES PRODUCTION JCL TO BE EXECUTED,*/
+   /* TEST REGION CAUSES TEST JCL TO BE EXECUTED USING DSNT,DSND or*/
+   /* DNSF.*/
+   /*  */
+   /* ALL VERSIONS OF JCL ARE FOUND IN TS09T01*/
+   /*  */
+   /* ------------------------------------------------------------*/
+
+  set TA3REC empty;
+
+  TA3REC.TA3OPTN = "ASSIGN";
+
+  try
+    call "TA0230" (TA3REC) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA3REC.TA3RTNCD == 0)         
+
+    return;
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA3REC.TA3GROUP; /* Subroutine parameters*/
+
+  converseLib.validationFailed(036); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "FIND CICS REGION";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = "AZ0BS-30001"; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  XSAZP00(); /* Restart Application*/
+
+end // end AZ0BS-30001
+
+// SUBMIT JCL TO INTERNAL READER
+Function AZ0BS-30011()
+
+   /* ------------------------------------------------------------*/
+   /* Submit the JCL and parameters for batch execution.*/
+   /* ------------------------------------------------------------*/
+
+  TA6REC.TA6SUBSW = "S"; /* Tailor and submit JCL*/
+  TA6REC.TA6MSGSW = "N"; /* EOJ online message switch*/
+
+  while (TA6REC.TA6RTNCD < "0") /* Until subroutine completed*/
+    XPTA0P(); /* Print Request Subroutine*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If a successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "0")        /* and normal return*/
+
+    converseLib.validationFailed(054); /* Return message*/
+    AZ0BM001.AZ0BMPRC = "AZ0B300"; /* Process name*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If user cancelled request, indicate user cancelled.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "1")        /* and user cancelled request*/
+
+    converseLib.validationFailed(053); /* Indicate user cancelled*/
+    AZ0BM001.AZ0BMPRC = "AZ0B300"; /* Process name*/
+
+  else
+    converseLib.validationFailed(036); /* Indicate system error*/
+    AZ0BM001.AZ0BMPRC = "AZ0B300"; /* Process name*/
+
+  end
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* Rollback Updates*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AZ0BS-30011
+
+// format AZWREC fields
+Function AZ0BS-40001()
+
+     /* read warehouse name*/
+
+  AZ0BS-40002();
+
+     /* move fields to AZWREC*/
+
+  AZ0BS-40003();
+
+end // end AZ0BS-40001
+
+// select warehouse name
+Function AZ0BS-40002()
+
+    /* get warehouse name*/
+
+  if (AZWREC.XWHCD in XWHTBL.XWHCD) /* check corp. warehouse tbl*/
+
+    if (XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* if active*/
+      AZWREC.XWHABRV = XWHTBL.XWHABRV[sysVar.arrayIndex]; /* warehouse abrev.*/
+      AZWREC.XWTCD = XWHTBL.XWTCD[sysVar.arrayIndex]; /* warehouse type code*/
+      AZWREC.XWHSTKLF = XWHTBL.XWHSTKLF[sysVar.arrayIndex]; /* xwh stock loc fl*/
+    else
+      AZWREC.XWHABRV = "UNKNOWN    "; /* abrev. not found*/
+    end
+  end
+
+end // end AZ0BS-40002
+
+// move fields to AZWREC
+Function AZ0BS-40003()
+
+     /* save the Bill of Lading & Sub Number*/
+
+  AZ0BW01.PK-BILL-OF-LADING = VAZHDR01.PK-BILL-OF-LADING;
+  AZ0BW01.PK-BOL-SUB-NBR = VAZHDR01.PK-BOL-SUB-NBR;
+
+  /* MOVE VAZHDR01.PK-BILL-OF-LADING TO AZWREC.PK-BILL-OF-LADING;*/
+  /* MOVE VAZHDR01.PK-BOL-SUB-NBR TO AZWREC.PK-BOL-SUB-NBR;*/
+
+     /* save the Release ALL flag*/
+
+  if (AZ0BM001.AZW-RELEASE-ALL-FL == "Y")
+    AZWREC.AZW-RELEASE-ALL-FL = AZ0BM001.AZW-RELEASE-ALL-FL;
+  end
+
+     /* save the status*/
+
+  AZWREC.AZ-ASN-STAT-CD = VAZHDR01.AZ-ASN-STAT-CD;
+
+end // end AZ0BS-40003
+
+// format the map date
+Function AZ0BS-MAP-DT()
+
+  AZ0BW01.AZ0BW-CHA-MM = AZ0BW01.AZ0BW-NUM-MM;
+
+  AZ0BW01.AZ0BW-CHA-DD = AZ0BW01.AZ0BW-NUM-DD;
+
+  AZ0BW01.AZ0BW-CHA-YY = AZ0BW01.AZ0BW-NUM-YY;
+
+  AZ0BW01.AZ0BW-CHA-SLASH1 = "/";
+
+  AZ0BW01.AZ0BW-CHA-SLASH2 = "/";
+
+end // end AZ0BS-MAP-DT
+
+// DB2 retn routine no rollback
+Function XSAZEDC()
+    /* DB2 return no rollback - will xfer to main menu*/
+
+
+    /* This stmt grp will NOT rollback any updates since the last*/
+    /* commit, converse or dxfr/xfer.*/
+
+   /* the following fields will be filled in by the*/
+   /* calling stmt group before entering this routine*/
+     /* ta1locat(1) = transaction type  ie: 'ss' 'sn'*/
+     /* ta1locat(2) = i/o mod name*/
+     /* ta1locat(3) = calling stmt group name*/
+     /* ta1locat(4) = programmers option(extra key data)*/
+     /* ta1rec.ta1dbase = data base name (DORDB, etc..)*/
+     /* ta1rec.ta1tblvu = data base view (VAZHDR01, etc..)*/
+     /* ta1map = appl's mapname and should be initialized*/
+              /* in the programs init process.*/
+
+
+  set ERRSQLCA empty;
+  move SQLCA to ERRSQLCA withV60Compat;
+  TA1REC.TA1TYPE = "DB2";
+  TA1REC.TA1FUNC = "RETN";
+  TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+  TA1REC.TA1TBLKE = AZWREC.AZWSYSKE; /* move system key*/
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.commit(); /* to close cursors*/
+  try
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+  end
+  XSAZP04(); /* master menu*/
+  exit program; /* master menu failure*/
+
+
+end // end XSAZEDC
+
+// DB2 post routine ta0020
+Function XSAZEDP()
+         /* DB2 Post routine*/
+
+   /* the following fields will be filled in by the*/
+   /* calling stmt group before entering this routine*/
+     /* ta1locat(1) = transaction type  ie: 'ss' 'sn'*/
+     /* ta1locat(2) = i/o mod name*/
+     /* ta1locat(3) = calling stmt group name*/
+     /* ta1locat(4) = programmers option(extra key data)*/
+     /* ta1rec.ta1dbase = data base name (DORDB, etc..)*/
+     /* ta1rec.ta1tblvu = data base view (VAZHDR01, etc..)*/
+     /* ta1map = appl's mapname and should be initialized*/
+              /* in the programs init process.*/
+   /* return code processing will also be handled by the*/
+   /* calling stmt group.*/
+
+  set ERRSQLCA empty;
+  move SQLCA to ERRSQLCA withV60Compat;
+  TA1REC.TA1TYPE = "DB2";
+  TA1REC.TA1FUNC = "POST";
+  TA1PGMNM = COMMAREA.CACURRAP; /* current application*/
+  TA1REC.TA1TBLKE = AZWREC.AZWSYSKE; /* move system key*/
+  try
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+  end
+
+end // end XSAZEDP
+
+// AZ SYSTEM - dxfr to self
+Function XSAZP00()
+
+   /* Application will transfer to itself*/
+
+  COMMAREA.CAUSERA = AZWREC.AZWGROUP;
+
+  sysVar.transferName = COMMAREA.CACURRAP;
+  transfer to program sysVar.transferName passing COMMAREA;
+
+end // end XSAZP00
+
+// AZ SYSTEM - HANDLE PF2
+Function XSAZP02()
+
+   /* Transfer to Ship Reconciliation Master Menu*/
+
+   /* purge all temp storage first*/
+
+  XSAZT1P(); /* purge ASNs*/
+  XSAZT2P(); /* purge ORDERs*/
+  XSAZT3P(); /* purge CARTONs*/
+
+  COMMAREA.CATOAP = "SR0A";
+  XSEXIT();
+
+end // end XSAZP02
+
+// AZ SYSTEM - HANDLE PF5
+Function XSAZP05()
+
+    /* Transfer to BOL Maintenance - (SR0T)*/
+
+  COMMAREA.CATOAP = "SR0T";
+  COMMAREA.CAFROMAP = COMMAREA.CACURRAP;
+  COMMAREA.CA-USER-WORKAREA-2K-B = AZWREC.AZWGROUP;
+  COMMAREA.CAUSERA = SRWREC.SRWGRP;
+  XSEXIT();
+
+end // end XSAZP05
+
+// AZ SYSTEM - HANDLE PF6
+Function XSAZP06()
+
+   /* Purge Temp Storage*/
+
+  XSAZT1P(); /* purge ASNs*/
+
+   /* Transfer control to the Balance Schedule*/
+
+  COMMAREA.CATOAP = "SR0G";
+  COMMAREA.CAFROMAP = COMMAREA.CACURRAP;
+  COMMAREA.CAUSERA = SRWREC.SRWGRP;
+  XSEXIT();
+
+
+end // end XSAZP06
+
+// AZ SYSTEM - HANDLE PF9
+Function XSAZP09()
+
+   /* Transfer control to the Ship Reconciliation*/
+
+  COMMAREA.CATOAP = "SR0T";
+  COMMAREA.CAFROMAP = COMMAREA.CACURRAP;
+  COMMAREA.CA-USER-WORKAREA-2K-B = AZWREC.AZWGROUP;
+  COMMAREA.CAUSERA = SRWREC.SRWGRP;
+  XSEXIT();
+
+
+end // end XSAZP09
+
+// a/z system security
+Function XSAZS01()
+
+
+      /* *********************************************************/
+      /* * retrieve a/z commarea and check ASN batch security   **/
+      /* *********************************************************/
+
+
+  AZWREC.AZWGROUP = COMMAREA.CAUSERA; /* get a/z commarea*/
+
+
+  if (AZWREC.AZWINIT != "AZ0") /* check a/z security*/
+    transfer to program "AZ0A" passing COMMAREA; /* dxfr if not properly initialized*/
+    exit program;
+  end
+
+
+   /* *************************************************************/
+end // end XSAZS01
+
+// 'S' Unique ASN Hdr by BOL Nbr
+Function XSAZS02()
+
+   /* Read the ASN header by Bill of Lading*/
+
+  set VAZHDR01 empty;
+  set AZFREC empty;
+  set SQLCA empty;
+
+  VAZHDR01.XWH-WHSE-CD = AZWREC.XWHCD;
+  VAZHDR01.PK-BILL-OF-LADING = AZ0BW01.PK-BILL-OF-LADING;
+  VAZHDR01.PK-BOL-SUB-NBR = AZ0BW01.PK-BOL-SUB-NBR;
+
+  AZFREC.AZFTASK = "S ";
+
+  call "VAZHDR01" (AZFREC, SQLCA, VAZHDR01) {isNoRefresh = yes, isExternal = yes}; /* select unique*/
+
+   /* check db2 return code*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DSHIP   "; /* data base name*/
+    TA1REC.TA1TBLVU = "VAZHDR01"; /* table view*/
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOCAT[1] = "S       "; /* calling option*/
+    TA1REC.TA1LOCAT[2] = "VAZHDR01"; /* i/o mod name*/
+    TA1REC.TA1LOCAT[3] = "XSAZS02 "; /* statement group*/
+    TA1REC.TA1LOCAT[4] = AZWREC.AZWSYSKE; /* possible key*/
+    if (SQLCA.VAGen_SQLCODE == -911)
+      XSAZS04();
+    else
+      XSAZEDC(); /* abort routine - no reset done*/
+    end
+  end
+
+end // end XSAZS02
+
+// -911 processing - no rollback
+Function XSAZS04()
+   /* process -911 return code - ta1rec data must be*/
+   /* filled in by the caller. This statement group*/
+   /* doesn't rollback previous updates.*/
+
+
+  XSAZEDP(); /* post and come back here*/
+  if (AZWREC.AZWER911 == "Y") /* -911 occured after a converse*/
+    AZWREC.CAMSG = "DATABASE BUSY - REENTER CHANGES AND TRY AGAIN";
+  end
+  XSAZP00(); /* restart application*/
+
+end // end XSAZS04
+
+// read temp storage 1 - ASNs
+Function XSAZT1R()
+
+   /* read temporary storage 1*/
+
+  set AZAREC empty;
+
+  TA5REC.TA5APPID = "AZF1"; /* appl identification*/
+  TA5REC.TA5FNCCD = "R"; /* function code*/
+  TA5REC.TA5TSQIX = AZWREC.AZWTSF1P; /* current page*/
+  AZAREC.AZATSLEN = 796; /* length of record*/
+
+  call "TA0050" (AZAREC, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "READ TS1";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    TA1REC.TA1TBLKE = AZAREC.AZATSROW[1]; /* first row, first rec*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    XSAZENP(); /* post, no rollback, non db2 diags*/
+
+  end
+end // end XSAZT1R
+
+// update temp storage 1 - ASNs
+Function XSAZT1U()
+
+   /* update temporary storage 1*/
+
+  TA5REC.TA5APPID = "AZF1"; /* appl identification*/
+  TA5REC.TA5FNCCD = "U"; /* function code*/
+  TA5REC.TA5TSQIX = AZWREC.AZWTSF1P; /* current page*/
+  AZAREC.AZATSLEN = 796; /* length of record*/
+
+  call "TA0050" (AZAREC, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+
+  if (TA5REC.TA5RTNCD == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "UPD TS1";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    TA1REC.TA1TBLKE = AZAREC.AZATSROW[1]; /* first row, first rec*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    XSAZENP(); /* post, no rollback, non db2*/
+
+  end
+end // end XSAZT1U
+
+// Update ASN Header
+Function XSAZU02()
+
+   /* Update the ASN header*/
+
+  set AZFREC empty;
+  set SQLCA empty;
+
+  VAZHDR01.XWH-WHSE-CD = AZWREC.XWHCD;
+  VAZHDR01.PK-BILL-OF-LADING = AZWREC.PK-BILL-OF-LADING;
+  VAZHDR01.PK-BOL-SUB-NBR = AZWREC.PK-BOL-SUB-NBR;
+  VAZHDR01.ZZ-CHNG-DT = AZWREC.ZZZCHGDT;
+  VAZHDR01.ZZ-CHNG-HHMM = AZWREC.ZZZCHGTM;
+
+  AZFREC.AZFTASK = "U ";
+
+  call "VAZHDR01" (AZFREC, SQLCA, VAZHDR01) {isNoRefresh = yes, isExternal = yes}; /* update*/
+
+   /* check db2 return code*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DSHIP   "; /* data base name*/
+    TA1REC.TA1TBLVU = "VAZHDR01"; /* table view*/
+    TA1REC.TA1TBLKE = AZWREC.AZWSYSKE;
+    TA1REC.TA1LOCAT[1] = "UPDATE"; /* calling option*/
+    TA1REC.TA1LOCAT[2] = "VAZHDR01"; /* i/o mod name*/
+    TA1REC.TA1LOCAT[3] = "XSAZU02 "; /* statement group*/
+    TA1REC.TA1LOCAT[4] = VAZHDR01.VAZHDR01-KEY; /* possible key*/
+    if (SQLCA.VAGen_SQLCODE == -911)
+      XSAZS04();
+    else
+      XSAZEDC(); /* abort routine - no reset done*/
+    end
+  end
+
+end // end XSAZU02
+
+//*** RECORD=AZ0BW01 ****
+//     working storage record for AZ0B.
+// 
+// ************************************************************
+// *    MAINTENANCE LOG
+// ************************************************************
+// 
+//   09/22/97    kdenne     initial creation
+// ***********************
+Record AZ0BW01 type basicRecord
+  10 AZ0BWSEL char(1) ; // selection made flag
+  10 AZ0BWSELR char(1) ; // Release selection flag
+  10 AZ0BWSELQ char(1) ; // Inquiry selection flag
+  10 AZ0BW-SHPMT-ERR-FL char(1) ; // Shipment Error flag
+  10 AZ0BW-PROCESS-FL char(1) ; // Process Release flag
+  10 AZ0BW-HDR-UPDT-FL char(1) ; // AZHDR Update flag
+  10 AZ0BW-STAT-CHG-FL AZ0BW-STAT-CHG-FL ; 
+  10 * char(1) ; 
+  10 AZ0BWSLT char(2) ; // Select set scan
+  10 AZ0BWNXT char(2) ; // Select next scan
+  10 AZ0BWCLO char(2) ; // Close scan
+  10 * char(1) ; 
+  10 AZ0BWEOF char(1) ; // DB2 end of file
+  10 AZ0BW-LAST-PAGE smallint ; // Save Area for last page
+  10 AZ0BW-REL-CNT smallint ; // Save Area for last page
+  10 AZ0BW-SEL-SUB smallint ; // Save Area for last page
+  10 AZ0BW-NUM-DATE AZ0BW-NUM-DATE ; 
+    15 AZ0BW-NUM-FILLER AZ0BW-NUM-FILLER ; 
+    15 AZ0BW-NUM-CC AZ0BW-NUM-CC ; 
+    15 AZ0BW-NUM-YY AZ0BW-NUM-YY ; 
+    15 AZ0BW-NUM-MM AZ0BW-NUM-MM ; 
+    15 AZ0BW-NUM-DD AZ0BW-NUM-DD ; 
+  10 AZ0BW-CHA-DATE AZ0BW-CHA-DATE ; 
+    15 AZ0BW-CHA-MM AZ0BW-CHA-MM ; 
+    15 AZ0BW-CHA-SLASH1 AZ0BW-CHA-SLASH1 ; 
+    15 AZ0BW-CHA-DD AZ0BW-CHA-DD ; 
+    15 AZ0BW-CHA-SLASH2 AZ0BW-CHA-SLASH2 ; 
+    15 AZ0BW-CHA-YY AZ0BW-CHA-YY ; 
+  10 AZ0BW-CU-STOR-ID-IN-CHA AZ0BW-CU-STOR-ID-IN-CHA ; 
+    15 AZ0BW-CU-STOR-ID-IN-CBYT AZ0BW-CU-STOR-ID-IN-CBYT [4] ; 
+  10 AZ0BW-CU-STOR-ID-IN-NUM AZ0BW-CU-STOR-ID-IN-NUM ; 
+    15 AZ0BW-CU-STOR-ID-IN-NBYT AZ0BW-CU-STOR-ID-IN-NBYT [4] ; 
+  10 AZ0BW-CU-STOR-ID-WK-NUM AZ0BW-CU-STOR-ID-WK-NUM ; 
+    15 AZ0BW-CU-STOR-ID-WK-BYTE AZ0BW-CU-STOR-ID-WK-BYTE [4] ; 
+  10 AZ0BW-XNX-DEPT-ID-IN-CHA AZ0BW-XNX-DEPT-ID-IN-CHA ; 
+    15 AZ0BW-XNX-DEPT-ID-IN-CBYT AZ0BW-XNX-DEPT-ID-IN-CBYT [4] ; 
+  10 AZ0BW-XNX-DEPT-ID-IN-NUM AZ0BW-XNX-DEPT-ID-IN-NUM ; 
+    15 AZ0BW-XNX-DEPT-ID-IN-NBYT AZ0BW-XNX-DEPT-ID-IN-NBYT [4] ; 
+  10 AZ0BW-XNX-DEPT-ID-WK-NUM AZ0BW-XNX-DEPT-ID-WK-NUM ; 
+    15 AZ0BW-XNX-DEPT-ID-WK-BYTE AZ0BW-XNX-DEPT-ID-WK-BYTE [4] ; 
+  10 AZ0BW-WORK-IDX AZ0BW-WORK-IDX ; 
+  10 PK-BILL-OF-LADING PK-BILL-OF-LADING ; 
+  10 PK-BOL-SUB-NBR PK-BOL-SUB-NBR ; 
+end // end AZ0BW01
+
+//*** RECORD=AZ0BW02 ****
+// JCL variable card overrides for TARJCL table
+// DLVRUSA 06/29/2001 Modified to include ESP parameters
+// ***********************
+Record AZ0BW02 type basicRecord
+  10 AZ0BWIDX2 AZ0BWIDX2 ; 
+  10 TA3APLID TA3APLID ; 
+    15 AZ0BW-CICS-LIT AZ0BW-CICS-LIT ; 
+    15 AZ0BW-CICS-VALUE AZ0BW-CICS-VALUE ; 
+    15 * char(1) ; 
+  10 AZ0BW-JOB-CARD char(80) ; // JCL Job card
+    15 * char(4) ; 
+    15 XWH-WHSE-CD XWH-WHSE-CD ; 
+    15 * char(74) ; 
+  10 AZ0BW-OUTPUT-CARD char(80) ; // OUTPUT Warehouse code
+    15 * char(2) ; 
+    15 AZ0BW-OUTPUT-LIT char(6) ; 
+    15 * char(15) ; 
+    15 AZ0BW-OUTPUT-RMT char(3) ; 
+    15 * char(54) ; 
+  10 AZ0BW-SYSTSIN-CARD char(80) ; // JCL Systsin card
+    15 * char(14) ; 
+    15 AZ0BW-DSN-VALUE char(1) ; // T,D,F,Y value
+    15 * char(65) ; 
+  10 AZ0BW-WHSE-CARD char(80) ; // JCL Warehouse card
+    15 * char(15) ; 
+    15 AZ0BW-WHSE-CD char(2) ; // warehouse code
+    15 * char(63) ; 
+  10 AZ0BW-AZ1820-PARM-CARD char(80) ; // JCL Parm Card
+    15 AZ0BW-AZ1820-PARM-WHSE-CD char(2) ; // whse code only
+    15 * char(78) ; 
+  10 AZ0BW-TYPE-CARD AZ0BW-TYPE-CARD ; 
+    15 * char(15) ; 
+    15 AZ0BW-TYPE-VALUE AZ0BW-TYPE-VALUE ; 
+    15 * char(64) ; 
+  10 AZ0BW-FTP-CARD AZ0BW-FTP-CARD ; 
+    15 * char(9) ; 
+    15 AZ0BW-FTP-LIT char(6) ; 
+    15 * char(2) ; 
+    15 AZ0BW-FTP-TARGET AZ0BW-FTP-TARGET ; 
+      20 * char(4) ; 
+      20 AZ0BW-FTPPARMS-WHSE-CD AZ0BW-FTPPARMS-WHSE-CD ; 
+      20 * char(14) ; 
+    15 * char(43) ; 
+  10 AZ0BW-RSH-CARD AZ0BW-RSH-CARD ; 
+    15 * char(9) ; 
+    15 AZ0BW-RSH-LIT char(3) ; 
+    15 * char(5) ; 
+    15 AZ0BW-RSH-TARGET AZ0BW-RSH-TARGET ; 
+      20 * char(11) ; 
+      20 AZ0BW-RSH-CMD-WHSE-CD char(2) ; 
+      20 * char(7) ; 
+    15 * char(43) ; 
+  10 AZ0BW-ESP-CARD AZ0BW-ESP-CARD ; 
+    15 * char(9) ; 
+    15 AZ0BW-ESP-LIT char(3) ; 
+    15 * char(2) ; 
+    15 AZ0BW-ESP-CMD char(8) ; 
+      20 * char(4) ; 
+      20 AZ0BW-ESP-CMD-WHSE-CD char(2) ; 
+      20 * char(2) ; 
+    15 * char(58) ; 
+end // end AZ0BW02
+
+DataItem AZ0BW-CHA-DATE char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-CHA-DD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-CHA-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-CHA-SLASH1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-CHA-SLASH2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-CHA-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// CICS Region literal (CICSD,T)
+DataItem AZ0BW-CICS-LIT char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CICS Region Id
+DataItem AZ0BW-CICS-VALUE char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-CU-STOR-ID-IN-CBYT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-CU-STOR-ID-IN-CHA char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-CU-STOR-ID-IN-NBYT num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-CU-STOR-ID-IN-NUM char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-CU-STOR-ID-WK-BYTE num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-CU-STOR-ID-WK-NUM num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-ESP-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-FTP-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-FTP-TARGET char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-FTPPARMS-WHSE-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-NUM-CC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-NUM-DATE num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-NUM-DD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-NUM-FILLER num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-NUM-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-NUM-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-RSH-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-RSH-TARGET char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Status Change flag
+DataItem AZ0BW-STAT-CHG-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// TYPE card
+DataItem AZ0BW-TYPE-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// T,D,F,Y value
+DataItem AZ0BW-TYPE-VALUE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-WORK-IDX num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-XNX-DEPT-ID-IN-CBYT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-XNX-DEPT-ID-IN-CHA char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-XNX-DEPT-ID-IN-NBYT num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-XNX-DEPT-ID-IN-NUM char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AZ0BW-XNX-DEPT-ID-WK-BYTE num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AZ0BW-XNX-DEPT-ID-WK-NUM num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Index for JCL Table
+DataItem AZ0BWIDX2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

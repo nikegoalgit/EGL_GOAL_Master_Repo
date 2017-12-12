@@ -1,0 +1,1417 @@
+package sm0x;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import pv.common.*;
+import sm.common.*;
+import ta.common.*;
+import vv.common.*;
+//*** PROGRAM=SM0X ****
+// SM0X displays rep information and allows an authorized
+// userid to modify the rep's employee id and/or the vendor
+// number assigned.
+// 
+// ************************************************************
+// *                    MAINTENANCE HISTORY                   *
+// ************************************************************
+// 
+// Log #    Date     Name   Description
+// -----  --------  ------  -----------------------------------
+// 
+//   001   1/13/93  RCORON  Created application.
+//   002  11/09/93  RPATTE  DB2 CHANGES. XXX-ADDR(N) RESIZED.
+//                          USE XXXADDR(N) INSTEAD.
+// *********************
+Program SM0X type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "SM00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  SM0XW01 SM0XW01; // record
+  SM0XW02 SM0XW02; // record
+  SM0XW03 SM0XW03; // record
+  SM0XW04 SM0XW04; // record
+  SM0XW05 SM0XW05; // record
+  SM4REC SM4REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TAEREC TAEREC; // record
+  VREPVN01 VREPVN01; // record
+  VSMAUD01 VSMAUD01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use SM0XM.SM0XM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    SM0X-00000: SM0X-00000();
+    goto SM0X-10000;
+    SM0X-10000: SM0X-10000();
+    /* ***********************************************************************/
+    /* Flow to SM0X-10000 which will display the map.                       **/
+    /* ***********************************************************************/
+
+    goto SM0X-10000; /* converse the map*/
+
+  end // end main
+end // end SM0X
+
+// Initial Processing
+Function SM0X-00000()
+  /* ***********************************************************************/
+  /* *  MODULE: INITIAL PROCESSING                                        **/
+  /* * PURPOSE: Check security, set segmented transaction id and do       **/
+  /* *          application initialization.                               **/
+  /* ***********************************************************************/
+
+  XSENTRY(); /* check goal security*/
+
+  XSSEGTR(); /* set segmented transaction id*/
+
+  SM0XS-INITIALIZE(); /* initialize*/
+
+end // end SM0X-00000
+
+// Converse SM0X map
+Function SM0X-10000()
+  SM0XM001.SM0XM-CURR-DATE = VGVar.currentShortGregorianDate;
+
+  converse SM0XM001 ;
+
+  SM0XM001.CAMSG = " "; /* program message area*/
+
+  /* Move map fields to current map header and detail record*/
+
+  SM0XW04.SM0XW-CURR-DTL-REC = SM0XW05.SM0XW-PREV-DTL-REC;
+  SM0XW02.SM0XW-CURR-HDR-REC = SM0XW03.SM0XW-PREV-HDR-REC;
+  SM0XW02.SM-SREP-ID = SM0XM001.SM0XM-SM-SREP-ID;
+  SM0XW04.SM-SREP-EMPL-ID = SM0XM001.SM-SREP-EMPL-ID;
+  SM0XW04.PV-MSA-VEND-NBR = SM0XM001.PV-MSA-VEND-NBR;
+
+  /* Reset field attributes*/
+
+  set SM0XM001.SM0XM-SM-SREP-ID cursor, initialAttributes;
+  set SM0XM001.SM-SREP-EMPL-ID initialAttributes;
+  set SM0XM001.PV-MSA-VEND-NBR initialAttributes;
+  if (COMMAREA.CACHGFL != "Y")
+    set SM0XM001.SM-SREP-EMPL-ID skip;
+    set SM0XM001.PV-MSA-VEND-NBR skip;
+  end
+  set SM0XM001.CATOAP initialAttributes;
+  set SM0XM001.CAITEM initialAttributes;
+
+  if (converseVar.eventKey is enter /* user pressed enter*/
+   || converseVar.eventKey is pf12) /* user pressed edit only*/
+    SM0XS-PROC-ENTER();
+  else
+    if (converseVar.eventKey is pa2) /* user pressed PA2*/
+      SM0XS-PROC-PA2();
+    else
+      if (converseVar.eventKey is pf1 /* user presses a valid*/
+       || converseVar.eventKey is pf3 /* PF key*/
+       || converseVar.eventKey is pf4)
+        SM0XS-PROC-PF-KEYS();
+      else
+        converseLib.validationFailed(2); /* invalid key pressed*/
+      end
+    end
+  end
+
+end // end SM0X-10000
+
+// Insert the audit table row
+Function SM0XS-ADD-AUD-ROW()
+  /* ***********************************************************************/
+  /* *  MODULE: INSERT THE AUDIT ROW                                     **/
+  /* ***********************************************************************/
+
+  call "IO0480" ("A ", SQLCA, VSMAUD01) {isNoRefresh = yes, isExternal = yes}; /* add rep pstn id*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* error occurred*/
+
+    set ERRSQLCA empty;
+    move SQLCA to ERRSQLCA withV60Compat;
+    TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DSLSMN"; /* database name*/
+    TA1REC.TA1TBLVU = "VSMAUD01"; /* table view name*/
+    TA1REC.TA1LOCAT[3] = "ADD     "; /* error location*/
+    TA1REC.TA1LOCAT[4] = "IO0480"; /* io module*/
+
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* message formatter*/
+
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* rollback changes*/
+
+    XSPF4(); /* pass control to menu*/
+
+    SM0XM001.CAMSG = COMMAREA.CAMSG; /* system error*/
+
+  end
+
+end // end SM0XS-ADD-AUD-ROW
+
+// Add a rep/vendor row
+Function SM0XS-ADD-VEND-ROW()
+  /* ***********************************************************************/
+  /* *  MODULE: ADD REP VENDOR ROW                                        **/
+  /* * PURPOSE: Inserts a rep vendor row for the rep id.                  **/
+  /* ***********************************************************************/
+
+  call "IO6590" ("A ", SQLCA, VREPVN01) {isNoRefresh = yes, isExternal = yes}; /* update rep row*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* error occurred*/
+
+    set ERRSQLCA empty;
+    move SQLCA to ERRSQLCA withV60Compat;
+    TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DSLSMN"; /* database name*/
+    TA1REC.TA1TBLVU = "VREPVN01"; /* table view name*/
+    TA1REC.TA1LOCAT[3] = "A       "; /* error location*/
+    TA1REC.TA1LOCAT[4] = "IO6590"; /* io module*/
+
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* message formatter*/
+
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* rollback changes*/
+
+    XSPF4(); /* pass control to menu*/
+
+    SM0XM001.CAMSG = COMMAREA.CAMSG; /* system error*/
+
+  end
+
+end // end SM0XS-ADD-VEND-ROW
+
+// save vreps001/get vendor info
+Function SM0XS-BUILD-DATA()
+  SM0XW05.SM-SREP-EMPL-ID = SM4REC.SM-SREP-EMPL-ID;
+  SM0XW05.XXX-LAST-NM = SM4REC.XXXLSTNM;
+  SM0XW05.XXX-FRST-NM = SM4REC.XXXFSTNM;
+  SM0XW05.XXX-MID-INIT = SM4REC.XXXMDINT;
+  SM0XW05.XXXADDR1 = SM4REC.XXXADDR1;
+  SM0XW05.XXXADDR2 = SM4REC.XXXADDR2;
+  SM0XW05.XXX-CITY = SM4REC.XXXCITY;
+  SM0XW05.XST-ST-CD = SM4REC.XSTCD;
+  SM0XW05.XXX-ZIP = SM4REC.XXXZIP;
+  SM0XW05.XXX-ALT-ADDR1 = SM4REC.XXXAADR1;
+  SM0XW05.XXX-ALT-ADDR2 = SM4REC.XXXAADR2;
+  SM0XW05.XXX-ALT-CITY = SM4REC.XXXACITY;
+  SM0XW05.XXX-ALT-ST-CD = SM4REC.XXXAST;
+  SM0XW05.XXX-ALT-ZIP = SM4REC.XXXAZIP;
+  SM0XW05.XXX-PHONE = SM4REC.XXXPHN;
+  SM0XW05.XXX-FAX-NBR = SM4REC.XXXFAX;
+  SM0XW05.SM-SREP-CONT-EDT = SM4REC.SM4EDT;
+  SM0XW05.SM-SREP-CONT-TDT = SM4REC.SM4TDT;
+  SM0XW05.ZZ-SDT = SM4REC.ZZZSDT;
+  SM0XW05.ZZ-CHNG-DT = SM4REC.ZZZCHGDT;
+  SM0XW01.SM0XW-VREPS001-CHNG-CNT = SM4REC.ZZZCHGCT;
+
+  SM0XS-GET-VEND-NBR(); /* get rep vendor number*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* rep vendor was found*/
+    SM0XW05.PV-MSA-VEND-NBR = VREPVN01.PV-MSA-VEND-NBR;
+    SM0XW01.SM0XW-VREPVN01-CHNG-CNT = VREPVN01.ZZ-CHNG-CNT;
+  end
+
+end // end SM0XS-BUILD-DATA
+
+// Delete a rep/vendor row
+Function SM0XS-DEL-VEND-ROW()
+  /* ***********************************************************************/
+  /* *  MODULE: DELETE REP VENDOR ROW                                     **/
+  /* * PURPOSE: Deletes an existing rep vendor row.                       **/
+  /* ***********************************************************************/
+
+  call "IO6590" ("D ", SQLCA, VREPVN01) {isNoRefresh = yes, isExternal = yes}; /* update rep row*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* error occurred*/
+    if (SQLCA.VAGen_SQLCODE == 100) /* row doesnt exist*/
+      converseLib.validationFailed(73); /* data already updated by another user*/
+                                   /* msg*/
+      set SM0XM001.PV-MSA-VEND-NBR bold, protect;
+    else
+
+      set ERRSQLCA empty;
+      move SQLCA to ERRSQLCA withV60Compat;
+      TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DSLSMN"; /* database name*/
+      TA1REC.TA1TBLVU = "VREPVN01"; /* table view name*/
+      TA1REC.TA1LOCAT[3] = "D       "; /* error location*/
+      TA1REC.TA1LOCAT[4] = "IO6590"; /* io module*/
+
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* message formatter*/
+
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* rollback changes*/
+
+      XSPF4(); /* pass control to menu*/
+
+      SM0XM001.CAMSG = COMMAREA.CAMSG; /* system error*/
+
+    end
+  else /* no errors*/
+
+  /* ***********************************************************************/
+  /* * Row was deleted successfully so reset the change count.            **/
+  /* ***********************************************************************/
+
+    SM0XW01.SM0XW-VREPVN01-CHNG-CNT = 0;
+
+  end
+
+end // end SM0XS-DEL-VEND-ROW
+
+// Process rep detail
+Function SM0XS-EDIT-DATA()
+
+   /* **********************************************************************/
+   /* Vendor number changed and is not spaces.  Check if entered vendor  **/
+   /* number is already assigned to another rep id.                      **/
+   /* **********************************************************************/
+
+  if (SM0XW04.PV-MSA-VEND-NBR != " "
+   && SM0XW04.PV-MSA-VEND-NBR != SM0XW05.PV-MSA-VEND-NBR)
+    SM0XS-EDIT-VND-NBR(); /* check to see if new vend nbr was used*/
+  end
+
+   /* **********************************************************************/
+   /* Employee id changed and is not spaces.  Check if the entered       **/
+   /* employee id is already assigned to another rep id.                 **/
+   /* **********************************************************************/
+
+  if (SM0XW04.SM-SREP-EMPL-ID != " "
+   && SM0XW04.SM-SREP-EMPL-ID != SM0XW05.SM-SREP-EMPL-ID)
+    SM0XS-EDIT-EMPL-ID(); /* check to see if new empl id was used*/
+  end
+
+end // end SM0XS-EDIT-DATA
+
+// Edit employee id
+Function SM0XS-EDIT-EMPL-ID()
+  set SM4REC empty; /* initialize recor*/
+
+  SM4REC.SM-SREP-EMPL-ID = SM0XW04.SM-SREP-EMPL-ID;
+  call "IO0020" ("SA", SQLCA, SM4REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* ********************************************************************/
+     /* Employee id entered is already used by another rep id*/
+     /* ********************************************************************/
+    if (SM4REC.SM4REPID != SM0XW03.SM-SREP-ID)
+      set SM0XM001.SM-SREP-EMPL-ID cursor, bold;
+      converseLib.validationFailed(0083); /* empl id already assigned to another*/
+    end
+  else
+     /* ********************************************************************/
+     /* Employee id not previously assigned*/
+     /* ********************************************************************/
+    if (SQLCA.VAGen_SQLCODE == 100)
+      return;
+    else
+       /* ******************************************************************/
+       /* DB2 error*/
+       /* ******************************************************************/
+      set ERRSQLCA empty;
+      move SQLCA to ERRSQLCA withV60Compat;
+      TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DSLSMN"; /* database name*/
+      TA1REC.TA1TBLVU = "VREPS001"; /* table view name*/
+      TA1REC.TA1LOCAT[3] = "SA      "; /* error location*/
+      TA1REC.TA1LOCAT[4] = "IO0020"; /* io module*/
+
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* message formatter*/
+
+      XSPF4(); /* pass control to menu*/
+
+      converseLib.validationFailed(72); /* system error*/
+
+    end
+  end
+
+end // end SM0XS-EDIT-EMPL-ID
+
+// Edit the new rep id
+Function SM0XS-EDIT-REP()
+  set SM4REC empty; /* initialise record*/
+
+  SM4REC.SM4REPID = SM0XW02.SM-SREP-ID;
+
+  SM0XS-FIND-REP-ID(); /* find unique rep id*/
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    SM0XW03.SM-SREP-ID = SM4REC.SM4REPID;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      set SM0XM001.SM0XM-SM-SREP-ID cursor, bold;
+      converseLib.validationFailed(0009); /* rep id is not on file*/
+    end
+  end
+
+end // end SM0XS-EDIT-REP
+
+// Edit vendor number
+Function SM0XS-EDIT-VND-NBR()
+  set VREPVN01 empty; /* initialize record*/
+
+  VREPVN01.PV-MSA-VEND-NBR = SM0XW04.PV-MSA-VEND-NBR;
+  call "IO6590" ("S ", SQLCA, VREPVN01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* ********************************************************************/
+     /* Vendor number entered is already used by another rep id*/
+     /* ********************************************************************/
+    if (VREPVN01.SM-SREP-ID != SM0XW03.SM-SREP-ID)
+      set SM0XM001.PV-MSA-VEND-NBR cursor, bold;
+      converseLib.validationFailed(0082); /* vend nbr already assigned to another*/
+    end
+  else
+     /* ********************************************************************/
+     /* Vendor number not previously assigned*/
+     /* ********************************************************************/
+    if (SQLCA.VAGen_SQLCODE == 100)
+      return;
+    else
+       /* ******************************************************************/
+       /* DB2 error*/
+       /* ******************************************************************/
+      set ERRSQLCA empty;
+      move SQLCA to ERRSQLCA withV60Compat;
+      TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DSLSMN"; /* database name*/
+      TA1REC.TA1TBLVU = "VREPVN01"; /* table view name*/
+      TA1REC.TA1LOCAT[3] = "S       "; /* error location*/
+      TA1REC.TA1LOCAT[4] = "IO6590"; /* io module*/
+
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* message formatter*/
+
+      XSPF4(); /* pass control to menu*/
+
+      converseLib.validationFailed(72); /* system error*/
+
+    end
+  end
+
+end // end SM0XS-EDIT-VND-NBR
+
+// Find rep id
+Function SM0XS-FIND-REP-ID()
+
+  call "IO0020" ("S ", SQLCA, SM4REC) {isNoRefresh = yes, isExternal = yes}; /* get rep name*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    set ERRSQLCA empty;
+    move SQLCA to ERRSQLCA withV60Compat;
+    TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+    TA1REC.TA1TYPE = "RETN";
+    TA1REC.TA1DBASE = "DSLSMN"; /* database name*/
+    TA1REC.TA1TBLVU = "VREPS001"; /* table view name*/
+    TA1REC.TA1LOCAT[3] = "GET REPID"; /* error location*/
+    TA1REC.TA1LOCAT[4] = "IO0020"; /* io module*/
+
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* message formatter*/
+
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+    XSPF4(); /* pass control to menu*/
+
+    converseLib.validationFailed(72); /* system error*/
+
+  end
+
+end // end SM0XS-FIND-REP-ID
+
+// Format the audit row
+Function SM0XS-FMT-AUD-ROW()
+  /* ***********************************************************************/
+  /* *  MODULE: FORMAT THE AUDIT ROW                                      **/
+  /* * PURPOSE: Move the required data to the database row.               **/
+  /* ***********************************************************************/
+
+  set VSMAUD01 empty; /* initialise record*/
+
+  VSMAUD01.SM-SREP-ID = SM0XW02.SM-SREP-ID;
+  VSMAUD01.SM-SAGCY-ID = " ";
+  VSMAUD01.SM-AUDIT-SRT-SEQ = 0;
+  VSMAUD01.XXX-USER-ID = COMMAREA.CAUSERID;
+  VSMAUD01.ZZ-SDT = TA2REC.TA2GRGGN;
+  VSMAUD01.ZZ-SETUP-HHMMSS = TA2REC.TA2TIMEN;
+
+end // end SM0XS-FMT-AUD-ROW
+
+// move data from savearea to map
+Function SM0XS-FMT-MAP-DTL()
+  SM0XM001.SM-SREP-EMPL-ID = SM0XW05.SM-SREP-EMPL-ID;
+  SM0XM001.PV-MSA-VEND-NBR = SM0XW05.PV-MSA-VEND-NBR;
+  SM0XM001.XXX-LAST-NM = SM0XW05.XXX-LAST-NM;
+  SM0XM001.XXX-FRST-NM = SM0XW05.XXX-FRST-NM;
+  SM0XM001.XXX-MID-INIT = SM0XW05.XXX-MID-INIT;
+  SM0XM001.XXXADDR1 = SM0XW05.XXXADDR1;
+  SM0XM001.XXXADDR2 = SM0XW05.XXXADDR2;
+  SM0XM001.XXX-CITY = SM0XW05.XXX-CITY;
+  SM0XM001.XST-ST-CD = SM0XW05.XST-ST-CD;
+  SM0XM001.SM0XM-XXXZIP1 = SM0XW05.SM0XW-XXXZIP1;
+  SM0XM001.SM0XM-XXXZIP2 = SM0XW05.SM0XW-XXXZIP2;
+  SM0XM001.XXX-ALT-ADDR1 = SM0XW05.XXX-ALT-ADDR1;
+  SM0XM001.XXX-ALT-ADDR2 = SM0XW05.XXX-ALT-ADDR2;
+  SM0XM001.XXX-ALT-CITY = SM0XW05.XXX-ALT-CITY;
+  SM0XM001.XXX-ALT-ST-CD = SM0XW05.XXX-ALT-ST-CD;
+  SM0XM001.SM0XM-XXXAZIP1 = SM0XW05.SM0XW-XXXAZIP1;
+  SM0XM001.SM0XM-XXXAZIP2 = SM0XW05.SM0XW-XXXAZIP2;
+  SM0XM001.SM0XM-XXXPHNA = SM0XW05.SM0XW-XXXPHNA;
+  SM0XM001.SM0XM-XXXPHNP = SM0XW05.SM0XW-XXXPHNP;
+  SM0XM001.SM0XM-XXXPHNN = SM0XW05.SM0XW-XXXPHNN;
+  SM0XM001.SM0XM-FAX-AREA = SM0XW05.SM0XW-FAX-AREA;
+  SM0XM001.SM0XM-FAX-PRE = SM0XW05.SM0XW-FAX-PRE;
+  SM0XM001.SM0XM-FAX-NBR = SM0XW05.SM0XW-FAX-NBR;
+  SM0XM001.SM0XM-SM-SREP-CONT-EDT = SM0XW05.SM-SREP-CONT-EDT;
+  SM0XM001.SM0XM-SM-SREP-CONT-TDT = SM0XW05.SM-SREP-CONT-TDT;
+  SM0XM001.SM0XM-ZZ-SDT = SM0XW05.ZZ-SDT;
+  SM0XM001.SM0XM-ZZ-CHNG-DT = SM0XW05.ZZ-CHNG-DT;
+
+end // end SM0XS-FMT-MAP-DTL
+
+// Format the rep row
+Function SM0XS-FMT-REP-ROW()
+  /* ***********************************************************************/
+  /* *  MODULE: FORMAT THE REP ROW                                        **/
+  /* * PURPOSE: Set up the columns that changed in the rep row.           **/
+  /* ***********************************************************************/
+
+  SM4REC.SM-SREP-EMPL-ID = SM0XW04.SM-SREP-EMPL-ID;
+  SM4REC.ZZZCHGDT = TA2REC.TA2GRGGN;
+  SM4REC.ZZZCHGTM = TA2REC.TA2TIMHM;
+
+end // end SM0XS-FMT-REP-ROW
+
+// Format the rep/vendor row
+Function SM0XS-FMT-VEND-ROW()
+  /* ***********************************************************************/
+  /* *  MODULE: FORMAT THE REP VENDOR ROW                                 **/
+  /* * PURPOSE: Set up the columns that changed in the rep vendor row.    **/
+  /* ***********************************************************************/
+
+  VREPVN01.PV-MSA-VEND-NBR = SM0XW04.PV-MSA-VEND-NBR;
+  VREPVN01.ZZ-CHNG-DT = TA2REC.TA2GRGGN;
+  VREPVN01.ZZ-CHNG-HHMM = TA2REC.TA2TIMHM;
+
+end // end SM0XS-FMT-VEND-ROW
+
+// Get current date and time
+Function SM0XS-GET-DATE()
+  /* ***********************************************************************/
+  /* *  MODULE: GET DATE                                                  **/
+  /* * PURPOSE: Get the formatted current date and time.                  **/
+  /* ***********************************************************************/
+
+  set TA2REC empty; /* initialise record*/
+
+  TA2REC.TA2DTOPT = "GETDATE";
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+
+  if (TA2REC.TA2RTNCD != 0) /* error occurred*/
+    TA1REC.TA1TYPE = "APPL"; /* db2 error*/
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "TA0040"; /* error location*/
+
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* message formatter*/
+
+    XSPF4(); /* pass control to menu*/
+
+    converseLib.validationFailed(72); /* system error msg*/
+
+  end
+
+end // end SM0XS-GET-DATE
+
+// find vendor number if exists
+Function SM0XS-GET-VEND-NBR()
+  set VREPVN01 empty; /* initialize record*/
+
+  VREPVN01.SM-SREP-ID = SM0XW03.SM-SREP-ID;
+  call "IO6590" ("SA", SQLCA, VREPVN01) {isNoRefresh = yes, isExternal = yes}; /* fetch rep details*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100) /* serious error*/
+
+    set ERRSQLCA empty;
+    move SQLCA to ERRSQLCA withV60Compat;
+    TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DSLSMN"; /* database name*/
+    TA1REC.TA1TBLVU = "VREPVN01"; /* table view name*/
+    TA1REC.TA1LOCAT[3] = "SA      "; /* error location*/
+    TA1REC.TA1LOCAT[4] = "IO6590"; /* io module*/
+
+    try
+      call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    end /* message formatter*/
+
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+
+    XSPF4(); /* pass control to menu*/
+
+    converseLib.validationFailed(72); /* system error*/
+
+  end
+
+end // end SM0XS-GET-VEND-NBR
+
+// Initialize screen fields
+Function SM0XS-INIT-SCRN()
+  set SM0XW02 empty; /* initialize current map header record*/
+  set SM0XW03 empty; /* initialize previous map header record*/
+  set SM0XW04 empty; /* initialize map data*/
+  set SM0XW05 empty; /* initialize map data*/
+
+  set SM0XM001 initial; /* init map*/
+
+  if (COMMAREA.CACHGFL != "Y")
+    set SM0XM001.SM-SREP-EMPL-ID skip;
+    set SM0XM001.PV-MSA-VEND-NBR skip;
+  end
+
+end // end SM0XS-INIT-SCRN
+
+// Initialize
+Function SM0XS-INITIALIZE()
+   /*  */
+   /* NOTE THAT ALL REFERRENCES TO SMWREC WAS COMMENTED OUT.  THIS WILL*/
+   /* BE RETURNED WHEN THE NEW SM SYSTEM WITH THE NEW SMWREC LAYOUT IS*/
+   /* INSTALLED.*/
+   /*  */
+   /* SET SMWREC EMPTY;                /* subsystem record*/
+  set SM0XW01 empty; /* sm0x workarea*/
+
+  SM0XW01.SM0XW-VREPS001-LENGTH = 316; /* vreps001 record length*/
+  SM0XW01.SM0XW-VREPVN01-LENGTH = 073; /* vrepvn01 record length*/
+  sysVar.errorCode = "00000000";
+  converseVar.commitOnConverse = 1; /* commit on converse*/
+
+  SM0XS-INIT-SCRN(); /* initialise screen fields*/
+
+  if (COMMAREA.CAFRMSYS == "SM") /* from same system*/
+    /* MOVE COMMAREA.CAUSERA TO SMWREC.SMW-SUBSYSTEM-RECORD;*/
+  end
+
+  /* ***********************************************************************/
+  /* * Check to see if we are being fastpathed into. if so, load the      **/
+  /* * rep id    to the map and current header record.                    **/
+  /* ***********************************************************************/
+
+   /* IF COMMAREA.CAITEM NE ' ';*/
+   /* MOVE COMMAREA.CAITEM TO SMWREC.SMW-SM-SREP-ID-WORK;*/
+   /* XSSMS-REP-NUM-CHK;             /* check if rep id is numeric*/
+   /* IF SMWREC.SMW-SM-SREP-ID-NUM NE 0;*/
+   /* MOVE SMWREC.SMW-SM-SREP-ID-NUM*/
+   /* TO SM0XM001.SM0XM-SM-SREP-ID;/* move to map*/
+   /* MOVE SMWREC.SMW-SM-SREP-ID-NUM*/
+   /* TO SM0XW02.SM-SREP-ID;       /* curr map header rec*/
+   /* SM0XS-NEW-REP;*/
+   /* END;*/
+   /* ELSE;*/
+
+  /* ***********************************************************************/
+  /* * Check to see if we are being PF keyed into. if so, load the        **/
+  /* * rep id    to the map and current header record.                    **/
+  /* ***********************************************************************/
+
+   /* IF SMWREC.SM-SREP-ID NE 0;*/
+   /* MOVE SMWREC.SM-SREP-ID TO*/
+   /* SM0XM001.SM0XM-SM-SREP-ID;  /* move to map*/
+   /* MOVE SMWREC.SM-SREP-ID TO*/
+   /* SM0XW02.SM-SREP-ID;         /* curr map header rec*/
+   /* SM0XS-NEW-REP;*/
+   /* END;*/
+
+   /* END;*/
+
+end // end SM0XS-INITIALIZE
+
+// New rep id processing
+Function SM0XS-NEW-REP()
+  set SM0XW03 empty; /* initialize map key save area*/
+  set SM0XW05 empty; /* initialize map save area*/
+
+  SM0XS-EDIT-REP(); /* check to see if new rep id is valid*/
+
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+
+    SM0XS-BUILD-DATA(); /* build rep info in sm0xw04*/
+
+    if (converseVar.validationMsgNum == 0) /* no errors*/
+      SM0XS-FMT-MAP-DTL(); /* format the map from sm0xw04*/
+    end
+
+  else /* errors during edit*/
+
+    SM0XS-FMT-MAP-DTL(); /* format the map detail from empty rec*/
+  end
+
+end // end SM0XS-NEW-REP
+
+// Process Enter
+Function SM0XS-PROC-ENTER()
+  if (SM0XM001.CATOAP == " ") /* fastpath application and parms blank*/
+    if (SM0XM001.CAITEM == " ")
+    /* next sentence*/
+    else
+      SM0XM001.CAITEM = " "; /* parms entered without application*/
+    end
+  else
+    SM0XS-PROC-FPATH(); /* process fpath*/
+    if (converseVar.validationMsgNum != 0
+     || SM0XM001.CAMSG != " ") /* error occurred*/
+      return;
+    end
+  end
+
+  if (SM0XW02.SM-SREP-ID == 0) /* rep not entered*/
+    SM0XS-INIT-SCRN(); /* initialize screen fields*/
+    set SM0XM001.SM0XM-SM-SREP-ID cursor, bold;
+    converseLib.validationFailed(60); /* enter rep id*/
+  else
+     /* ********************************************************************/
+     /* changed rep id and the rep data at the same time*/
+     /* ********************************************************************/
+    if (SM0XW02.SM0XW-CURR-HDR-INPUT-FLDS
+     != SM0XW03.SM0XW-PREV-HDR-INPUT-FLDS
+     && SM0XW04.SM0XW-CURR-DTL-REC != SM0XW05.SM0XW-PREV-DTL-REC)
+      SM0XM001.SM0XM-SM-SREP-ID = SM0XW03.SM-SREP-ID;
+      converseLib.validationFailed(80); /* cannot change rep id w/ pend updt*/
+    else
+       /* ******************************************************************/
+       /* rep id changed*/
+       /* ******************************************************************/
+      if (SM0XW02.SM-SREP-ID != SM0XW03.SM-SREP-ID) /* rep id changed*/
+        SM0XS-NEW-REP(); /* process new rep id*/
+      else
+         /* ****************************************************************/
+         /* rep data was changed*/
+         /* ****************************************************************/
+        if (SM0XW04.SM0XW-CURR-DTL-REC != SM0XW05.SM0XW-PREV-DTL-REC)
+
+          SM0XS-EDIT-DATA(); /* edit changed rep data*/
+
+          if (converseVar.validationMsgNum == 0) /* no errors*/
+            if (converseVar.eventKey is pf12) /* edit only*/
+              converseLib.validationFailed(0013); /* press again to update*/
+            else
+
+              SM0XS-UPDT-DATA(); /* update affected tables*/
+
+            end
+          end
+        else
+          converseLib.validationFailed(0012); /* no changes entered*/
+        end
+      end
+    end
+  end
+
+end // end SM0XS-PROC-ENTER
+
+// Process Fastpath
+Function SM0XS-PROC-FPATH()
+  if (SM0XW02.SM0XW-CURR-HDR-INPUT-FLDS
+   != SM0XW03.SM0XW-PREV-HDR-INPUT-FLDS)
+
+    set SM0XM001.CATOAP cursor, bold;
+    set SM0XM001.CAITEM bold;
+    converseLib.validationFailed(69); /* cannot fpath with key changes*/
+
+  else
+
+    COMMAREA.CATOAP = SM0XM001.CATOAP; /* move to commarea*/
+    COMMAREA.CAITEM = SM0XM001.CAITEM;
+    COMMAREA.CAUSERA = " "; /* clear user area*/
+
+    if (COMMAREA.CATOSYS == COMMAREA.CAFRMSYS) /* transfer in SM system*/
+      SM0XS-SET-CAUSERA(); /* set subsystem rec & move to causera*/
+    end
+
+    XSEXIT(); /* transfer control*/
+
+    SM0XS-NEW-REP(); /* reload rep data*/
+
+    set SM0XM001.CATOAP cursor, bold;
+    set SM0XM001.CAITEM bold;
+    SM0XM001.CAMSG = COMMAREA.CAMSG; /* transfer failed*/
+
+  end
+
+end // end SM0XS-PROC-FPATH
+
+// Process PA2
+Function SM0XS-PROC-PA2()
+  if (SM0XW02.SM0XW-CURR-HDR-INPUT-FLDS
+   != SM0XW03.SM0XW-PREV-HDR-INPUT-FLDS
+   || SM0XW04.SM0XW-CURR-DTL-REC != SM0XW05.SM0XW-PREV-DTL-REC)
+
+    SM0XM001.SM0XM-SM-SREP-ID = SM0XW03.SM-SREP-ID;
+    SM0XS-FMT-MAP-DTL(); /* reload saved values*/
+
+    if (SM0XW04.SM0XW-CURR-DTL-REC != SM0XW05.SM0XW-PREV-DTL-REC)
+      converseLib.validationFailed(0040); /* update cancelled*/
+    end
+  else
+    SM0XS-INIT-SCRN(); /* initialise screen*/
+  end
+
+end // end SM0XS-PROC-PA2
+
+// Process PF keys
+Function SM0XS-PROC-PF-KEYS()
+  if (SM0XW02.SM0XW-CURR-HDR-INPUT-FLDS
+   != SM0XW03.SM0XW-PREV-HDR-INPUT-FLDS
+   || SM0XW04.SM0XW-CURR-DTL-REC != SM0XW05.SM0XW-PREV-DTL-REC)
+    converseLib.validationFailed(68); /* cannot PF key with changes*/
+  else
+    if (SM0XM001.CATOAP != " "
+     || SM0XM001.CAITEM != " ")
+      set SM0XM001.CATOAP cursor, bold;
+      set SM0XM001.CAITEM bold;
+      converseLib.validationFailed(4); /* cannot PF key with fast path*/
+    end
+  end
+
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+    if (converseVar.eventKey is pf1) /* help requested*/
+      COMMAREA.CAUSERA = " ";
+      XSPF1(); /* transfer to help system*/
+      SM0XM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+
+    if (converseVar.eventKey is pf3)
+      COMMAREA.CATOAP = "SM0H";
+      COMMAREA.CAITEM = " ";
+      COMMAREA.CAUSERA = " ";
+      SM0XS-SET-CAUSERA(); /* set subsystem rec & move to causera*/
+      XSEXIT(); /* pass control*/
+      SM0XM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+    if (converseVar.eventKey is pf4) /* transfer to MN0M requested*/
+      COMMAREA.CAITEM = " ";
+      COMMAREA.CAUSERA = " ";
+      XSPF4(); /* pass control*/
+      SM0XM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+  end
+
+end // end SM0XS-PROC-PF-KEYS
+
+// set subsys rec & causer area
+Function SM0XS-SET-CAUSERA()
+  /* ************************************************************************/
+  /* This statement group moves the last valid Rep id to the subsystem*/
+  /* record so the next application will have a valid key to start with.*/
+  /* if the rep id is different from the one passed to this application,*/
+  /* then the agency id in the subsystem record is initialized.*/
+  /* The subsystem record is then moved as a group to the causera field*/
+  /* of the common data area.*/
+  /* ************************************************************************/
+
+   /* IF SM0XW02.SM-SREP-ID NE SMWREC.SM-SREP-ID;*/
+   /* MOVE SM0XW02.SM-SREP-ID TO SMWREC.SM-SREP-ID;*/
+   /* MOVE ' ' TO SMWREC.SM-SAGCY-ID;*/
+   /* END;*/
+
+   /* MOVE SMWREC.SMW-SUBSYSTEM-RECORD TO COMMAREA.CAUSERA;*/
+
+end // end SM0XS-SET-CAUSERA
+
+// Process Update
+Function SM0XS-UPDT-DATA()
+  /* ************************************************************************/
+  /* This module will update all affected DB2 tables.                     **/
+  /* ************************************************************************/
+
+  SM0XS-GET-DATE(); /* get date and time*/
+
+   /* **********************************************************************/
+   /* Update vendor table if vendor number on the map changed.           **/
+   /* **********************************************************************/
+
+  if (SM0XW04.PV-MSA-VEND-NBR != SM0XW05.PV-MSA-VEND-NBR
+   && converseVar.validationMsgNum == 0)
+
+    if (SM0XW05.PV-MSA-VEND-NBR == " " /* no prior vendor nbr*/
+     && SM0XW04.PV-MSA-VEND-NBR != " ") /* rep was assigned a vend nbr*/
+       /* ******************************************************************/
+       /* Rep did not have a prior vendor nbr entry and was assigned     **/
+       /* a vendor number.                                               **/
+       /* ******************************************************************/
+      set VREPVN01 empty; /* initialize record*/
+      VREPVN01.SM-SREP-ID = SM0XW02.SM-SREP-ID;
+      SM0XS-FMT-VEND-ROW(); /* format the rep vendor row*/
+      VREPVN01.ZZ-SDT = VREPVN01.ZZ-CHNG-DT;
+      SM0XS-ADD-VEND-ROW(); /* add the rep vend row*/
+      SM0XS-FMT-AUD-ROW(); /* format the audit row*/
+      VSMAUD01.XXX-TBL-NM = "VREPVN01";
+      VSMAUD01.SM-AUDIT-FILLER-LEN = SM0XW01.SM0XW-VREPVN01-LENGTH;
+      VSMAUD01.SM-AUDIT-TYP-CD = "A"; /* repvn was added*/
+      VSMAUD01.SM-BFR-AFT-IND = "A";
+      VSMAUD01.SM-AUDIT-FILLER-TEXT = VREPVN01.VREPVN01-GROUP;
+      SM0XS-ADD-AUD-ROW(); /* add an audit 'after' image*/
+    else
+      if (SM0XW05.PV-MSA-VEND-NBR != " " /* rep had a vendor number*/
+       && SM0XW04.PV-MSA-VEND-NBR != " ") /* rep was assigned a new vend*/
+         /* ****************************************************************/
+         /* Rep had a vendor nbr previously assigned and assigned a      **/
+         /* different vendor nbr.                                        **/
+         /* ****************************************************************/
+        set VREPVN01 empty; /* initialize record*/
+        VREPVN01.SM-SREP-ID = SM0XW02.SM-SREP-ID;
+
+        SM0XS-GET-VEND-NBR(); /* get vend 'before' image*/
+
+        if (SQLCA.VAGen_SQLCODE == 100 /* 'before' image has been deleted*/
+         || SM0XW01.SM0XW-VREPVN01-CHNG-CNT != 
+        VREPVN01.ZZ-CHNG-CNT)          /* change counts are different*/
+          converseLib.validationFailed(73); /* data already updated msg*/
+          set SM0XM001.PV-MSA-VEND-NBR bold, protect;
+        else
+          SM0XS-FMT-AUD-ROW(); /* format the audit row*/
+          VSMAUD01.XXX-TBL-NM = "VREPVN01";
+          VSMAUD01.SM-AUDIT-FILLER-LEN = SM0XW01.SM0XW-VREPVN01-LENGTH;
+          VSMAUD01.SM-AUDIT-TYP-CD = "C"; /* update is a change*/
+          VSMAUD01.SM-BFR-AFT-IND = "B";
+          VSMAUD01.SM-AUDIT-FILLER-TEXT = VREPVN01.VREPVN01-GROUP;
+          SM0XS-ADD-AUD-ROW(); /* add an audit 'before' image*/
+          SM0XS-FMT-VEND-ROW(); /* format the rep vendor row*/
+          SM0XS-UPDT-VND-ROW(); /* update the rep vendor row*/
+          VSMAUD01.SM-AUDIT-TYP-CD = "C"; /* update is a change*/
+          VSMAUD01.SM-BFR-AFT-IND = "A";
+          VSMAUD01.SM-AUDIT-FILLER-TEXT = VREPVN01.VREPVN01-GROUP;
+          SM0XS-ADD-AUD-ROW(); /* add an audit 'after' image*/
+        end
+      else
+         /* ****************************************************************/
+         /* Rep had a vendor nbr previously assigned and was removed.    **/
+         /* ****************************************************************/
+        set VREPVN01 empty; /* initialize record*/
+        VREPVN01.SM-SREP-ID = SM0XW02.SM-SREP-ID;
+
+        SM0XS-GET-VEND-NBR(); /* get vend 'before' image*/
+
+        if (SQLCA.VAGen_SQLCODE == 100 /* 'before' image has been deleted*/
+         || SM0XW01.SM0XW-VREPVN01-CHNG-CNT != 
+        VREPVN01.ZZ-CHNG-CNT)          /* change counts are different*/
+          converseLib.validationFailed(73); /* data already updated msg*/
+          set SM0XM001.PV-MSA-VEND-NBR bold, protect;
+        else
+          SM0XS-FMT-AUD-ROW(); /* format the audit row*/
+          VSMAUD01.XXX-TBL-NM = "VREPVN01";
+          VSMAUD01.SM-AUDIT-FILLER-LEN = SM0XW01.SM0XW-VREPVN01-LENGTH;
+          VSMAUD01.SM-AUDIT-TYP-CD = "D"; /* update is a delete*/
+          VSMAUD01.SM-BFR-AFT-IND = "B";
+          VSMAUD01.SM-AUDIT-FILLER-TEXT = VREPVN01.VREPVN01-GROUP;
+          SM0XS-ADD-AUD-ROW(); /* add an audit 'before' image*/
+          SM0XS-FMT-VEND-ROW(); /* format the rep vendor row*/
+          SM0XS-DEL-VEND-ROW(); /* delete the rep vendor row*/
+        end
+      end
+    end
+
+  end
+
+   /* **********************************************************************/
+   /* Update rep table if employee id changed.                           **/
+   /* **********************************************************************/
+
+  if (SM0XW04.SM-SREP-EMPL-ID != SM0XW05.SM-SREP-EMPL-ID
+   && converseVar.validationMsgNum == 0)
+
+    set SM4REC empty; /* initialize record*/
+    SM4REC.SM4REPID = SM0XW02.SM-SREP-ID;
+
+    SM0XS-FIND-REP-ID(); /* get rep 'before' image*/
+
+    if (SQLCA.VAGen_SQLCODE == 100 /* 'before' image has been deleted*/
+     || SM0XW01.SM0XW-VREPS001-CHNG-CNT != 
+    SM4REC.ZZZCHGCT)               /* change counts are different*/
+      converseLib.validationFailed(73); /* data already updated msg*/
+      set SM0XM001.SM-SREP-EMPL-ID bold, protect;
+    else
+      SM0XS-FMT-AUD-ROW(); /* format the audit row*/
+      VSMAUD01.XXX-TBL-NM = "VREPS001";
+      VSMAUD01.SM-AUDIT-FILLER-LEN = SM0XW01.SM0XW-VREPS001-LENGTH;
+      VSMAUD01.SM-AUDIT-TYP-CD = "C"; /* update is a change*/
+      VSMAUD01.SM-BFR-AFT-IND = "B";
+      VSMAUD01.SM-AUDIT-FILLER-TEXT = SM4REC.VREPS001-GROUP;
+      SM0XS-ADD-AUD-ROW(); /* add an audit 'before' image*/
+      SM0XS-FMT-REP-ROW(); /* format the rep row*/
+      SM0XS-UPDT-REP-ROW(); /* update the rep row*/
+      VSMAUD01.SM-AUDIT-TYP-CD = "C"; /* update is a change*/
+      VSMAUD01.SM-BFR-AFT-IND = "A";
+      VSMAUD01.SM-AUDIT-FILLER-TEXT = SM4REC.VREPS001-GROUP;
+      SM0XS-ADD-AUD-ROW(); /* add an audit 'after' image*/
+    end
+
+  end
+
+   /* **********************************************************************/
+   /* Rollback if errors were encountered.                               **/
+   /* **********************************************************************/
+
+  if (converseVar.validationMsgNum != 0
+   || SM0XM001.CAMSG != " ") /* errors occurred*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* rollback changes*/
+  else /* no errors*/
+    SM0XW05.SM0XW-PREV-DTL-REC = SM0XW04.SM0XW-CURR-DTL-REC; /* move current dtl to prev dtl*/
+    converseLib.validationFailed(0074); /* update successful*/
+  end
+end // end SM0XS-UPDT-DATA
+
+// Update the rep row
+Function SM0XS-UPDT-REP-ROW()
+  /* ***********************************************************************/
+  /* *  MODULE: UPDATE REP ROW                                            **/
+  /* * PURPOSE: Updates an existing rep row.                              **/
+  /* ***********************************************************************/
+
+  call "IO0020" ("U ", SQLCA, SM4REC) {isNoRefresh = yes, isExternal = yes}; /* update rep row*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* error occurred*/
+    if (SQLCA.VAGen_SQLCODE == 100) /* row doesnt exist*/
+      converseLib.validationFailed(73); /* data already updated by another user*/
+                                   /* msg*/
+      set SM0XM001.SM-SREP-EMPL-ID bold, protect;
+    else
+
+      set ERRSQLCA empty;
+      move SQLCA to ERRSQLCA withV60Compat;
+      TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DSLSMN"; /* database name*/
+      TA1REC.TA1TBLVU = "VREPS001"; /* table view name*/
+      TA1REC.TA1LOCAT[3] = "U       "; /* error location*/
+      TA1REC.TA1LOCAT[4] = "IO0020"; /* io module*/
+
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* message formatter*/
+
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* rollback changes*/
+
+      XSPF4(); /* pass control to menu*/
+
+      SM0XM001.CAMSG = COMMAREA.CAMSG; /* system error*/
+
+    end
+  else /* no errors*/
+
+  /* ***********************************************************************/
+  /* * Row was updated successfully so store new change count.            **/
+  /* ***********************************************************************/
+
+    SM0XW01.SM0XW-VREPS001-CHNG-CNT = SM4REC.ZZZCHGCT;
+
+  end
+
+end // end SM0XS-UPDT-REP-ROW
+
+// Update the rep/vendor row
+Function SM0XS-UPDT-VND-ROW()
+  /* ***********************************************************************/
+  /* *  MODULE: UPDATE REP VENDOR ROW                                     **/
+  /* * PURPOSE: Updates an existing rep vendor row.                       **/
+  /* ***********************************************************************/
+
+  call "IO6590" ("U ", SQLCA, VREPVN01) {isNoRefresh = yes, isExternal = yes}; /* update rep row*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* error occurred*/
+    if (SQLCA.VAGen_SQLCODE == 100) /* row doesnt exist*/
+      converseLib.validationFailed(73); /* data already updated by another user*/
+                                   /* msg*/
+      set SM0XM001.PV-MSA-VEND-NBR bold, protect;
+    else
+
+      set ERRSQLCA empty;
+      move SQLCA to ERRSQLCA withV60Compat;
+      TA1REC.TA1TYPE = "DB2"; /* db2 error*/
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DSLSMN"; /* database name*/
+      TA1REC.TA1TBLVU = "VREPVN01"; /* table view name*/
+      TA1REC.TA1LOCAT[3] = "U       "; /* error location*/
+      TA1REC.TA1LOCAT[4] = "IO6590"; /* io module*/
+
+      try
+        call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+      end /* message formatter*/
+
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* rollback changes*/
+
+      XSPF4(); /* pass control to menu*/
+
+      SM0XM001.CAMSG = COMMAREA.CAMSG; /* system error*/
+
+    end
+  else /* no errors*/
+
+  /* ***********************************************************************/
+  /* * Row was updated successfully so store new change count.            **/
+  /* ***********************************************************************/
+
+    SM0XW01.SM0XW-VREPVN01-CHNG-CNT = VREPVN01.ZZ-CHNG-CNT;
+
+  end
+
+end // end SM0XS-UPDT-VND-ROW
+
+//*** RECORD=SM0XW01 ****
+// Working storage record for application SM0X.
+// 
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    1/12/93  RCORON    Created record.
+// 
+// ***********************
+Record SM0XW01 type basicRecord
+  10 SM0XW-VREPS001-LENGTH SM0XW-VREPS001-LENGTH ; 
+  10 SM0XW-VREPVN01-LENGTH SM0XW-VREPVN01-LENGTH ; 
+  10 SM0XW-VREPS001-CHNG-CNT SM0XW-VREPS001-CHNG-CNT ; 
+  10 SM0XW-VREPVN01-CHNG-CNT SM0XW-VREPVN01-CHNG-CNT ; 
+end // end SM0XW01
+
+//*** RECORD=SM0XW02 ****
+// Current map header record.
+// 
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    2/12/93  RCORON    Created record.
+// 
+// ***********************
+Record SM0XW02 type basicRecord
+  5 SM0XW-CURR-HDR-REC SM0XW-CURR-HDR-REC ; 
+    10 SM0XW-CURR-HDR-INPUT-FLDS SM0XW-CURR-HDR-INPUT-FLDS ; 
+      15 SM-SREP-ID SM-SREP-ID ; 
+end // end SM0XW02
+
+//*** RECORD=SM0XW03 ****
+// Previous map header record.
+// 
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    1/12/93  RCORON    Created record.
+// 
+// ***********************
+Record SM0XW03 type basicRecord
+  5 SM0XW-PREV-HDR-REC SM0XW-PREV-HDR-REC ; 
+    10 SM0XW-PREV-HDR-INPUT-FLDS SM0XW-PREV-HDR-INPUT-FLDS ; 
+      15 SM-SREP-ID SM-SREP-ID ; 
+end // end SM0XW03
+
+//*** RECORD=SM0XW04 ****
+// Current map detail record.
+// 
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    1/13/92  RCORON    Created record.
+// 
+// ***********************
+Record SM0XW04 type basicRecord
+  5 SM0XW-CURR-DTL-REC SM0XW-CURR-DTL-REC ; 
+    15 PV-MSA-VEND-NBR PV-MSA-VEND-NBR ; 
+    15 SM-SREP-EMPL-ID SM-SREP-EMPL-ID ; 
+    15 XXX-LAST-NM XXX-LAST-NM ; 
+    15 XXX-FRST-NM XXX-FRST-NM ; 
+    15 XXX-MID-INIT XXX-MID-INIT ; 
+    15 XXXADDR1 XXXADDR1 ; 
+    15 XXXADDR2 XXXADDR2 ; 
+    15 XXX-CITY XXX-CITY ; 
+    15 XST-ST-CD XST-ST-CD ; 
+    15 XXX-ZIP XXX-ZIP ; 
+      20 SM0XW-XXXZIP1 SM0XW-XXXZIP1 ; 
+      20 * char(1) ; 
+      20 SM0XW-XXXZIP2 SM0XW-XXXZIP2 ; 
+    15 XXX-ALT-ADDR1 XXX-ALT-ADDR1 ; 
+    15 XXX-ALT-ADDR2 XXX-ALT-ADDR2 ; 
+    15 XXX-ALT-CITY XXX-ALT-CITY ; 
+    15 XXX-ALT-ST-CD XXX-ALT-ST-CD ; 
+    15 XXX-ALT-ZIP XXX-ALT-ZIP ; 
+      20 SM0XW-XXXAZIP1 SM0XW-XXXAZIP1 ; 
+      20 * char(1) ; 
+      20 SM0XW-XXXAZIP2 SM0XW-XXXAZIP2 ; 
+    15 XXX-PHONE XXX-PHONE ; 
+      20 SM0XW-XXXPHNA SM0XW-XXXPHNA ; 
+      20 SM0XW-XXXPHNP SM0XW-XXXPHNP ; 
+      20 SM0XW-XXXPHNN SM0XW-XXXPHNN ; 
+    15 XXX-FAX-NBR XXX-FAX-NBR ; 
+      20 SM0XW-FAX-AREA SM0XW-FAX-AREA ; 
+      20 SM0XW-FAX-PRE SM0XW-FAX-PRE ; 
+      20 SM0XW-FAX-NBR SM0XW-FAX-NBR ; 
+      20 * char(5) ; 
+    15 SM-SREP-CONT-EDT SM-SREP-CONT-EDT ; 
+    15 SM-SREP-CONT-TDT SM-SREP-CONT-TDT ; 
+    15 ZZ-SDT ZZ-SDT ; 
+    15 ZZ-CHNG-DT ZZ-CHNG-DT ; 
+end // end SM0XW04
+
+//*** RECORD=SM0XW05 ****
+// Previous map detail record.
+// 
+// ************************************************************
+// *                  Mainenance History                      *
+// ************************************************************
+// 
+// Log #    Date      Name    Description
+// _____  ________  ________  _________________________________
+//  001    1/13/92  RCORON    Created record.
+// 
+// ***********************
+Record SM0XW05 type basicRecord
+  5 SM0XW-PREV-DTL-REC SM0XW-PREV-DTL-REC ; 
+    15 PV-MSA-VEND-NBR PV-MSA-VEND-NBR ; 
+    15 SM-SREP-EMPL-ID SM-SREP-EMPL-ID ; 
+    15 XXX-LAST-NM XXX-LAST-NM ; 
+    15 XXX-FRST-NM XXX-FRST-NM ; 
+    15 XXX-MID-INIT XXX-MID-INIT ; 
+    15 XXXADDR1 XXXADDR1 ; 
+    15 XXXADDR2 XXXADDR2 ; 
+    15 XXX-CITY XXX-CITY ; 
+    15 XST-ST-CD XST-ST-CD ; 
+    15 XXX-ZIP XXX-ZIP ; 
+      20 SM0XW-XXXZIP1 SM0XW-XXXZIP1 ; 
+      20 * char(1) ; 
+      20 SM0XW-XXXZIP2 SM0XW-XXXZIP2 ; 
+    15 XXX-ALT-ADDR1 XXX-ALT-ADDR1 ; 
+    15 XXX-ALT-ADDR2 XXX-ALT-ADDR2 ; 
+    15 XXX-ALT-CITY XXX-ALT-CITY ; 
+    15 XXX-ALT-ST-CD XXX-ALT-ST-CD ; 
+    15 XXX-ALT-ZIP XXX-ALT-ZIP ; 
+      20 SM0XW-XXXAZIP1 SM0XW-XXXAZIP1 ; 
+      20 * char(1) ; 
+      20 SM0XW-XXXAZIP2 SM0XW-XXXAZIP2 ; 
+    15 XXX-PHONE XXX-PHONE ; 
+      20 SM0XW-XXXPHNA SM0XW-XXXPHNA ; 
+      20 SM0XW-XXXPHNP SM0XW-XXXPHNP ; 
+      20 SM0XW-XXXPHNN SM0XW-XXXPHNN ; 
+    15 XXX-FAX-NBR XXX-FAX-NBR ; 
+      20 SM0XW-FAX-AREA SM0XW-FAX-AREA ; 
+      20 SM0XW-FAX-PRE SM0XW-FAX-PRE ; 
+      20 SM0XW-FAX-NBR SM0XW-FAX-NBR ; 
+      20 * char(5) ; 
+    15 SM-SREP-CONT-EDT SM-SREP-CONT-EDT ; 
+    15 SM-SREP-CONT-TDT SM-SREP-CONT-TDT ; 
+    15 ZZ-SDT ZZ-SDT ; 
+    15 ZZ-CHNG-DT ZZ-CHNG-DT ; 
+end // end SM0XW05
+
+// current map detail record
+DataItem SM0XW-CURR-DTL-REC char(296)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current map hdr input flds
+DataItem SM0XW-CURR-HDR-INPUT-FLDS char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// curremt map hdr record
+DataItem SM0XW-CURR-HDR-REC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0XW-FAX-AREA num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SM0XW-FAX-NBR num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SM0XW-FAX-PRE num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current map detail record
+DataItem SM0XW-PREV-DTL-REC char(296)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// previous map hdr input flds
+DataItem SM0XW-PREV-HDR-INPUT-FLDS char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// previous map hdr record
+DataItem SM0XW-PREV-HDR-REC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0XW-VREPS001-CHNG-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// temp storage rec length
+DataItem SM0XW-VREPS001-LENGTH num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SM0XW-VREPVN01-CHNG-CNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// temp storage rec length
+DataItem SM0XW-VREPVN01-LENGTH num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// XST_ST_CD
+DataItem SM0XW-XXXAZIP1 num(5)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// XST_ST_CD
+DataItem SM0XW-XXXAZIP2 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SM0XW-XXXPHNA num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SM0XW-XXXPHNN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SM0XW-XXXPHNP num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// XST_ST_CD
+DataItem SM0XW-XXXZIP1 num(5)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// XST_ST_CD
+DataItem SM0XW-XXXZIP2 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// sales rep effective date
+DataItem XXX-PHONE char(10)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

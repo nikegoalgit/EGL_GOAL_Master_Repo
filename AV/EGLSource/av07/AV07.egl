@@ -1,0 +1,3979 @@
+package av07;
+import av.common.*;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import fk.common.*;
+import fy.common.*;
+import in1.common.*;
+import ku.common.*;
+import op.common.*;
+import os.common.*;
+import pc.common.*;
+import pg.common.*;
+import sy.common.*;
+import ta.common.*;
+import ts.common.*;
+//*** PROGRAM=AV07 ****
+// This application allows the user to enter a style number
+// or owner group code or a record setup date or date range
+// to the map.  The davail.vainva01 (availability inventory
+// audit table is then searched based on the user entered
+// information and the returned rows are displayed.  The user
+// may then select one or more products on the map to view
+// the quantity detail for the selected product.
+// 
+// The selection criteria are as follows:
+// 1. Search by style number only
+// 2. Search by owner code only
+// 3. Search by one setup date or a range of setup dates
+// 4. Other key information may not be used as search criteria
+//    alone.  One of the above fields must also be entered
+// 5. If required fields are entered alone, other key values
+//    will be wildcarded.  If not, other key fields will be
+//    defaulted.
+// 6. Only one product may be selected for viewing in detail
+//    at a time.
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+//          03/01/91  DBRUIL  New application.
+//          03/25/91  RHETRI  Changed to be conversational.
+// av-109   07/24/91  bantho  fixed edit for date1
+// av0195   02/09/93  dbruih  changed to use whse 25 in owner
+//                            group verification.
+// 
+// av0000   10/08/93  MSMIT2  CSPV4.1 ABEND COMMAREA/AVWREC
+//                            ERROR MESSAGE PROBLEM.
+// av273    03/25/96  MHUYNH  Added warehouse 42 for Canada
+// YR2000   10/31/97  MBURLE  Y2KFIX: modified stmt groups,
+//                            AV07S04 and AV07S05 to be Y2K
+//                            compliant when checking for a
+//                            zero date.
+//          03/29/01 spitch  changes made for ware house 25
+//                            AV07159
+// *********************
+Program AV07 type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "AV00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  AV07W00 AV07W00; // record
+  AV07W01 AV07W01; // record
+  AV07W02 AV07W02; // record
+  AV07W03 AV07W03; // record
+  AVMREC AVMREC; // record
+  AVNREC AVNREC; // record
+  AVWREC AVWREC; // record
+  COMMAREA COMMAREA ; // record
+  PC2REC PC2REC; // record
+  PG2REC PG2REC; // record
+  PG3REC PG3REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  XOWREC XOWREC; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL; // table
+  use XOWTBL; // table
+  use XDMTBL; // table
+  use XQATBL; // table
+  use XPGTBL; // table
+  use AV07M.AV07M001,  // forms
+      AV07M.AV07M002
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPAV001: XPAV001();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and display storage areas.*/
+     /* ------------------------------------------------------------*/
+
+    set AV07M001 initial; /* M001 input/output*/
+    set AV07M002 initial; /* M002 input/output*/
+    set AV07W00 empty; /* Working storage*/
+    set AV07W01 empty; /* M001 display storage*/
+    set AV07W02 empty; /* M001 display storage*/
+    set AV07W03 empty; /* M001 display storage*/
+    set SQLCA empty; /* SQL communication area*/
+    set TAEREC empty; /* Error diagnosis information*/
+    set TA1REC empty; /* Error diagnosis parameters*/
+    set TA5REC empty; /* Temporary storage parameters*/
+    set XX0XW01 empty; /* Date/time subroutine parameters*/
+
+     /* 10/08/93: CSPV4.1 RESTRICTION.  MAKE SURE THAT THE AVWREC HAS*/
+     /* BEEN INITIALIZED.*/
+
+    if (COMMAREA.CAFROMAP != "AV04"
+     && COMMAREA.CAFROMAP != "AV05"
+     && COMMAREA.CAFROMAP != "AV06")
+      set AVWREC empty;
+    end
+
+    AV07W00.AV07WMAP = "1"; /* Map number*/
+    AV07W00.AV07WSWF = "Y"; /* Format the map switch*/
+    AVWREC.XGPCD = "03"; /* Initialize GPC*/
+
+    AV07W03.AV07MDT2 = 999999; /* Default end date*/
+    AV07M001.AV07MDT2 = 999999; /* Default end date*/
+    AV07W03.AV07WDT2 = 99999999; /* Default end date*/
+
+     /* ------------------------------------------------------------*/
+     /* If warehouse wasn't passed, default to 'xx'.*/
+     /* ------------------------------------------------------------*/
+    if (AVWREC.XWHCD == " ") /* If whse missing*/
+      AVWREC.XWHCD = "XX"; /* Default warehouse to wildcard*/
+      AVWREC.XWHABRV = "*** ALL ***"; /* Wildcard whse*/
+    end
+
+     /* ------------------------------------------------------------*/
+     /* If the search key was passed, request data.*/
+     /* ------------------------------------------------------------*/
+
+    if (AVWREC.XOWCD != " " /* if owner passed*/
+     || AVWREC.SY1STNBR != " ") /* or style nbr passed*/
+
+      AV07W00.AV07WSWR = "Y"; /* Request for data switch*/
+    else
+
+      AV07W00.AV07WSWR = "N"; /* Default Request data switch*/
+    end
+
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto AV07001; /* Converse the main process*/
+
+
+    AV07001: AV07001();
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the main process used to display a map.*/
+     /* ------------------------------------------------------------*/
+
+    goto AV07001; /* Converse the main process*/
+
+
+  end // end main
+end // end AV07
+
+// Determine which map to display
+Function AV07001()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) If specified, display the first map.*/
+   /* 2) Otherwise, if specified, display the second map.*/
+   /* 3) Otherwise, indicate error and exit to Application Menu.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07W00.AV07WMAP == "1") /* Map 1 was requested*/
+    AV07100(); /* Display map 1*/
+  else
+    if (AV07W00.AV07WMAP == "2") /* Map 2 was requested*/
+      AV07200(); /* Display map 2*/
+    else
+
+      /* ------------------------------------------------------------*/
+       /* Write the error to the Error Diagnosis Reporting Facility.*/
+      /* ------------------------------------------------------------*/
+      AVWREC.XXXMODID = "001"; /* Module identification*/
+      AVWREC.XXXMSGNO = 10; /* Unexpected error occurred*/
+
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+      TA1REC.TA1LOC = "INVALID MAP NUMBER WAS REQUESTED";
+      TA1REC.TA1MAPNO = AV07W00.AV07WMAP; /* Map number*/
+      TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+      TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+      /* ------------------------------------------------------------*/
+       /* Exit to display the application system menu.*/
+      /* ------------------------------------------------------------*/
+
+      COMMAREA.CATOAP = "AV0M"; /* TO application*/
+      XPAV003(); /* Exit to another application*/
+      /* ------------------------------------------------------------*/
+       /* Abnormally terminate the transaction if the exit failed.*/
+      /* ------------------------------------------------------------*/
+
+      TA1REC.TA1FUNC = "ABND"; /* Termination function*/
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+    end
+  end
+
+
+end // end AV07001
+
+// Main process to display a map
+Function AV07100()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) Obtain the data to display.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Reset highlighted fields to normal intensity.*/
+   /* 5) Verify the data that was entered.*/
+   /* 6) Process a valid input request.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+  AV07110(); /* Obtain the data to display*/
+
+  AV07120(); /* Format and display the map*/
+
+  AV07130(); /* Check attention identifier*/
+
+  AV07140(); /* Reset fields to normal intensity*/
+
+  AV07150(); /* Verify the entered data*/
+
+  AV07160(); /* Process valid input request*/
+
+
+end // end AV07100
+
+// Obtain the data to display
+Function AV07110()
+   /* ------------------------------------------------------------*/
+   /* If data was not requested or an error was found, return to*/
+   /* the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07W00.AV07WSWR != "Y" /* Data was not requested*/
+   || converseVar.validationMsgNum != 0) /* or an error was found*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Establish the temporary storage queue page length.*/
+   /* ------------------------------------------------------------*/
+
+  AV07W00.XXXTSLEN = 676; /* Temporary storage page length*/
+
+   /* ------------------------------------------------------------*/
+   /* Purge any existing pages from the temporary storage queue.*/
+   /* ------------------------------------------------------------*/
+
+  AV07S01(); /* Purge any temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* Obtain date and time.*/
+   /* ------------------------------------------------------------*/
+
+  XX0XS01(); /* Obtain date and time*/
+
+   /* ------------------------------------------------------------*/
+   /* Save keys not kept in AVWREC.*/
+   /* ------------------------------------------------------------*/
+
+  AV07W00.AV07MUSR = AV07M001.AV07MUSR; /* User ID*/
+  AV07W03.AV07MDT1 = AV07M001.AV07MDT1; /* Beg date*/
+  AV07W03.AV07MDT2 = AV07M001.AV07MDT2; /* End date*/
+  AV07W00.PC2SEGAB = AV07M001.PC2SEGAB; /* Seg name*/
+  AV07W00.XQAABRV = AV07M001.XQAABRV; /* XQA name*/
+  AV07W00.XPGABRV = AV07M001.XPGABRV; /* XPG name*/
+
+   /* ------------------------------------------------------------*/
+   /* Open AINVA.*/
+   /* ------------------------------------------------------------*/
+
+  AV07111(); /* Open AINVA*/
+
+   /* ------------------------------------------------------------*/
+   /* Fetch and format the data into pages until end of cursor.*/
+   /* ------------------------------------------------------------*/
+
+  while (AV07W00.AV07WEOC == "N") /* until end of cursor*/
+
+    AV07112(); /* Fetch AINVA*/
+
+    if (AV07W00.AV07WEOC != "Y") /* If not end of cursor*/
+
+      /* ------------------------------------------------------------*/
+       /* Select SYCLR.*/
+      /* ------------------------------------------------------------*/
+      AV07113(); /* Select SYCLR*/
+
+      /* ------------------------------------------------------------*/
+       /* Save data in display storage.*/
+      /* ------------------------------------------------------------*/
+      AV07114(); /* Save data*/
+
+      /* ------------------------------------------------------------*/
+       /* If the page is full, add the page to the storage queue.*/
+      /* ------------------------------------------------------------*/
+
+      if (AV07W00.AV07WIX1 > 12) /* Page is full*/
+        AV07115(); /* Add page to temporary storage*/
+      end
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Add any partially formatted last page to the queue.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07W00.AV07WIX1 > 1) /* Page was formatted*/
+    AV07115(); /* Add page to temporary storage*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Close AINVA.*/
+   /* ------------------------------------------------------------*/
+
+  AV07116(); /* close davail.vainva01 cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If no pages were formatted, indicate no data to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07W00.TA5TSQIX == 0) /* if no products written to temp*/
+                                   /* storage*/
+
+    AVWREC.XXXMODID = "110"; /* Module identification*/
+    converseLib.validationFailed(194); /* no data to display msg*/
+
+    return; /* Exit to continue processing*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If no message to display, reset the desired page number.*/
+   /* ------------------------------------------------------------*/
+
+  if (AVWREC.XXXMSGNO == 0) /* No message to display*/
+    AV07W00.XXXTSPAG = 1; /* Desired page number*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the request for data is complete.*/
+   /* ------------------------------------------------------------*/
+
+  AV07W00.AV07WSWR = "N"; /* Request for data switch*/
+
+
+end // end AV07110
+
+// Open AINVA
+Function AV07111()
+   /* ---------------------------------------------------------*/
+    /* Clear copybooks.*/
+   /* ---------------------------------------------------------*/
+  set AVMREC empty; /* clear io5520 work record*/
+  set AVNREC empty; /* clear io5520 work record*/
+
+   /* ---------------------------------------------------------*/
+   /* Format key.*/
+   /* ---------------------------------------------------------*/
+  if (COMMAREA.XSOCD != "42") /* usa*/
+    AVNREC.AVNFUNCD = "S1"; /* Format key*/
+  else /* canada*/
+    AVNREC.AVNFUNCD = "S2"; /* Format key*/
+  end
+
+  AVNREC.AVNBEGDT = AV07W03.AV07WDT1; /* Format setup date 1*/
+  AVNREC.AVNENDDT = AV07W03.AV07WDT2; /* Format setup date 2*/
+
+   /* ---------------------------------------------------------*/
+   /* Format key.  If no value is entered, wildcard field.*/
+   /* ---------------------------------------------------------*/
+
+  if (AVWREC.SY1STNBR == " ") /* If style number missing*/
+    AVMREC.SY1STNBR = "*"; /* wildcard style*/
+  else
+    AVMREC.SY1STNBR = AVWREC.SY1STNBR; /* style*/
+  end
+
+  if (AVWREC.SY2CLRID == " ") /* If color missing*/
+    AVMREC.SY2CLRID = "*"; /* wildcard color*/
+  else
+    AVMREC.SY2CLRID = AVWREC.SY2CLRID; /* color*/
+  end
+
+  if (AVWREC.XOWCD == " ") /* If owner missing*/
+    AVMREC.XOWCD = "*"; /* wildcard owner*/
+  else
+    AVMREC.XOWCD = AVWREC.XOWCD; /* color*/
+  end
+
+   /* F AVWREC.XWHCD EQ ' '            /* If warehouse missing*/
+  if (AVWREC.XWHCD == "XX") /* or wildcarded indicated*/
+    AVMREC.XWHCD = "*"; /* wildcard warehouse*/
+  else
+    AVMREC.XWHCD = AVWREC.XWHCD; /* warehouse*/
+  end
+
+  if (AVWREC.PC2INSEG == " ") /* If ISEG missing*/
+    AVMREC.PC2INSEG = "*"; /* wildcard ISEG*/
+  else
+    AVMREC.PC2INSEG = AVWREC.PC2INSEG; /* ISEG*/
+  end
+
+  if (AVWREC.XDMCD == " ") /* If deminsion*/
+    AVMREC.XDMCD = "*"; /* wildcard dimension*/
+  else
+    AVMREC.XDMCD = AVWREC.XDMCD; /* dimension*/
+  end
+
+  if (AVWREC.XQACD == " ") /* If quality code missing*/
+    AVMREC.XQACD = "*"; /* wildcard quality*/
+  else
+    AVMREC.XQACD = AVWREC.XQACD; /* quality code*/
+  end
+
+  if (AVWREC.XPGCD == " ") /* If package type missing*/
+    AVMREC.XPGCD = "*"; /* wildcard package type*/
+  else
+    AVMREC.XPGCD = AVWREC.XPGCD; /* package code*/
+  end
+
+  if (AV07W00.AV07MUSR == " ") /* If user ID*/
+    AVMREC.XXXUSRID = "*"; /* wildcard user ID*/
+  else
+    AVMREC.XXXUSRID = AV07W00.AV07MUSR; /* user ID*/
+  end
+
+   /* ----------------------------------------------------------*/
+   /* Open AINVA cursor.*/
+   /* ----------------------------------------------------------*/
+  try
+    call "AV9010" (AVNREC, SQLCA, AVMREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table set*/
+
+   /* ----------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ----------------------------------------------------------*/
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    AV07W00.AV07WEOC = "N"; /* End of cursor switch*/
+    AV07W00.AV07WIX1 = 1; /* Set line counter*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  AVWREC.XXXMODID = "111"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)  
+
+    converseLib.validationFailed(75); /* database in use messge*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(1); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OPEN CURSOR";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DAVAIL "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VAINVA01"; /* Table view name*/
+  TA1REC.TA1TBLKE = AVMREC.AVMKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07111
+
+// Fetch AINVA
+Function AV07112()
+   /* ---------------------------------------------------------*/
+   /* Format key.*/
+   /* ---------------------------------------------------------*/
+  if (COMMAREA.XSOCD != "42") /* usa*/
+    AVNREC.AVNFUNCD = "N1"; /* Format key*/
+  else
+    AVNREC.AVNFUNCD = "N2"; /* Format key*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Fetch AINVA.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "AV9010" (AVNREC, SQLCA, AVMREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or not found, return to previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == +0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == +100) /* Row not found*/
+
+      /* ------------------------------------------------------------*/
+       /* If end of selected set, indicate end of cursor.*/
+      /* ------------------------------------------------------------*/
+      if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+        AV07W00.AV07WEOC = "Y"; /* Indicate end of cursor*/
+      end
+
+      return; /* Return to previous process*/
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  AVWREC.XXXMODID = "112"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(75); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(264); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH NEXT TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DAVAIL  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VAINVA01"; /* Table view name*/
+  TA1REC.TA1TBLKE = AVMREC.AVMKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07112
+
+// Obtain SYCLR
+Function AV07113()
+   /* ---------------------------------------------------------*/
+   /* Clear copybook.*/
+   /* ---------------------------------------------------------*/
+  set PG2REC empty; /* clear iomod rec*/
+
+   /* ---------------------------------------------------------*/
+   /* Format keys.*/
+   /* ---------------------------------------------------------*/
+  PG2REC.XGPCD = AVWREC.XGPCD; /* gpc*/
+  PG2REC.SY1STNBR = AVMREC.SY1STNBR; /* style*/
+  PG2REC.SY2CLRID = AVMREC.SY2CLRID; /* color*/
+  PG2REC.XDMCD = AVMREC.XDMCD; /* dimension code*/
+
+   /* ---------------------------------------------------------*/
+   /* Select SYCLR.*/
+   /* ---------------------------------------------------------*/
+  AV07S02(); /* select dprodg.vsyclr01*/
+
+   /* ---------------------------------------------------------*/
+   /* Save data.*/
+   /* ---------------------------------------------------------*/
+  if (SQLCA.VAGen_SQLCODE == 0) /* if record found*/
+
+    AV07W01.SY1SSTNM[AV07WIX1] = PG2REC.SY1SSTNM; /* short style name*/
+    AV07W01.SY2CLRAB[AV07WIX1] = PG2REC.SY2CLRAB;
+                                   /* color abreviation*/
+  else
+
+    AV07W01.SY1SSTNM[AV07WIX1] = "NOT FOUND"; /* short style name*/
+    AV07W01.SY2CLRAB[AV07WIX1] = "NOT FOUND"; /* color abreviation*/
+  end
+
+
+end // end AV07113
+
+// Save data
+Function AV07114()
+   /* --------------------------------------------------*/
+   /* Save data in temporary storage for display.*/
+   /* --------------------------------------------------*/
+  AV07W01.XWHCD[AV07WIX1] = AVMREC.XWHCD; /* whse code*/
+  AV07W01.XOWCD[AV07WIX1] = AVMREC.XOWCD; /* owner group code*/
+  AV07W01.SY1STNBR[AV07WIX1] = AVMREC.SY1STNBR; /* style nbr*/
+  AV07W01.SY2CLRID[AV07WIX1] = AVMREC.SY2CLRID; /* color id*/
+  AV07W01.XDMCD[AV07WIX1] = AVMREC.XDMCD; /* dimension code*/
+  AV07W01.XQACD[AV07WIX1] = AVMREC.XQACD; /* quality code*/
+  AV07W01.PC2INSEG[AV07WIX1] = AVMREC.PC2INSEG; /* inventory segment cd*/
+  AV07W01.XPGCD[AV07WIX1] = AVMREC.XPGCD; /* package type code*/
+  AV07W01.XXXUSRID[AV07WIX1] = AVMREC.XXXUSRID; /* user id*/
+
+   /* --------------------------------------------------*/
+   /* Add to line counter.*/
+   /* --------------------------------------------------*/
+  AV07W00.AV07WIX1 = AV07W00.AV07WIX1 + 1;
+
+
+end // end AV07114
+
+// Add page to temporary storage
+Function AV07115()
+   /* ------------------------------------------------------------*/
+   /* Add the next page to temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  AV07W01.XXXTSLEN = AV07W00.XXXTSLEN; /* Temporary storage length*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+  TA5REC.TA5FNCCD = "A"; /* Function code*/
+
+  try
+    call "TA0050" (AV07W01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, initialize the storage area and indicators*/
+   /* to be used.  Return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    set AV07W01 empty; /* m001 display storage*/
+    AV07W00.AV07WIX1 = 1; /* display storage index*/
+    AV07W00.TA5TSQIX = TA5REC.TA5TSQIX; /* Highest page number*/
+    TA5REC.TA5TSQIX = 0; /* Current page number*/
+
+    return; /* Return to previous process*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  AVWREC.XXXMODID = "115"; /* Module identification*/
+  converseLib.validationFailed(76); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07115
+
+// Close AINVA
+Function AV07116()
+   /* ---------------------------------------------------------*/
+   /* Format key.*/
+   /* ---------------------------------------------------------*/
+  if (COMMAREA.XSOCD != "42") /* usa*/
+    AVNREC.AVNFUNCD = "C1"; /* Format key*/
+  else /* canada*/
+    AVNREC.AVNFUNCD = "C2"; /* Format key*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Close AINVA.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "AV9010" (AVNREC, SQLCA, AVMREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  AVWREC.XXXMODID = "116"; /* Module identification*/
+  converseLib.validationFailed(264); /* Indicate system error*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE CURSOR";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DAVAIL  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VAINVA01"; /* Table view name*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07116
+
+// Format and converse the map
+Function AV07120()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, save the error message number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+
+    AVWREC.XXXMSGNO = converseVar.validationMsgNum; /* Message number*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data requested or no error, format the data to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07W00.AV07WSWF == "Y" /* If data was requested*/
+   || converseVar.validationMsgNum == 0) /* or no error found*/
+
+    if (AV07W00.AV07WSWF == "Y") /* Map must be formatted*/
+      AV07121(); /* Format the data on the map*/
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Format the current date and any FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  AV07M001.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  AV07M001.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  AV07M001.CAITEM = COMMAREA.CAITEM; /* Application data*/
+
+   /* ------------------------------------------------------------*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /* ------------------------------------------------------------*/
+
+  if (AVWREC.XXXMSGNO != 0) /* Message to display*/
+
+    AV07M001.XXXMODID = AVWREC.XXXMODID; /* Module identification*/
+    if (AVWREC.XXXMSGNO == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(AVWREC.XXXMSGNO);
+    end /* Message number*/
+
+    set AV07M001 alarm; /* Indicate sound alarm*/
+
+  end
+
+  converse AV07M001 ;
+
+   /* ------------------------------------------------------------*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  AVWREC.XXXMODID = " "; /* Module identification*/
+  AVWREC.XXXMSGNO = 0; /* Message number*/
+
+  COMMAREA.CATOAP = AV07M001.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = AV07M001.CAITEM; /* Application data*/
+
+
+end // end AV07120
+
+// Format the display data
+Function AV07121()
+   /* ------------------------------------------------------------*/
+   /* Clear the fields in the map storage area to be formatted.*/
+   /* ------------------------------------------------------------*/
+
+  set AV07M001 initial; /* M001 input/output area*/
+
+  AV07W00.AV07WSWF = "N"; /* Format the map switch*/
+
+   /* ------------------------------------------------------------*/
+   /* If the page in storage is not the page to be displayed,*/
+   /* obtain the desired page from temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07W00.TA5TSQIX > 0) /* Pages were formatted*/
+
+    if (AV07W00.XXXTSPAG != TA5REC.TA5TSQIX) /* Desired page not current*/
+
+      /* ------------------------------------------------------------*/
+       /* If the desired page number is greater than the highest page*/
+       /* in storage, default to the highest page number.*/
+      /* ------------------------------------------------------------*/
+
+      if (AV07W00.XXXTSPAG > AV07W00.TA5TSQIX) /* Desired greater highest*/
+        AV07W00.XXXTSPAG = AV07W00.TA5TSQIX; /* Default to highest*/
+      end
+
+      AV07S03(); /* Obtain temporary storage page*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* Display the page information on the screen.*/
+    /* ------------------------------------------------------------*/
+
+    set AV07M001.XXXLITPG skip; /* "PAGE" literal*/
+    AV07M001.XXXTSPAG = AV07W00.XXXTSPAG; /* Current page*/
+    set AV07M001.XXXLITOF skip; /* "OF" literal*/
+    AV07M001.TA5TSQIX = AV07W00.TA5TSQIX; /* Highest page*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Load key data to map.*/
+   /* ------------------------------------------------------------*/
+
+  AV07M001.AV07MSTY = AVWREC.SY1STNBR; /* style number*/
+  AV07M001.AV07MSTD = AVWREC.SY1SSTNM; /* style name*/
+  AV07M001.AV07MCLR = AVWREC.SY2CLRID; /* color id*/
+  AV07M001.AV07MCLA = AVWREC.SY2CLRAB; /* color abrv*/
+  AV07M001.AV07MXOW = AVWREC.XOWCD; /* owner group code*/
+  AV07M001.XOWDESC = AVWREC.XOWDESC; /* owner grp name*/
+  AV07M001.AV07MXWH = AVWREC.XWHCD; /* warehouse code*/
+  AV07M001.XWHABRV = AVWREC.XWHABRV; /* warehouse abrv*/
+  AV07M001.AV07MISG = AVWREC.PC2INSEG; /* inventory segment code*/
+  AV07M001.AV07MXDM = AVWREC.XDMCD; /* dimension code*/
+  AV07M001.AV07MXQA = AVWREC.XQACD; /* quality code*/
+  AV07M001.AV07MXPG = AVWREC.XPGCD; /* package type code*/
+
+  AV07M001.PC2SEGAB = AV07W00.PC2SEGAB; /* inventory segment abrv*/
+  AV07M001.XQAABRV = AV07W00.XQAABRV; /* quality abrv*/
+  AV07M001.XPGABRV = AV07W00.XPGABRV; /* package type abrv*/
+  AV07M001.AV07MUSR = AV07W00.AV07MUSR; /* userid*/
+  AV07M001.AV07MDT1 = AV07W03.AV07MDT1; /* setup date 1*/
+  AV07M001.AV07MDT2 = AV07W03.AV07MDT2; /* setup date 2*/
+
+  if (AV07M001.AV07MDT2 == 000000)
+    AV07M001.AV07MDT2 = 999999;
+  end
+
+   /* ---------------------------------------------------------*/
+   /* Set map selection fields dark:*/
+   /* The following fields are set defined as temp storage data*/
+   /* is moved in.*/
+   /* ---------------------------------------------------------*/
+
+  AV07W00.AV07WIX1 = 1; /* set index to 1*/
+  if (converseVar.validationMsgNum != 262 /* selection field messages:*/
+   && converseVar.validationMsgNum != 277)
+
+    while (AV07W00.AV07WIX1 <= 12) /* until end of map lines*/
+      set AV07M001.AV07MSEL[AV07WIX1] protect, invisible;
+      AV07W00.AV07WIX1 = AV07W00.AV07WIX1 + 1;
+    end
+  else
+    while (AV07W00.AV07WIX1 <= 12) /* until end of map lines*/
+      if (AV07M001.SY1STNBR[AV07WIX1] == " ")
+        set AV07M001.AV07MSEL[AV07WIX1] protect, invisible;
+      end
+      AV07W00.AV07WIX1 = AV07W00.AV07WIX1 + 1;
+    end
+  end
+
+   /* ---------------------------------------------------------*/
+   /* Load data to map.*/
+   /* ---------------------------------------------------------*/
+  AV07W00.AV07WIX1 = 1; /* set map index*/
+
+  while (AV07W00.AV07WIX1 <= 12) /* load each map row*/
+
+    if (AV07W01.SY1STNBR[AV07WIX1] > " ") /* and data in record row*/
+      /* ---------------------------------------------------------*/
+       /* MOVE TEMPORARY STORAGE PAGE FIELDS TO MAP*/
+      /* ---------------------------------------------------------*/
+      if (AV07W00.AV07WIX1 == 1) /* First select field*/
+        set AV07M001.AV07MSEL[AV07WIX1] cursor; /* Position cursor*/
+      end
+
+      set AV07M001.AV07MSEL[AV07WIX1] normal;
+
+      AV07M001.AV07MSEL[AV07WIX1] = AV07W01.AV07MSEL[AV07WIX1];
+      AV07M001.XWHCD[AV07WIX1] = AV07W01.XWHCD[AV07WIX1];
+      AV07M001.XOWCD[AV07WIX1] = AV07W01.XOWCD[AV07WIX1];
+      AV07M001.SY1STNBR[AV07WIX1] = AV07W01.SY1STNBR[AV07WIX1];
+      AV07M001.SY2CLRID[AV07WIX1] = AV07W01.SY2CLRID[AV07WIX1];
+      AV07M001.XDMCD[AV07WIX1] = AV07W01.XDMCD[AV07WIX1];
+
+      AV07M001.SY1SSTNM[AV07WIX1] = AV07W01.SY1SSTNM[AV07WIX1];
+      AV07M001.SY2CLRAB[AV07WIX1] = AV07W01.SY2CLRAB[AV07WIX1];
+      AV07M001.XQACD[AV07WIX1] = AV07W01.XQACD[AV07WIX1];
+      AV07M001.PC2INSEG[AV07WIX1] = AV07W01.PC2INSEG[AV07WIX1];
+      AV07M001.XPGCD[AV07WIX1] = AV07W01.XPGCD[AV07WIX1];
+      AV07M001.XXXUSRID[AV07WIX1] = AV07W01.XXXUSRID[AV07WIX1];
+
+    end
+
+    AV07W00.AV07WIX1 = AV07W00.AV07WIX1 + 1; /* Increment line index*/
+
+  end
+
+
+end // end AV07121
+
+// Check attention identifier
+Function AV07130()
+   /* ------------------------------------------------------------*/
+   /* If CANCEL was requested, clear the map fields and exit.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+
+    if (AV07W00.AV07WSWR == "Y") /* Request for data*/
+      set AV07W01 empty; /* m001 display storage*/
+    end
+
+    AV07W00.AV07WSWF = "Y"; /* Format the map switch*/
+    AV07W00.AV07WSWR = "N"; /* Request for data switch*/
+
+    COMMAREA.CATOAP = " "; /* TO application*/
+    COMMAREA.CAITEM = " "; /* Application data*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If FAST PATH was requested, transfer to the application.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07M001.CATOAP > " ") /* FAST PATH was requested*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      AV07S01(); /* Purge temporary storage*/
+
+      XPAV003(); /* Exit to another application*/
+
+      set AV07M001.CATOAP cursor, bold; /* Highlight*/
+      AV07W00.AV07WSWR = "Y"; /* Request for data switch*/
+
+    else
+
+      AVWREC.XXXMODID = "130"; /* Module identification*/
+      converseLib.validationFailed(23); /* PA/PF key may not be used*/
+
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If HELP, exit to the previous level or exit to the Master*/
+   /* Menu was requested, exit to another application.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf1  /* PF1 was pressed*/
+   || converseVar.eventKey is pf3  /* or PF3 was pressed*/
+   || converseVar.eventKey is pf4  /* or PF4 was pressed*/
+   || converseVar.eventKey is pf5  /* or PF5 was pressed*/
+   || converseVar.eventKey is pf6  /* or PF6 was pressed*/
+   || converseVar.eventKey is pf13 /* or PF13 was pressed*/
+   || converseVar.eventKey is pf14 /* or PF14 was pressed*/
+   || converseVar.eventKey is pf15) /* or PF15 was pressed*/
+
+    if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+      COMMAREA.CAITEM = "AV07M001"; /* Application find code*/
+    end
+
+    if (converseVar.eventKey is pf3 /* PF3 was pressed*/
+     || converseVar.eventKey is pf6) /* PF6 was pressed*/
+      COMMAREA.CATOAP = "AV0S"; /* TO application*/
+    end
+
+    if (converseVar.eventKey is pf5) /* PF5 was pressed*/
+      COMMAREA.CATOAP = "AV0M"; /* TO application*/
+    end
+
+    if (converseVar.eventKey is pf13) /* PF13 was pressed*/
+      COMMAREA.CATOAP = "AV04"; /* TO application*/
+    end
+
+    if (converseVar.eventKey is pf14) /* PF13 was pressed*/
+      COMMAREA.CATOAP = "AV05"; /* TO application*/
+    end
+
+    if (converseVar.eventKey is pf15) /* PF15 was pressed*/
+      COMMAREA.CATOAP = "AV06"; /* TO application*/
+    end
+
+    AV07S01(); /* Purge temporary storage*/
+
+    XPAV003(); /* Exit to another application*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf7   /* and PF7 was not pressed*/
+   && converseVar.eventKey not pf8)  /* and PF8 was not pressed*/
+
+    AVWREC.XXXMODID = "130"; /* Module identification*/
+    converseLib.validationFailed(15); /* PA/PF key pressed is not valid*/
+
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+end // end AV07130
+
+// Reset highlighted fields
+Function AV07140()
+   /* ------------------------------------------------------------*/
+   /* Reset all modifiable field attributes to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  set AV07M001.AV07MSTY initialAttributes; /* Style*/
+  set AV07M001.AV07MCLR initialAttributes; /* Color*/
+  set AV07M001.AV07MXDM initialAttributes; /* Dimension*/
+  set AV07M001.AV07MXWH initialAttributes; /* Warehouse*/
+  set AV07M001.AV07MXOW initialAttributes; /* Owner*/
+  set AV07M001.AV07MXQA initialAttributes; /* Quality*/
+  set AV07M001.AV07MISG initialAttributes; /* ISEG*/
+  set AV07M001.AV07MXPG initialAttributes; /* Package type*/
+  set AV07M001.XXXUSRID initialAttributes; /* User ID*/
+  set AV07M001.AV07MDT1 initialAttributes; /* Begin date*/
+  set AV07M001.AV07MDT2 initialAttributes; /* End date*/
+
+  AV07W00.AV07WIXM = 1; /* Initialize line index*/
+
+  while (AV07W00.AV07WIXM <= 12 /* Until end of lines*/
+   && AV07M001.SY1STNBR[AV07WIXM] > " ") /* or end of display*/
+
+    set AV07M001.AV07MSEL[AV07WIXM] normal; /* Reset select flag*/
+
+    AV07W00.AV07WIXM = AV07W00.AV07WIXM + 1; /* Increment line index*/
+
+  end
+
+  set AV07M001.CATOAP initialAttributes; /* TO application*/
+  set AV07M001.CAITEM initialAttributes; /* Application data*/
+
+
+end // end AV07140
+
+// Verify data that was entered
+Function AV07150()
+   /* ------------------------------------------------------------*/
+   /* Highlight any application data that was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07M001.CAITEM > " ") /* Application data was entered*/
+
+    AVWREC.XXXMODID = "150"; /* Module identification*/
+    set AV07M001.CAITEM cursor, bold; /* Highlight*/
+    converseLib.validationFailed(28); /* Enter only with FAST PATH*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid request to scroll was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   || converseVar.eventKey is pf8) /* or scroll forward request*/
+
+    AV07151(); /* Verify scroll request*/
+
+  else
+
+    /* ------------------------------------------------------------*/
+     /* Otherwise, if page was formatted, verify data in the line.*/
+    /* ------------------------------------------------------------*/
+
+    if (AV07W00.TA5TSQIX > 0) /* Page was formatted*/
+
+      AV07W00.AV07WIXM = 12; /* Initialize line index*/
+
+      while (AV07W00.AV07WIXM > 0) /* Until end of lines*/
+
+        AV07152(); /* Verify data in the line*/
+
+        AV07W00.AV07WIXM = AV07W00.AV07WIXM - 1; /* Decrement line number*/
+
+      end
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* Verify dates.*/
+    /* ------------------------------------------------------------*/
+    AV07153(); /* Verify dates*/
+
+    /* ------------------------------------------------------------*/
+     /* Verify the Package code.*/
+    /* ------------------------------------------------------------*/
+    AV07154(); /* Verify package*/
+
+    /* ------------------------------------------------------------*/
+     /* Verify the ISEG code*/
+    /* ------------------------------------------------------------*/
+    if (AV07M001.AV07MISG > " ") /* If ISEG code entered*/
+      AV07155(); /* Verify ISEG code*/
+    else
+      AV07M001.PC2SEGAB = " "; /* Clear ISEG name*/
+    end
+
+    /* ------------------------------------------------------------*/
+     /* Verify the Quality code.*/
+    /* ------------------------------------------------------------*/
+    AV07156(); /* Verify quality code*/
+
+    /* ------------------------------------------------------------*/
+     /* If both Style and Owner Group are not entered, error.*/
+    /* ------------------------------------------------------------*/
+    AV07157(); /* Verify style/color codes*/
+
+    /* ------------------------------------------------------------*/
+     /* Verify the Owner Group code.*/
+    /* ------------------------------------------------------------*/
+    AV07158(); /* Verify owner grp code*/
+
+    /* ------------------------------------------------------------*/
+     /* Verify the Warehouse code.*/
+    /* ------------------------------------------------------------*/
+    AV07159(); /* Verify warehouse code*/
+
+  end
+   /* ------------------------------------------------------------*/
+   /* If any errors were found, exit to display the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Errors were found*/
+    exit stack; /* Exit to display map*/
+  end
+
+
+end // end AV07150
+
+// Verify scroll request
+Function AV07151()
+   /* ------------------------------------------------------------*/
+   /* If scroll back was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   && AV07W00.XXXTSPAG < 2)       /* and no previous pages*/
+
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    converseLib.validationFailed(10); /* No previous page to display*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll forward was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf8 /* Scroll forward request*/
+   && AV07W00.XXXTSPAG >= AV07W00.TA5TSQIX) /* and no more pages*/
+
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    converseLib.validationFailed(11); /* No more pages to display*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Indicate an error for any data that was modified.*/
+   /* ------------------------------------------------------------*/
+
+  AV07W00.AV07WIXM = 12; /* Initialize line index*/
+
+  while (AV07W00.AV07WIXM > 0) /* Until end of lines*/
+
+    if (AV07M001.AV07MSEL[AV07WIXM] != AV07W01.AV07MSEL[AV07WIXM])
+      if (AV07M001.AV07MSEL[AV07WIXM] != " "
+       && AV07M001.AV07MSEL[AV07WIXM] != "V")
+
+        AVWREC.XXXMODID = "151"; /* Module identification*/
+        set AV07M001.AV07MSEL[AV07WIXM] cursor, bold; /* Highlight*/
+        converseLib.validationFailed(272); /* Field may not change*/
+
+      end
+    end
+
+    AV07W00.AV07WIXM = AV07W00.AV07WIXM - 1; /* Decrement line number*/
+
+  end
+
+
+  if (AV07M001.AV07MDT2 != AV07W03.AV07MDT2) /* Beg date changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MDT2 cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+  if (AV07M001.AV07MDT1 != AV07W03.AV07MDT1) /* Beg date changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MDT1 cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+  if (AV07M001.AV07MUSR != AV07W00.AV07MUSR) /* User ID changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MUSR cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+  if (AV07M001.AV07MXPG != AVWREC.XPGCD) /* Package type changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MXPG cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+  if (AV07M001.AV07MISG != AVWREC.PC2INSEG) /* Iseg changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MISG cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+  if (AV07M001.AV07MXQA != AVWREC.XQACD) /* Quality changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MXQA cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+  if (AV07M001.AV07MXDM != AVWREC.XDMCD) /* Dim changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MXDM cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+  if (AV07M001.AV07MCLR != AVWREC.SY2CLRID) /* Color changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MCLR cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+  if (AV07M001.AV07MSTY != AVWREC.SY1STNBR) /* Style changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MSTY cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+  if (AV07M001.AV07MXOW != AVWREC.XOWCD) /* Owner changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MXOW cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+  if (AV07M001.AV07MXWH != AVWREC.XWHCD) /* Warehouse changed*/
+    AVWREC.XXXMODID = "151"; /* Module identification*/
+    set AV07M001.AV07MXWH cursor, bold; /* Highlight*/
+    converseLib.validationFailed(275); /* Field may not change*/
+  end
+
+
+end // end AV07151
+
+// Verify data in the line
+Function AV07152()
+   /* ------------------------------------------------------------*/
+   /* If selection was entered and is not a "S", indicate that*/
+   /* only "S" may be entered to select a line.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07M001.AV07MSEL[AV07WIXM] != AV07W01.AV07MSEL[AV07WIXM]
+   && AV07M001.AV07MSEL[AV07WIXM] != "S" /* and is not a "S"*/
+   && AV07M001.AV07MSEL[AV07WIXM] != "V" /* and is not viewed*/
+   && AV07M001.AV07MSEL[AV07WIXM] != " ") /* and is not blank*/
+
+    AVWREC.XXXMODID = "152"; /* Module identification*/
+    set AV07M001.AV07MSEL[AV07WIXM] cursor, bold; /* Highlight*/
+    converseLib.validationFailed(262); /* Only "S" may be entered*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Verify only one 's' can be entered at a time.*/
+   /* ------------------------------------------------------------*/
+  if (AV07M001.AV07MSEL[AV07WIXM] == "S") /* If "S" entered*/
+
+    AV07W00.AV07WIX2 = AV07W00.AV07WIXM - 1; /* Set counter*/
+
+    while (AV07W00.AV07WIX2 > 0) /* While counter greater than 0*/
+
+      if (AV07M001.AV07MSEL[AV07WIX2] == "S") /* If any other 'S'*/
+        AVWREC.XXXMODID = "152"; /* Module identification*/
+        set AV07M001.AV07MSEL[AV07WIXM] cursor, bold; /* Highlight*/
+        converseLib.validationFailed(277); /* More than one selection*/
+      end
+
+      AV07W00.AV07WIX2 = AV07W00.AV07WIX2 - 1; /* Decrement counter*/
+
+    end
+  end
+
+
+end // end AV07152
+
+// Verify dates
+Function AV07153()
+   /* -----------------------------------------------------*/
+   /* Default setup end date:*/
+   /* -----------------------------------------------------*/
+  if (AV07M001.AV07MDT2 == 000000)
+    AV07M001.AV07MDT2 = 999999;
+  end
+
+   /* ------------------------------------------------------*/
+   /* Clear working storage format ccyymmdd dates:*/
+   /* ------------------------------------------------------*/
+  AV07W03.AV07WDT1 = 0;
+  AV07W03.AV07WDT2 = 0;
+  AV07W03.AV07WDT3 = 0;
+  AV07W03.AV07WDT4 = 0;
+
+  if (AV07M001.AV07MDT1 == 000000) /* if setup dates are not entered*/
+    AV07W03.AV07WDT1 = +000000000; /* set select setup begin date*/
+  end
+
+  if (AV07M001.AV07MDT2 == 999999) /* if setup dates are not entered*/
+    AV07W03.AV07WDT2 = +999999999; /* set select setup end date*/
+  end
+
+  if (AV07M001.AV07MDT1 == 000000 /* if no dates entered*/
+   && AV07M001.AV07MDT2 == 999999)
+    return;
+  end
+
+  XX0XS01(); /* convert system date and time*/
+
+   /* ------------------------------------------------------*/
+   /* If begin date is greater than zero,*/
+   /* ------------------------------------------------------*/
+  if (AV07M001.AV07MDT1 > 0) /* if setup date 1 entered*/
+    AV07W03.AV07WDT3 = AV07M001.AV07MDT1;
+    AV07S04(); /* reformat date to ccyymmdd*/
+    AV07S05(); /* edit setup date 1*/
+
+    if (converseVar.validationMsgNum > 0) /* if date in error*/
+      AVWREC.XXXMODID = "153"; /* Module identification*/
+      set AV07M001.AV07MDT1 cursor, bold;
+    else
+       /* move formatted setup date1 to save date 1*/
+      AV07W03.AV07WDT1 = AV07W03.AV07WDT4;
+    end
+  end
+
+   /* ------------------------------------------------------*/
+   /* If end date is not equal 999999,*/
+   /* ------------------------------------------------------*/
+  if (AV07M001.AV07MDT2 != 999999) /* if setup date 2 entered*/
+    AV07W03.AV07WDT3 = AV07M001.AV07MDT2;
+    AV07S04(); /* reformat date to ccyymmdd*/
+    AV07S05(); /* edit setup date 2*/
+
+    if (converseVar.validationMsgNum > 0) /* if date in error*/
+      AVWREC.XXXMODID = "153"; /* Module identification*/
+      set AV07M001.AV07MDT2 cursor, bold;
+    else
+      /* -------------------------------------------------*/
+       /* move formatted setup date2 to save date 2*/
+      /* -------------------------------------------------*/
+      AV07W03.AV07WDT2 = AV07W03.AV07WDT4;
+    end
+  end
+
+   /* ------------------------------------------------------*/
+   /* if setup date 1 greater than setup date 2*/
+   /* the result will be no records selected*/
+   /* ------------------------------------------------------*/
+  if (AV07W03.AV07WDT1 > AV07W03.AV07WDT2)
+    AVWREC.XXXMODID = "153"; /* Module identification*/
+    converseLib.validationFailed(179); /* invalid date range msg*/
+    set AV07M001.AV07MDT1 cursor, bold;
+    set AV07M001.AV07MDT2 bold;
+  end
+
+
+end // end AV07153
+
+// Verify package code
+Function AV07154()
+   /* ------------------------------------------------------------*/
+   /* Verify the Package Type*/
+   /* ------------------------------------------------------------*/
+
+  AV07M001.XPGABRV = " "; /* ISEG*/
+
+  if (AV07M001.AV07MXPG > "  ") /* iseg entered*/
+
+    if (AV07M001.AV07MXPG in XPGTBL.XPGCD) /* Code in table*/
+      if (XPGTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+        AV07M001.XPGABRV = XPGTBL.XPGABRV[sysVar.arrayIndex]; /* ISEG*/
+
+      else
+        /* ------------------------------------------------------------*/
+         /* If inactive*/
+        /* ------------------------------------------------------------*/
+        AVWREC.XXXMODID = "154"; /* Module identification*/
+        set AV07M001.AV07MXPG cursor, bold; /* Highlight*/
+        converseLib.validationFailed(32); /* package type inactive*/
+
+      end
+    else
+      /* ------------------------------------------------------------*/
+       /* If not found*/
+      /* ------------------------------------------------------------*/
+
+      AVWREC.XXXMODID = "154"; /* Module identification*/
+      set AV07M001.AV07MXPG cursor, bold; /* Highlight*/
+      converseLib.validationFailed(31); /* package type invalid*/
+
+    end
+  end
+
+
+end // end AV07154
+
+// Verify ISEG code
+Function AV07155()
+   /* ------------------------------------------------------------*/
+    /* Clear copybook.*/
+   /* ------------------------------------------------------------*/
+  set PC2REC empty; /* clear iomod record*/
+  AV07M001.PC2SEGAB = " "; /* clear map segment abreviation*/
+
+   /* ------------------------------------------------------------*/
+   /* Format key.*/
+   /* ------------------------------------------------------------*/
+  PC2REC.XGPCD = AVWREC.XGPCD; /* gpc code*/
+  PC2REC.PC2INSEG = AV07M001.AV07MISG; /* cust segment code*/
+
+   /* ------------------------------------------------------------*/
+   /* Select SYCLR.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "IO3340" ("SG", SQLCA, PC2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or not found, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == +0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      if (SQLCA.VAGen_SQLCODE == +0) /* Normal return code*/
+        AV07M001.PC2SEGAB = PC2REC.PC2SEGAB;
+      else
+        converseLib.validationFailed(41); /* invalid cust segment code msg*/
+        AVWREC.XXXMODID = "155"; /* Module identification*/
+        set AV07M001.AV07MISG cursor, modified, bold;
+      end
+      return;
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  AVWREC.XXXMODID = "155"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(75); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(264); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DPRODC  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPRDCU01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PG2REC.PG2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07155
+
+// Verify quality code
+Function AV07156()
+   /* ------------------------------------------------------------*/
+   /* Verify the Quality code*/
+   /* ------------------------------------------------------------*/
+
+  AV07M001.XQAABRV = " "; /* quality*/
+
+  if (AV07M001.AV07MXQA > "  ") /* quality entered*/
+
+    if (AV07M001.AV07MXQA in XQATBL.XQACD) /* Code in table*/
+      if (XQATBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+        AV07M001.XQAABRV = XQATBL.XQAABRV[sysVar.arrayIndex]; /* quality*/
+
+      else
+        /* ------------------------------------------------------------*/
+         /* If inactive*/
+        /* ------------------------------------------------------------*/
+
+        AVWREC.XXXMODID = "156"; /* Module identification*/
+        set AV07M001.AV07MXQA cursor, bold; /* Highlight*/
+        converseLib.validationFailed(45); /* quality inactive*/
+
+      end
+    else
+      /* ------------------------------------------------------------*/
+       /* If not found*/
+      /* ------------------------------------------------------------*/
+
+      AVWREC.XXXMODID = "156"; /* Module identification*/
+      set AV07M001.AV07MXQA cursor, bold; /* Highlight*/
+      converseLib.validationFailed(44); /* quality invalid*/
+
+    end
+  end
+
+
+end // end AV07156
+
+// Verify style/color/dim
+Function AV07157()
+   /* ------------------------------------------------------------*/
+   /* Verify the Dimension code.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07M001.AV07MXDM > "  ") /* dimension entered*/
+
+    if (AV07M001.AV07MXDM in XDMTBL.XDMCD) /* Code in table*/
+      if (XDMTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+         /* next sentence*/
+
+      else
+        /* ------------------------------------------------------------*/
+         /* If inactive*/
+        /* ------------------------------------------------------------*/
+
+        AVWREC.XXXMODID = "157"; /* Module identification*/
+        set AV07M001.AV07MXDM cursor, bold; /* Highlight*/
+        converseLib.validationFailed(83); /* dimension inactive*/
+
+      end
+    else
+      /* ------------------------------------------------------------*/
+       /* If not found*/
+      /* ------------------------------------------------------------*/
+
+      AVWREC.XXXMODID = "157"; /* Module identification*/
+      set AV07M001.AV07MXDM cursor, bold; /* Highlight*/
+      converseLib.validationFailed(84); /* dimension invalid*/
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* ------------------------------------------------------------*/
+   /* ------------------------------------------------------------*/
+   /* ------------------------------------------------------------*/
+   /* ------------------------------------------------------------*/
+   /* ------------------------------------------------------------*/
+   /* ------------------------------------------------------------*/
+   /* If both Style and Owner Group are not entered, error.*/
+   /* ------------------------------------------------------------*/
+  if (AV07M001.AV07MSTY == "      " /* style empty*/
+   && AV07M001.AV07MXOW == "  ")    /* and owner empty*/
+
+    AVWREC.XXXMODID = "157"; /* Module identification*/
+    set AV07M001.AV07MSTY cursor, bold; /* Highlight*/
+    set AV07M001.AV07MXOW bold; /* Highlight*/
+    converseLib.validationFailed(308);
+                                   /* May not wildcard both style and owner*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If Style, Color, and Dim entered, validate product*/
+   /* ------------------------------------------------------------*/
+  AV07M001.AV07MSTD = " "; /* init style desc*/
+  AV07M001.AV07MCLA = " "; /* init color desc*/
+
+  if (AV07M001.AV07MSTY > "      " /* style entered*/
+   && AV07M001.AV07MCLR > "   "    /* color entered*/
+   && AV07M001.AV07MXDM > "  ")    /* dim entered*/
+
+    set PG2REC empty; /* Clear row storage area*/
+
+    PG2REC.XGPCD = AVWREC.XGPCD; /* GPC code*/
+    PG2REC.SY1STNBR = AV07M001.AV07MSTY; /* Style number*/
+    PG2REC.SY2CLRID = AV07M001.AV07MCLR; /* color*/
+    PG2REC.XDMCD = AV07M001.AV07MXDM; /* dim*/
+
+    /* ------------------------------------------------------------*/
+     /* Select SYCLR.*/
+    /* ------------------------------------------------------------*/
+    AV07S02();
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* not found*/
+      AVWREC.XXXMODID = "157"; /* Module identification*/
+      set AV07M001.AV07MSTY cursor, bold; /* Highlight*/
+      set AV07M001.AV07MCLR bold; /* Highlight*/
+      set AV07M001.AV07MXDM bold; /* Highlight*/
+      converseLib.validationFailed(311); /* style does not exist*/
+    else
+      AVWREC.SY1SSTNM = PG2REC.SY1SSTNM; /* move style desc*/
+      AVWREC.SY2CLRAB = PG2REC.SY2CLRAB; /* move color desc*/
+    end
+
+  else
+    /* ------------------------------------------------------------*/
+     /* If Style entered, validate style*/
+    /* ------------------------------------------------------------*/
+    if (AV07M001.AV07MSTY > "      ") /* style entered*/
+
+      /* ------------------------------------------------------------*/
+       /* Open SYCLR.*/
+      /* ------------------------------------------------------------*/
+      AV07S06();
+
+      /* ------------------------------------------------------------*/
+       /* Fetch SYCLR.*/
+      /* ------------------------------------------------------------*/
+      AV07S07();
+
+      if (SQLCA.VAGen_SQLCODE == 100) /* Not found*/
+        AVWREC.XXXMODID = "157"; /* Module identification*/
+        set AV07M001.AV07MSTY cursor, bold; /* Highlight*/
+        converseLib.validationFailed(6); /* style does not exist*/
+      else
+        AVWREC.SY1SSTNM = PG2REC.SY1SSTNM; /* move style desc*/
+
+        /* ------------------------------------------------------------*/
+         /* If Color entered, validate Color*/
+        /* ------------------------------------------------------------*/
+        if (AV07M001.AV07MCLR > "   ") /* color is not present*/
+
+          while (PG2REC.SY2CLRID != AV07M001.AV07MCLR
+           && SQLCA.VAGen_SQLCODE != 100)
+
+            /* ------------------------------------------------------------*/
+             /* Fetch SYCLR.*/
+
+            /* ------------------------------------------------------------*/
+            AV07S07();
+          end
+
+          if (SQLCA.VAGen_SQLCODE == 100) /* Not found*/
+            AVWREC.XXXMODID = "157"; /* Module identification*/
+            set AV07M001.AV07MCLR cursor, bold; /* Highlight*/
+            converseLib.validationFailed(7); /* color/dim does not exist*/
+
+          else
+            AVWREC.SY2CLRAB = PG2REC.SY2CLRAB; /* move color desc*/
+          end
+        end
+      end
+
+      /* ------------------------------------------------------------*/
+       /* Close SYCLR.*/
+      /* ------------------------------------------------------------*/
+      AV07S08();
+
+    end
+  end
+
+
+end // end AV07157
+
+// Verify owner group code
+Function AV07158()
+   /* ------------------------------------------------------------*/
+   /* Verify the Owner Group code.*/
+   /* ------------------------------------------------------------*/
+
+  if (COMMAREA.XSOCD != "42") /* usa*/
+    if (AV07M001.AV07MXWH == "  "
+     || AV07M001.AV07MXWH == "XX")
+      XOWREC.XWHCD = "51";
+    else
+      XOWREC.XWHCD = AV07M001.AV07MXWH;
+    end
+  else /* Canada*/
+    if (AV07M001.AV07MXWH == "  "
+     || AV07M001.AV07MXWH == "XX")
+      XOWREC.XWHCD = "42";
+    else
+      XOWREC.XWHCD = AV07M001.AV07MXWH;
+    end
+  end
+
+  AV07M001.XOWDESC = " "; /* init owner group desc*/
+
+  if (AV07M001.AV07MXOW > "  ") /* owner group entered*/
+
+    XOWREC.XOWCD = AV07M001.AV07MXOW; /* move to key*/
+
+    if (XOWREC.XOWKEY in XOWTBL.XOWKEY) /* Code in table*/
+      if (XOWTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+        AV07M001.XOWDESC = XOWTBL.XOWDESC[sysVar.arrayIndex]; /* move desc*/
+
+      else
+        /* ------------------------------------------------------------*/
+         /* If inactive*/
+        /* ------------------------------------------------------------*/
+
+        AVWREC.XXXMODID = "158"; /* Module identification*/
+        set AV07M001.AV07MXOW cursor, bold; /* Highlight*/
+        set AV07M001.AV07MXWH bold; /* Highlight*/
+        converseLib.validationFailed(80); /* owner group inactive*/
+
+      end
+    else
+      /* ------------------------------------------------------------*/
+       /* If not found*/
+      /* ------------------------------------------------------------*/
+      AVWREC.XXXMODID = "158"; /* Module identification*/
+      set AV07M001.AV07MXOW cursor, bold; /* Highlight*/
+      set AV07M001.AV07MXWH bold; /* Highlight*/
+      converseLib.validationFailed(81); /* owner group invalid*/
+
+    end
+  end
+
+
+end // end AV07158
+
+// Verify warehouse code
+Function AV07159()
+   /* ------------------------------------------------------------*/
+   /* Verify the Warehouse code.*/
+   /* ------------------------------------------------------------*/
+  AV07M001.XWHABRV = " "; /* init whse abrv*/
+
+  if (AV07M001.AV07MXWH != "  "
+   && AV07M001.AV07MXWH != "42"
+   && AV07M001.AV07MXWH != "51"
+   /* change begin*/
+   /* AND AV07M001.AV07MXWH NE '25'*/
+   /* chnage end*/
+   && AV07M001.AV07MXWH != "03"
+   && AV07M001.AV07MXWH != "XX")
+
+    AVWREC.XXXMODID = "159"; /* Module identification*/
+    set AV07M001.AV07MXWH cursor, bold; /* Highlight*/
+    converseLib.validationFailed(58); /* warehouse invalid*/
+
+  else
+    if (AV07M001.AV07MXWH != "XX") /* warehouse entered*/
+
+      if (COMMAREA.XSOCD == "42"
+       && AV07M001.AV07MXWH != "  "
+       && AV07M001.AV07MXWH != "42")
+        AVWREC.XXXMODID = "159"; /* Module identification*/
+        set AV07M001.AV07MXWH cursor, bold; /* Highlight*/
+        converseLib.validationFailed(58); /* warehouse invalid*/
+      end
+
+      if (COMMAREA.XSOCD != "42"
+       && AV07M001.AV07MXWH == "42")
+        AVWREC.XXXMODID = "159"; /* Module identification*/
+        set AV07M001.AV07MXWH cursor, bold; /* Highlight*/
+        converseLib.validationFailed(58); /* warehouse invalid*/
+      end
+
+      if (AV07M001.AV07MXWH in XWHTBL.XWHCD) /* Code in table*/
+        if (AV07M001.AV07MXWH == "  ") /* direct ship*/
+          AV07M001.XWHABRV = XWHTBL.XWHABRV[sysVar.arrayIndex]; /* move whse*/
+
+        else
+          if (XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active status*/
+            AV07M001.XWHABRV = XWHTBL.XWHABRV[sysVar.arrayIndex]; /* move whse*/
+
+          else
+            /* -----------------------------------------------*/
+             /* If inactive*/
+            /* -----------------------------------------------*/
+            AVWREC.XXXMODID = "159"; /* Module identification*/
+            set AV07M001.AV07MXWH cursor, bold; /* Highlight*/
+            converseLib.validationFailed(57); /* warehouse inactive*/
+          end
+        end
+      else
+        /* ------------------------------------------------------------*/
+         /* If not found*/
+        /* ------------------------------------------------------------*/
+         /* next sentence*/
+
+      end
+    else
+      AV07M001.XWHABRV = "*** ALL ***"; /* move wildcard desc*/
+
+    end
+  end
+
+
+end // end AV07159
+
+// Process valid input request
+Function AV07160()
+   /* ------------------------------------------------------------*/
+   /* Indicate that the map must be formatted before display.*/
+   /* ------------------------------------------------------------*/
+  AV07W00.AV07WSWF = "Y"; /* Format the map switch*/
+
+   /* ------------------------------------------------------------*/
+   /* If the search key was changed, save the search information.*/
+   /* ------------------------------------------------------------*/
+  if (AV07M001.AV07MXWH != AVWREC.XWHCD     /* warehouse changed*/
+   || AV07M001.AV07MXOW != AVWREC.XOWCD     /* or owner changed*/
+   || AV07M001.AV07MSTY != AVWREC.SY1STNBR  /* or style changed*/
+   || AV07M001.AV07MCLR != AVWREC.SY2CLRID  /* or color changed*/
+   || AV07M001.AV07MXDM != AVWREC.XDMCD     /* or dimension changed*/
+   || AV07M001.AV07MXQA != AVWREC.XQACD     /* or quality changed*/
+   || AV07M001.AV07MISG != AVWREC.PC2INSEG  /* or iseg changed*/
+   || AV07M001.AV07MXPG != AVWREC.XPGCD     /* or package type changed*/
+   || AV07M001.AV07MUSR != AV07W00.AV07MUSR /* or user ID changed*/
+   || AV07M001.AV07MDT1 != AV07W03.AV07MDT1 /* or Begin date changed*/
+   || AV07M001.AV07MDT2 != AV07W03.AV07MDT2) /* or End date changed*/
+
+    /* ------------------------------------------------------------*/
+     /* Update AVWREC.*/
+    /* ------------------------------------------------------------*/
+    AVWREC.XWHCD = AV07M001.AV07MXWH; /* warehouse*/
+    AVWREC.XWHABRV = AV07M001.XWHABRV; /* warehouse name*/
+    AVWREC.XOWCD = AV07M001.AV07MXOW; /* owner*/
+    AVWREC.XOWDESC = AV07M001.XOWDESC; /* Owner name*/
+    AVWREC.SY1STNBR = AV07M001.AV07MSTY; /* style*/
+    AVWREC.SY1SSTNM = AV07M001.AV07MSTD; /* style name*/
+    AVWREC.SY2CLRID = AV07M001.AV07MCLR; /* color*/
+    AVWREC.SY2CLRAB = AV07M001.AV07MCLA; /* color name*/
+    AVWREC.XDMCD = AV07M001.AV07MXDM; /* dimension*/
+    AVWREC.XQACD = AV07M001.AV07MXQA; /* quality*/
+    AVWREC.PC2INSEG = AV07M001.AV07MISG; /* iseg*/
+    AVWREC.XPGCD = AV07M001.AV07MXPG; /* package type*/
+
+    AV07W00.AV07WSWR = "Y"; /* Request for data switch*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If a scroll backward was requested, decrement the page*/
+   /* number and return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  if (converseVar.eventKey is pf7) /* Scroll back requested*/
+
+    AV07W00.XXXTSPAG = AV07W00.XXXTSPAG - 1; /* Decrement page number*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If a scroll forward was requested, increment the page*/
+   /* number and return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  if (converseVar.eventKey is pf8) /* Scroll forward requested*/
+
+    AV07W00.XXXTSPAG = AV07W00.XXXTSPAG + 1; /* Increment page number*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Update display storage.*/
+   /* ------------------------------------------------------------*/
+
+  AV07W00.AV07MUSR = AV07M001.AV07MUSR; /* User ID*/
+  AV07W03.AV07MDT1 = AV07M001.AV07MDT1; /* Beg date*/
+  AV07W03.AV07MDT2 = AV07M001.AV07MDT2; /* End date*/
+  AV07W00.PC2SEGAB = AV07M001.PC2SEGAB; /* Seg name*/
+  AV07W00.XQAABRV = AV07M001.XQAABRV; /* XQA name*/
+  AV07W00.XPGABRV = AV07M001.XPGABRV; /* XPG name*/
+
+   /* ------------------------------------------------------------*/
+   /* Check for selection of line.*/
+   /* ------------------------------------------------------------*/
+
+  if ("S" in AV07M001.AV07MSEL) /* If any line was selected*/
+
+    AV07W01.AV07MSEL[sysVar.arrayIndex] = AV07M001.AV07MSEL[sysVar.arrayIndex];
+    AV07W00.AV07WSIX = sysVar.arrayIndex; /* pointer*/
+    AV07W00.AV07WMAP = "2"; /* Map to be displayed switch*/
+    AV07W00.AV07WDFL = "Y"; /* Request for data switch*/
+
+    AV07M001.AV07MSEL[sysVar.arrayIndex] = "V"; /* indicate viewed*/
+    AV07W01.AV07MSEL[sysVar.arrayIndex] = "V"; /* indicate viewed*/
+    AV07161(); /* Update temporary storage*/
+
+  end
+
+
+end // end AV07160
+
+// Update temporary storage
+Function AV07161()
+   /* ------------------------------------------------------------*/
+   /* Format key.*/
+   /* ------------------------------------------------------------*/
+  TA5REC.TA5APPID = "AV07"; /* application id*/
+  TA5REC.TA5FNCCD = "U"; /* Function code*/
+  TA5REC.TA5TSQIX = AV07W00.XXXTSPAG; /* set temp storage page*/
+
+   /* ------------------------------------------------------------*/
+   /* Update temporary storage.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "TA0050" (AV07W01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, initialize the storage area and indicators*/
+   /* to be used.  Return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+    return; /* Return to previous process*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  AVWREC.XXXMODID = "161"; /* module id*/
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  converseLib.validationFailed(76); /* Indicate system error*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "UPDATE TEMPORARY STORAGE PAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07161
+
+// Main process to display a map
+Function AV07200()
+   /* ------------------------------------------------------------*/
+   /* This is the main process used to display a map.  Processing*/
+   /* always returns to the top of this process and falls through*/
+   /* subordinate processes until an error is found or a valid*/
+   /* request is processed.  Processing sequence is as follows:*/
+
+   /* 1) Obtain the data to display.*/
+   /* 2) Format the map output area and display the map.*/
+   /* 3) Check the attention identifier used to respond.*/
+   /* 4) Reset highlighted fields to normal intensity.*/
+   /* 5) Verify the data that was entered.*/
+   /* 6) Process a valid input request.*/
+
+   /* In all subordinate processes, "EZEFLO" is used to exit to*/
+   /* redisplay the map when an error is found.  This is done to*/
+   /* minimize the coding effort required to skip subsequent*/
+   /* processing under error conditions.*/
+   /* ------------------------------------------------------------*/
+
+  AV07210(); /* Obtain the data to display*/
+
+  AV07220(); /* Format and display the map*/
+
+  AV07230(); /* Check attention identifier*/
+
+  AV07240(); /* Reset fields to normal intensity*/
+
+  AV07250(); /* Verify the entered data*/
+
+  AV07260(); /* Process valid input request*/
+
+
+end // end AV07200
+
+// Obtain the data to display
+Function AV07210()
+   /* ------------------------------------------------------------*/
+   /* If data was not requested or an error was found, return to*/
+   /* the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07W00.AV07WDFL != "Y" /* Data was not requested*/
+   || converseVar.validationMsgNum != 0) /* or an error was found*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Establish the temporary storage queue page length.*/
+   /* ------------------------------------------------------------*/
+
+  AV07W00.AV07MLEN = 264; /* Temporary storage page length*/
+
+   /* ------------------------------------------------------------*/
+   /* Purge any existing pages from the temporary storage queue.*/
+   /* ------------------------------------------------------------*/
+  AV07S21(); /* Purge any temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* Set the index that points to line selected on Map 1.*/
+   /* ------------------------------------------------------------*/
+  AV07W00.AV07WIX1 = AV07W00.AV07WSIX; /* set index*/
+
+   /* ------------------------------------------------------------*/
+   /* Obtain SYCLR size descriptions.*/
+   /* ------------------------------------------------------------*/
+  AV07211(); /* Select SYCLR*/
+
+   /* ------------------------------------------------------------*/
+   /* Open AINVA.*/
+   /* ------------------------------------------------------------*/
+  AV07212(); /* Open AINVA*/
+
+   /* ------------------------------------------------------------*/
+   /* Fetch and format the data into pages until end of cursor.*/
+   /* ------------------------------------------------------------*/
+
+  while (AV07W00.AV07WEOC == "N") /* until end of cursor*/
+
+    /* ------------------------------------------------------------*/
+     /* Fetch AINVA.*/
+    /* ------------------------------------------------------------*/
+    AV07213(); /* Fetch AINVA*/
+
+    if (AV07W00.AV07WEOC != "Y") /* If not end of cursor*/
+
+      /* ------------------------------------------------------------*/
+       /* Save data in display storage.*/
+      /* ------------------------------------------------------------*/
+      AV07214(); /* Save data*/
+
+      /* ------------------------------------------------------------*/
+       /* Add page to the storage queue.*/
+      /* ------------------------------------------------------------*/
+      AV07215(); /* Add page to temporary storage*/
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Close AINVA.*/
+   /* ------------------------------------------------------------*/
+  AV07216(); /* close davail.vainva01 cursor*/
+
+   /* ------------------------------------------------------------*/
+   /* If no pages were formatted, indicate no data to display.*/
+   /* ------------------------------------------------------------*/
+  if (AV07W00.TA5TSQIX == 0) /* if no products written to temp*/
+                                   /* storage*/
+
+    AVWREC.XXXMODID = "210"; /* Module identification*/
+    converseLib.validationFailed(194); /* no data to display msg*/
+
+    return; /* Exit to continue processing*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If no message to display, reset the desired page number.*/
+   /* ------------------------------------------------------------*/
+
+  if (AVWREC.XXXMSGNO == 0) /* No message to display*/
+    AV07W00.AV07MPAG = 1; /* Desired page number*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Indicate that the request for data is complete.*/
+   /* ------------------------------------------------------------*/
+  AV07W00.AV07WDFL = "N"; /* Request for data switch*/
+
+
+end // end AV07210
+
+// Obtain SYCLR size descriptions
+Function AV07211()
+   /* -----------------------------------------------------------*/
+   /* Clear copybook.*/
+   /* -----------------------------------------------------------*/
+  set PG3REC empty; /* Clear copybook*/
+
+   /* -----------------------------------------------------------*/
+   /* Format key.*/
+   /* -----------------------------------------------------------*/
+  PG3REC.XGPCD = AVWREC.XGPCD; /* GPC code*/
+  PG3REC.SY1STNBR = AV07W01.SY1STNBR[AV07WIX1]; /* style*/
+  PG3REC.SY2CLRID = AV07W01.SY2CLRID[AV07WIX1]; /* color*/
+  PG3REC.XDMCD = AV07W01.XDMCD[AV07WIX1]; /* dimension*/
+  PG3REC.XQACD = "02"; /* quality*/
+
+  PG3REC.PG3FUNCD = "PC"; /* all valid sizes*/
+  PG3REC.PG3XDVCD = "99"; /* all divisions*/
+  PG3REC.PG3DATFM = "C"; /* Compress*/
+
+   /* ------------------------------------------------------------*/
+   /* Call XSPG301.*/
+   /* ------------------------------------------------------------*/
+  XSPG301(); /* CALL SIZE TRANSLATION ROUTINE*/
+
+   /* ------------------------------------------------------------*/
+   /* Check for bad return codes.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode != "00000000") /* If call not successful*/
+    converseLib.validationFailed(264); /* Indicate system error*/
+    return; /* Return to previous process*/
+  end
+
+  if (PG3REC.PG3RETCD == "9") /* If data in use*/
+    converseLib.validationFailed(75); /* Indicate data not available*/
+    return; /* Return to previous process*/
+  end
+
+
+end // end AV07211
+
+// Open AINVA
+Function AV07212()
+   /* ---------------------------------------------------------*/
+    /* Clear copybooks.*/
+   /* ---------------------------------------------------------*/
+  set AVNREC empty; /* clear io5520 work record*/
+  set AVMREC empty; /* clear io5520 work rec*/
+
+   /* ---------------------------------------------------------*/
+   /* Format special function key.*/
+   /* ---------------------------------------------------------*/
+  AVNREC.AVNFUNCD = "S1"; /* Format key*/
+
+  AVNREC.AVNBEGDT = AV07W03.AV07WDT1; /* Format setup date 1*/
+  AVNREC.AVNENDDT = AV07W03.AV07WDT2; /* Format setup date 2*/
+
+   /* ---------------------------------------------------------*/
+    /* Format key.*/
+   /* ---------------------------------------------------------*/
+  AVMREC.XWHCD = AV07W01.XWHCD[AV07WIX1]; /* warehouse code*/
+  AVMREC.XOWCD = AV07W01.XOWCD[AV07WIX1]; /* owner group code*/
+  AVMREC.SY1STNBR = AV07W01.SY1STNBR[AV07WIX1]; /* style number*/
+  AVMREC.SY2CLRID = AV07W01.SY2CLRID[AV07WIX1]; /* color id*/
+  AVMREC.XDMCD = AV07W01.XDMCD[AV07WIX1]; /* dimension code*/
+  AVMREC.XQACD = AV07W01.XQACD[AV07WIX1]; /* quality code*/
+  AVMREC.PC2INSEG = AV07W01.PC2INSEG[AV07WIX1]; /* inventory segment*/
+  AVMREC.XPGCD = AV07W01.XPGCD[AV07WIX1]; /* package type code*/
+  AVMREC.XXXUSRID = AV07W01.XXXUSRID[AV07WIX1]; /* userid*/
+
+   /* ----------------------------------------------------------*/
+   /* Open AINVA cursor.*/
+   /* ----------------------------------------------------------*/
+  try
+    call "IO5520" (AVNREC, SQLCA, AVMREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table set*/
+
+   /* ----------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ----------------------------------------------------------*/
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    AV07W00.AV07WEOC = "N"; /* End of cursor switch*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  AVWREC.XXXMODID = "212"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)  
+
+    converseLib.validationFailed(75); /* database in use messge*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(1); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OPEN CURSOR";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DAVAIL "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VAINVA01"; /* Table view name*/
+  TA1REC.TA1TBLKE = AVMREC.AVMKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07212
+
+// Fetch AINVA
+Function AV07213()
+   /* ---------------------------------------------------------*/
+   /* Format key.*/
+   /* ---------------------------------------------------------*/
+  AVNREC.AVNFUNCD = "N1"; /* Format key*/
+
+   /* ------------------------------------------------------------*/
+   /* Fetch AINVA.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "IO5520" (AVNREC, SQLCA, AVMREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or not found, return to previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == +0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == +100) /* Row not found*/
+
+      /* ------------------------------------------------------------*/
+       /* If end of selected set, indicate end of cursor.*/
+      /* ------------------------------------------------------------*/
+      if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+        AV07W00.AV07WEOC = "Y"; /* Indicate end of cursor*/
+      end
+
+      return; /* Return to previous process*/
+
+    end
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  AVWREC.XXXMODID = "113"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(75); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(264); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH NEXT TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DAVAIL  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VAINVA01"; /* Table view name*/
+  TA1REC.TA1TBLKE = AVMREC.AVMKEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07213
+
+// Save data for temp storage
+Function AV07214()
+   /* ----------------------------------------------------------*/
+   /* Save data in temporary storage.*/
+   /* ----------------------------------------------------------*/
+  AV07W02.AV07WGRP = AVMREC.AVMGRP;
+
+   /* ------------------------------------------------------------*/
+   /* Format setup date from ccyymmdd to mmddyy ;*/
+   /* ------------------------------------------------------------*/
+  AV07W03.AV07WDT4 = AV07W02.ZZZSDT;
+
+  AV07W03.AV07WD3Y = AV07W03.AV07WD4Y; /* year*/
+  AV07W03.AV07WD3M = AV07W03.AV07WD4M; /* month*/
+  AV07W03.AV07WD3D = AV07W03.AV07WD4D; /* day*/
+
+  AV07W02.AV07WDDT = AV07W03.AV07WDT3; /* setup date*/
+
+   /* ------------------------------------------------------------*/
+   /* Obtain owner group warehouse description.*/
+   /* ------------------------------------------------------------*/
+  if (AV07W02.XOWCD == "00" /* If owner equal '00'*/
+   || AV07W02.XWHCD == "  ") /* or warehouse equal ' '*/
+    if (COMMAREA.XSOCD == "42")
+      XOWREC.XWHCD = "42"; /* move to key*/
+    else
+      XOWREC.XWHCD = "51"; /* move to key*/
+    end
+
+  else
+    XOWREC.XWHCD = AV07W02.XWHCD; /* move to key*/
+
+  end
+
+  XOWREC.XOWCD = AV07W02.XOWCD; /* move to key*/
+
+  if (XOWREC.XOWKEY in XOWTBL.XOWKEY) /* Code in table*/
+    AV07W02.XOWDESC = XOWTBL.XOWDESC[sysVar.arrayIndex]; /* save name*/
+
+  else
+    AV07W02.XOWDESC = "INVALID";
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Obtain warehouse description.*/
+   /* ------------------------------------------------------------*/
+  if (AV07W02.XWHCD in XWHTBL.XWHCD) /* If code in table*/
+    AV07W02.XWHABRV = XWHTBL.XWHABRV[sysVar.arrayIndex]; /* save name*/
+    AVWREC.XWHSABRV = XWHTBL.XWHSABRV[sysVar.arrayIndex]; /* save name*/
+
+  else
+    AV07W02.XWHABRV = "INVALID";
+
+  end
+
+
+end // end AV07214
+
+// Add page to temporary storage
+Function AV07215()
+   /* ------------------------------------------------------------*/
+   /* Format keys.*/
+   /* ------------------------------------------------------------*/
+  TA5REC.TA5APPID = "AV72"; /* Application identification*/
+  AV07W02.XXXTSLEN = AV07W00.AV07MLEN; /* Temporary storage length*/
+  TA5REC.TA5FNCCD = "A"; /* Function code*/
+
+   /* ------------------------------------------------------------*/
+   /* ADD THE NEXT PAGE TO TEMPORARY STORAGE.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "TA0050" (AV07W02, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, initialize the storage area and indicators*/
+   /* to be used.  Return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    set AV07W02 empty; /* m002 display storage*/
+
+    AV07W00.AV07MTIX = TA5REC.TA5TSQIX; /* highest page*/
+    TA5REC.TA5TSQIX = 0; /* Current page number*/
+
+    return; /* Return to previous process*/
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  AVWREC.XXXMODID = "215"; /* module identification*/
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  converseLib.validationFailed(76); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M002"; /* Map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07215
+
+// Close AINVA
+Function AV07216()
+   /* ------------------------------------------------------------*/
+   /* Format key.*/
+   /* ------------------------------------------------------------*/
+  AVNREC.AVNFUNCD = "C1";
+
+   /* ------------------------------------------------------------*/
+   /* Close AINVA.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "IO5520" (AVNREC, SQLCA, AVMREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table set*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  AVWREC.XXXMODID = "216"; /* Module identification*/
+  converseLib.validationFailed(264); /* Indicate system error*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE CURSOR";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DAVAIL  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VAINVA01"; /* Table view name*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07216
+
+// Format and converse the map
+Function AV07220()
+   /* ------------------------------------------------------------*/
+   /* If an error was found, save the error message number.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+
+    AVWREC.XXXMSGNO = converseVar.validationMsgNum; /* Message number*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data requested or no error, format the data to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07W00.AV07WSWF == "Y" /* If data was requested*/
+   || converseVar.validationMsgNum == 0) /* or no error found*/
+
+    if (AV07W00.AV07WSWF == "Y") /* Map must be formatted*/
+      AV07221(); /* Format the data on the map*/
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Format the current date and any FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  AV07M002.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  AV07M002.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  AV07M002.CAITEM = COMMAREA.CAITEM; /* Application data*/
+
+   /* ------------------------------------------------------------*/
+   /* If a message to display, indicate sound audible alarm.*/
+   /* ------------------------------------------------------------*/
+
+  if (AVWREC.XXXMSGNO != 0) /* Message to display*/
+
+    AV07M002.XXXMODID = AVWREC.XXXMODID; /* Module identification*/
+    if (AVWREC.XXXMSGNO == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(AVWREC.XXXMSGNO);
+    end /* Message number*/
+
+    set AV07M002 alarm; /* Indicate sound alarm*/
+
+  end
+
+  converse AV07M002 ;
+
+   /* ------------------------------------------------------------*/
+   /* Clear the message fields and save FAST PATH information.*/
+   /* ------------------------------------------------------------*/
+
+  AVWREC.XXXMODID = " "; /* Module identification*/
+  AVWREC.XXXMSGNO = 0; /* Message number*/
+
+  COMMAREA.CATOAP = AV07M002.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = AV07M002.CAITEM; /* Application data*/
+
+
+end // end AV07220
+
+// Format the display data
+Function AV07221()
+   /* ------------------------------------------------------------*/
+   /* Clear the fields in the map storage area to be formatted.*/
+   /* ------------------------------------------------------------*/
+  set AV07M002 initial; /* m002 input/output area*/
+  AV07W00.AV07WSWF = "N"; /* Format the map switch*/
+
+   /* ------------------------------------------------------------*/
+   /* If the page in storage is not the page to be displayed,*/
+   /* obtain the desired page from temporary storage.*/
+   /* ------------------------------------------------------------*/
+  if (AV07W00.AV07MTIX > 0) /* Pages were formatted*/
+
+    if (AV07W00.AV07MPAG != TA5REC.TA5TSQIX) /* Desired page not current*/
+      /* ------------------------------------------------------------*/
+       /* If the desired page number is greater than the highest page*/
+       /* in storage, default to the highest page number.*/
+      /* ------------------------------------------------------------*/
+
+      if (AV07W00.AV07MPAG > AV07W00.AV07MTIX) /* Desired greater highest*/
+        AV07W00.AV07MPAG = AV07W00.AV07MTIX; /* Default to highest*/
+      end
+
+      AV07S22(); /* Obtain temporary storage page*/
+
+    end
+
+    /* ------------------------------------------------------------*/
+     /* Display the page information on the screen.*/
+    /* ------------------------------------------------------------*/
+    set AV07M002.XXXLITPG skip; /* "PAGE" literal*/
+    set AV07M002.XXXLITOF skip; /* "OF" literal*/
+    AV07M002.AV07MPAG = AV07W00.AV07MPAG; /* move current page to map*/
+    AV07M002.AV07MTIX = AV07W00.AV07MTIX; /* move total pages to map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Load key data to map.*/
+   /* ------------------------------------------------------------*/
+  AV07W00.AV07WIX1 = AV07W00.AV07WSIX; /* set selected prod index*/
+
+  AV07M002.XWHCD = AV07W01.XWHCD[AV07WIX1]; /* warehouse code*/
+  AV07M002.XOWCD = AV07W01.XOWCD[AV07WIX1]; /* owner group code*/
+  AV07M002.SY1STNBR = AV07W01.SY1STNBR[AV07WIX1]; /* style number*/
+  AV07M002.SY2CLRID = AV07W01.SY2CLRID[AV07WIX1]; /* color id*/
+  AV07M002.XDMCD = AV07W01.XDMCD[AV07WIX1]; /* dimension code*/
+  AV07M002.XQACD = AV07W01.XQACD[AV07WIX1]; /* quality code*/
+  AV07M002.PC2INSEG = AV07W01.PC2INSEG[AV07WIX1];
+                                   /* inventory segment*/
+  AV07M002.XPGCD = AV07W01.XPGCD[AV07WIX1]; /* package type code*/
+  AV07M002.SY1SSTNM = AV07W01.SY1SSTNM[AV07WIX1];
+  AV07M002.SY2CLRAB = AV07W01.SY2CLRAB[AV07WIX1];
+
+  AV07M002.XXXUSRID = AV07W02.XXXUSRID; /* userid*/
+  AV07M002.AV2CMNT = AV07W02.AV2CMNT; /* user comment*/
+  AV07M002.AV07MSDT = AV07W02.AV07WDDT; /* setup date*/
+  AV07M002.ZZZSTM = AV07W02.ZZZSTM; /* setup time*/
+  AV07M002.XWHABRV = AV07W02.XWHABRV; /* warehouse abrv*/
+  AV07M002.XOWDESC = AV07W02.XOWDESC; /* owner grp desc*/
+
+   /* ---------------------------------------------------------*/
+   /* Load data to map.*/
+   /* ---------------------------------------------------------*/
+  AV07W00.AV07WIX2 = 1; /* set map index*/
+
+  while (AV07W00.AV07WIX2 <= 31 /* for each map size/qty field*/
+   && PG3REC.SY5SZID[AV07WIX2] > 0) /* and valid product size*/
+
+    /* ------------------------------------------------------------*/
+     /* Move size description to detail map:*/
+    /* ------------------------------------------------------------*/
+    AV07M002.SY4IDDSC[AV07WIX2] = PG3REC.SY4IDDSC[AV07WIX2];
+
+    /* ------------------------------------------------------------*/
+     /* Set index in inventory quantity array:*/
+    /* ------------------------------------------------------------*/
+    sysVar.arrayIndex = PG3REC.SY5SZID[AV07WIX2];
+
+    /* ------------------------------------------------------------*/
+     /* Move quantity to detail map quantity:*/
+    /* ------------------------------------------------------------*/
+    AV07M002.AVLADJQT[AV07WIX2] = AV07W02.AVLADJQT[sysVar.arrayIndex];
+    AV07M-TOTAL = AV07M-TOTAL + AV07W02.AVLADJQT[sysVar.arrayIndex]; /* ACCUMULATE*/
+
+    /* ------------------------------------------------------------*/
+     /* Add to counter.*/
+    /* ------------------------------------------------------------*/
+    AV07W00.AV07WIX2 = AV07W00.AV07WIX2 + 1; /* increment index*/
+
+  end
+
+
+end // end AV07221
+
+// Check attention identifier
+Function AV07230()
+   /* ------------------------------------------------------------*/
+   /* If CANCEL was requested, clear the map fields and exit.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+
+    if (AV07W00.AV07WSWR == "Y") /* Request for data*/
+      set AV07W02 empty; /* m002 display storage*/
+    end
+
+    AV07W00.AV07WSWF = "Y"; /* Format the map switch*/
+    AV07W00.AV07WSWR = "N"; /* Request for data switch*/
+
+    COMMAREA.CATOAP = " "; /* TO application*/
+    COMMAREA.CAITEM = " "; /* Application data*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If FAST PATH was requested, transfer to the application.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07M002.CATOAP > " ") /* FAST PATH was requested*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      AV07S21(); /* Purge temporary storage*/
+
+      XPAV003(); /* Exit to another application*/
+
+      set AV07M002.CATOAP cursor, bold; /* Highlight*/
+      AV07W00.AV07WSWR = "Y"; /* Request for data switch*/
+
+    else
+
+      AVWREC.XXXMODID = "230"; /* Module identification*/
+      converseLib.validationFailed(23); /* PA/PF key may not be used*/
+
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If HELP, exit to the previous level or exit to the Master*/
+   /* Menu was requested, exit to another application.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf1  /* PF1 was pressed*/
+   || converseVar.eventKey is pf3  /* or PF3 was pressed*/
+   || converseVar.eventKey is pf4  /* or PF4 was pressed*/
+   || converseVar.eventKey is pf5  /* or PF5 was pressed*/
+   || converseVar.eventKey is pf6  /* or PF6 was pressed*/
+   || converseVar.eventKey is pf13 /* or PF13 was pressed*/
+   || converseVar.eventKey is pf14 /* or PF14 was pressed*/
+   || converseVar.eventKey is pf15) /* or PF15 was pressed*/
+
+    if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+      COMMAREA.CAITEM = "AV07M002"; /* Application find code*/
+    end
+
+    if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+      AV07W00.AV07WMAP = 1; /* Map number flag*/
+      AV07W00.AV07WDFL = "N"; /* Map2 data request flag*/
+      AV07S21(); /* Purge temporary storage*/
+      exit stack; /* Return to display map*/
+    end
+
+    /* ------------------------------------------------------------*/
+     /* Save key in AVWREC to be used if transfer occurs.*/
+    /* ------------------------------------------------------------*/
+    AV07S23(); /* Update AVWREC for transfers*/
+
+    if (converseVar.eventKey is pf6) /* PF6 was pressed*/
+      COMMAREA.CATOAP = "AV0S"; /* TO application*/
+    end
+
+    if (converseVar.eventKey is pf5) /* PF5 was pressed*/
+      COMMAREA.CATOAP = "AV0M"; /* TO application*/
+    end
+
+    if (converseVar.eventKey is pf13) /* PF13 was pressed*/
+      COMMAREA.CATOAP = "AV04"; /* TO application*/
+    end
+
+    if (converseVar.eventKey is pf14) /* PF13 was pressed*/
+      COMMAREA.CATOAP = "AV05"; /* TO application*/
+    end
+
+    if (converseVar.eventKey is pf15) /* PF15 was pressed*/
+      COMMAREA.CATOAP = "AV06"; /* TO application*/
+    end
+
+    AV07S21(); /* Purge temporary storage*/
+
+    XPAV003(); /* Exit to another application*/
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf7   /* and PF7 was not pressed*/
+   && converseVar.eventKey not pf8)  /* and PF8 was not pressed*/
+
+    AVWREC.XXXMODID = "230"; /* Module identification*/
+    converseLib.validationFailed(15); /* PA/PF key pressed is not valid*/
+
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+
+    exit stack; /* Exit to display map*/
+
+  end
+
+
+end // end AV07230
+
+// Reset highlighted fields
+Function AV07240()
+   /* ------------------------------------------------------------*/
+   /* Reset all modifiable field attributes to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  set AV07M002.CATOAP initialAttributes; /* TO application*/
+  set AV07M002.CAITEM initialAttributes; /* Application data*/
+
+
+end // end AV07240
+
+// Verify data that was entered
+Function AV07250()
+   /* ------------------------------------------------------------*/
+   /* Highlight any application data that was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (AV07M001.CAITEM > " ") /* Application data was entered*/
+
+    AVWREC.XXXMODID = "250"; /* Module identification*/
+    set AV07M001.CAITEM cursor, bold; /* Highlight*/
+    converseLib.validationFailed(28); /* Enter only with FAST PATH*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid request to scroll was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   || converseVar.eventKey is pf8 /* or scroll forward request*/
+   || converseVar.eventKey is enter) /* or scroll forward request*/
+
+    AV07251(); /* Verify scroll request*/
+
+  end
+   /* ------------------------------------------------------------*/
+   /* If any errors were found, exit to display the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Errors were found*/
+    exit stack; /* Exit to display map*/
+  end
+
+
+end // end AV07250
+
+// Verify scroll request
+Function AV07251()
+   /* ------------------------------------------------------------*/
+   /* If scroll back was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   && AV07W00.AV07MPAG < 2)       /* and no previous pages*/
+
+    AVWREC.XXXMODID = "251"; /* Module identification*/
+    converseLib.validationFailed(142); /* No previous page to display*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If scroll forward was requested, ensure that pages exist.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf8 /* Scroll forward request*/
+   || converseVar.eventKey is enter) /* Scroll forward request*/
+
+    if (AV07W00.AV07MPAG >= AV07W00.AV07MTIX) /* and no more pages*/
+
+      AVWREC.XXXMODID = "251"; /* Module identification*/
+      converseLib.validationFailed(143); /* No more pages to display*/
+
+    end
+  end
+
+
+end // end AV07251
+
+// Process valid input request
+Function AV07260()
+   /* ------------------------------------------------------------*/
+   /* Indicate that the map must be formatted before display.*/
+   /* ------------------------------------------------------------*/
+  AV07W00.AV07WSWF = "Y"; /* Format the map switch*/
+
+   /* ------------------------------------------------------------*/
+   /* If a scroll backward was requested, decrement the page*/
+   /* number and return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  if (converseVar.eventKey is pf7)
+                                   /* if display previous product requested*/
+
+    AV07W00.AV07MPAG = AV07W00.AV07MPAG - 1; /* Decrement page number*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If a scroll forward was requested, increment the page*/
+   /* number and return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf8 /* if display next product requested*/
+   || converseVar.eventKey is enter)
+
+    AV07W00.AV07MPAG = AV07W00.AV07MPAG + 1;
+
+  end
+
+
+end // end AV07260
+
+// Purge any temporary storage
+Function AV07S01()
+   /* ------------------------------------------------------------*/
+   /* Initialize the storage areas and indicators to be used.*/
+   /* ------------------------------------------------------------*/
+
+  set AV07W01 empty; /* m010 display storage*/
+
+  TA5REC.TA5TSQIX = 0; /* Current page number*/
+  AV07W00.TA5TSQIX = 0; /* Highest page number*/
+
+   /* ------------------------------------------------------------*/
+   /* Purge any temporary storage for this application.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+  TA5REC.TA5FNCCD = "P"; /* Function code*/
+
+  try
+    call "TA0050" (AV07W01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+
+    return; /* Return to previous process*/
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+  AVWREC.XXXMODID = "S01"; /* Module identification*/
+  converseLib.validationFailed(76); /* Unexpected error occurred*/
+
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M010"; /* Map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07S01
+
+// Select SYCLR
+Function AV07S02()
+   /* ------------------------------------------------------------*/
+   /* Select SYCLR.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "IO3120" ("S ", SQLCA, PG2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL Commarea*/
+
+  AVWREC.XXXMODID = "S02"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(75); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(264); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DPRODG  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSYCLR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PG2REC.PG2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07S02
+
+// Read temporary storage
+Function AV07S03()
+   /* ------------------------------------------------------*/
+    /* Clear copybook.*/
+   /* ------------------------------------------------------*/
+  set TA5REC empty; /* clear temporary storage rec*/
+
+   /* ------------------------------------------------------*/
+    /* Format key.*/
+   /* ------------------------------------------------------*/
+  AV07W01.XXXTSLEN = AV07W00.XXXTSLEN; /* page length*/
+  TA5REC.TA5TSQIX = AV07W00.XXXTSPAG; /* desired page nbr*/
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* application id*/
+  TA5REC.TA5FNCCD = "R"; /* 'read' function code*/
+
+   /* ------------------------------------------------------*/
+    /* Call TA0050.*/
+   /* ------------------------------------------------------*/
+  try
+    call "TA0050" (AV07W01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* temp storage program*/
+
+   /* -------------------------------------------------------*/
+   /* if successful return to continue main process*/
+   /* -------------------------------------------------------*/
+  if (sysVar.errorCode == "00000000" /* call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* normal ta0050 return code*/
+    return; /* return to continue processing*/
+  end
+
+   /* -------------------------------------------------------*/
+   /* otherwise, indicate that a system error has occurred*/
+   /* -------------------------------------------------------*/
+
+  AVWREC.XXXMODID = "S03"; /* module number*/
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* csp return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* subroutine parameters*/
+  converseLib.validationFailed(76); /* 'system error' msg*/
+
+  TA1REC.TA1FUNC = "RETN"; /* termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* type of error*/
+  TA1REC.TA1LOC = "READ PAGE FROM TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* module number*/
+  TA1REC.TA1MAPNO = "M001"; /* map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* error diagnosis routine*/
+  exit stack; /* exit to display map*/
+
+
+end // end AV07S03
+
+// Format dates for edit
+Function AV07S04()
+   /* ------------------------------------------------------*/
+   /* Reformat mmddyy format to ccyymmdd*/
+   /* ------------------------------------------------------*/
+
+   /* ---------- Y2K OUT BEGIN ----------*/
+   /* IF AV07W03.AV07WD3Y EQ 0*/
+   /* ---------- Y2K OUT END ------------*/
+
+   /* ---------- Y2K IN BEGIN -----------*/
+  if (AV07W03.AV07WD3Y == 0
+   && AV07W03.AV07WD3M == 0
+   && AV07W03.AV07WD3D == 0) /* If date is missing*/
+    /* ---------- Y2K IN END -------------*/
+    return; /* Return to previous process*/
+  end
+
+   /* ---------- Y2K OUT BEGIN ----------*/
+   /* MOVE XX0XW01.XX0XW19 TO AV07W03.AV07WD4C;/* century*/
+   /* ---------- Y2K OUT END ------------*/
+
+   /* ---------- Y2K IN BEGIN -----------*/
+  if (AV07W03.AV07WD3Y > 60)
+    AV07W03.AV07WD4C = "19";
+  else
+    AV07W03.AV07WD4C = "20";
+  end
+   /* ---------- Y2K IN END -------------*/
+
+  AV07W03.AV07WD4Y = AV07W03.AV07WD3Y; /* year*/
+  AV07W03.AV07WD4M = AV07W03.AV07WD3M; /* month*/
+  AV07W03.AV07WD4D = AV07W03.AV07WD3D; /* day*/
+
+
+end // end AV07S04
+
+// Edit dates
+Function AV07S05()
+   /* ------------------------------------------------------*/
+   /* Edit dates.*/
+   /* ------------------------------------------------------*/
+  if (AV07W03.AV07WD4M > 12
+   || AV07W03.AV07WD4M < 1)
+
+    AVWREC.XXXMODID = "S05"; /* module identification*/
+    converseLib.validationFailed(94); /* invalid month msg*/
+
+    return;
+  end
+
+  if (AV07W03.AV07WD4D < 1
+   || AV07W03.AV07WD4D > 31)
+
+    AVWREC.XXXMODID = "S05"; /* module identification*/
+    converseLib.validationFailed(95); /* invalid day msg*/
+
+    return;
+  end
+
+   /* if entered date is greater than todays date*/
+  if (AV07W03.AV07WDT4 > XX0XW01.XX0XWDAT)
+
+    AVWREC.XXXMODID = "S05"; /* module identification*/
+    converseLib.validationFailed(179); /* 'date out of range' msg*/
+
+    return;
+  end
+
+   /* --------- Y2K OUT BEGIN -------------*/
+   /* IF AV07W03.AV07WD4Y EQ 0;*/
+   /* --------- Y2K OUT END ---------------*/
+
+   /* --------- Y2K IN BEGIN --------------*/
+  if (AV07W03.AV07WD4Y == 0
+   && AV07W03.AV07WD4M == 0
+   && AV07W03.AV07WD4D == 0)
+    /* --------- Y2K IN END ----------------*/
+
+    AVWREC.XXXMODID = "S05"; /* module identification*/
+    converseLib.validationFailed(96); /* invalid year msg*/
+
+    return;
+  end
+
+  if (AV07W03.AV07WD4Y < 91
+   && AV07W03.AV07WD4C < 20)
+
+    AVWREC.XXXMODID = "S05"; /* module identification*/
+    converseLib.validationFailed(96); /* invalid year msg*/
+
+    return;
+  end
+
+
+end // end AV07S05
+
+// Open SYCLR
+Function AV07S06()
+   /* ------------------------------------------------------------*/
+   /* Clear copybook.*/
+   /* ------------------------------------------------------------*/
+  set PG2REC empty; /* Clear row storage area*/
+
+   /* ------------------------------------------------------------*/
+   /* Format key.*/
+   /* ------------------------------------------------------------*/
+  PG2REC.XGPCD = AVWREC.XGPCD; /* GPC code*/
+  PG2REC.SY1STNBR = AV07M001.AV07MSTY; /* Style number*/
+
+   /* ------------------------------------------------------------*/
+   /* Open SYCLR.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "IO3120" ("SS", SQLCA, PG2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+  end
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  AVWREC.XXXMODID = "S06"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(75); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(76); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OBTAIN STYLE NAME FOR HEADING";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DPRODG  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSYCLR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PG2REC.PG2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07S06
+
+// Fetch SYCLR
+Function AV07S07()
+   /* ------------------------------------------------------------*/
+   /* Fetch SYCLR.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "IO3120" ("SN", SQLCA, PG2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful or not found, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* Not found*/
+      return; /* Return to previous process*/
+    end
+
+  end
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  AVWREC.XXXMODID = "S07"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(75); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(76); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OBTAIN STYLE NAME FOR HEADING";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DPRODG  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSYCLR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PG2REC.PG2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07S07
+
+// Close SYCLR
+Function AV07S08()
+   /* ------------------------------------------------------------*/
+   /* Close SYCLR.*/
+   /* ------------------------------------------------------------*/
+  try
+    call "IO3120" ("CS", SQLCA, PG2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+  end
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  AVWREC.XXXMODID = "S08"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(75); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(76); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OBTAIN STYLE NAME FOR HEADING";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* Program number*/
+  TA1REC.TA1DBASE = "DPRODG  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSYCLR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PG2REC.PG2KEY; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end AV07S08
+
+// Purge temporary storage
+Function AV07S21()
+   /* -------------------------------------------*/
+    /* Format key.*/
+   /* -------------------------------------------*/
+  TA5REC.TA5APPID = "AV72"; /* APPL ID*/
+  TA5REC.TA5FNCCD = "P"; /* SET FUNSTION CODE*/
+
+   /* -------------------------------------------*/
+    /* PURGE ANY TEMPORARY STORAGE*/
+   /* -------------------------------------------*/
+  call "TA0050" (AV07W02, TA5REC) {isNoRefresh = yes}; /* CALL TEMP STORAGE ROUTINE*/
+
+   /* -------------------------------------------*/
+    /* IF SUCCESSFUL RETURN TO CALLING ROUTINE*/
+   /* -------------------------------------------*/
+  if (TA5REC.TA5RTNCD == 0) /* NORMAL RETURN*/
+    AV07W00.AV07MTIX = 0; /* set temp storage total pages*/
+    AV07W00.AV07MPAG = 0; /* set temp storage wrk page*/
+    return;
+  end
+
+   /* -------------------------------------------*/
+    /* OTHERWISE POST A MESSAGE AND RETURN*/
+   /* -------------------------------------------*/
+
+  AVWREC.XXXMODID = "S21";
+  TAEREC.TAEDESC1 = sysVar.errorCode;
+  TA1REC.TA1FUNC = "POST";
+  TA1REC.TA1TYPE = "APPL";
+  TA1REC.TA1PGMAP = "AV07";
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID;
+  TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE";
+  TA1REC.TA1MAP = "AV07M002";
+  SQLCA.SQLCAREC = TA5REC.TA5DATA;
+
+  call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes};
+
+  converseLib.validationFailed(76);
+  return; /* exit to display error message*/
+
+
+end // end AV07S21
+
+// Read temporary storage
+Function AV07S22()
+   /* ------------------------------------------------------*/
+    /* Format key.*/
+   /* ------------------------------------------------------*/
+  AV07W02.XXXTSLEN = AV07W00.AV07MLEN; /* page length*/
+  TA5REC.TA5TSQIX = AV07W00.AV07MPAG; /* desired page nbr*/
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* application id*/
+  TA5REC.TA5APPID = "AV72"; /* Application identification*/
+  TA5REC.TA5FNCCD = "R"; /* 'read' function code*/
+
+   /* ------------------------------------------------------*/
+    /* Call TA0050.*/
+   /* ------------------------------------------------------*/
+  try
+    call "TA0050" (AV07W02, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* temp storage program*/
+
+   /* -------------------------------------------------------*/
+   /* if successful return to continue main process*/
+   /* -------------------------------------------------------*/
+  if (sysVar.errorCode == "00000000" /* call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* normal ta0050 return code*/
+    return; /* return to continue processing*/
+  end
+
+   /* -------------------------------------------------------*/
+   /* otherwise, indicate that a system error has occurred*/
+   /* -------------------------------------------------------*/
+
+  AVWREC.XXXMODID = "S22"; /* module number*/
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* csp return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* subroutine parameters*/
+  converseLib.validationFailed(76); /* 'system error' msg*/
+
+  TA1REC.TA1FUNC = "RETN"; /* termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* type of error*/
+  TA1REC.TA1LOC = "READ PAGE FROM TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* program application*/
+  TA1REC.TA1PGMNO = AVWREC.XXXMODID; /* module number*/
+  TA1REC.TA1MAPNO = "M002"; /* map number*/
+
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* error diagnosis routine*/
+  exit stack; /* exit to display map*/
+
+
+end // end AV07S22
+
+// Update AVWREC for transfer
+Function AV07S23()
+   /* ------------------------------------------------------------*/
+   /* Save key in AVWREC to be used if transfer to another*/
+   /* application occurs.  (AV07WIX1 set in AV07210.)*/
+   /* ------------------------------------------------------------*/
+
+  AVWREC.SY1STNBR = AV07W01.SY1STNBR[AV07WIX1]; /* style number*/
+  AVWREC.SY2CLRID = AV07W01.SY2CLRID[AV07WIX1]; /* color id*/
+  AVWREC.XDMCD = AV07W01.XDMCD[AV07WIX1]; /* dimension code*/
+  AVWREC.XQACD = AV07W01.XQACD[AV07WIX1]; /* quality code*/
+  AVWREC.PC2INSEG = AV07W01.PC2INSEG[AV07WIX1]; /* inventory segment*/
+  AVWREC.XPGCD = AV07W01.XPGCD[AV07WIX1]; /* package type code*/
+  AVWREC.SY1SSTNM = AV07W01.SY1SSTNM[AV07WIX1];
+  AVWREC.SY2CLRAB = AV07W01.SY2CLRAB[AV07WIX1];
+
+  if (AV07W02.XWHABRV != "INVALID") /* If warehouse cd O.K.*/
+    AVWREC.XWHABRV = AV07W02.XWHABRV; /* warehouse abrv*/
+    AVWREC.XWHCD = AV07W01.XWHCD[AV07WIX1]; /* warehouse code*/
+  else
+    AVWREC.XWHABRV = " "; /* warehouse abrv*/
+    AVWREC.XWHCD = " "; /* warehouse code*/
+  end
+
+  if (AV07W02.XOWDESC != "INVALID") /* If owner grp O.K.*/
+    AVWREC.XOWDESC = AV07W02.XOWDESC; /* owner grp desc*/
+    AVWREC.XOWCD = AV07W01.XOWCD[AV07WIX1]; /* owner group code*/
+  else
+    AVWREC.XOWDESC = " "; /* owner grp desc*/
+    AVWREC.XOWCD = " "; /* owner group code*/
+  end
+
+
+end // end AV07S23
+
+//*** RECORD=AV07W00 ****
+// ************************************************************
+// av07 work fields
+// ************************************************************
+// ***********************
+Record AV07W00 type basicRecord
+  10 XXXTSPAG XXXTSPAG ; 
+  10 AV07MPAG AV07MPAG ; 
+  10 XXXTSLEN XXXTSLEN ; 
+  10 AV07MLEN AV07MLEN ; 
+  10 TA5TSQIX TA5TSQIX ; 
+  10 AV07MTIX AV07MTIX ; 
+  10 AV07WSWF AV07WSWF ; 
+  10 AV07WSWR AV07WSWR ; 
+  10 AV07WDFL AV07WDFL ; 
+  10 AV07WMAP AV07WMAP ; 
+  10 * char(1) ; 
+  10 AV07WEOC AV07WEOC ; 
+  10 AV07WIXM AV07WIXM ; 
+  10 AV07WIX1 AV07WIX1 ; 
+  10 AV07WIX2 AV07WIX2 ; 
+  10 AV07WSIX AV07WSIX ; 
+  10 * char(1) ; 
+  10 XDMABRV XDMABRV ; 
+  10 XQAABRV XQAABRV ; 
+  10 PC2SEGAB PC2SEGAB ; 
+  10 XPGABRV XPGABRV ; 
+  10 AV07MUSR AV07MUSR ; 
+end // end AV07W00
+
+//*** RECORD=AV07W01 ****
+// ************************************************************
+// temporary storage work record
+// db2 table:         davail.vainva01
+// ************************************************************
+// ***********************
+Record AV07W01 type basicRecord
+  5 XXXTSLEN XXXTSLEN ; 
+  5 * char(672) ; 
+    10 AV07MSEL AV07MSEL [12] ; 
+    10 XWHCD XWHCD [12] ; 
+    10 XOWCD XOWCD [12] ; 
+    10 SY1STNBR SY1STNBR [12] ; 
+    10 SY2CLRID SY2CLRID [12] ; 
+    10 XDMCD XDMCD [12] ; 
+    10 SY1SSTNM SY1SSTNM [12] ; 
+    10 SY2CLRAB SY2CLRAB [12] ; 
+    10 XQACD XQACD [12] ; 
+    10 PC2INSEG PC2INSEG [12] ; 
+    10 XPGCD XPGCD [12] ; 
+    10 XXXUSRID XXXUSRID [12] ; 
+end // end AV07W01
+
+//*** RECORD=AV07W02 ****
+// ************************************************************
+// Temporary storage work record for the Alternate inventory
+// detail display (av07m002)
+// This record is in the image of the avmrec, which is the
+// io5520 work record.
+// ************************************************************
+// ***********************
+Record AV07W02 type basicRecord
+  5 XXXTSLEN XXXTSLEN ; 
+  5 * char(264) ; 
+    10 AV07WGRP AV07WGRP ; 
+      15 XWHCD XWHCD ; 
+      15 XOWCD XOWCD ; 
+      15 SY1STNBR SY1STNBR ; 
+      15 SY2CLRID SY2CLRID ; 
+      15 XDMCD XDMCD ; 
+      15 XQACD XQACD ; 
+      15 PC2INSEG PC2INSEG ; 
+      15 XPGCD XPGCD ; 
+      15 XXXUSRID XXXUSRID ; 
+      15 AV2CMNT AV2CMNT ; 
+      15 AVLADJQT AVLADJQT [40] ; 
+      15 ZZZSDT ZZZSDT ; 
+      15 ZZZSTM ZZZSTM ; 
+    10 AV07WDDT AV07WDDT ; 
+    10 XWHABRV XWHABRV ; 
+    10 XOWDESC XOWDESC ; 
+end // end AV07W02
+
+//*** RECORD=AV07W03 ****
+// ************************************************************
+// av07 work fields
+// ************************************************************
+// ***********************
+Record AV07W03 type basicRecord
+  10 AV07MDT1 AV07MDT1 ; 
+  10 AV07MDT2 AV07MDT2 ; 
+  10 * char(1) ; 
+  10 AV07WDT1 AV07WDT1 ; 
+  10 AV07WDT2 AV07WDT2 ; 
+  10 * char(1) ; 
+  10 AV07WDT3 AV07WDT3 ; 
+    15 AV07WD3M AV07WD3M ; 
+    15 AV07WD3D AV07WD3D ; 
+    15 AV07WD3Y AV07WD3Y ; 
+  10 * char(1) ; 
+  10 AV07WDT4 AV07WDT4 ; 
+    15 AV07WD4C AV07WD4C ; 
+    15 AV07WD4Y AV07WD4Y ; 
+    15 AV07WD4M AV07WD4M ; 
+    15 AV07WD4D AV07WD4D ; 
+  10 * char(1) ; 
+end // end AV07W03
+
+//*** RECORD=AVMREC ****
+// ************ availability inventory table ******************
+// 
+// db2 table:         davail.vainva01
+// 
+// copylib member:    dcl00906
+// iomod:             io5520
+// 
+// key to db2 table:  xwhcd
+//                    xowcd
+//                    sy1stnbr
+//                    sy2clrid
+//                    xdmcd
+//                    xqacd
+//                    pc2inseg
+//                    xpgcd
+// 
+// 
+// date created:      01-31-91
+// 
+// maintenance log:
+// date        init      comments
+// --------    ------    --------------------------------------
+// 01-31-91    dbruih    created csp record
+// ************************************************************
+// **********************
+Record AVMREC type basicRecord
+  5 AVMGRP AVMGRP ; 
+    10 AVMKEY AVMKEY ; 
+      15 XWHCD XWHCD ; 
+      15 XOWCD XOWCD ; 
+      15 SY1STNBR SY1STNBR ; 
+      15 SY2CLRID SY2CLRID ; 
+      15 XDMCD XDMCD ; 
+      15 XQACD XQACD ; 
+      15 PC2INSEG PC2INSEG ; 
+      15 XPGCD XPGCD ; 
+    10 XXXUSRID XXXUSRID ; 
+    10 AV2CMNT AV2CMNT ; 
+    10 AVLADJQT AVLADJQT [40] ; 
+    10 ZZZSDT ZZZSDT ; 
+    10 ZZZSTM ZZZSTM ; 
+end // end AVMREC
+
+//*** RECORD=AVNREC ****
+// ********** SPECIAL FUNCTION I/O MODULE PARAMETERS **********
+// 
+// This record contains the function code and the beginning and
+// ending months needed for special "BETWEEN" functions in some
+// I/O modules.  This record replaces the function literal that
+// is passed as a parameter in the CALL statement.
+// 
+//    EXAMPLE:
+//    --------
+//    CALL ______ FFFREC,SQLCA,FF_REC (NOMAPS,NONCSP,REPLY;
+// 
+// Use this record whenever requesting a special function from
+// the following I/O modules:
+// 
+//       IO3700        IO3710        IO3720        IO3730
+//       IO3740        IO3750        IO3770        IO3820
+//       IO3830        IO3870        IO3900        IO4020
+//       IO4030        IO4050        IO4060        IO4070
+//       IO4100        IO4110        IO4120        IO4130
+//       IO4180        FF5500        FF5510        FF5520
+//       FF5530        FF5540        FF5550
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+//          06/02/89  SPOPA   New record.
+// **********************
+Record AVNREC type basicRecord
+  10 AVNFUNCD AVNFUNCD ; 
+  10 AVNBEGDT AVNBEGDT ; 
+  10 AVNENDDT AVNENDDT ; 
+  10 * char(654) ; 
+end // end AVNREC
+
+// Begining date
+DataItem AV07MDT1 num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Ending date
+DataItem AV07MDT2 num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Temp storage pg lengthmap2
+DataItem AV07MLEN num(4)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = " ", inputRequired = no
+}
+end
+
+// Current temp storage pg map2
+DataItem AV07MPAG num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AV07MSEL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// map2 total temp stor pages
+DataItem AV07MTIX num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// xxx-user-id
+DataItem AV07MUSR char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// format day
+DataItem AV07WD3D num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format month
+DataItem AV07WD3M num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format year
+DataItem AV07WD3Y num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format century
+DataItem AV07WD4C char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// format day
+DataItem AV07WD4D num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format month
+DataItem AV07WD4M num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format year
+DataItem AV07WD4Y num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Display set up date
+DataItem AV07WDDT num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// request data flag
+DataItem AV07WDFL char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// formatted setup date 1
+DataItem AV07WDT1 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted setup date 2
+DataItem AV07WDT2 int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format date mmddyy
+DataItem AV07WDT3 num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format date ccyymmdd
+DataItem AV07WDT4 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// end of vainva01 cursor flag
+DataItem AV07WEOC char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record group level
+DataItem AV07WGRP char(226)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// temp storage map 1 idx
+DataItem AV07WIX1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// map 2 index
+DataItem AV07WIX2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// general counter
+DataItem AV07WIXM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// display map flag
+DataItem AV07WMAP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// selected product index
+DataItem AV07WSIX num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Format the map switch
+DataItem AV07WSWF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Requst for data switch
+DataItem AV07WSWR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// data group, entire row
+DataItem AVMGRP char(226)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// availability inventory tbl key
+DataItem AVMKEY char(22)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem AVNBEGDT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AVNENDDT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem AVNFUNCD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

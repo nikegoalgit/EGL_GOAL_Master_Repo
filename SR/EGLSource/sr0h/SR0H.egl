@@ -1,0 +1,2513 @@
+package sr0h;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpy2.*;
+import corpz3.*;
+import dg.common.*;
+import fy.common.*;
+import in1.common.*;
+import ku.common.*;
+import ob.common.*;
+import op.common.*;
+import pc.common.*;
+import pk.common.*;
+import pw.common.*;
+import sl.common.*;
+import sm.common.*;
+import sp.common.*;
+import sr.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+//*** PROGRAM=SR0H ****
+// ------------ sr0h - build direct ship batch ----------------
+// 
+// overview: this application builds shipment reconciliation
+//           batches for direct ship orders.  the user will
+//           enter warehouse, factory, ship date, carrier,
+//           and direct ship orders.  editing is performed, and
+//           a batch will be created in the shiprec database.
+// 
+// processing:
+// i. initialization: (process sr0h010)
+//    a. if control is received from other shiprec applications
+//       whse nbr is picked up from the commarea usera area.
+//       otherwise, whse is picked up from the standard whse
+//       code field in the commarea.
+//    b. the direct ship map is cleared.
+// 
+// ii. converse/edit: (process sr0h020)
+//    a. editing is performed in reverse order of fields
+//       appearance on the screen.
+//    b. order numbers edit: (stmt grp sr0hs07)
+//       1. validate order as direct ship:
+//          a) read order db order header  (sr0hs17)
+//          b) check order header for:
+//             1) order found
+//             2) order is direct ship
+//             3) order is not fully shipped or canceled
+//       2. verify that order not already built in shiprec
+//          a) select rows with order nbr
+//          b) readnext each row (sr0hs18)
+//             1) if row found with deallocate flag eq ' '
+//                set order already exists in batch msg
+//          c) close set
+//       3. verify that order appears only once on screen
+//       4. set appropriate error messages for errors found
+//    c. carrier edit: (stmt grp sr0hs10)
+//       1. read db2 dpick.vcarr001
+//       2. if not found, set invalid carrier msg
+//       3. if found, check misc carrier code:
+//          a) if code = 'y', user must enter carrier name
+//          b) if code = 'n', use carrier name from table.
+//    d. factory edit: (stmt grp sr0hs12)
+//       1. read db2 dwprod.vfcty001
+//       2. if not found, set invalid factory msg
+//    e. ship date edit: (stmt grp sr0hs15)
+//       1. use ta0040 sub program to validate date contents,
+//          and return julian date for age checking.
+//       2. if invalid date contents, or date greater than
+//          todays date, or date greater than 1 year old,
+//          set invalid ship date msg.
+//       3. if date older than 30 days, and less than 1 year,
+//          set warning msg.
+//    f. whse edit: (stmt grp sr0hs05)
+//       1. lookup whse in csp table xwhtbl
+//       2. if not found, or inactive, set error msg
+//    g. flow:
+//       1. if pa2 (reset), branch to sr0h010
+//       2. if pf6 (deactivaion request) branch to sr0h035
+//       3. if any errors, redisplay - sr0h020
+//       4. no errors - build direct ship - sr0h030.
+// 
+// iii.  build direct ship batch: (process sr0h030)
+//    a. for each batch:
+//       1. convert csp date/time (stmt grp xx0xs01)
+//       2. reset batch accumulators
+//       3. read/upt next schedule id (stmt grp sr0hs20)
+//       4. for each order:
+//          a) reset order accumulators
+//          b) select order db items/sizes (sr0hs22)
+//          c) for each item: (sr0hs25 is readnext)
+//             1) reset item qty
+//             2) for each active size
+//                * fmt shiprec size data
+//                * accumulate item qty
+//             3) fmt/write shiprec item/sizes record (sr0hs27)
+//             4) accumulate order qty, amt, item count
+//          d) close item set (sr0hs30)
+//          e) read db2 dorder.vorhdr01 (sr0hs17)
+//          f) fmt/write shiprec order record (sr0hs32)
+//          f) accumulate batch qty, order count, amt, item cnt
+//          g) fmt/write shiprec address record if 1 time
+//             ship to (sr0hs35)
+//       5. fmt/write shiprec batch header (sr0hs37)
+//       6. set batch created msg, ship date warning if needed.
+//       7. commit batch
+//       8. redisplay map
+// 
+//  iv.  init. deactivate order: (process sr0h035)
+//    a. before stage:
+//       1. clear map
+//       2. set date, whse fields
+// 
+//   v.  converse deactivate order: (process sr0h040)
+//    a. before stage:
+//       1. move user msg to msg field
+//    b. after stage:
+//       1. clear msg field
+//       2. check pf keys
+//          1) if pf3, skip to flow
+//          2) if xfer pf, normal xfer processing
+//       3. if schedule/order data entered,
+//          or first time thru:
+//          1) clear deactivate flag, askip/dark confirm
+//             literal and option
+//          2) read shiprec order for sched/order (sr0hs40)
+//             a) if not found, error
+//             b) if found and already deactivated, error
+//             c) if errors, skip to flow
+//          3) read shiprec batch header (sr0hs45)
+//             a) if not found, abend (if order found, batch
+//                must be found)
+//             b) if status is 'b' (balanced) or 'r' (released)
+//                set message, skip to flow.
+//          4) if above edits are passed, set confirm literal
+//             to askip,display and option to unprot,normal.
+//       4. if no key changes and verification pass:
+//          1) verify 'y' or 'n' for deactive request
+//    c. flow:
+//       1. if any errors, redisplay - sr0h040
+//       2. if pa2 (reset) - sr0h035
+//       3. if pf3, or request = 'n', return to display
+//          build direct ship - sr0h020
+//       4. if key change, with or without errors, redisplay
+//          deactivate screen - sr0h040
+//       5. if no key change, and verification eq 'y',
+//          deactivate order - sr0h050
+// 
+//  vi.  deactivate order: (process sr0h050)
+//    a. set up parameter record with order key, function
+//    b. call sr0o to deallocate order
+//    c. if good return, set deactivated msg
+//    d. if bad return, abend
+//    e. flow - to display deactivate screen - sr0h040
+// 
+// 
+// MAINTENANCE HISTORY:
+// 
+// CONTROL    DATE    USERID  DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// date writtem: 9/86    author: david ply - cap gemini america
+//  10/20/88    jwood      added call option NONCSP
+//  11/03/88    jcampb     default pk1bllad(pk_bill_of_lading)
+//                         to the customer order number and
+//                         nike order number.
+//  11/29/88    jcampb     setup addr for conslodated bol proj.
+//  12/08/88    mblail     changed identifier from 'SA' to 'Se'
+//                         in sr0hs32 for call of IO0800.
+//  01/12/89    rhetri     add move for ship-dt to new field,
+//                         dship.vsrhdr01's sr-pick-sched-dt.
+//  03/20/89    jwood      added xssegtr logic
+//  04/27/89    jcampb     add xdv and xoc code move's to pgm
+//  01/19/90    mwalto     change sr2rec field name of pd1fctyc
+//                         to fy1fctyc.
+//  02/07/90    kande1     change whse validation to no allow
+//                         whse with division code of '02'
+//  02/13/90    esmith     add fy1rec and IO2810; remove pd1rec
+//                         and IO0870; add gpc to map and check
+//                         orders for valid gpc; new messages
+//  04/04/90    mchow      added xbccd to order header and ship
+//                         order (sr0hs32) for table changes.
+//  05/11/90    jcampb     structure change add xob xso xdv etc
+//  05/18/90    mmoreh     removed xgpcd & fy1fctyc from map
+//                         sr0hm020.  added tsfshpid to map.
+//                         chgd sr0hs07, sr0hs12, sr0hs32 to
+//                         validate and insert shipment id into
+//                         dship.vsrord01 table.
+//  11/06/90    mpluth     Changed xsdcd and xsacd for table
+//                         changes.
+//  11/14/91    rvakel     table changes: in SR0HS27, renamed
+//                         xsacde to pc2inseg, renamed xsdcd
+//                         to xegcd (sr3rec changed).
+//  12/16/91    dchian     Initialize sr3rec.zzzchgdt (SH0HS27)
+// SR#0     06/09/92  SPOPA   Remove requirement that warehouse
+//                            entered have XDVCD other than 02.
+//                            Do not allow orders to be batched
+//                            if they have XDVCD of 02.
+// SR#0     06/23/92  SPOPA   Move XBC_BRAND_CD when inserting
+//                            SR3REC.  Set SR_STOP_ORD_SHP_FL
+//                            to 'N' when inserting SR2REC. Set
+//                            CU_STOR_SELF_ID, CU_DEPT_SELF_ID
+//                            to PK6REC when inserting SR2REC.
+// SR#0     02/09/93  HKEMPE  Added moving of TF-CARR_CD,
+//                            TF_CARR_NM, PK_CARR_SPF_CD in
+//                            SR3REC (SROHS32).  Initialize
+//                            ZZZCHGDT in SR3REC, SR4REC and
+//                            SR1REC (SR0HS32, SR0HS35, and
+//                            SR0HS37 respectively).
+// 1H0003   01/11/94  HKEMPE  Changed order nbr length to nine
+//                            digit in SR0HW01, SR0HM020 and
+//                            SR0HM040.
+// SR9001   03/01/94  HKEMPE  Generate/Compile to pick up
+//                            revised COMMAREA, SR3REC, SR4REC,
+//                            OP1REC, OP3REC, OP5REC, PK6REC,
+//                            and XWHTBL.
+//                            Resized SR0HW01.SR0HWBAM/OAM/IAM.
+//                            Moved 6 address lines in SR0HS35.
+// SR#235   10/21/94  HKEMPE  Clean up maps, get rid of invalid
+// SR#241                     PF keys & change hdg to be spcfc.
+// SR#244                     Change to get nbr of cartons -
+//                            footwear (gpc 02) gets it from
+//                            transportation database, apparel
+//                            (gpc 03) sends a warning for it
+//                            to be entered through SR0C.
+//                            Populated shipped date on the
+//                            order level.
+// SR#245   11/16/94  HKEMPE  Move nbr of cartons to total bol
+//                            cartons and populate SRWREC sched
+//                            and order nbr for PF14(SR0C).
+// y2kproj  02-09-98  oricha  y2k modifications:  sr0hm020 zero
+//                            fill year; sr0hs15, s32, s37.
+// retrofit 07-27-98  esmit2  disallow de-activation for DCMS
+//                            orders, both shipped & voided.
+// ASN proj 10-29-98  esmit2  sr0hs20 - exclude whse '51'/'42'
+//                            from subtracting 99 from nxt schd
+// *********************
+Program SR0H type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "SR00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  OP1REC OP1REC; // record
+  OP3REC OP3REC; // record
+  OP5REC OP5REC; // record
+  OP8REC OP8REC; // record
+  OPBREC OPBREC; // record
+  PK6REC PK6REC; // record
+  SQLCA SQLCA; // record
+  SR0HW01 SR0HW01; // record
+  SR0HW02 SR0HW02; // record
+  SR1REC SR1REC; // record
+  SR2REC SR2REC; // record
+  SR3REC SR3REC; // record
+  SR4REC SR4REC; // record
+  SR7REC SR7REC; // record
+  SR8REC SR8REC; // record
+  SRWREC SRWREC; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TAEREC TAEREC; // record
+  TF1REC TF1REC; // record
+  TSFREC TSFREC; // record
+  TSGREC TSGREC; // record
+  TSIREC TSIREC; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL; // table
+  use SR0HM.SR0HM020,  // forms
+      SR0HM.SR0HM040
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    SR0H010: SR0H010();
+
+     /* ----------------- sr0h010 flow -----------------*/
+
+    goto SR0H020; /* to converse direct ship map*/
+
+    SR0H020: SR0H020();
+     /* ------------  sr0h020 flow ---------------*/
+
+    if (converseVar.eventKey is pa2) /* reset?*/
+      goto SR0H010; /* to init direct ship*/
+    end
+
+    if (converseVar.eventKey is pf6) /* deactivate request?*/
+      goto SR0H035;
+    end
+
+     /* if errors, redisplay map*/
+     /* no errors - build direct ship batch*/
+    if (SRWREC.SRWMSG != " ")
+      SR0HM020.SR0HMMSG = SRWREC.SRWMSG; /* security errors*/
+    end
+
+    if (converseVar.validationMsgNum == 44) /* order already in sched*/
+      SR0HM020.SR0HMMSG = SR0HW01.SR0HWMSG; /* the sched is ...*/
+    end
+
+    if (converseVar.validationMsgNum == 0)
+      if (SR0HM020.SR0HMMSG == " ")
+        goto SR0H030; /* no errors - build direct ship*/
+      else
+        set SR0HM020 alarm;
+        goto SR0H020; /* access errors - redisplay*/
+      end
+    else
+      set SR0HM020 alarm;
+      goto SR0H020; /* pfkey/edit errors - redisplay*/
+    end
+
+
+    SR0H030: SR0H030();
+
+     /* ---------------  sr0h030 flow -----------------*/
+
+    goto SR0H020; /* to redisplay direct ship map*/
+
+    SR0H035: SR0H035();
+
+     /* -----------  sr0h035 flow  -----------------*/
+
+    goto SR0H040; /* display deactivate order*/
+
+    SR0H040: SR0H040();
+
+     /* -------------  sr0h040 flow ----------------------*/
+
+    if (converseVar.eventKey is pa2)
+      goto SR0H035; /* init deactivate*/
+    end
+
+    if (converseVar.validationMsgNum != 0 /* pf key error?*/
+     || SRWREC.SRWMSG != " ")             /* security/edit error?*/
+      set SR0HM040 alarm;
+      goto SR0H040; /* redisplay deactivate order*/
+    end
+
+    if (converseVar.eventKey is pf3
+     || SR0HM040.SR0HMOPT == "N")
+      goto SR0H020; /* redisplay build direct ship*/
+    end
+
+    if (SR0HW01.SR0HWDEA == "Y")
+      goto SR0H050; /* deactivate order*/
+    else
+      SR0HW01.SR0HWDEA = "Y"; /* set deactivate flag*/
+      set SR0HM040.SR0HMOPT cursor, normal; /* reset from autoskip*/
+      set SR0HM040.SR0HMLIT skip; /* reset from dark*/
+      goto SR0H040; /* confirm deactivate*/
+    end
+
+    SR0H050: SR0H050();
+
+     /* -----------  sr0h050 flow  -----------------*/
+
+    converseLib.validationFailed(46); /* ship recon order deactivated*/
+
+    goto SR0H040; /* display deactivate order*/
+
+  end // end main
+end // end SR0H
+
+// init direct ship batch
+Function SR0H010()
+   /* --------------- start process sr0h010 ---------------------*/
+
+  XSENTRY(); /* entry security*/
+
+  XSSEGTR(); /* set segmented transaction id*/
+
+  set SR0HM020 initial; /* clear map fields*/
+  SR0HM020.SR0HMDT = VGVar.currentShortGregorianDate; /* move system date to map*/
+
+     /* look for whse passed from outside applications*/
+  SRWREC.SRWGRP = COMMAREA.CAUSERA; /* user commarea to work*/
+  SR0HW01.SR0HW2CH = COMMAREA.CAFROMAP; /* if entered from*/
+  if (SR0HW01.SR0HW2CH != "SR") /* outside shiprec system,*/
+    SRWREC.SRWXWHCD = COMMAREA.XWHCD; /* use commarea.xwhcd*/
+  end
+
+    /* if whse passed in commarea, move to map and validate*/
+  if (SRWREC.SRWXWHCD != " ")
+    SR0HM020.SR0HMXWH = SRWREC.SRWXWHCD;
+    SR0HS05(); /* validate whse*/
+  else
+    set SR0HM020.SR0HMXWH cursor;
+  end
+
+   /* ---------------   end process sr0h010 ---------------------*/
+
+end // end SR0H010
+
+// converse direct ship map
+Function SR0H020()
+   /* -------------- sr0h020 before stage ----------------*/
+
+    /* no processing*/
+
+  converse SR0HM020 ;
+   /* -------------- sr0h020 after stage -----------------*/
+
+  SR0HM020.SR0HMMSG = " "; /* clear msg field*/
+  SR0HW01.SR0HWSFL = 0; /* clear ship date warning flag*/
+  SR0HW01.SR0HWOEN = "N"; /* order entered flag*/
+
+  SRWREC.SRWXWHCD = SR0HM020.SR0HMXWH; /* set whse for xfer*/
+  COMMAREA.CAUSERA = SRWREC.SRWGRP;
+
+  if (converseVar.eventKey is pf6) /* skip to deactivate request?*/
+    exit stack;
+  end
+
+  if (converseVar.eventKey is pf14) /* skip to deactivate request?*/
+    SRWREC.SRWPKID = SR0HM020.SR0HMSCH;
+    SRWREC.SRWCUOID = SR0HM020.SR0HMORD[1];
+    SRWREC.SRWNORID = SR0HM020.SR0HMSUB[1];
+  end
+
+  XSSRS01(); /* check shiprec pf keys*/
+
+  if (converseVar.validationMsgNum != 0
+   || SRWREC.SRWMSG != " ")
+    exit stack;
+  end
+
+   /* ------------  edit direct ship map -----------------*/
+
+     /* check all order number slots*/
+  SR0HW01.SR0HWIX1 = 40; /* init index*/
+  while (SR0HWIX1 > 0)
+    set SR0HM020.SR0HMORD[SR0HWIX1] initialAttributes; /* clear any hilite*/
+    set SR0HM020.SR0HMSUB[SR0HWIX1] initialAttributes;
+    if (SR0HM020.SR0HMORD[SR0HWIX1] > 0 /* order number entered?*/
+     || SR0HM020.SR0HMSUB[SR0HWIX1] > 0)
+      SR0HS07(); /* validate order as direct ship*/
+      SR0HW01.SR0HWOEN = "Y"; /* order entered flag*/
+    end /* end if order number entered*/
+    SR0HWIX1 = SR0HWIX1 - 1;
+  end /* end while index gt 0*/
+  if (SR0HW01.SR0HWOEN == "N") /* no orders entered?*/
+    set SR0HM020.SR0HMORD[1] cursor, modified, bold;
+    set SR0HM020.SR0HMSUB[1] modified, bold;
+    converseLib.validationFailed(67); /* at least one order must be entered*/
+  end
+
+  SR0HS10(); /* validate carrier code/name*/
+
+  SR0HS12(); /* validate shipment id*/
+
+  SR0HS15(); /* validate date shipped*/
+
+  SR0HS05(); /* validate warehouse*/
+
+
+
+end // end SR0H020
+
+// build direct ship batch
+Function SR0H030()
+   /* --------------- start process sr0h030 ---------------------*/
+
+  XX0XS01(); /* convert csp date/time*/
+
+    /* reset batch accumulators*/
+  SR0HW01.SR0HWBOD = 0; /* orders per batch*/
+  SR0HW01.SR0HWBIT = 0; /* items per batch*/
+  SR0HW01.SR0HWBQT = 0; /* batch qty*/
+  SR0HW01.SR0HWBAM = 0; /* batch amt*/
+
+  SR0HS-GET-CARTONS(); /* get nbr of cartons*/
+
+  SR0HS20(); /* read/upt next batch id*/
+
+  SR0HW01.SR0HWIX1 = 1;
+
+  while (SR0HWIX1 <= 40) /* for each used order slot*/
+
+    if (SR0HM020.SR0HMORD[SR0HWIX1] > 0)
+
+      SR0HS17(); /* read order db order header*/
+
+      SR0HW01.SR0HWOIT = 0; /* reset order item count*/
+      SR0HW01.SR0HWOQT = 0; /* reset order qty*/
+      SR0HW01.SR0HWOAM = 0; /* reset order amt*/
+
+      SR0HS22(); /* select order db item/sizes set using*/
+                                   /* db1000*/
+
+      SR0HS25(); /* select next item/sizes*/
+
+
+      while (OPBREC.OPBSZRC == 0) /* for each line item:*/
+
+        if (OP3REC.OP2LNIST != "XL") /* item not cancelled?*/
+
+          SR0HW01.SR0HWIQT = 0; /* reset item  qty*/
+          set SR3REC empty; /* clear shiprec item/sizes*/
+
+
+               /* for each active size in order db item/sizes*/
+          SR0HW01.SR0HWIX2 = 1; /* index for order db sizes*/
+          SR0HW01.SR0HWIX3 = 1; /* index for shiprec db sizes*/
+          while (SR0HWIX2 <= 40) /* for each size:*/
+            if (OP3REC.OP3SZAFL[SR0HWIX2] == "Y") /* if active*/
+
+               /* size id is bucket nbr; bin, zone, qty alloc set empty,*/
+               /* shipped qty is set to on-order qty*/
+              SR3REC.SY5SZID[SR0HWIX3] = SR0HWIX2; /* SIZE ID*/
+              SR3REC.SR3QTYSH[SR0HWIX3] = OP3REC.OP3ONOQT[SR0HWIX2];
+              SR0HWIX3 = SR0HWIX3 + 1;
+               /* accum item qty*/
+              SR0HW01.SR0HWIQT = SR0HWIQT + OP3REC.OP3ONOQT[SR0HWIX2];
+
+            end /* end if active size*/
+            SR0HWIX2 = SR0HWIX2 + 1;
+          end /* end for each order db size*/
+
+
+          SR0HS27(); /* fmt/write shiprec item/sizes*/
+
+           /* accum order qty, amt, items per order*/
+           /* item amt = item qty * ave unit price*/
+          SR0HW01.SR0HWOIT = SR0HW01.SR0HWOIT + 1; /* item count*/
+          SR0HW01.SR0HWOQT = SR0HW01.SR0HWOQT + SR0HW01.SR0HWIQT;
+          SR0HW01.SR0HWIAM = OP3REC.OP2AUPRC * SR0HW01.SR0HWIQT;
+          SR0HW01.SR0HWOAM = SR0HW01.SR0HWOAM + SR0HW01.SR0HWIAM;
+
+        end /* end if item not cancelled*/
+
+        SR0HS25(); /* select next item/sizes*/
+
+      end /* END FOR EACH LINE ITEM*/
+
+      SR0HS30(); /* close item/sizes set*/
+
+      SR0HS-S-VPKCUS01(); /* Select DPICK.VPKCUS01 row*/
+
+      SR0HS32(); /* fmt/write shiprec order*/
+        /* count order, accum batch qty, amt, items per batch*/
+      SR0HW01.SR0HWBOD = SR0HW01.SR0HWBOD + 1; /* orders*/
+      SR0HW01.SR0HWBIT = SR0HW01.SR0HWBIT + SR0HW01.SR0HWOIT; /* itms*/
+      SR0HW01.SR0HWBQT = SR0HW01.SR0HWBQT + SR0HW01.SR0HWOQT; /* qty*/
+      SR0HW01.SR0HWBAM = SR0HW01.SR0HWBAM + SR0HW01.SR0HWOAM; /* amt*/
+
+      if (OP1REC.OP11TMSF == "Y") /* one time ship to data present?*/
+        SR0HS35(); /* read address, write to shiprec*/
+      end
+
+    end /* end if order present in slot*/
+    SR0HWIX1 = SR0HWIX1 + 1;
+  end /* end for each order slot*/
+
+  SR0HS37(); /* fmt/write batch header*/
+
+    /* move message to map*/
+  if (SR0HW01.SR0HWSFL == 1) /* ship date warning?*/
+    SR0HM020.SR0HMMSG = "WARNING: SHIP DATE GREATER THAN 30 DAYS OLD";
+    converseLib.validationFailed(13); /* direct ship batch created*/
+  else
+    converseLib.validationFailed(13); /* direct ship batch created*/
+  end
+
+  if (SRWREC.SRWMSG == " ")
+    /* next sentence*/
+  else
+    SR0HM020.SR0HMMSG = SRWREC.SRWMSG;
+  end
+
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.commit(); /* commit batch*/
+
+
+end // end SR0H030
+
+// init deallocate order
+Function SR0H035()
+   /* -------------- sr0h035 process start ---------------*/
+
+  set SR0HM040 initial;
+  SR0HM040.SR0HMDT = VGVar.currentShortGregorianDate; /* system date*/
+  SR0HM040.SR0HMXWH = SR0HM020.SR0HMXWH; /* whse*/
+
+   /* -------------- sr0h035 process end -----------------*/
+
+end // end SR0H035
+
+// converse dealloc order
+Function SR0H040()
+   /* -------------- sr0h040 before stage ----------------*/
+
+  SR0HM040.SR0HMMSG = SRWREC.SRWMSG; /* message*/
+
+  converse SR0HM040 ;
+   /* -------------- sr0h040 after stage -----------------*/
+
+  SRWREC.SRWMSG = " ";
+
+  if (converseVar.eventKey is pf3)
+    exit stack;
+  else
+    XSSRS01(); /* check shiprec pf keys*/
+  end
+
+  if (SRWREC.SRWMSG != " " /* security access error*/
+   || converseVar.validationMsgNum != 0) /* pf key error*/
+    exit stack;
+  end
+
+    /* on first pass verify order valid for deactivation,*/
+    /* set confirm with y/n literal if valid.*/
+
+  if (SR0HM040.SR0HMSCH is modified
+   || SR0HM040.SR0HMORD is modified
+   || SR0HM040.SR0HMSUB is modified
+   || SR0HW01.SR0HWDEA == "N")
+
+    SR0HW01.SR0HWDEA = "N"; /* clear deactivate flag*/
+    set SR0HM040.SR0HMOPT skip, invisible; /* set option*/
+    set SR0HM040.SR0HMLIT skip, invisible; /* set y/n dark,autoskip*/
+    set SR0HM040.SR0HMSCH cursor;
+
+    SR0HS40(); /* read shiprec order table*/
+    if (SQLCA.VAGen_SQLCODE == 0
+     && SR2REC.SR2DALFL == "Y")
+      SRWREC.SRWMSG = "ORDER ALREADY DEACTIVATED";
+      exit stack;
+    end
+    if (SQLCA.VAGen_SQLCODE == 100)
+      SRWREC.SRWMSG = "ORDER NOT FOUND";
+      exit stack;
+    end
+
+    SR0HS45(); /* read shiprec batch hdr*/
+    if (SR1REC.SR1BTST == "R")
+      SRWREC.SRWMSG = "SCHEDULE HAS BEEN RELEASED - CANNOT DEACTIVATE";
+      exit stack;
+
+    end
+
+    if (SR1REC.SR1BTST == "B")
+      SRWREC.SRWMSG = "SCHEDULE HAS BEEN BALANCED - CANNOT DEACTIVATE";
+      exit stack;
+    end
+
+    if (SR1REC.TF1CARNM == "DCMS") /* DCMS order - Apparel only*/
+
+      if (SR1REC.SR1QTYSH > 0) /* DCMS shipped order*/
+        SRWREC.SRWMSG = "DCMS SHIPPED ORDER - CANNOT DEACTIVATE ON GOAL";
+      else /* DCMS voided order*/
+        SRWREC.SRWMSG = "DCMS VOIDED ORDER - CANNOT DEACTIVATE ON GOAL";
+      end
+
+      exit stack;
+
+    end
+
+    exit stack; /* bypass y/n check until verification step*/
+
+  end
+
+
+
+  if (SR0HM040.SR0HMOPT == "Y"
+   || SR0HM040.SR0HMOPT == "N")
+     /* next sentence*/
+  else
+    SRWREC.SRWMSG = "MUST ENTER Y/N FOR OPTION";
+  end
+
+
+end // end SR0H040
+
+// deallocate order
+Function SR0H050()
+   /* --------------- start process sr0h050 ---------------------*/
+
+         /* deallocate order using sr0o application*/
+
+  set SR8REC empty;
+  SR8REC.XWHCD = SR2REC.XWHCD;
+  SR8REC.PK1PKSCH = SR2REC.PK1PKSCH;
+  SR8REC.OP1CUOID = SR2REC.OP1CUOID;
+  SR8REC.OP1NORID = SR2REC.OP1NORID;
+  SR8REC.OP1NTMAL = SR2REC.OP1NTMAL;
+  SR8REC.SR8FUNC = "O";
+
+  call "SR0O" (SR8REC, SQLCA) {isNoRefresh = yes};
+
+  if (SR8REC.SR8RTN == "0") /* good return*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.commit();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    exit stack;
+  end
+
+  SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.rollback();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+  
+  SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+  TA1REC.TA1TYPE = "DB2";
+  TA1REC.TA1FUNC = "ABND";
+  TA1REC.TA1DBASE = "DSHIP";
+  if (SR8REC.SR8LOC == "SR0OS05"
+   || SR8REC.SR8LOC == "SR0OS20")
+    TA1REC.TA1TBLVU = "VSRORD01";
+  end
+  if (SR8REC.SR8LOC == "SR0OS25"
+   || SR8REC.SR8LOC == "SR0OS30")
+    TA1REC.TA1TBLVU = "VSRHDR01";
+  end
+  TA1REC.TA1MAP = "SR0HM040";
+  TA1REC.TA1TBLKE = " ";
+  TA1REC.TA1LOC = SR8REC.SR8LOC;
+  TA1REC.TA1PGMNM = "CSP    ";
+  call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+
+
+   /* ---------------   end process sr0h050 ---------------------*/
+
+end // end SR0H050
+
+// get nbr of cartons fr trans db
+Function SR0HS-GET-CARTONS()
+   /* -----------------------------------------------------------**/
+      /* Determine the nbr of cartons of each order entered.    **/
+   /* -----------------------------------------------------------**/
+
+  set SR0HW02 empty;
+
+  move SR0HM020.SR0HMORD to SR0HW02.OP1CUOID[1] for all; /* cust ord id*/
+  move SR0HM020.SR0HMSUB to SR0HW02.OP1NORID[1] for all; /* nike ord id*/
+
+  set TSIREC empty;
+  set TSGREC empty;
+
+  TSIREC.TSFSHPID = TSFREC.TSFSHPID; /* ship id*/
+
+  SR0HS-IO2570-S1(); /* open cursor dtrans.vcplhd01*/
+
+  SR0HS-IO2570-N1(); /* fetch vcplhd01*/
+
+  while (VAGen_SQLCODE == 0)
+
+    if (TSIREC.OP1CUOID in SR0HW02.OP1CUOID) /* search cust ord id*/
+
+      if (TSIREC.OP1NORID == SR0HW02.OP1NORID[sysVar.arrayIndex]) /* nike ord id*/
+        SR0HW02.TSICRTQT[sysVar.arrayIndex] = SR0HW02.TSICRTQT[sysVar.arrayIndex] +         TSIREC.TSICRTQT; /* accum nbr of cartons*/
+      end
+
+    end
+
+    SR0HS-IO2570-N1(); /* fetch next row*/
+
+  end
+
+  SR0HS-IO2570-C1(); /* close cursor*/
+
+
+end // end SR0HS-GET-CARTONS
+
+// get nbr of cartons fr trans db
+Function SR0HS-IO2570-C1()
+   /* ------------------------------------------------------------*/
+
+          /* CLOSE SELECTED SET FROM DTRANS.VCPLHD01*/
+
+   /* 1) Close the selected set of table rows.*/
+   /* 2) If any error, indicate a system error.*/
+
+   /* ------------------------------------------------------------*/
+
+  TSGREC.TSNFNC = "C1"; /* move in function code*/
+
+  call "IO2570" (TSGREC, SQLCA, TSIREC) {isNoRefresh = yes, isExternal = yes}; /* Close table set*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+    return;
+  else
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    TA1REC.TA1PGMNM = "IO2570C1"; /* Process name*/
+    TA1REC.TA1LOC = "CLOSE SELECTED SET OF TABLE ROWS";
+    TA1REC.TA1MAP = "SR0HM020"; /* Map name*/
+    TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VCPLHD01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    converseLib.clearScreen();
+     /* Clear screen before redisplay*/
+
+    exit stack;
+
+  end
+
+
+end // end SR0HS-IO2570-C1
+
+// get nbr of cartons fr trans db
+Function SR0HS-IO2570-N1()
+   /* ------------------------------------------------------------*/
+
+              /* FETCH ROW FROM DTRANS.VCPLHD01*/
+
+   /* 1) Fetch the next row from the selected set of rows.*/
+   /* 2) If end of file, set end of file switch.*/
+   /* 3) If any error, indicate a system error.*/
+
+   /* ------------------------------------------------------------*/
+
+  TSGREC.TSNFNC = "N1"; /* move in function code*/
+
+  call "IO2570" (TSGREC, SQLCA, TSIREC) {isNoRefresh = yes, isExternal = yes}; /* Fetch the next row*/
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* Noraml return code*/
+   || SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+      converseLib.validationFailed(11); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    else
+      converseLib.validationFailed(10); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      converseLib.clearScreen();
+       /* Clear screen before redisplay*/
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "IO2570N1"; /* Process name*/
+    TA1REC.TA1LOC = "FETCH NEXT SELECTED TABLE ROW";
+    TA1REC.TA1MAP = "SR0HM020"; /* Map name*/
+    TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VCPLHD01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    exit stack;
+
+  end
+
+
+end // end SR0HS-IO2570-N1
+
+// get nbr of cartons fr trans db
+Function SR0HS-IO2570-S1()
+   /* ------------------------------------------------------------*/
+
+        /* SELECT SET AND OPEN CURSOR FOR DTRANS.VCPLHD01*/
+
+   /* 1) Select the set of table rows.*/
+   /* 2) If not available, return an error message to the user.*/
+   /* 3) If any other, indicate system error.*/
+
+   /* ------------------------------------------------------------*/
+
+  TSGREC.TSNFNC = "S1"; /* function*/
+
+  call "IO2570" (TSGREC, SQLCA, TSIREC) {isNoRefresh = yes, isExternal = yes}; /* Select table set*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+    return;
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+      converseLib.validationFailed(11); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    else
+      converseLib.validationFailed(10); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      converseLib.clearScreen();
+       /* Clear screen before redisplay*/
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "IO2570S1"; /* Process name*/
+    TA1REC.TA1LOC = "SELECT SET OF TABLE ROWS";
+    TA1REC.TA1MAP = "SR0HM020"; /* Map name*/
+    TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VCPLHD01"; /* Table view name*/
+    TA1REC.TA1TBLKE = TSIREC.TSIKEY; /* Table key*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    exit stack;
+
+  end
+
+
+end // end SR0HS-IO2570-S1
+
+// Select DPICK.VPKCUS01 row
+Function SR0HS-S-VPKCUS01()
+   /* ------------------------------------------------------------*/
+   /* Select the requested row from the table.*/
+   /* ------------------------------------------------------------*/
+
+  set PK6REC empty; /* Clear row storage area*/
+
+  PK6REC.KUCCOID = OP1REC.KUCCOID; /* Company identification*/
+  PK6REC.KUMSTRID = OP1REC.KUMSTRID; /* Store identification*/
+
+  try
+    call "IO1830" ("S ", SQLCA, PK6REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* or row not found*/
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that an unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  SR0HM020.SR0HMMSG = "SR0HS-S-VPKCUS01"; /* Module identification*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(134); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+
+    converseLib.validationFailed(124); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT DPICK.VPKCUS01 ROW";
+  TA1REC.TA1PGMNM = COMMAREA.CACURRAP; /* Program name*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPKCUS01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PK6REC.PK6GROUP; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+
+end // end SR0HS-S-VPKCUS01
+
+// validate warehouse
+Function SR0HS05()
+      /* look up warehouse in csp corp whse table*/
+        /* found/active - move whse name to map*/
+        /* notfnd/inactive - brt, error msg*/
+
+  set SR0HM020.SR0HMXWH initialAttributes;
+
+  if (SR0HM020.SR0HMXWH != " ")
+    if (SR0HM020.SR0HMXWH in XWHTBL.XWHCD)
+      SR0HM020.SR0HMWNM = XWHTBL.XWHNM[sysVar.arrayIndex];
+    end
+    if (sysVar.arrayIndex != 0)
+      if (XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+         /* NEXT SENTENCE*/
+      else
+        SR0HM020.SR0HMWNM = " ";
+        set SR0HM020.SR0HMXWH cursor, modified, bold;
+        converseLib.validationFailed(2); /* warehouse code inactive*/
+      end
+    else
+      SR0HM020.SR0HMWNM = " ";
+      set SR0HM020.SR0HMXWH cursor, modified, bold;
+      converseLib.validationFailed(1); /* warehouse code invalid*/
+    end
+  else
+    SR0HM020.SR0HMWNM = " ";
+    set SR0HM020.SR0HMXWH cursor, modified, bold;
+    converseLib.validationFailed(17); /* warehouse code required*/
+  end
+
+
+end // end SR0HS05
+
+// validate order as direct ship
+Function SR0HS07()
+   /* ------------- start stmt grp sr0h007 ---------------*/
+
+   /* validate order as direct ship*/
+     /* a. read order db order header*/
+     /* b. check order header for:*/
+        /* 1. order found*/
+        /* 2. order is direct ship*/
+        /* 3. order is not fully shipped or cancelled*/
+        /* 4. order gpc matches gpc on map*/
+     /* c. verify that shiprec order doesn't already exist.*/
+     /* d. verify that order request only appears once on map*/
+
+  SR0HS17(); /* read db2 dorder.vorhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE == 0) /* record found*/
+    if (OP1REC.XDSCD == "1") /* Direct ship order*/
+      if (OP1REC.XDVCD != "02") /* Not an export order*/
+        if (OP1REC.XOSCD != "SH" /* Not already shipped*/
+         && OP1REC.XOSCD != "XL") /* and not cancelled*/
+          /* next sentence(eligable order)*/
+        else /* order is shipped or canceled*/
+          set SR0HM020.SR0HMORD[SR0HWIX1] cursor, modified, bold;
+          set SR0HM020.SR0HMSUB[SR0HWIX1] modified, bold;
+          converseLib.validationFailed(162); /* order fully shipped or cancelled*/
+          return;
+        end
+      else
+        set SR0HM020.SR0HMORD[SR0HWIX1] cursor, modified, bold;
+        set SR0HM020.SR0HMSUB[SR0HWIX1] modified, bold;
+        converseLib.validationFailed(174); /* Export orders not allowed*/
+        return;
+      end
+    else /* order is not direct ship*/
+      set SR0HM020.SR0HMORD[SR0HWIX1] cursor, modified, bold;
+      set SR0HM020.SR0HMSUB[SR0HWIX1] modified, bold;
+      converseLib.validationFailed(4); /* order is not direct ship*/
+      return;
+    end
+  else /* order is not found*/
+    set SR0HM020.SR0HMORD[SR0HWIX1] cursor, modified, bold;
+    set SR0HM020.SR0HMSUB[SR0HWIX1] modified, bold;
+    converseLib.validationFailed(3); /* order is not found*/
+    return;
+  end
+
+
+    /* check for order already in shiprec*/
+      /* a. build wildcard key for all shiprec orders*/
+         /* with current order number*/
+      /* b. select set*/
+      /* c. select next.  if any records found, error.*/
+      /* d. close set*/
+
+  set SR2REC empty;
+  SR2REC.XWHCD = "**";
+  SR2REC.PK1PKSCH = -1;
+  SR2REC.OP1CUOID = SR0HM020.SR0HMORD[SR0HWIX1];
+  SR2REC.OP1NORID = SR0HM020.SR0HMSUB[SR0HWIX1];
+  SR2REC.OP1NTMAL = -1;
+
+  call "IO0800" ("SS", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sq*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS07";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+         /* select next shiprec order header*/
+
+  call "IO0800" ("SN", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* already exists*/
+   && SR2REC.SR2DALFL != "Y")  /* and order not deallocated*/
+    set SR0HM020.SR0HMORD[SR0HWIX1] cursor, modified, bold;
+    set SR0HM020.SR0HMSUB[SR0HWIX1] modified, bold;
+    converseLib.validationFailed(44); /* order already exists in batch*/
+    SR0HW01.SR0HWMLT = "THE SCHEDULE IS"; /* message literal*/
+    SR0HW01.SR0HWMLI = " WHSE IS "; /* message literal*/
+    SR0HW01.SR0HWMSC = SR2REC.PK1PKSCH; /* message sched. nbr*/
+    SR0HW01.SR0HWMWH = SR2REC.XWHCD; /* message whse   nbr*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* doesn't exist*/
+      /* next sentence*/
+    else /* sql error*/
+      if (SQLCA.VAGen_SQLCODE != 0)
+        SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+        TA1REC.TA1TYPE = "DB2";
+        TA1REC.TA1FUNC = "ABND";
+        TA1REC.TA1DBASE = "DSHIP";
+        TA1REC.TA1TBLVU = "VSRORD01";
+        TA1REC.TA1MAP = "SR0HM020";
+        TA1REC.TA1TBLKE = " ";
+        TA1REC.TA1LOC = "SR0HS07";
+        TA1REC.TA1PGMNM = "CSP    ";
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      end
+    end
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 100
+   && SQLCA.VAGen_SQLCODE != 0)
+     /* next sentence*/
+  else
+    if (SR2REC.SR2DALFL == "Y")
+      SR0HS09(); /* check the rest of the orders if any*/
+    end
+  end
+
+  call "IO0800" ("CS", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sq*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS07";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+  if (converseVar.validationMsgNum == 44) /* direct ship order already exists*/
+    return;
+  end
+
+
+
+    /* check if order is requested more than once*/
+  SR0HWIX2 = 40;
+  while (SR0HWIX2 > 0)
+    if (SR0HM020.SR0HMORD[SR0HWIX1] == SR0HM020.SR0HMORD[SR0HWIX2]
+     && SR0HM020.SR0HMSUB[SR0HWIX1] == SR0HM020.SR0HMSUB[SR0HWIX2]
+     && SR0HWIX1 != SR0HWIX2)
+      set SR0HM020.SR0HMORD[SR0HWIX1] cursor, modified, bold;
+      set SR0HM020.SR0HMSUB[SR0HWIX1] modified, bold;
+      converseLib.validationFailed(45); /* order already requested for dir.shp*/
+      return;
+    end
+    SR0HWIX2 = SR0HWIX2 - 1;
+  end
+
+
+   /* -------------   end stmt grp sr0hs07 ---------------*/
+end // end SR0HS07
+
+// is order in another schedule?
+Function SR0HS09()
+   /* ------------- start stmt grp sr0hs09 ---------------*/
+
+
+         /* select next shiprec order header*/
+
+  SR0HW01.SR0HWFL1 = " ";
+
+  while (SR0HW01.SR0HWFL1 == " ")
+
+    call "IO0800" ("SN", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+
+    if (SQLCA.VAGen_SQLCODE == 0 /* already exists*/
+     && SR2REC.SR2DALFL != "Y")  /* and order not deallocated*/
+      SR0HW01.SR0HWFL1 = "Y";
+      set SR0HM020.SR0HMORD[SR0HWIX1] cursor, modified, bold;
+      set SR0HM020.SR0HMSUB[SR0HWIX1] modified, bold;
+      converseLib.validationFailed(44); /* order already exists in batch*/
+      SR0HW01.SR0HWMLT = "THE SCHEDULE IS"; /* message literal*/
+      SR0HW01.SR0HWMLI = " WHSE IS "; /* message literal*/
+      SR0HW01.SR0HWMSC = SR2REC.PK1PKSCH; /* message sched. nbr*/
+      SR0HW01.SR0HWMWH = SR2REC.XWHCD; /* message whse   nbr*/
+    else
+      if (SQLCA.VAGen_SQLCODE == 100) /* doesn't exist*/
+        SR0HW01.SR0HWFL1 = "Y";
+        /* next sentence*/
+      else /* sql error*/
+        if (SQLCA.VAGen_SQLCODE != 0)
+          SR0HW01.SR0HWFL1 = "Y";
+          SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+          VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+          VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+          sysLib.rollback();
+          VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+          
+          SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+          TA1REC.TA1TYPE = "DB2";
+          TA1REC.TA1FUNC = "ABND";
+          TA1REC.TA1DBASE = "DSHIP";
+          TA1REC.TA1TBLVU = "VSRORD01";
+          TA1REC.TA1MAP = "SR0HM020";
+          TA1REC.TA1TBLKE = " ";
+          TA1REC.TA1LOC = "SR0HS07";
+          TA1REC.TA1PGMNM = "CSP    ";
+          call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+        end
+      end
+    end
+  end
+
+
+
+   /* -------------   end stmt grp sr0hs09 ---------------*/
+end // end SR0HS09
+
+// validate carrier code/name
+Function SR0HS10()
+   /* ------------- start stmt grp sr0hs10 ---------------*/
+
+      /* read db2 dpick.vcarr001 table*/
+        /* found/active:*/
+          /* check misc carrier flag.  if = 'y', user must*/
+          /* have entered carrier name. if = 'n', move*/
+          /* carrier name from table to map.*/
+        /* notfnd/inactive - brt, error msg*/
+
+  TF1REC.TF1CARCD = SR0HM020.SR0HMCAR; /* build key*/
+
+  call "IO0860" ("S ", SQLCA, TF1REC) {isNoRefresh = yes, isExternal = yes}; /* read dpick.vcarr001*/
+
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == 100)
+     /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VCARR001";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = SR0HM020.SR0HMCAR;
+    TA1REC.TA1LOC = "SR0HS10";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+  set SR0HM020.SR0HMCAR initialAttributes;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (TF1REC.XXXSTAT == "A")
+      /* next sentence*/
+    else
+      converseLib.validationFailed(6); /* inactive carrier code*/
+      set SR0HM020.SR0HMCAR cursor, modified, bold;
+      SR0HM020.SR0HMCNM = " "; /* clear carrier name*/
+      return;
+    end
+  else
+    converseLib.validationFailed(5); /* invalid carrier code*/
+    set SR0HM020.SR0HMCAR cursor, modified, bold;
+    SR0HM020.SR0HMCNM = " "; /* clear carrier name*/
+    return;
+  end
+
+  if (TF1REC.TF1MCARF == "Y") /* misc carrier?*/
+    if (SR0HM020.SR0HMCNM > " ")
+      /* next sentence*/
+    else
+      converseLib.validationFailed(7); /* misc carrier name required*/
+      set SR0HM020.SR0HMCAR cursor, modified, bold;
+    end
+  else
+    SR0HM020.SR0HMCNM = TF1REC.TF1CARNM; /* decode carrier*/
+  end
+
+   /* -------------   end stmt grp sr0hs10 ---------------*/
+end // end SR0HS10
+
+// validate shipment id
+Function SR0HS12()
+   /* ------------------------------------------------------------*/
+   /* the shipment id must be entered otherwise it is an error.*/
+   /* ------------------------------------------------------------*/
+
+  set SR0HM020.TSFSHPID initialAttributes;
+  if (SR0HM020.TSFSHPID == 0)
+      /* MOVE 24 TO EZEMNO             ; required field*/
+      /* SET SR0HM020.TSFSHPID CURSOR,MODIFIED,BRIGHT;*/
+    return;
+  end
+
+   /* ------------------------------------------------------------*/
+   /* validate the shipment id against the DTRANS.VSHPHD01 table.*/
+   /* ------------------------------------------------------------*/
+
+  set TSFREC empty; /* Clear the table record*/
+
+  TSFREC.TSFSHPID = SR0HM020.TSFSHPID; /* shipment id*/
+
+  try
+    call "IO2540" ("S ", SQLCA, TSFREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table row*/
+
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+
+    if (SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+      converseLib.validationFailed(165); /* invalid shipment id*/
+      set SR0HM020.TSFSHPID cursor, modified, bold;
+
+      return; /* Return to previous process*/
+
+    end
+
+  end
+
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+
+    converseLib.validationFailed(1341); /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+  else
+
+    converseLib.validationFailed(124); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OBTAIN SHIPMENT ID - VSHPHD01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = "S12"; /* Program number*/
+  TA1REC.TA1MAP = "SR0HM020"; /* map name*/
+  TA1REC.TA1DBASE = "DTRANS  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSHPHD01"; /* Table view name*/
+  TA1REC.TA1TBLKE = SR0HM020.TSFSHPID; /* Table key*/
+
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  exit stack; /* Exit to display map*/
+
+end // end SR0HS12
+
+// validate date shipped
+Function SR0HS15()
+   /* ------------- start stmt grp sr0hs15 ---------------*/
+
+     /* date shipped must have valid date and*/
+     /* be le todays date, less than 1 year old.*/
+     /* warning for ship date gt 30 days old*/
+
+  set SR0HM020.SR0HMYY initialAttributes;
+  set SR0HM020.SR0HMMM initialAttributes;
+  set SR0HM020.SR0HMDD initialAttributes;
+
+   /* ------- y2k out begin -------*/
+   /* MOVE EZEDTE TO SR0HW01.SR0HWDT1;  /* sys yymmdd to work*/
+   /* ------- y2k out end ---------*/
+
+   /* ------- y2k in  begin -------*/
+  SR0HW01.SR0HWDT1 = VGVar.currentGregorianDate; /* sys ccyymmdd to work*/
+   /* ------- y2k in end ----------*/
+
+  SR0HW01.SR0HWYY2 = SR0HM020.SR0HMYY; /* ship yymmdd to work*/
+  SR0HW01.SR0HWMM2 = SR0HM020.SR0HMMM;
+  SR0HW01.SR0HWDD2 = SR0HM020.SR0HMDD;
+   /* ------- y2k in  begin -------*/
+  if (SR0HW01.SR0HWYY2 > 60)
+    SR0HW01.SR0HWSCC = 19;
+  else
+    SR0HW01.SR0HWSCC = 20;
+  end
+   /* ------- y2k in end ----------*/
+
+
+   /* ------- y2k out begin -------*/
+   /* MOVE SR0HW01.SR0HWDT2 TO TA2REC.TA2GRGEN;*/
+   /* MOVE 'GREGJUL ' TO TA2REC.TA2DTOPT;*/
+   /* MOVE 'E' TO TA2REC.TA2GRTYP;*/
+   /* ------- y2k out end --------*/
+
+   /* ------- y2k in begin --------*/
+  set TA2REC empty;
+  TA2REC.TA2GRGGN = SR0HW01.SR0HWSDT;
+  TA2REC.TA2DTOPT = "GREGJUL ";
+  TA2REC.TA2GRTYP = "G";
+   /* ------- y2k in end ----------*/
+
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* common date checking/converting pgm*/
+
+  if (TA2REC.TA2RTNCD != 0) /* bad date entered?*/
+    set SR0HM020.SR0HMYY modified, bold;
+    set SR0HM020.SR0HMMM cursor, modified, bold;
+    set SR0HM020.SR0HMDD modified, bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  end
+
+   /* ------ y2k out begin ---------*/
+   /* IF SR0HW01.SR0HWDT2 GT SR0HW01.SR0HWDT1;/* ship date gt sys date?*/
+   /* ------ y2k out end -----------*/
+
+   /* ------ y2k in  begin ---------*/
+  if (SR0HW01.SR0HWSDT > SR0HW01.SR0HWDT1) /* ship date gt sys date?*/
+   /* ------ y2k in end ------------*/
+    set SR0HM020.SR0HMYY modified, bold;
+    set SR0HM020.SR0HMMM cursor, modified, bold;
+    set SR0HM020.SR0HMDD modified, bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  end
+
+    /* compute days between ship date and todays date*/
+  SR0HW01.SR0HW3N1 = TA2REC.TA2JULNN; /* save ship julian days*/
+
+
+
+   /* -------- y2k out begin -----*/
+   /* MOVE EZEDTE TO TA2REC.TA2GRGEN;*/
+   /* MOVE 'GREGJUL ' TA2REC.TA2DTOPT; /* get todays julian date*/
+   /* MOVE 'E' TO TA2REC.TA2GRTYP;*/
+   /* CALL TA0040 TA2REC (NOMAPS,NONCSP;/* common date check/convert pgm*/
+   /* -------- y2k out end -------*/
+
+   /* -------- y2k in begin ------*/
+  set TA2REC empty;
+  TA2REC.TA2GRGGN = SR0HW01.SR0HWDT1;
+  TA2REC.TA2DTOPT = "GREGJUL "; /* get todays julian date*/
+  TA2REC.TA2GRTYP = "G";
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* common date check/convert pgm*/
+
+  if (TA2REC.TA2RTNCD != 0) /* bad ezedte or?*/
+    set SR0HM020.SR0HMYY modified, bold;
+    set SR0HM020.SR0HMMM cursor, modified, bold;
+    set SR0HM020.SR0HMDD modified, bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  end
+   /* -------- y2k in end --------*/
+
+  SR0HW01.SR0HW3N2 = TA2REC.TA2JULNN; /* save todays julian days*/
+
+   /* -------- y2k out begin -----*/
+   /* SR0HW01.SR0HW2N = SR0HW01.SR0HWYY1 - SR0HW01.SR0HWYY2;*/
+   /* -------- y2k out end -------*/
+   /* -------- y2k in begin ------*/
+  SR0HW01.SR0HW2N = SR0HW01.SR0HW-CCYY1 - SR0HW01.SR0HW-CCYY2;
+   /* -------- y2k in end --------*/
+
+  SR0HW01.SR0HWAGE = SR0HW01.SR0HW2N * 365;
+  SR0HW01.SR0HWAGE = SR0HW01.SR0HWAGE + SR0HW01.SR0HW3N2 - SR0HW01.SR0HW3N1;
+
+    /* check for ship date older than 1 year*/
+  if (SR0HW01.SR0HWAGE > 365)
+    set SR0HM020.SR0HMYY modified, bold;
+    set SR0HM020.SR0HMMM cursor, modified, bold;
+    set SR0HM020.SR0HMDD modified, bold;
+    converseLib.validationFailed(10); /* invalid ship date*/
+    return;
+  end
+
+    /* check for ship date older than 30 days*/
+  if (SR0HW01.SR0HWAGE > 30)
+    SR0HW01.SR0HWSFL = "1";
+                                   /* warning: ship date older than 30 days*/
+  end
+
+   /* -------------   end stmt grp sr0hs15 ---------------*/
+end // end SR0HS15
+
+// read dorder.vorhdr01
+Function SR0HS17()
+   /* ------------- start stmt grp sr0hs17 ---------------*/
+
+    /* build order header key*/
+  SR0HW01.SR0HW1N = SR0HM020.SR0HMORD[SR0HWIX1]; /* find order partition*/
+  OP1REC.OP1PARTN = SR0HW01.SR0HW1N;
+  OP1REC.OP1CUOID = SR0HM020.SR0HMORD[SR0HWIX1];
+  OP1REC.OP1NORID = SR0HM020.SR0HMSUB[SR0HWIX1];
+
+      /* read db2 order db header table*/
+  call "IO0430" ("S ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* read dorder.vorhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == 100)
+    return;
+  else
+    SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DORDER";
+    TA1REC.TA1TBLVU = "VORHDR01";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS17";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* -------------   end stmt grp sr0hs17 ---------------*/
+end // end SR0HS17
+
+// get next batch id
+Function SR0HS20()
+   /* ------------- start stmt grp sr0hs20 ---------------*/
+
+     /* get next schedule id (io mod updates next id)*/
+
+  call "IO0850" ("U1", SQLCA, SR7REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrnxt01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VSRNXT01";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS20";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* *** change to exclude warhouse '51' & '42' - ASN Project*/
+  if (SR0HM020.SR0HMXWH != "04" /* this is for non-installed phase 3*/
+   /* whse*/
+   && SR0HM020.SR0HMXWH != "51" 
+   && SR0HM020.SR0HMXWH != "02" 
+   && SR0HM020.SR0HMXWH != "42" 
+   && SR0HM020.SR0HMXWH != "07" 
+   && SR0HM020.SR0HMXWH != "03" 
+   && SR0HM020.SR0HMXWH != "09" 
+   && SR0HM020.SR0HMXWH != "12")
+    SR7REC.SR7NXTSD = SR7REC.SR7NXTSD - 9900000;
+  end
+
+  SR0HM020.SR0HMSCH = SR7REC.SR7NXTSD; /* move sched. to map*/
+
+   /* -------------   end stmt grp sr0hs20 ---------------*/
+end // end SR0HS20
+
+// sel/set order db item/sizes
+Function SR0HS22()
+   /* --------------- start stmt grp sr0hs22 ---------------------*/
+
+   /* select order db item/size set using db1000*/
+
+      /* build order set key*/
+  SR0HW01.SR0HW1N = SR0HM020.SR0HMORD[SR0HWIX1];
+  OP3REC.OP1PARTN = SR0HW01.SR0HW1N;
+  OP3REC.OP1CUOID = SR0HM020.SR0HMORD[SR0HWIX1];
+  OP3REC.OP1NORID = SR0HM020.SR0HMSUB[SR0HWIX1];
+  OP8REC.OP8TASK = "SS"; /* set parameters for db1000*/
+  OP8REC.OP8MAP = "SR0HM020";
+  OP8REC.OP8LOCAT[1] = "SR0H";
+  OP8REC.OP8LOCAT[2] = "SR0HS22";
+
+  call "DB1000" (OP8REC, OP3REC, OPBREC) {isNoRefresh = yes, isExternal = yes}; /* select items/sizes*/
+
+  if (OPBREC.OPBSZRC != 0)
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    set SQLCA empty;
+    SQLCA.VAGen_SQLCODE = OPBREC.OPBSZRC;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DORDER";
+    TA1REC.TA1TBLVU = "DB1000  ";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS22";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end stmt grp sr0hs22 ---------------------*/
+end // end SR0HS22
+
+// select next item/sizes
+Function SR0HS25()
+   /* ------------- start stmt grp sr0hs25 ---------------*/
+
+      /* select next item/sizes using db1000*/
+
+  OP8REC.OP8TASK = "SN";
+  OP8REC.OP8LOCAT[2] = "SR0HS25";
+
+  call "DB1000" (OP8REC, OP3REC, OPBREC) {isNoRefresh = yes, isExternal = yes};
+                                   /* select next item/sizes*/
+
+  if (OPBREC.OPBSZRC != 0
+   && OPBREC.OPBSZRC != 1)
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+                                   /* syncpoint rollback*/
+    set SQLCA empty;
+    SQLCA.VAGen_SQLCODE = OPBREC.OPBSZRC; /* db1000 rc to sqlcode*/
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DORDER";
+    TA1REC.TA1TBLVU = "DB1000  ";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS25";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+   /* -------------   end stmt grp sr0hs25 ---------------*/
+end // end SR0HS25
+
+// fmt/write shiprec item
+Function SR0HS27()
+   /* ------------- start stmt grp sr0hs27 ---------------*/
+
+      /* fmt/write shiprec item record*/
+
+    /* record already cleared and sizes loaded*/
+  SR3REC.XWHCD = SR0HM020.SR0HMXWH; /* warehouse*/
+  SR3REC.PK1PKSCH = SR0HM020.SR0HMSCH; /* schedule number*/
+  SR3REC.OP1CUOID = SR0HM020.SR0HMORD[SR0HWIX1]; /* cust order nbr*/
+  SR3REC.OP1NORID = SR0HM020.SR0HMSUB[SR0HWIX1]; /* nike order nbr*/
+  SR3REC.OP2LNINB = OP3REC.OP2LNINB; /* line item nbr*/
+  SR3REC.XGPCD = OP3REC.XGPCD; /* gen. prod. class*/
+  SR3REC.SY1STNBR = OP3REC.SY1STNBR; /* style*/
+  SR3REC.SY2CLRID = OP3REC.SY2CLRID; /* color*/
+  SR3REC.XEGCD = OP3REC.XEGCD; /* shade*/
+  SR3REC.PC2INSEG = OP3REC.PC2INSEG; /* spec diff.*/
+  SR3REC.XQACD = OP3REC.XQACD; /* quality code*/
+  SR3REC.XDMCD = OP3REC.XDMCD; /* dimension*/
+  SR3REC.XPGCD = OP3REC.XPGCD; /* package type*/
+  SR3REC.XUMCD = OP3REC.XUMCD; /* unit of measure*/
+  SR3REC.XBCCD = OP1REC.XBCCD; /* brand code*/
+  SR3REC.OP2AUPRC = OP3REC.OP2AUPRC; /* ave. unit price*/
+  SR3REC.SR3TQTSH = SR0HW01.SR0HWIQT; /* item qty shipped*/
+
+   /* times allocated,*/
+   /* owner group, dealloc flag, spc handling chrg,*/
+   /* dec prod nbr and class code init as empty.*/
+
+  SR3REC.XXXUSRID = COMMAREA.CAUSERID; /* /user id*/
+  SR3REC.ZZZSDT = XX0XW01.XX0XWDAT; /* setup date*/
+  SR3REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* chng date*/
+  SR3REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* last chng time*/
+
+     /* write db2 shiprec item/sizes table row*/
+  call "SR1100" ("A ", SQLCA, SR3REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsritm01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRITM01";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS27";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* -------------   end stmt grp sr0hs27 ---------------*/
+end // end SR0HS27
+
+// close set of order db items
+Function SR0HS30()
+   /* --------------- start stmt grp sr0hs30 ---------------------*/
+
+   /* close set of order db item/sizes*/
+
+  OP8REC.OP8TASK = "CS"; /* set parameters for db1000*/
+  OP8REC.OP8MAP = "SR0HM020";
+  OP8REC.OP8LOCAT[1] = "SR0H";
+  OP8REC.OP8LOCAT[2] = "SR0HS30";
+
+  call "DB1000" (OP8REC, OP3REC, OPBREC) {isNoRefresh = yes, isExternal = yes}; /* select items/sizes*/
+
+  if (OPBREC.OPBSZRC != 0)
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    set SQLCA empty;
+    SQLCA.VAGen_SQLCODE = OPBREC.OPBSZRC;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DORDER";
+    TA1REC.TA1TBLVU = "DB1000  ";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS30";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ---------------  end stmt grp sr0hs30 ---------------------*/
+end // end SR0HS30
+
+// fmt/write shiprec order
+Function SR0HS32()
+   /* ---------------- start stmt grp sr0hs32 -------------------**/
+      /* Fmt/write shiprec order record (dship.vsrord01)        **/
+   /* -----------------------------------------------------------**/
+
+   /* 1. make sure the bol and bol-sub does not exist already.*/
+      /* if it does add 1 to sub nbr to create unique bol nbr.*/
+   /* 2. format and write the order header only when sqlcode is*/
+      /* equal to 100 for the whse/bol/sub key**/
+
+      /* when writing vsrord01 the following are empty:*/
+
+        /* times alloc, pro nbr, carrier name if not misc,*/
+        /* shpgrp addr code and id, spc inst, wog flag,*/
+        /* wog nbr, wgt, cartons, ship charge,*/
+        /* dealloc flag, ship date*/
+
+      /* 10/21/94 - revised to fill up*/
+        /* order ship date, pick sched date, pick act and stat flags*/
+        /* nbr of cartons - footwear from Transportation*/
+        /* - apparel through SR0C*/
+   /* -----------------------------------------------------------**/
+
+  set SQLCA empty;
+
+  set SR2REC empty;
+
+  TA1REC.TA1LOC = "SR0HS32SA";
+
+  SR2REC.XWHCD = SR0HM020.SR0HMXWH; /* warehouse*/
+  SR0HW01.SR0HWNID = SR0HM020.SR0HMSUB[SR0HWIX1]; /* nike order nbr*/
+  SR0HW01.SR0HWOID = SR0HM020.SR0HMORD[SR0HWIX1]; /* cust order nbr*/
+  SR2REC.PK1BLLAD = SR0HW01.SR0HWBOL; /* B.O.L. number*/
+  SR2REC.SR2BLLSU = 0;
+
+  while (SQLCA.VAGen_SQLCODE == 0)
+    call "IO0800" ("SE", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes};
+    if (VAGen_SQLCODE == 0)
+      SR2REC.SR2BLLSU = SR2REC.SR2BLLSU + 1; /* B.O.L. sub nbr*/
+    end
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 100)
+    TA1REC.TA1LOC = "SR0HS32A";
+    SR2REC.PK1PKSCH = SR0HM020.SR0HMSCH; /* schedule number*/
+    SR2REC.OP1CUOID = SR0HM020.SR0HMORD[SR0HWIX1]; /* cust order nbr*/
+    SR2REC.OP1NORID = SR0HM020.SR0HMSUB[SR0HWIX1]; /* nike order nbr*/
+    SR2REC.TF1CARCD = SR0HM020.SR0HMCAR; /* carrier code*/
+    if (TF1REC.TF1MCARF == "Y") /* if misc carrier*/
+      SR2REC.TF1CARNM = SR0HM020.SR0HMCNM; /* carrier name*/
+    end
+    SR2REC.PK4CARSP = 10; /* carrier specific code*/
+    SR2REC.KUCCOID = OP1REC.KUCCOID; /* company id*/
+    SR2REC.KUMSTRID = OP1REC.KUMSTRID; /* store id*/
+    SR2REC.XNXCD = OP1REC.XNXCD; /* dept code*/
+    SR2REC.XGPCD = OP1REC.XGPCD; /* gen. prod. class*/
+    SR2REC.XDVCD = OP1REC.XDVCD; /* division cd*/
+    SR2REC.XBCCD = OP1REC.XBCCD; /* brand code*/
+    SR2REC.XDSCD = OP1REC.XDSCD; /* direct ship*/
+    SR2REC.OP1FTIND = OP1REC.OP1FTIND; /* op-frgt-ppd-fl*/
+    SR2REC.XOTCD = OP1REC.XOTCD; /* order type code*/
+    SR2REC.XOBCD = OP1REC.XOBCD; /* base order type*/
+    SR2REC.XOCCD = OP1REC.XOCCD; /* order class cd*/
+    SR2REC.SM1AGYID = OP1REC.SM1AGYID; /* SM-SAGCY-ID*/
+    SR2REC.XSOCD = OP1REC.XSOCD; /* sales office*/
+    SR2REC.OP1CUNDT = OP1REC.OP1CUNDT; /* need date*/
+    SR2REC.OP1DSBDT = OP1REC.OP1DSBDT; /* dn't shp b4 dt*/
+    SR2REC.OP1TBREP = OP1REC.OP1TBREP; /* service rep*/
+    SR2REC.OP11TMSF = OP1REC.OP11TMSF; /* one time ship*/
+    SR2REC.OP1CUPO = OP1REC.OP1CUPO; /* cust. p.o.*/
+    SR2REC.KUMSLFID = PK6REC.KUMSLFID; /* Store self id*/
+    SR2REC.KUJSLFID = PK6REC.KUJSLFID; /* Department self id*/
+    SR2REC.TSFSHPID = TSFREC.TSFSHPID; /* shipment id*/
+    SR2REC.SR-STOP-ORD-SHP-FL = "N"; /* stop shipment flag*/
+    SR2REC.SR2RINVF = "N"; /* rlv inventory*/
+    SR2REC.SR2STKTF = "N"; /* stock transfer*/
+    SR2REC.SR2UIVCF = "Y"; /* update inv*/
+    SR2REC.SR2NBITM = SR0HW01.SR0HWOIT; /* nbr of items*/
+    SR2REC.SR2QTYSH = SR0HW01.SR0HWOQT; /* qty shipped*/
+    SR2REC.SR2DLRAM = SR0HW01.SR0HWOAM; /* dollar amt*/
+
+    /* ------ y2k out begin ------*/
+    /* MOVE 19 TO SR0HW01.SR0HWSCC;   /* ship date century*/
+    /* ------ y2k out end --------*/
+    SR2REC.SR1SHPDT = SR0HW01.SR0HWSDT; /* ship date*/
+    SR2REC.SR1PKSDT = SR0HW01.SR0HWSDT; /* pick sched date*/
+    SR2REC.SR1PKAFL = "N"; /* pick act flag*/
+    SR2REC.SR1PKSFL = "N"; /* pick stat flag*/
+
+    if (SR2REC.XGPCD == "02" /* if footwear*/
+     && SR0HW02.TSICRTQT[SR0HWIX1] > 0) /* and nbr of cartons gt 0*/
+      SR2REC.PK1NBCTN = SR0HW02.TSICRTQT[SR0HWIX1]; /* nbr of cartons*/
+      SR2REC.SR2TNBCT = SR0HW02.TSICRTQT[SR0HWIX1]; /* bol cartons*/
+    else
+      set SR0HM020.SR0HMORD[SR0HWIX1] bold;
+      set SR0HM020.SR0HMSUB[SR0HWIX1] bold;
+      SRWREC.SRWMSG = "PLEASE ENTER THE ORDER(S) NBR OF CARTONS IN SR0C - PRESS PF14";
+    end
+
+    SR2REC.ZZZSDT = XX0XW01.XX0XWDAT; /* setup date*/
+    SR2REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* last chng date*/
+    SR2REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* last chng time*/
+       /* write db2 shiprec order table row*/
+    call "IO0800" ("A ", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsrord01*/
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+end // end SR0HS32
+
+// fmt/write shiprec address
+Function SR0HS35()
+   /* ------------- start stmt grp sr0hs35 ---------------*/
+
+     /* read address from dorder.voaddr01 table*/
+
+  SR0HW01.SR0HW1N = SR0HM020.SR0HMORD[SR0HWIX1]; /* find order partition*/
+  OP5REC.OP1PARTN = SR0HW01.SR0HW1N;
+  OP5REC.OP1CUOID = SR0HM020.SR0HMORD[SR0HWIX1]; /* cust ord*/
+  OP5REC.OP1NORID = SR0HM020.SR0HMSUB[SR0HWIX1]; /* nike ord*/
+  OP5REC.OP5BILIN = "N"; /* bill to ind*/
+  OP5REC.OP5SHPIN = "Y"; /* ship to ind*/
+
+  call "IO0460" ("S ", SQLCA, OP5REC) {isNoRefresh = yes, isExternal = yes}; /* read dorder.voaddr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DORDER";
+    TA1REC.TA1TBLVU = "VOADDR01";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS35";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* fmt/write shiprec address record*/
+  set SR4REC empty;
+  SR4REC.XWHCD = SR2REC.XWHCD; /* warehouse*/
+  SR4REC.PK1BLLAD = SR2REC.PK1BLLAD; /* B.O.L. number*/
+  SR4REC.SR2BLLSU = SR2REC.SR2BLLSU; /* B.O.L. sub nbr*/
+  SR4REC.OP5ALTNM = OP5REC.OP5ALTNM; /* alt name*/
+  SR4REC.XXX-ADDR[1] = OP5REC.XXX-ADDR[1]; /* address line 1*/
+  SR4REC.XXX-ADDR[2] = OP5REC.XXX-ADDR[2]; /* address line 2*/
+  SR4REC.XXX-ADDR[3] = OP5REC.XXX-ADDR[3]; /* address line 3*/
+  SR4REC.XXX-ADDR[4] = OP5REC.XXX-ADDR[4]; /* address line 4*/
+  SR4REC.XXX-ADDR[5] = OP5REC.XXX-ADDR[5]; /* address line 5*/
+  SR4REC.XXX-ADDR[6] = OP5REC.XXX-ADDR[6]; /* address line 6*/
+  SR4REC.XXXCITY = OP5REC.XXXCITY; /* city*/
+  SR4REC.XSTCD = OP5REC.XSTCD; /* state code*/
+  SR4REC.XXXZIP = OP5REC.XXXZIP; /* zip*/
+  SR4REC.XCTCD = OP5REC.XCTCD; /* country code*/
+  SR4REC.ZZZSDT = XX0XW01.XX0XWDAT; /* setup date*/
+  SR4REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* last chng date*/
+  SR4REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* last chng time*/
+  call "IO0820" ("A ", SQLCA, SR4REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsradd01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRADD01";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1PGMNM = "CSP    ";
+    TA1REC.TA1LOC = "SR0HS35";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* -------------   end stmt grp sr0hs35 ---------------*/
+end // end SR0HS35
+
+// fmt/write shiprec batch header
+Function SR0HS37()
+   /* ------------- start stmt grp sr0hs37 ---------------*/
+
+      /* fmt/write shiprec batch header*/
+
+  set SR1REC empty;
+  SR1REC.XWHCD = SR0HM020.SR0HMXWH; /* warehouse*/
+  SR1REC.PK1PKSCH = SR0HM020.SR0HMSCH; /* schedule number*/
+  SR1REC.SR1ORGSD = SR0HM020.SR0HMSCH;
+                                   /* orginal schedule number*/
+   /* -------- y2k out begin ---------*/
+   /* MOVE 19 SR0HW01.SR0HWSCC;*/
+   /* -------- y2k out end -----------*/
+                                   /* ship date century*/
+  SR1REC.SR1SHPDT = SR0HW01.SR0HWSDT; /* ship date*/
+  SR1REC.SR1PKDT = SR0HW01.SR0HWSDT; /* pick sched date*/
+  SR1REC.SR1BTST = "P"; /* status = prepared*/
+  SR1REC.SR1PKAFL = "N"; /* pick act fl*/
+  SR1REC.SR1PKSFL = "N"; /* pick stat fl*/
+  SR1REC.TF1CARCD = SR0HM020.SR0HMCAR; /* carrier code*/
+  if (TF1REC.TF1MCARF == "Y") /* misc carrier?*/
+    SR1REC.TF1CARNM = SR0HM020.SR0HMCNM; /* name*/
+  end
+  SR1REC.SR1NBITM = SR0HW01.SR0HWBIT; /* nbr of items*/
+  SR1REC.SR1NBORD = SR0HW01.SR0HWBOD; /* nbr of orders*/
+  SR1REC.SR1QTYSH = SR0HW01.SR0HWBQT; /* batch qty shipped*/
+  SR1REC.SR1DLRAM = SR0HW01.SR0HWBAM; /* batch dollar amt*/
+
+    /* the following are initialized empty:*/
+      /* carrier name if not misc,*/
+      /* hold reason, split reason, run nbr*/
+
+  SR1REC.XXXUSRID = COMMAREA.CAUSERID; /* user id*/
+  SR1REC.ZZZSDT = XX0XW01.XX0XWDAT; /* setup date*/
+  SR1REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* last chng date*/
+  SR1REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* last chng time*/
+
+     /* write db2 shiprec batch table row*/
+  call "IO0790" ("A ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* write dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0HM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS37";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* -------------   end stmt grp sr0hs37 ---------------*/
+end // end SR0HS37
+
+// read shiprec order table
+Function SR0HS40()
+   /* --------------- start stmt grp sr0hs40 ---------------------*/
+
+    /* read shiprec order table*/
+
+  set SR2REC empty;
+  SR2REC.XWHCD = SR0HM040.SR0HMXWH; /* warehouse*/
+  SR2REC.PK1PKSCH = SR0HM040.SR0HMSCH; /* schedule number*/
+  SR2REC.OP1CUOID = SR0HM040.SR0HMORD; /* cust order nbr*/
+  SR2REC.OP1NORID = SR0HM040.SR0HMSUB; /* nike order nbr*/
+
+
+     /* read db2 shiprec order table row*/
+  call "IO0800" ("S ", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == 100)
+    /* next sentence*/
+  else
+    SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0HM040";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS40";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+   /* ---------------  end stmt grp sr0hs40 ---------------------*/
+end // end SR0HS40
+
+// read shiprec batch table
+Function SR0HS45()
+   /* --------------- start stmt grp sr0hs45 ---------------------*/
+
+
+    /* build batch level key*/
+  SR1REC.XWHCD = SR0HM040.SR0HMXWH; /* whse*/
+  SR1REC.PK1PKSCH = SR0HM040.SR0HMSCH; /* schedule*/
+
+  call "IO0790" ("S ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0HW01.SR0HWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0HW01.SR0HWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0HM040";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0HS45";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+   /* ---------------  end stmt grp sr0hs45 ---------------------*/
+end // end SR0HS45
+
+//*** RECORD=SR0HW01 ****
+// ********** build direct ship batch work record *************
+// 
+// ***********************
+Record SR0HW01 type basicRecord
+  5 SR0HWIX1 SR0HWIX1 ; 
+  5 SR0HWIX2 SR0HWIX2 ; 
+  5 SR0HWIX3 SR0HWIX3 ; 
+  5 SR0HW2CH SR0HW2CH ; 
+  5 SR0HW1N SR0HW1N ; 
+  5 SR0HW2N SR0HW2N ; 
+  5 SR0HW3N1 SR0HW3N1 ; 
+  5 SR0HW3N2 SR0HW3N2 ; 
+  5 SR0HWDEA SR0HWDEA ; 
+  5 SR0HWMSG SR0HWMSG ; 
+    10 SR0HWMLT SR0HWMLT ; 
+    10 SR0HWMSC SR0HWMSC ; 
+    10 SR0HWMLI SR0HWMLI ; 
+    10 SR0HWMWH SR0HWMWH ; 
+  5 SR0HWOEN SR0HWOEN ; 
+  5 SR0HWSFL SR0HWSFL ; 
+  5 SR0HWAGE SR0HWAGE ; 
+  5 SR0HWDT1 SR0HWDT1 ; 
+    10 SR0HW-CCYY1 SR0HW-CCYY1 ; 
+      15 SR0HW-CC1 SR0HW-CC1 ; 
+      15 SR0HWYY1 SR0HWYY1 ; 
+    10 SR0HWMM1 SR0HWMM1 ; 
+    10 SR0HWDD1 SR0HWDD1 ; 
+  5 SR0HWSDT SR0HWSDT ; 
+    10 SR0HW-CCYY2 SR0HW-CCYY2 ; 
+      15 SR0HWSCC SR0HWSCC ; 
+      15 SR0HWYY2 SR0HWYY2 ; 
+    10 SR0HWMM2 SR0HWMM2 ; 
+    10 SR0HWDD2 SR0HWDD2 ; 
+  5 SR0HWBQT SR0HWBQT ; 
+  5 SR0HWOQT SR0HWOQT ; 
+  5 SR0HWIQT SR0HWIQT ; 
+  5 SR0HWBAM SR0HWBAM ; 
+  5 SR0HWOAM SR0HWOAM ; 
+  5 SR0HWIAM SR0HWIAM ; 
+  5 SR0HWBOD SR0HWBOD ; 
+  5 SR0HWBIT SR0HWBIT ; 
+  5 SR0HWOIT SR0HWOIT ; 
+  5 SR0HWSQL SR0HWSQL ; 
+  5 SR0HWFL1 SR0HWFL1 ; 
+  5 SR0HWBOL SR0HWBOL ; 
+    10 SR0HWOID SR0HWOID ; 
+    10 SR0HWNID SR0HWNID ; 
+end // end SR0HW01
+
+//*** RECORD=SR0HW02 ****
+// ********** build direct ship batch work record *************
+// 
+// ***********************
+Record SR0HW02 type basicRecord
+  5 SR0HW-ORD-CRTN-INFO SR0HW-ORD-CRTN-INFO [40] ; 
+    10 OP1CUOID OP1CUOID ; 
+    10 OP1NORID OP1NORID ; 
+    10 TSICRTQT TSICRTQT ; 
+end // end SR0HW02
+
+//*** RECORD=SR7REC ****
+// ************* ship recon next batch id record***************
+// 
+// db2 table:          dship.vsrnxt01
+// 
+// copylib member:     dcl00113
+// 
+// i/o mod:            io0850
+// 
+// key to db2 table:   no key
+// 
+// date created:       9/10/86
+// 
+// maintenance log:
+// 
+//   date        init            comment
+//   ----        ----       -----------------------------------
+// 9/10/86       tl         initial creation
+// **********************
+Record SR7REC type basicRecord
+  5 SR7GRP SR7GRP ; 
+    10 SR7KEYS SR7KEYS ; 
+      15 SR7NXTSD SR7NXTSD ; 
+end // end SR7REC
+
+DataItem SR0HW-CC1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SR0HW-CCYY1 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SR0HW-CCYY2 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SR0HW-ORD-CRTN-INFO char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 1 digit work field
+DataItem SR0HW1N num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 2 char work field
+DataItem SR0HW2CH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 2 digit work field
+DataItem SR0HW2N num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 3 digit work field
+DataItem SR0HW3N1 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 3 digit work field
+DataItem SR0HW3N2 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship date age in days
+DataItem SR0HWAGE num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// batch amt
+DataItem SR0HWBAM decimal(11,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// items per batch
+DataItem SR0HWBIT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// orders per batch
+DataItem SR0HWBOD smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// default bol number
+DataItem SR0HWBOL num(11)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// batch qty
+DataItem SR0HWBQT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   day
+DataItem SR0HWDD1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//     day
+DataItem SR0HWDD2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// deallocate flag
+DataItem SR0HWDEA char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work date 1
+DataItem SR0HWDT1 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// micel flag
+DataItem SR0HWFL1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// item amt
+DataItem SR0HWIAM decimal(11,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// item qty
+DataItem SR0HWIQT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work index 1
+DataItem SR0HWIX1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work index 2
+DataItem SR0HWIX2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work index 3
+DataItem SR0HWIX3 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// msg literal
+DataItem SR0HWMLI char(9)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   msg literal
+DataItem SR0HWMLT char(16)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   month
+DataItem SR0HWMM1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//     month
+DataItem SR0HWMM2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   msg schedule nbr
+DataItem SR0HWMSC num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// msg for existing sched.
+DataItem SR0HWMSG char(34)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   msg whse nbr
+DataItem SR0HWMWH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// op-nike-ord-id
+DataItem SR0HWNID num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// order amt
+DataItem SR0HWOAM decimal(11,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// order entered flag
+DataItem SR0HWOEN char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// op-cust-ord-id
+DataItem SR0HWOID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// items per order
+DataItem SR0HWOIT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// order qty
+DataItem SR0HWOQT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   ship date century
+DataItem SR0HWSCC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work ship date
+DataItem SR0HWSDT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ship date > 30 days warning
+DataItem SR0HWSFL num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// save area for sqlca
+DataItem SR0HWSQL char(136)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   year
+DataItem SR0HWYY1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//     year
+DataItem SR0HWYY2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// record group level
+DataItem SR7GRP char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// key group
+DataItem SR7KEYS char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

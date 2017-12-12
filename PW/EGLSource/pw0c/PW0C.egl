@@ -1,0 +1,1508 @@
+package pw0c;
+import corpcom1.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import in1.common.*;
+import pk.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+//*** PROGRAM=PW0C ****
+// This application displays Totals By Schedule/Spur for the
+// user to view.
+// 
+// Upon initial entry, the Picking Spur Schedule Table is read
+// and all rows for the warehouse are selected and formatted in
+// temporary storage, one display page per queue record.
+// 
+// The records are retrieved from temporary storage, one at a
+// time, for display to the user.  The user may page forward
+// and backward, right and left, to view the selected data.
+// 
+// If warehouse code is changed, the temporary storage queue is
+// deleted and the process repeats as at initial entry, above.
+// 
+// The user may exit to any allowed application via FAST PATH
+// or PF key at any time.
+// 
+//   DATE     NAME              COMMENTS
+// --------   ---------------   -------------------------------
+// 09/18/87   Stephen Popa      New application.
+// 12/06/88   Robert Yonker     Added grand totals for units
+//                              and cartons.
+// 12/07/88   john wood         added noncsp option on calls
+// 12/07/88   john wood         added xssegtr logic
+// 01/06/88   jcampb
+// 01/20/88   jcampb            allow sched or spur to be zero
+// 04/06/90   jcampb            add code for whse51 spurs that
+//                              are over 99 (5001 - 5099)
+// 11/20/91   DPETTI            PF3 NOW EXITS TO PK0J
+// 05/15/92   GRAY              add code for whse04 spurs that
+//                              are over 99 (8001 - 8099)
+// 05/22/92   jcampb            fix code for whse04 spurs that
+//                              are over 99 (8001 - 8099)
+// 11/22/95   pander            Increase pw0cwsch to fix
+//                              abend (pw0cw03, 04, 05).
+// 11/27/95   pander            Read/write temporary storage
+//                              line by line.
+// 04/04/97   dgerlt            Allow whse 51 to increase the
+//                              the number of spurs from 100
+//                              to 200.
+// *********************
+Program PW0C type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "PK00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  PKVREC PKVREC; // record
+  PKWREC PKWREC; // record
+  PKZREC PKZREC; // record
+  PW0CW01 PW0CW01; // record
+  PW0CW02 PW0CW02; // record
+  PW0CW03 PW0CW03; // record
+  PW0CW04 PW0CW04; // record
+  PW0CW05 PW0CW05; // record
+  PW0CW06 PW0CW06; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TF1REC TF1REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use PW0CM.PW0CM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPPK001: XPPK001();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage and map output areas.*/
+     /* Flow to converse the Totals By Schedule/Spur process.*/
+     /* ------------------------------------------------------------*/
+
+    set PW0CW01 empty; /* Initialize working storage*/
+    set PW0CW02 empty; /* Initialize warehouse totals*/
+    set PW0CW03 empty; /* Initialize temporary storage*/
+    set PW0CW05 empty; /* Initialize frame storage*/
+    set PW0CW06 empty; /* Initialize column storage*/
+    set PW0CM001 initial; /* Initialize map output area*/
+
+    PW0CW01.XWHCD = PKWREC.XWHCD; /* Initialize warehouse code*/
+    PW0CW01.XWHABRV = PKWREC.XWHABRV; /* and warehouse abbreviation*/
+
+    PW0CW01.XXXRVNBR = "05"; /* Application revision number*/
+
+    goto PW0C001; /* Converse Totals By Schedule/Spur*/
+
+
+    PW0C001: PW0C001();
+     /* ------------------------------------------------------------*/
+     /* Flow to converse the Totals By Schedule/Spur process.*/
+     /* ------------------------------------------------------------*/
+
+    goto PW0C001; /* Converse Totals By Schedule/Spur*/
+
+
+  end // end main
+end // end PW0C
+
+// Totals By Schedule/Spur
+Function PW0C001()
+   /* ------------------------------------------------------------*/
+   /* If data was requested, obtain the data to display.*/
+   /* Format the map output area and display the map.*/
+   /* Check the attention identifier used to respond.*/
+   /* Reset highlighted fields to normal intensity.*/
+   /* Verify the data that was entered.*/
+   /* Process input request if no errors found and not a cancel.*/
+   /* ------------------------------------------------------------*/
+
+  if (PW0CW01.PW0CWSWR == "Y") /* Request for data*/
+    PW0C100(); /* Obtain the data to display*/
+  end
+
+  PW0C200(); /* Format and display the map*/
+
+  PW0C300(); /* Check attention identifier*/
+
+  PW0C400(); /* Reset fields to normal intensity*/
+
+  PW0C500(); /* Verify the entered data*/
+
+  if (converseVar.validationMsgNum == 0 /* No errors were found*/
+   && converseVar.eventKey not pa2)     /* and not a cancel request*/
+    PW0C600(); /* Process valid input request*/
+  end
+
+
+end // end PW0C001
+
+// Obtain the data to display
+Function PW0C100()
+   /* ------------------------------------------------------------*/
+   /* Clear warehouse totals array.*/
+   /* Purge any existing queue in temporary storage.*/
+   /* Select and open the cursor for the set to be formatted.*/
+   /* Fetch and format the data.*/
+   /* Add the line to the storage queue.*/
+   /* At end of rows, add any remaining line to the queue.*/
+   /* At end of rows, close the selected set cursor.*/
+   /* Indicate that the request for data was completed.*/
+   /* ------------------------------------------------------------*/
+
+  set PW0CW02 empty; /* Clear warehouse totals*/
+  PW0CW01.PW0CWPTU = 0; /* clear plan total units*/
+  PW0CW01.PW0CWPTC = 0; /* clear plan total cartons*/
+
+  PW0C110(); /* Purge any temporary storage*/
+
+  PW0C120(); /* Select set and open the cursor*/
+
+  set PW0CW04 empty; /* Clear schedule line record*/
+
+  PW0CW01.PW0CWSWC = "N"; /* Initialize end of file switch*/
+
+  PW0C130(); /* Obtain initial data*/
+
+  if (converseVar.validationMsgNum == 0 /* No errors were found*/
+   && PW0CW01.PW0CWSWC == "N")          /* and not end of file*/
+
+    PW0CW04.PKVSSNBR = PKVREC.PKVSSNBR; /* Initial schedule*/
+
+  end
+
+  if (converseVar.validationMsgNum == 0) /* No errors were found*/
+
+    while (PW0CW01.PW0CWSWC == "N") /* Until cursor end of file*/
+
+      if (PKVREC.PKVSSNBR != PW0CW04.PKVSSNBR) /* Schedule changed*/
+
+        PW0C140(); /* Add page to temporary storage*/
+
+        set PW0CW04 empty; /* Clear schedule line record*/
+        PW0CW04.PKVSSNBR = PKVREC.PKVSSNBR; /* Next schedule*/
+
+      end
+
+      if (converseVar.validationMsgNum == 0) /* No errors were found*/
+
+        PW0C150(); /* Accumulate schedule totals*/
+        PW0C130(); /* Obtain next data*/
+
+      end
+
+      if (converseVar.validationMsgNum != 0) /* Errors were found*/
+        PW0CW01.PW0CWSWC = "Y"; /* Force end of file*/
+      end
+
+    end
+
+  end
+
+  if (converseVar.validationMsgNum == 0 /* No errors were found*/
+   && PW0CW04.PKVSSNBR != 0)            /* and page was formatted*/
+
+    PW0C140(); /* Add page to temporary storage*/
+
+  end
+
+  if (converseVar.validationMsgNum == 0) /* No errors were found*/
+    PW0C160(); /* Close the selected set cursor*/
+  end
+
+  if (converseVar.validationMsgNum == 0) /* No errors were found*/
+
+    PW0CW01.PW0CWSWR = "N"; /* Request for data completed*/
+
+    PW0CW01.PW0CWTSP = 1; /* Initialize page number*/
+    PW0CW01.PW0CWIXF = 1; /* Initialize frame number*/
+
+    PW0CW01.PW0CWHIF = PW0CW01.PKVSSPNB % 4; /* Determine remainder*/
+
+    if (PW0CW01.PW0CWHIF > 0) /* Any remainder was found*/
+      PW0CW01.PW0CWHIF = 1; /* Initialize highest frame*/
+    end
+
+    PW0CW01.PW0CWHIF = PW0CW01.PW0CWHIF + PW0CW01.PKVSSPNB / 4;
+
+  end
+
+
+end // end PW0C100
+
+// Purge any temporary storage
+Function PW0C110()
+   /* ------------------------------------------------------------*/
+   /* Purge any temporary storage for this application.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5APPID = "PW0C"; /* Application identification*/
+  TA5REC.TA5FNCCD = "P"; /* Function code*/
+
+  call "TA0050" (PW0CW03, TA5REC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PW0C110"; /* Process name*/
+    TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "PW0CM001"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  end
+
+  PW0CW01.PW0CWTSP = 0; /* Reset current page number*/
+  PW0CW01.TA5TSQIX = 0; /* Reset highest page number*/
+  PW0CW01.PW0CWHIF = 0; /* Reset highest frame number*/
+  PW0CW01.PKVSSPNB = 0; /* Reset highest spur number*/
+
+
+end // end PW0C110
+
+// Select set and open cursor
+Function PW0C120()
+   /* ------------------------------------------------------------*/
+   /* Select the set of planning spurs rows for the warehouse.*/
+   /* If not available, return an error message to the user.*/
+   /* If any other, indicate system error.*/
+   /* ------------------------------------------------------------*/
+
+  set PKVREC empty; /* Initialize spurs record area*/
+
+  PKVREC.XWHCD = PW0CW01.XWHCD; /* Warehouse code*/
+
+  if (PW0CW01.PW0CMSWP == "Y") /* Planning totals*/
+    PKVREC.PKURUNMD = "P"; /* Run mode*/
+  end
+
+  PKZREC.PKZFUNC = "S1"; /* I/O module function*/
+
+  call "PK7600" (PKZREC, SQLCA, PKVREC) {isNoRefresh = yes, isExternal = yes}; /* Select table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+
+      converseLib.validationFailed(28); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+    else
+
+      converseLib.validationFailed(29); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+      converseLib.clearScreen();
+       /* Clear screen before redisplay*/
+
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PW0C120"; /* Process name*/
+    TA1REC.TA1LOC = "SELECT PICKING SPURS TABLE SET";
+    TA1REC.TA1MAP = "PW0CM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSPURS01"; /* Table view name*/
+    TA1REC.TA1TBLKE = PKVREC.PKVKEY; /* Table key*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PW0CM001.XXXPRCNM = "PW0C120"; /* Process name*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PW0C120
+
+// Fetch the next selected row
+Function PW0C130()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next row from the selected planning spurs set.*/
+   /* If end of file, set cursor end of file switch.*/
+   /* If any error, indicate a system error.*/
+   /* Format the data in the temporary storage display line.*/
+   /* ------------------------------------------------------------*/
+
+  PKZREC.PKZFUNC = "N1"; /* I/O module function*/
+
+  call "PK7600" (PKZREC, SQLCA, PKVREC) {isNoRefresh = yes, isExternal = yes}; /* Fetch the next row*/
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+    PW0CW01.PW0CWSWC = "Y"; /* Indicate end of file*/
+
+    return; /* Return to previous process*/
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    TA1REC.TA1PGMNM = "PW0C130"; /* Process name*/
+    TA1REC.TA1LOC = "FETCH NEXT PICKING SPURS ROW";
+    TA1REC.TA1MAP = "PW0CM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSPURS01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PW0CM001.XXXPRCNM = "PW0C130"; /* Process name*/
+    converseLib.validationFailed(29); /* Indicate system error*/
+
+    converseLib.clearScreen();
+     /* Clear screen before redisplay*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+  if (PKVREC.XWHCD == "51")
+    if (PKVREC.PKVSSNBR >= 1
+     && PKVREC.PKVSSNBR <= 99
+     && PKVREC.PKVSSPNB >= 5001
+     && PKVREC.PKVSSPNB <= 5199)
+      return;
+    end
+  else
+    if (PKVREC.XWHCD == "04")
+      if (PKVREC.PKVSSNBR >= 1
+       && PKVREC.PKVSSNBR <= 99
+       && PKVREC.PKVSSPNB >= 8001
+       && PKVREC.PKVSSPNB <= 8099)
+        return;
+      end
+    else
+      if (PKVREC.PKVSSNBR >= 1 /* Schedule between 1 and 99*/
+       && PKVREC.PKVSSNBR <= 99
+       && PKVREC.PKVSSPNB >= 1 /* and spur between 1 and 99*/
+       && PKVREC.PKVSSPNB <= 99)
+        return;
+      end
+    end
+  end
+
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1FUNC = "POST"; /* Termination function*/
+  TA1REC.TA1PGMNM = "PW0C130"; /* Process name*/
+  TA1REC.TA1LOC = "INVALID SCHEDULE/SPUR NUMBER";
+  TA1REC.TA1MAP = "PW0CM001"; /* Map name*/
+  TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSPURS01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PKVREC.PKVGROUP; /* Table key*/
+
+  call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  PW0CM001.XXXPRCNM = "PW0C130"; /* Process name*/
+  converseLib.validationFailed(29); /* Indicate system error*/
+
+
+
+end // end PW0C130
+
+// Add page to temporary storage
+Function PW0C140()
+   /* ------------------------------------------------------------*/
+   /* Add the next page to temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  PW0CW04.PW0CWLEN = 2646; /* Temporary storage length*/
+  TA5REC.TA5APPID = "PW0C"; /* Application identification*/
+  TA5REC.TA5FNCCD = "A"; /* Function code*/
+
+  call "TA0050" (PW0CW04, TA5REC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    TA1REC.TA1PGMNM = "PW0C140"; /* Process name*/
+    TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "PW0CM001"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PW0CM001.XXXPRCNM = "PW0C140"; /* Process name*/
+    converseLib.validationFailed(29); /* Indicate system error*/
+
+    converseLib.clearScreen();
+     /* Clear screen before redisplay*/
+
+    return; /* Return to previous process*/
+
+  end
+
+  PW0CW01.PW0CWTSL = TA5REC.TA5TSQIX; /* Maximum temp storage index*/
+  PW0CW01.TA5TSQIX = TA5REC.TA5TSQIX % 5; /* Determine remainder*/
+
+  if (PW0CW01.TA5TSQIX > 0) /* Any remainder was found*/
+    PW0CW01.TA5TSQIX = 1; /* Initialize highest page*/
+  end
+
+  PW0CW01.TA5TSQIX = PW0CW01.TA5TSQIX + TA5REC.TA5TSQIX / 5;
+
+  set TA5REC empty; /* Clear parameters work area*/
+
+
+end // end PW0C140
+
+// Accumulate schedule totals
+Function PW0C150()
+   /* ------------------------------------------------------------*/
+   /* Save the totals in the table entries for the schedule/spur.*/
+   /* ------------------------------------------------------------*/
+
+  PW0CW01.PW0CWIXT = PKVREC.PKVSSNBR; /* Schedule totals index*/
+  PW0CW01.PW0CWIXT = PKVREC.PKVSSNBR + 1;
+
+  PW0CW02.PW0CMSCU[PW0CWIXT] = PW0CW02.PW0CMSCU[PW0CWIXT] + PKZREC.PKZSUM1;
+  PW0CW02.PW0CMSCC[PW0CWIXT] = PW0CW02.PW0CMSCC[PW0CWIXT] + PKZREC.PKZSUM2;
+
+  if (PKVREC.XWHCD == "51")
+    if (PKVREC.PKVSSPNB == 0)
+      PKVREC.PKVSSPNB = 5001;
+    end
+    PKVREC.PKVSSPNB = PKVREC.PKVSSPNB - 5000;
+  end
+
+  if (PKVREC.XWHCD == "04")
+    if (PKVREC.PKVSSPNB == 0)
+      PKVREC.PKVSSPNB = 8001;
+    end
+    PKVREC.PKVSSPNB = PKVREC.PKVSSPNB - 8000;
+  end
+
+  PW0CW01.PW0CWIXT = PKVREC.PKVSSPNB; /* Spur totals index*/
+
+  PW0CW02.PW0CMSPU[PW0CWIXT] = PW0CW02.PW0CMSPU[PW0CWIXT] + PKZREC.PKZSUM1;
+  PW0CW02.PW0CMSPC[PW0CWIXT] = PW0CW02.PW0CMSPC[PW0CWIXT] + PKZREC.PKZSUM2;
+
+  PW0CW01.PW0CWPTU = PW0CW01.PW0CWPTU + PKZREC.PKZSUM1;
+  PW0CW01.PW0CWPTC = PW0CW01.PW0CWPTC + PKZREC.PKZSUM2;
+
+  if (PKVREC.TF1CARCD == " ") /* No carrier code*/
+    PKVREC.TF1CARCD = "(01)"; /* Pack and hold*/
+  end
+
+  if (PW0CW04.TF1CARCD[PW0CWIXT] == " " /* No carrier code*/
+   || PW0CW04.TF1CARCD[PW0CWIXT] == PKVREC.TF1CARCD) /* or same carrier*/
+
+    PW0CW04.TF1CARCD[PW0CWIXT] = PKVREC.TF1CARCD; /* Save carrier*/
+  else
+    PW0CW04.TF1CARCD[PW0CWIXT] = "(02)"; /* Multiple carriers*/
+
+  end
+
+  PW0CW04.PKZSUM1[PW0CWIXT] = PW0CW04.PKZSUM1[PW0CWIXT] + PKZREC.PKZSUM1;
+  PW0CW04.PKZSUM2[PW0CWIXT] = PW0CW04.PKZSUM2[PW0CWIXT] + PKZREC.PKZSUM2;
+
+  if (PKVREC.PKVSSPNB > PW0CW01.PKVSSPNB) /* Higher spur number*/
+    PW0CW01.PKVSSPNB = PKVREC.PKVSSPNB; /* Save spur number*/
+  end
+
+
+end // end PW0C150
+
+// Close selected set cursor
+Function PW0C160()
+   /* ------------------------------------------------------------*/
+   /* Close the selected plan sequence table set.*/
+   /* If any error, indicate a system error.*/
+   /* ------------------------------------------------------------*/
+
+  PKZREC.PKZFUNC = "C1"; /* I/O module function*/
+
+  call "PK7600" (PKZREC, SQLCA, PKVREC) {isNoRefresh = yes, isExternal = yes}; /* Close table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    TA1REC.TA1PGMNM = "PW0C160"; /* Process name*/
+    TA1REC.TA1LOC = "CLOSE PICKING SPURS TABLE SET";
+    TA1REC.TA1MAP = "PW0CM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSPURS01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PW0CM001.XXXPRCNM = "PW0C160"; /* Process name*/
+    converseLib.validationFailed(29); /* Indicate system error*/
+
+    converseLib.clearScreen();
+     /* Clear screen before redisplay*/
+
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PW0C160
+
+// Format and display the map
+Function PW0C200()
+   /* ------------------------------------------------------------*/
+   /* If no error to display, format and display the map.*/
+   /* Indicate sound audible alarm for any error.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.validationMsgNum != 0) /* Error message to display*/
+    set PW0CM001 alarm; /* Indicate sound alarm*/
+  end
+
+  if (converseVar.validationMsgNum == 0 /* No error message to display*/
+   || PW0CM001.XXXRVNBR == " ")         /* or first time through*/
+
+    if (PW0CM001.XXXRVNBR == " ") /* First time through*/
+
+      if (COMMAREA.CAITEM > " ") /* Application data exists*/
+
+        PW0CM001.CAITEM = COMMAREA.CAITEM; /* Application data*/
+        set PW0CM001.CAITEM modified; /* Set MDT on*/
+        COMMAREA.CAITEM = " "; /* Clear application data*/
+
+      end
+
+    else
+
+      set PW0CM001 initial; /* Clear map output area*/
+
+    end
+
+    PW0CM001.XXXRVNBR = PW0CW01.XXXRVNBR; /* Revision number*/
+
+    PW0CM001.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+
+    PW0CM001.XWHCD = PW0CW01.XWHCD; /* Warehouse code*/
+    PW0CM001.XWHABRV = PW0CW01.XWHABRV; /* Warehouse abbreviation*/
+
+    PW0CM001.PW0CMPTU = PW0CW01.PW0CWPTU; /* plan total units*/
+    PW0CM001.PW0CMPTC = PW0CW01.PW0CWPTC; /* plan total cartons*/
+
+    if (PW0CW01.PW0CMSWP > " ") /* Planning switch set*/
+
+      PW0CM001.PW0CMSWP = PW0CW01.PW0CMSWP; /* Planning switch*/
+
+      if (PW0CW01.PW0CMSWP == "Y") /* Planning totals*/
+
+        set PW0CM001.PW0CMPLL[1] skip; /* Spur planning literal*/
+        set PW0CM001.PW0CMPLL[2] skip; /* Schedule planning literal*/
+
+      end
+
+      if (converseVar.validationMsgNum == 0) /* No error message to display*/
+        PW0C210(); /* Format the data on the page*/
+      end
+
+    end
+
+  end
+
+  if (PKWREC.XWHABRV == " ") /* Warehouse missing or invalid*/
+
+    set PW0CM001.XWHCD cursor, modified, bold; /* Highlight warehouse*/
+    PW0CM001.XWHABRV = " "; /* Clear warehouse abbreviation*/
+    PW0CM001.XXXPRCNM = "PW0C200"; /* Process name*/
+
+  end
+
+  converse PW0CM001 ;
+
+
+end // end PW0C200
+
+// Format picking spurs data
+Function PW0C210()
+   /* ------------------------------------------------------------*/
+   /* Obtain the next lines from temporary storage.*/
+   /* Format the plan sequence data in the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (PW0CW01.TA5TSQIX == 0) /* No orders to display*/
+
+    set PW0CM001.XWHCD cursor; /* Position cursor on warehouse*/
+    PW0CM001.XXXPRCNM = "PW0C210"; /* Process name*/
+    converseLib.validationFailed(159); /* Indicate no schedules to display*/
+
+    return; /* Return to previous process*/
+
+  end
+
+  PW0CW01.TF1CARCD[1] = " "; /* Initialize column 1 carrier*/
+  PW0CW01.TF1CARCD[2] = " "; /* Initialize column 2 carrier*/
+  PW0CW01.TF1CARCD[3] = " "; /* Initialize column 3 carrier*/
+  PW0CW01.TF1CARCD[4] = " "; /* Initialize column 4 carrier*/
+
+  if (PW0CW01.PW0CWTSP != TA5REC.TA5TSQIX) /* Page not current*/
+    TA5REC.TA5TSQIX = PW0CW01.PW0CWTSP; /* Page number*/
+    TA5REC.TA5TSQIX = TA5REC.TA5TSQIX * 5;
+    TA5REC.TA5TSQIX = TA5REC.TA5TSQIX - 4;
+    PW0C211(); /* Obtain temporary storage line*/
+  end
+
+  set PW0CM001.PW0CMPGL skip; /* Display "PAGE" literal*/
+  set PW0CM001.PW0CMOFL skip; /* Display "OF" literal*/
+  set PW0CM001.PW0CMLEF skip; /* Display "L" literal*/
+  set PW0CM001.PW0CMRIG skip; /* Display "R" literal*/
+
+  PW0CM001.PW0CWTSP = PW0CW01.PW0CWTSP; /* Current page number*/
+  PW0CM001.TA5TSQIX = PW0CW01.TA5TSQIX; /* Highest page number*/
+
+  PW0CM001.PW0CMFAL = PW0CW01.PW0CWIXF - 1; /* Available left*/
+  PW0CM001.PW0CMFAR = PW0CW01.PW0CWHIF - PW0CW01.PW0CWIXF; /* Right*/
+
+  PW0CW01.PW0CWIXL = 1; /* Initialize line index*/
+
+  while (PW0CW01.PW0CWIXL <= 5   /* While more lines*/
+   && PW0CW03.PW0CWSCH != " " /* and more schedules*/
+   && TA5REC.TA5TSQIX <= PW0CW01.PW0CWTSL) /* and more TS pages*/
+    PW0C212(); /* Format schedule display line*/
+    if (TA5REC.TA5TSQIX <= PW0CW01.PW0CWTSL) /* More TS pages*/
+      PW0C211(); /* Obtain temporary storage line*/
+    end
+  end
+
+
+end // end PW0C210
+
+// Read temporary storage page
+Function PW0C211()
+   /* ------------------------------------------------------------*/
+   /* Obtain the next page of data to display.*/
+   /* ------------------------------------------------------------*/
+
+  PW0CW03.PW0CWLEN = 2646; /* Temporary storage length*/
+  TA5REC.TA5APPID = "PW0C"; /* Application identification*/
+  TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+  call "TA0050" (PW0CW03, TA5REC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    TA1REC.TA1PGMNM = "PW0C211"; /* Process name*/
+    TA1REC.TA1LOC = "READ PAGE FROM TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "PW0CM001"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PW0CM001.XXXPRCNM = "PW0C211"; /* Process name*/
+    converseLib.validationFailed(29); /* Indicate system error*/
+
+    converseLib.clearScreen();
+     /* Clear screen before redisplay*/
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+
+end // end PW0C211
+
+// Format schedule display line
+Function PW0C212()
+   /* ------------------------------------------------------------*/
+   /* Format the fields from the temporary storage record line to*/
+   /* the output display line.*/
+   /* ------------------------------------------------------------*/
+
+  PW0CW05.PW0CWSCH = PW0CW03.PW0CWSCH; /* Line*/
+
+  PW0CW06.PW0CWSLF = PW0CW05.PW0CWSLF[PW0CWIXF]; /* Frame in line*/
+
+  PW0CW01.PW0CWIXT = PW0CW05.PKVSSNBR; /* Schedule index*/
+  PW0CW01.PW0CWIXT = PW0CW01.PW0CWIXT + 1;
+  PW0CM001.PKVSSNBR[PW0CWIXL] = PW0CW05.PKVSSNBR; /* Schedule number*/
+  PW0CM001.PW0CMSCU[PW0CWIXL] = PW0CW02.PW0CMSCU[PW0CWIXT]; /* Units*/
+  PW0CM001.PW0CMSCC[PW0CWIXL] = PW0CW02.PW0CMSCC[PW0CWIXT];
+                                   /* Cartons*/
+
+  PW0CW01.PW0CWIXC = 1; /* Initialize column index*/
+  PW0CW01.PW0CWIXT = 0; /* Initialize totals index*/
+
+  while (PW0CW01.PW0CWIXC <= 4 /* Until end of columns*/
+   && PW0CW01.PW0CWIXT < PW0CW01.PKVSSPNB) /* or end of spurs*/
+
+    PW0CW01.PW0CWIXM = PW0CW01.PW0CWIXL * 4 + PW0CW01.PW0CWIXC - 4;
+    PW0CW01.PW0CWIXT = PW0CW01.PW0CWIXF * 4 + PW0CW01.PW0CWIXC - 4;
+
+    if (PW0CW01.PW0CWIXL == 1) /* First schedule line*/
+
+      if (PW0CM001.XWHCD == "51")
+        PW0CM001.PKVSSPNB[PW0CWIXC] = PW0CW01.PW0CWIXT + 5000;
+      else
+        if (PW0CM001.XWHCD == "04")
+          PW0CM001.PKVSSPNB[PW0CWIXC] = PW0CW01.PW0CWIXT + 8000;
+        else
+          PW0CM001.PKVSSPNB[PW0CWIXC] = PW0CW01.PW0CWIXT; /* Spur*/
+        end
+      end
+      PW0CM001.PW0CMSPU[PW0CWIXC] = PW0CW02.PW0CMSPU[PW0CWIXT];
+      PW0CM001.PW0CMSPC[PW0CWIXC] = PW0CW02.PW0CMSPC[PW0CWIXT];
+
+    end
+
+    PW0CM001.PKZSUM1[PW0CWIXM] = PW0CW06.PKZSUM1[PW0CWIXC];
+    PW0CM001.PKZSUM2[PW0CWIXM] = PW0CW06.PKZSUM2[PW0CWIXC];
+
+    if (PW0CW06.TF1CARCD[PW0CWIXC] != " " /* Carrier code*/
+     && PW0CW06.TF1CARCD[PW0CWIXC] != PW0CW01.TF1CARCD[PW0CWIXC])
+
+      PW0CS01(); /* Obtain carrier abbreviation*/
+
+    end
+
+    PW0CW01.PW0CWIXC = PW0CW01.PW0CWIXC + 1; /* Increment column index*/
+
+  end
+
+  PW0CW01.PW0CWIXL = PW0CW01.PW0CWIXL + 1; /* Increment line index*/
+  TA5REC.TA5TSQIX = TA5REC.TA5TSQIX + 1; /* Increment temp storage index*/
+
+
+end // end PW0C212
+
+// Check attention identifier
+Function PW0C300()
+   /* ------------------------------------------------------------*/
+   /* Check attention identifier used to invoke the transaction.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+
+    set PW0CM001 initial; /* Clear map storage area*/
+
+    PKWREC.XWHCD = PW0CW01.XWHCD; /* Restore warehouse code*/
+    PKWREC.XWHABRV = PW0CW01.XWHABRV; /* and warehouse abbreviation*/
+
+    return; /* Return to previous process*/
+
+  end
+
+  if (PW0CM001.CATOAP > " ") /* FAST PATH was requested*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      PW0C310(); /* Execute FAST PATH request*/
+
+    else
+
+      set PW0CM001.CATOAP cursor, modified, bold; /* Highlight application*/
+      converseLib.validationFailed(13); /* Indicate PF key not valid*/
+      PW0CM001.XXXPRCNM = "PW0C300"; /* Process name*/
+
+      exit stack; /* Exit to redisplay map*/
+
+    end
+
+  end
+
+  if (converseVar.eventKey is pf1  /* PF1 was pressed*/
+   || converseVar.eventKey is pf3  /* or PF3 was pressed*/
+   || converseVar.eventKey is pf4  /* or PF4 was pressed*/
+   || converseVar.eventKey is pf19 /* or PF19 was pressed*/
+   || converseVar.eventKey is pf20) /* or PF20 was pressed*/
+
+    PW0C110(); /* Purge any temporary storage*/
+
+  end
+
+  if (converseVar.eventKey is pf3  /* PF3 was pressed*/
+   || converseVar.eventKey is pf19 /* or PF19 was pressed*/
+   || converseVar.eventKey is pf20) /* or PF20 was pressed*/
+
+    PW0C320(); /* Exit to another application*/
+
+  end
+
+  if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+
+    XSPF1(); /* Exit to the HELP facility*/
+
+    PW0CM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    PW0CM001.XXXPRCNM = "PW0C300"; /* Process name*/
+    converseLib.validationFailed(); /* Force alarm to sound*/
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+  if (converseVar.eventKey is pf4) /* PF4 was pressed*/
+
+    XSPF4(); /* Exit to system main menu*/
+
+    PW0CM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    PW0CM001.XXXPRCNM = "PW0C300"; /* Process name*/
+    converseLib.validationFailed(); /* Force alarm to sound*/
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf7   /* and PF7 was not pressed*/
+   && converseVar.eventKey not pf8   /* and PF8 was not pressed*/
+   && converseVar.eventKey not pf10  /* and PF10 was not pressed*/
+   && converseVar.eventKey not pf11) /* and PF11 was not pressed*/
+
+    PW0CM001.XXXPRCNM = "PW0C300"; /* Process name*/
+    converseLib.validationFailed(12); /* Indicate invalid attention key*/
+
+    if (converseVar.eventKey is pa1 /* PA1 was pressed*/
+     || converseVar.eventKey is pa3) /* or PA3 was pressed*/
+
+      converseLib.clearScreen();
+       /* Clear screen before redisplay*/
+
+    end
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+
+end // end PW0C300
+
+// Execute FAST PATH request
+Function PW0C310()
+   /* ------------------------------------------------------------*/
+   /* Transfer to requested application via FAST PATH.*/
+   /* If transfer failed, display returned error message.*/
+   /* ------------------------------------------------------------*/
+
+  if (PW0CM001.CATOAP == COMMAREA.CACURRAP)
+                                   /* TO application same as current*/
+
+    set PW0CM001.CATOAP cursor, modified, bold; /* Highlight TO application*/
+    converseLib.validationFailed(1); /* Indicate invalid request*/
+    PW0CM001.XXXPRCNM = "PW0C310"; /* Process name*/
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+  PKWREC.XWHCD = PW0CM001.XWHCD; /* Save warehouse code*/
+
+  COMMAREA.CATOAP = PW0CM001.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = PW0CM001.CAITEM; /* Application data*/
+
+  COMMAREA.CAUSERA = PKWREC.PKWGRPLV; /* User area*/
+
+  XSEXIT(); /* Transfer to requested application*/
+
+  set PW0CM001.CATOAP cursor, modified, bold; /* Highlight to application*/
+
+  PW0CM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+  converseLib.validationFailed(); /* Force alarm to sound*/
+  PW0CM001.XXXPRCNM = "PW0C310"; /* Process name*/
+
+  COMMAREA.CATOAP = " "; /* Clear TO application*/
+  COMMAREA.CAITEM = " "; /* and application data*/
+
+  exit stack; /* Exit to redisplay map*/
+
+
+end // end PW0C310
+
+// Exit to another application
+Function PW0C320()
+   /* ------------------------------------------------------------*/
+   /* Set the "TO" application according to the PF key pressed.*/
+   /* If warehouse code was modified, save in common work area.*/
+   /* Transfer to the application.  Display any returned error.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+    COMMAREA.CATOAP = "PK0J"; /* PICKING Master Menu*/
+  end
+
+  if (converseVar.eventKey is pf19) /* PF19 was pressed*/
+    COMMAREA.CATOAP = "PK0S"; /* PICK PLANNING Menu*/
+  end
+
+  if (converseVar.eventKey is pf20) /* PF20 was pressed*/
+    COMMAREA.CATOAP = "PK07"; /* PICK SELECTION Menu*/
+  end
+
+  PKWREC.XWHCD = PW0CM001.XWHCD; /* Save warehouse code*/
+
+  COMMAREA.CAUSERA = PKWREC.PKWGRPLV; /* User area*/
+
+  XSEXIT(); /* Invoke selected application*/
+
+  PW0CM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+  converseLib.validationFailed(); /* Force alarm to sound*/
+  PW0CM001.XXXPRCNM = "PW0C320"; /* Process name*/
+
+  exit stack; /* Exit to redisplay map*/
+
+
+end // end PW0C320
+
+// Reset highlighted fields
+Function PW0C400()
+   /* ------------------------------------------------------------*/
+   /* Reset field attributes to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  set PW0CM001.XWHCD initialAttributes; /* Warehouse code*/
+  set PW0CM001.CATOAP initialAttributes; /* Commarea TO application*/
+  set PW0CM001.CAITEM initialAttributes; /* Commarea application data*/
+
+
+end // end PW0C400
+
+// Verify the entered data
+Function PW0C500()
+   /* ------------------------------------------------------------*/
+   /* Highlight any application data that was entered.*/
+   /* Verify the planning totals switch.*/
+   /* Save and verify warehouse code.*/
+   /* Determine whether a valid request to scroll was entered.*/
+   /* If any errors were found, exit to redisplay the map.*/
+   /* ------------------------------------------------------------*/
+
+  if (PW0CM001.CAITEM > " ") /* Application data was entered*/
+
+    set PW0CM001.CAITEM cursor, modified, bold; /* Highlight data*/
+    converseLib.validationFailed(15); /* Enter only with FAST PATH*/
+    PW0CM001.XXXPRCNM = "PW0C500"; /* Process name*/
+
+  end
+
+  if (converseVar.eventKey not pa2) /* Not a cancel request*/
+
+    if (PW0CM001.PW0CMSWP != "Y" /* Switch not yes*/
+     && PW0CM001.PW0CMSWP != "N") /* and switch not no*/
+
+      set PW0CM001.PW0CMSWP cursor, modified, bold; /* Highlight*/
+      PW0CM001.XXXPRCNM = "PW0C500"; /* Process name*/
+      converseLib.validationFailed(249); /* Indicate missing or invalid*/
+
+    end
+
+    PKWREC.XWHCD = PW0CM001.XWHCD; /* Warehouse code*/
+
+  end
+
+  XPPK002(); /* Verify warehouse code*/
+
+  if (converseVar.eventKey is pf7  /* Scroll back request*/
+   || converseVar.eventKey is pf8  /* or scroll forward request*/
+   || converseVar.eventKey is pf10 /* or scroll left request*/
+   || converseVar.eventKey is pf11) /* or scroll right request*/
+
+    PW0C510(); /* Verify scroll request*/
+
+  end
+
+  if (converseVar.validationMsgNum != 0) /* Errors were found*/
+    exit stack; /* Exit to redisplay map*/
+  end
+
+
+end // end PW0C500
+
+// Verify scroll request
+Function PW0C510()
+   /* ------------------------------------------------------------*/
+   /* Ensure that pages exist to scroll forward or back.*/
+   /* Ensure that frames exist to scroll left or right.*/
+   /* Indicate an error for any data that was modified.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   && PW0CW01.PW0CWTSP < 2)       /* and no previous pages*/
+
+    PW0CM001.XXXPRCNM = "PW0C510"; /* Process name*/
+    converseLib.validationFailed(37); /* No previous page to display*/
+
+  end
+
+  if (converseVar.eventKey is pf8 /* Scroll forward request*/
+   && PW0CW01.PW0CWTSP >= PW0CW01.TA5TSQIX) /* and no more pages*/
+
+    PW0CM001.XXXPRCNM = "PW0C510"; /* Process name*/
+    converseLib.validationFailed(38); /* No more pages to display*/
+
+  end
+
+  if (converseVar.eventKey is pf10 /* Scroll left request*/
+   && PW0CW01.PW0CWIXF < 2)        /* and no previous frames*/
+
+    PW0CM001.XXXPRCNM = "PW0C510"; /* Process name*/
+    converseLib.validationFailed(227); /* No columns to the left*/
+
+  end
+
+  if (converseVar.eventKey is pf11 /* Scroll right request*/
+   && PW0CW01.PW0CWIXF >= PW0CW01.PW0CWHIF) /* and no more frames*/
+
+    PW0CM001.XXXPRCNM = "PW0C510"; /* Process name*/
+    converseLib.validationFailed(228); /* No columns to the right*/
+
+  end
+
+  if (PW0CM001.PW0CMSWP != PW0CW01.PW0CMSWP) /* Switch was changed*/
+
+    set PW0CM001.PW0CMSWP cursor, modified, bold; /* Highlight*/
+    PW0CM001.XXXPRCNM = "PW0C510"; /* Process name*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+
+  end
+
+  if (PW0CM001.XWHCD != PW0CW01.XWHCD) /* Warehouse was changed*/
+
+    set PW0CM001.XWHCD cursor, modified, bold; /* Highlight*/
+    PW0CM001.XXXPRCNM = "PW0C510"; /* Process name*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+
+  end
+
+
+end // end PW0C510
+
+// Process valid input request
+Function PW0C600()
+   /* ------------------------------------------------------------*/
+   /* If a scroll request, adjust the page or frame number.*/
+   /* If warehouse changed, indicate format new data to display.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7) /* Scroll back requested*/
+
+    PW0CW01.PW0CWTSP = PW0CW01.PW0CWTSP - 1; /* Decrement page number*/
+
+    return; /* Return to previous process*/
+
+  end
+
+  if (converseVar.eventKey is pf8) /* Scroll forward requested*/
+
+    PW0CW01.PW0CWTSP = PW0CW01.PW0CWTSP + 1; /* Increment page number*/
+
+    return; /* Return to previous process*/
+
+  end
+
+  if (converseVar.eventKey is pf10) /* Scroll left requested*/
+
+    PW0CW01.PW0CWIXF = PW0CW01.PW0CWIXF - 1; /* Decrement frame number*/
+
+    return; /* Return to previous process*/
+
+  end
+
+  if (converseVar.eventKey is pf11) /* Scroll right requested*/
+
+    PW0CW01.PW0CWIXF = PW0CW01.PW0CWIXF + 1; /* Increment frame number*/
+
+    return; /* Return to previous process*/
+
+  end
+
+  if (PW0CM001.XWHCD != PW0CW01.XWHCD /* Warehouse was changed*/
+   || PW0CM001.PW0CMSWP != PW0CW01.PW0CMSWP) /* or switch was changed*/
+
+    PW0CW01.XWHCD = PKWREC.XWHCD; /* Save warehouse code*/
+    PW0CW01.XWHABRV = PKWREC.XWHABRV; /* and abbreviation*/
+
+    PW0CW01.PW0CMSWP = PW0CM001.PW0CMSWP; /* Save switch*/
+
+    PW0CW01.PW0CWSWR = "Y"; /* Indicate request for data*/
+
+  end
+
+
+end // end PW0C600
+
+// Obtain carrier abbreviation
+Function PW0CS01()
+   /* ------------------------------------------------------------*/
+   /* Obtain the Picking Carrier Table row for the specified*/
+   /* carrier code.  If not available, return an error message*/
+   /* to the user.  If any other error, indicate a system error.*/
+   /* Format the carrier name field in the map.*/
+   /* ------------------------------------------------------------*/
+
+  set TF1REC empty; /* Initialize record area*/
+
+  TF1REC.TF1CARCD = PW0CW06.TF1CARCD[PW0CWIXC]; /* Carrier*/
+
+  if (TF1REC.TF1CARCD == "(01)") /* Pack and hold*/
+
+    TF1REC.TF1SABRV = "DF P&H"; /* Carrier abbreviation*/
+
+  else
+
+    if (TF1REC.TF1CARCD == "(02)") /* Multiple carriers*/
+
+      TF1REC.TF1SABRV = "MC CAR"; /* Carrier abbreviation*/
+
+    else
+
+      call "IO0860" ("S ", SQLCA, TF1REC) {isNoRefresh = yes, isExternal = yes}; /* Select table row*/
+
+      if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+        if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+
+          converseLib.validationFailed(28); /* Indicate not available*/
+          TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+        else
+
+          converseLib.validationFailed(29); /* Indicate system error*/
+          TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+          converseLib.clearScreen();
+           /* Clear screen before redisplay*/
+
+        end
+
+        TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+        TA1REC.TA1PGMNM = "PW0CS01"; /* Process name*/
+        TA1REC.TA1LOC = "OBTAIN CARRIER TABLE ROW";
+        TA1REC.TA1MAP = "PW0CM001"; /* Map name*/
+        TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+        TA1REC.TA1TBLVU = "VCARR001"; /* Table view name*/
+        TA1REC.TA1TBLKE = TF1REC.TF1KEYS; /* Table key*/
+
+        call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+        PW0CM001.XXXPRCNM = "PW0CS01"; /* Process name*/
+
+        exit stack; /* Exit to redisplay map*/
+
+      end
+
+    end
+
+  end
+
+  PW0CW01.TF1CARCD[PW0CWIXC] = TF1REC.TF1CARCD; /* Save carrier*/
+
+  if (PW0CM001.TF1SABRV[PW0CWIXC] > " ") /* Column heading formatted*/
+
+    PW0CM001.PW0CMCAR[PW0CWIXM] = "*"; /* Indicate carrier change*/
+    PW0CM001.TF1SABRV[PW0CWIXM] = TF1REC.TF1SABRV; /* Abbreviation*/
+  else
+    PW0CM001.TF1SABRV[PW0CWIXC] = TF1REC.TF1SABRV; /* Abbreviation*/
+
+  end
+
+
+end // end PW0CS01
+
+//*** RECORD=PKVREC ****
+// ************* PICKING SCHEDULE/SPUR TABLE ******************
+// 
+// DB2 TABLE VIEW:      DPICK.VSPURS01
+// 
+// COPYLIB MEMBER:      DCL00340
+// 
+// I/O MODULE:          PK7600
+// 
+// KEY TO DB2 TABLE:    XWHCD
+//                      PKURUNMD
+// 
+// DATE CREATED:        09/09/87
+// 
+// MAINTENANCE LOG:
+// 
+//   DATE     INIT.     COMMENT
+// --------   ------    ---------------------------------------
+// 09/09/87   TL        New record definition.
+// 03/06/92   SHENDE    Resize PKVSCRUN to integer for March
+//                      table changes.
+// **********************
+Record PKVREC type basicRecord
+  5 PKVGROUP PKVGROUP ; 
+    10 PKVKEY PKVKEY ; 
+      15 XWHCD XWHCD ; 
+      15 PKURUNMD PKURUNMD ; 
+    10 PKVSSNBR PKVSSNBR ; 
+    10 PKVSSPNB PKVSSPNB ; 
+    10 TF1CARCD TF1CARCD ; 
+    10 PKVSCRUN PKVSCRUN ; 
+    10 PKVSCCRT PKVSCCRT ; 
+    10 ZZZCHGDT ZZZCHGDT ; 
+    10 ZZZCHGTM ZZZCHGTM ; 
+    10 ZZZCHGCT ZZZCHGCT ; 
+end // end PKVREC
+
+//*** RECORD=PW0CW01 ****
+// Working storage for PW0C - Totals By Schedule/Spur
+// ***********************
+Record PW0CW01 type basicRecord
+  10 XWHCD XWHCD ; 
+  10 XWHABRV XWHABRV ; 
+  10 XXXRVNBR XXXRVNBR ; 
+  10 PW0CMSWP PW0CMSWP ; 
+  10 PW0CWIXM PW0CWIXM ; 
+  10 PW0CWIXL PW0CWIXL ; 
+  10 PW0CWIXF PW0CWIXF ; 
+  10 PW0CWIXC PW0CWIXC ; 
+  10 PW0CWIXT PW0CWIXT ; 
+  10 PW0CWSWC PW0CWSWC ; 
+  10 PW0CWSWR PW0CWSWR ; 
+  10 PW0CWTSP PW0CWTSP ; 
+  10 PW0CWTSL PW0CWTSL ; 
+  10 TA5TSQIX TA5TSQIX ; 
+  10 PW0CWHIF PW0CWHIF ; 
+  10 PKVSSPNB PKVSSPNB ; 
+  10 TF1CARCD TF1CARCD [4] ; 
+  10 PW0CWPTU PW0CWPTU ; 
+  10 PW0CWPTC PW0CWPTC ; 
+end // end PW0CW01
+
+//*** RECORD=PW0CW02 ****
+// Warehouse totals for PW0C - Totals By Schedule/Spur
+// ***********************
+Record PW0CW02 type basicRecord
+  10 PW0CMSCU PW0CMSCU [200] ; 
+  10 PW0CMSCC PW0CMSCC [200] ; 
+  10 PW0CMSPU PW0CMSPU [200] ; 
+  10 PW0CMSPC PW0CMSPC [200] ; 
+end // end PW0CW02
+
+//*** RECORD=PW0CW03 ****
+// Temporary storage record for PW0C - Totals By Schedule/Spur
+// ***********************
+Record PW0CW03 type basicRecord
+  10 PW0CWLEN PW0CWLEN ; 
+  10 PW0CWSCH PW0CWSCH ; 
+end // end PW0CW03
+
+//*** RECORD=PW0CW04 ****
+// Schedule line definition for PW0C - Totals By Schedule/Spur
+// ***********************
+Record PW0CW04 type basicRecord
+  10 PW0CWLEN PW0CWLEN ; 
+  10 PW0CWSCH PW0CWSCH ; 
+    15 PKVSSNBR PKVSSNBR ; 
+    15 PW0CWSST PW0CWSST [220] ; 
+      20 PKZSUM1 PKZSUM1 ; 
+      20 PKZSUM2 PKZSUM2 ; 
+      20 TF1CARCD TF1CARCD ; 
+end // end PW0CW04
+
+//*** RECORD=PW0CW05 ****
+// Frame definition for PW0C - Totals By Schedule/Spur
+// ***********************
+Record PW0CW05 type basicRecord
+  10 PW0CWSCH PW0CWSCH ; 
+    15 PKVSSNBR PKVSSNBR ; 
+    15 PW0CWSLF PW0CWSLF [55] ; 
+end // end PW0CW05
+
+//*** RECORD=PW0CW06 ****
+// Column definition for PW0C - Totals By Schedule/Spur
+// ***********************
+Record PW0CW06 type basicRecord
+  10 PW0CWSLF PW0CWSLF ; 
+    15 PW0CWSST PW0CWSST [4] ; 
+      20 PKZSUM1 PKZSUM1 ; 
+      20 PKZSUM2 PKZSUM2 ; 
+      20 TF1CARCD TF1CARCD ; 
+end // end PW0CW06
+
+// Record group level
+DataItem PKVGROUP char(25)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Key group level
+DataItem PKVKEY char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// pk-sched-carr-crtn
+DataItem PKVSCCRT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// pk-sched-carr-unt
+DataItem PKVSCRUN int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Total schedule cartons
+DataItem PW0CMSCC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Total schedule units
+DataItem PW0CMSCU int {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Total spur cartons
+DataItem PW0CMSPC int {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Total spur units
+DataItem PW0CMSPU int {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Planning totals Yes/No switch
+DataItem PW0CMSWP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Highest frame number
+DataItem PW0CWHIF num(2)  {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for column fields
+DataItem PW0CWIXC smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for frame fields
+DataItem PW0CWIXF smallint {
+  currency = no, numericSeparator = no, sign = none, zeroFormat = yes, 
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for line fields
+DataItem PW0CWIXL smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem PW0CWIXM smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for total fields
+DataItem PW0CWIXT smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Temporary storage length
+DataItem PW0CWLEN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// plan total cartons
+DataItem PW0CWPTC int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// plan total units
+DataItem PW0CWPTU int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Schedule line entry
+DataItem PW0CWSCH char(2642)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Schedule line frame entry
+DataItem PW0CWSLF char(48)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Schedule/spur total entry
+DataItem PW0CWSST char(12)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Cursor end of file switch
+DataItem PW0CWSWC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Request for data switch
+DataItem PW0CWSWR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem PW0CWTSL num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Current temporary storage page
+DataItem PW0CWTSP num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

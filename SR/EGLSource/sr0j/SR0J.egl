@@ -1,0 +1,1742 @@
+package sr0j;
+import corpcom1.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import fy.common.*;
+import in1.common.*;
+import ku.common.*;
+import op.common.*;
+import pc.common.*;
+import pg.common.*;
+import pk.common.*;
+import pw.common.*;
+import sl.common.*;
+import sm.common.*;
+import sp.common.*;
+import sr.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+import ww.common.*;
+//*** PROGRAM=SR0J ****
+// ------  sr0j - inquiry on orders within schedule  --------
+// 
+// overview:  this application provides an inquiry on order
+//            and product information within a schedule.
+//            after the user enters the schedule number, the
+//            application reads orders and their respective
+//            items and stores the inquiry field information
+//            in a temp storage que.  a seperate process builds
+//            the inquiry page from the que.  the user may
+//            select one of the displayed lines for correction.
+//            if so, the application will transfer control to
+//            the correct product or correct header application
+//            along with appropriate key information.  the temp
+//            storage que is purged before any transfer
+//            processing or new schedule request processing is
+//            performed.
+// 
+// date written: 11/86
+// author:       dave ply - cap gemini america
+// 
+// ************************************************************
+//  10/20/88    jwood     added call option NONCSP
+//  03/20/89    jwood     added xssegtr logic
+//  02/14/91    rvakel    table changes:  rename xsdcd to
+//                        pc2inseg, rename xsacd to xegcd
+//                        in sr0js20 (sr3rec changed).
+//  09/21/92    mchow     changed from using DPROD.VCOLOR01 to
+//                        DPICK.VPKSTY01 (IO1810) for style or
+//                        color information. (SR0J005,SR0JS17)
+//  01/18/94    hkempe    expanded order nbr to nine digit and
+//                        got rid of the nbr of times allocated
+//                        - SR0JM020, SR0JW01, SR0JS30, SR0JS32
+//                        and SR0JS35.
+//                        corrected forward browsing error -
+//                        SR0J020.
+//  03/01/94    HKEMPE    Generate/Compile to pick up revised
+//                        COMMAREA, SR3REC and XWHTBL.
+//  08/31/95    CBRINE    CANADA - Add call to SY2000, SR0JW04
+//  04/04/96    PJAMES    CANADA - Items didn't get moved in
+//  12/04/97    DKESLE    Regenerate to pick up new srwrec
+//   december - moved modules again.
+//  03/24/98    Dpage     Y2KFIX modifications to SR0JS17
+//  03/20/01    rnunna    modified to show if an order is
+//                        Goods Issued or not.
+// 
+// processing:
+//   i. initialization (process sr0j005)
+//      a. check entry security
+//      b. clear map and work records
+//      c. pick up warehouse from transfering application.
+//      d. flow - always to converse inquiry map. (sr0j020)
+// 
+//  ii. build temp storage queue (process sr0j010)
+//      a. purge que if present (sr0js02)
+//      b. select orders for schedule (sr0js05)
+//      c. for each non-deallocated order:(readnext is sr0js07)
+//         1. format/write order data to ts que (sr0js10)
+//         2. select items within order (sr0js12)
+//         3. for each non-deallocated item: (readnext/sr0js15)
+//            a) get effective life cycle (sr0js17)
+//            b) format/write item data to ts que (sr0js20)
+//         4. close set of selected items (sr0js22)
+//      d. close set of selected orders (sr0js25)
+//      e. set default next line to process at 1
+//      f. save number of records in ts que.
+//      g. flow:
+//         1. if no non-deallocated orders found for schedule,
+//            set error msg, branch to converse (sr0j020)
+//         2. if no errors, branch to build page (sr0j015)
+// 
+// iii. build page from temp storage (sr0j015)
+//      a. clear map, carry forward headings
+//      b. read current temp storage record (sr0js27)
+//      c. build 1st map line(s):
+//         1. save current ts pointer
+//         2. if current ts record is order data:
+//            a) move order data to map (sr0js30)
+//            b) save header for carry over to next page
+//         3. if current ts record is item data:
+//            a) save item data
+//            b) if page back or new next line request is
+//               in effect:
+//               1) read order header, fmt to ts rec (sr0js31)
+//               2) move order data to map (sr0js30)
+//               3) save header for carry over to next page
+//               4) increment map index
+//               5) move item data to ts rec
+//               6) move item data to map (sr0js32)
+//            c) if page forward in effect:
+//               1) move saved header to ts rec
+//               2) move order data to map (sr0js30)
+//               3) increment map index
+//               4) move item data to ts rec
+//               5) move item data to map (sr0js32)
+//      d. build remaining map lines:
+//         1. for each map line with available ts record:
+//            a) read ts record (sr0js27)
+//            b) if order data, move to map (sr0js30)
+//            c) if item data, move to map (sr0js32)
+//            d) increment map index and ts rec pointer.
+//      e. move next line number to display to map
+//      f. flow - always to converse inquiry (sr0j020)
+// 
+//  iv. converse/edit inquiry of orders within sched. (sr0j020)
+//      a. no before stage processing
+//      b. clear msg and flag fields
+//      c. reset system rec key fields
+//      d. if transfer pf key request, purge ts que (sr0js02)
+//      e. check standard pf keys, transfer if appropriate
+//      f. check select column lines: (sr0js35)
+//         1. only 's' is valid
+//         2. only one line may be selected
+//         3. must be order or item data on line
+//         4. if selected and no errors, save key data to
+//            system work record, set order or item select flag
+//      g. check whse/schedule nbr: (sr0js37)
+//         1. both fields required
+//         2. whse must be valid
+//         3. schedule must exist (read is sr0js40)
+//      h. check for new next line request:
+//         1. verify requested line not > than lines avail.
+//      i. line select and new schedule may not be entered
+//         at the same time.
+//      j. if no errors, and line selected:
+//         1. if order line selected:
+//            a) purge ts que (sr0js02)
+//            b) move system work rec to commarea
+//            c) transfer to correct header (sr0c)
+//         2. if item line selected:
+//            a) purge ts que (sr0js02)
+//            b) move system work rec to commarea
+//            c) transfer to correct product (sr0m)
+//      k. flow:
+//         1. if pa2 (reset) - sr0j005 (init)
+//         2. if errors - sr0j020 (redisplay with errors)
+//         3. if new schedule request - sr0j010 (build ts que)
+//         4. if new line request - sr0j015 (build page)
+//         5. if pf7, dec next line pointer - sr0j015 (bld pg)
+//         6. if pf8, inc next line pointer - sr0j015 (bld pg)
+//         7. enter - no changes - sr0j020 (redisplay)
+// 
+// *********************
+Program SR0J type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "SR00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  PKNREC PKNREC; // record
+  SQLCA SQLCA; // record
+  SR0JW01 SR0JW01; // record
+  SR0JW02 SR0JW02; // record
+  SR0JW03 SR0JW03; // record
+  SR0JW04 SR0JW04; // record
+  SR1REC SR1REC; // record
+  SR2REC SR2REC; // record
+  SR3REC SR3REC; // record
+  SRWREC SRWREC; // record
+  TA1REC TA1REC; // record
+  TAEREC TAEREC; // record
+  WSY2000 WSY2000; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use SR0JM.SR0JM020 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    SR0J005: SR0J005();
+
+     /* ------------  sr0j005 flow  ---------------*/
+
+    goto SR0J020; /* always to converse map*/
+
+    SR0J010: SR0J010();
+
+     /* --------------  flow for sr0j010  --------------*/
+
+    if (converseVar.validationMsgNum == 0)
+      goto SR0J015; /* to build page*/
+    else
+      goto SR0J020; /* display error*/
+    end
+
+    SR0J015: SR0J015();
+
+     /* ------------  sr0j015 flow  ---------------*/
+
+    if (SR0JW01.SR0JWNXT <= 11)
+      converseLib.validationFailed(104); /* beginning of sched/order*/
+    end
+
+    if (SR0JW01.SR0JWNXT >= SR0JW01.SR0JWMAX)
+      converseLib.validationFailed(103); /* end of sched/order*/
+    end
+
+    goto SR0J020; /* display inquiry*/
+
+    SR0J020: SR0J020();
+
+     /* ------------  sr0j020 flow ---------------*/
+
+    if (converseVar.eventKey is pa2) /* reset?*/
+      goto SR0J005; /* to init inq. orders*/
+    end
+
+     /* if errors, redisplay map*/
+    if (SRWREC.SRWMSG != " ")
+      SR0JM020.SR0JMMSG = SRWREC.SRWMSG; /* security errors*/
+    end
+
+    if (converseVar.validationMsgNum != 0
+     || SR0JM020.SR0JMMSG != " ")
+      set SR0JM020 alarm;
+      goto SR0J020; /* errors - redisplay*/
+    end
+
+    if (SR0JW01.SR0JWNSC == "Y") /* new schedule request?*/
+      goto SR0J010; /* to build ts que*/
+    end
+
+    if (SR0JW01.SR0JWLNM == "Y") /* next line field modified?*/
+      SR0JW01.SR0JWNXT = SR0JM020.SR0JMNXT;
+      goto SR0J015; /* to build new page*/
+    end
+
+    if (converseVar.eventKey is pf7) /* page back?*/
+      SR0JW01.SR0JWNXT = SR0JW01.SR0JW1ST - 10;
+      if (SR0JW01.SR0JWNXT <= 0)
+        SR0JW01.SR0JWNXT = 1;
+      end
+      goto SR0J015; /* to build new page*/
+    end
+
+    if (converseVar.eventKey is pf8) /* page forward*/
+      if (SR0JW01.SR0JWNXT >= SR0JW01.SR0JWMAX)
+        converseLib.validationFailed(103);
+        set SR0JM020 alarm;
+        goto SR0J020; /* errors - redisplay*/
+      else
+        goto SR0J015; /* to build new page*/
+      end
+    end
+
+    goto SR0J020; /* default - redisplay*/
+
+
+  end // end main
+end // end SR0J
+
+// init. inq. orders in sched.
+Function SR0J005()
+   /* --------------- start process sr0j005 ---------------------*/
+
+  XSENTRY(); /* entry security*/
+
+  XSSEGTR(); /* set segmented transaction id*/
+
+  set SR0JM020 initial; /* clear map fields*/
+  SR0JM020.SR0JMDT = VGVar.currentShortGregorianDate; /* move system date to map*/
+
+     /* look for whse passed from outside applications*/
+  SRWREC.SRWGRP = COMMAREA.CAUSERA; /* user commarea to work*/
+  SR0JW01.SR0JW2CH = COMMAREA.CAFROMAP; /* if entered from*/
+  if (SR0JW01.SR0JW2CH != "SR") /* outside shiprec system,*/
+    SRWREC.SRWXWHCD = COMMAREA.XWHCD; /* use commarea.xwhcd*/
+  end
+
+  if (SRWREC.SRWXWHCD != " ")
+    SR0JM020.SR0JMXWH = SRWREC.SRWXWHCD;
+  else
+    set SR0JM020.SR0JMXWH cursor;
+  end
+
+     /* clear records*/
+  set SR0JW01 empty;
+  set SR0JW02 empty;
+  set SR0JW03 empty;
+  set SR0JW04 empty;
+  set SR1REC empty;
+  set SR2REC empty;
+  set SR3REC empty;
+  set PKNREC empty;
+
+  SR0JW01.SR0JWP1 = "."; /* dots for formated order nbr*/
+
+  converseLib.validationFailed(91); /* enter sched - 1st resp. may be slow*/
+
+   /* ---------------   end process sr0j005 ---------------------*/
+
+end // end SR0J005
+
+// load ts with sched. data
+Function SR0J010()
+   /* --------------- start process sr0j010 ---------------------*/
+
+      /* load temp storage que with data to display all lines*/
+      /* for schedule.*/
+
+  SR0JS02(); /* purge possible existing ts que*/
+
+  SR0JW03.SR0JWRID = 0; /* clear relative rec id*/
+
+  SR0JS05(); /* select orders within requested schedule*/
+
+  SR0JS07(); /* read next order*/
+
+  while (SQLCA.VAGen_SQLCODE == 0) /* for each order*/
+
+    SR0JS10(); /* format/write ts que for order line*/
+
+    SR0JS12(); /* select items for order*/
+    SR0JS15(); /* readnext item*/
+    while (SQLCA.VAGen_SQLCODE == 0) /* for each item*/
+      SR0JS17(); /* get eff. life cycle from prod db*/
+      SR0JS20(); /* format/write ts que for item line*/
+      SR0JS15(); /* readnext item*/
+    end /* end for each item*/
+    SR0JS22(); /* close set of selected items*/
+
+    SR0JS07(); /* readnext order*/
+
+  end /* end for each order*/
+  SR0JS25(); /* close selected order set*/
+
+
+  SR0JW01.SR0JWNXT = 1; /* set default next line*/
+  SR0JW01.SR0JWMAX = SR0JW03.SR0JWRID; /* set high ts rec cnt*/
+  if (SR0JW01.SR0JWMAX == 0)
+    converseLib.validationFailed(92); /* NO DATA FOUND FOR SCHED*/
+    exit stack;
+  end
+
+   /* ---------------   end process sr0j010 ---------------------*/
+
+end // end SR0J010
+
+// build page from temp storage
+Function SR0J015()
+   /* --------------- start process sr0j015 ---------------------*/
+
+          /* build page from temp storage*/
+
+  set SR0JM020 initial; /* clear map fields*/
+  SR0JM020.SR0JMDT = VGVar.currentShortGregorianDate; /* move system date to map*/
+  SR0JM020.SR0JMXWH = SRWREC.SRWXWHCD;
+  SR0JM020.SR0JMSCH = SRWREC.SRWPKID;
+
+  SR0JS27(); /* read temp storage record*/
+
+  SR0JW01.SR0JW1ST = SR0JW01.SR0JWNXT; /* save 1st line pointer*/
+  SR0JW01.SR0JWIX1 = 1; /* set map index*/
+
+     /* set up first map line, carrying forward header if*/
+     /* paging forward, and reading header if paging back*/
+     /* or new line request.*/
+  if (SR0JW02.SR0JWSTY == " ") /* order header data?*/
+    SR0JS30(); /* load header data to map*/
+    SR0JW01.SR0JWHDR = SR0JW02.SR0JWGRP; /* save header data*/
+
+  else /* (current ts rec is detail)*/
+
+    SR0JW01.SR0JWDTL = SR0JW02.SR0JWGRP; /* save detail data*/
+
+    if (converseVar.eventKey is pf7 /* page back?*/
+     || SR0JW01.SR0JWLNM == "Y")    /* new next line req?*/
+      SR0JS31(); /* read header, move to ts record*/
+      SR0JW01.SR0JWHDR = SR0JW02.SR0JWGRP; /* save header data*/
+      SR0JS30(); /* load header data to map*/
+      SR0JW01.SR0JWIX1 = SR0JW01.SR0JWIX1 + 1; /* inc map index*/
+      SR0JW02.SR0JWGRP = SR0JW01.SR0JWDTL;
+      SR0JS32(); /* load detail to map*/
+
+    else /* (ts is detail and not pf7 or new line request)*/
+
+      if (converseVar.eventKey is pf8)
+        SR0JW02.SR0JWGRP = SR0JW01.SR0JWHDR;
+        SR0JS30(); /* load last header to map*/
+        SR0JW01.SR0JWIX1 = SR0JW01.SR0JWIX1 + 1; /* inc map index*/
+        SR0JW02.SR0JWGRP = SR0JW01.SR0JWDTL;
+        SR0JS32(); /* load detail to map*/
+      end /* end if pf8*/
+
+    end /* end if pf7 or new line*/
+  end /* end if ts rec is header*/
+
+
+    /* load remainder of map*/
+  SR0JW01.SR0JWNXT = SR0JW01.SR0JWNXT + 1; /* inc next line ptr*/
+  SR0JW01.SR0JWIX1 = SR0JW01.SR0JWIX1 + 1; /* inc map index*/
+  while (SR0JW01.SR0JWIX1 <= 10 /* map full?*/
+   && SR0JW01.SR0JWNXT <= SR0JW01.SR0JWMAX) /* no more rec's?*/
+
+    SR0JS27(); /* read temp storage record*/
+
+    if (SR0JW02.SR0JWSTY == " ") /* order header data?*/
+      SR0JS30(); /* load header data to map*/
+      SR0JW01.SR0JWHDR = SR0JW02.SR0JWGRP; /* save header data*/
+    else
+      SR0JS32(); /* load detail to map*/
+    end
+
+    SR0JW01.SR0JWNXT = SR0JW01.SR0JWNXT + 1; /* inc next line ptr*/
+    SR0JW01.SR0JWIX1 = SR0JW01.SR0JWIX1 + 1; /* inc map index*/
+
+  end /* end if map full or all recs read*/
+
+   /* ---------------   end process sr0j015 ---------------------*/
+
+end // end SR0J015
+
+// converse/edit inq. map
+Function SR0J020()
+   /* ----------- process sr0j020 before stage  ----------------*/
+
+            /* no before stage processing*/
+
+  converse SR0JM020 ;
+   /* ----------- process sr0j020 after stage  ----------------*/
+
+    /* clear msg field and flags*/
+  SR0JM020.SR0JMMSG = " "; /* clear msg field*/
+  SRWREC.SRWMSG = " "; /* clear msg field*/
+  SR0JW01.SR0JWSEL = " "; /* clear select flag*/
+  SR0JW01.SR0JWNSC = " "; /* clear new schedule flag*/
+  SR0JW01.SR0JWLNM = " "; /* clear new line modified flag*/
+
+
+     /* reset system work record key*/
+  SRWREC.SRWXWHCD = SR0JM020.SR0JMXWH; /* set whse for xfer*/
+  SRWREC.SRWPKID = SR0JM020.SR0JMSCH;
+  SRWREC.SRWCUOID = 0; /* (clearing these fields suppress*/
+  SRWREC.SRWNORID = 0; /* old item from redisplay if pf20*/
+  SRWREC.SRWNTMAL = 0; /* to correct product rather than*/
+  SRWREC.SRWSTYLE = " "; /* 's' on select line)*/
+  SRWREC.SRWCOLOR = " ";
+  SRWREC.SRWDIM = " ";
+  SRWREC.SRWQUAL = " ";
+  SRWREC.SRWSPEC = " ";
+  SRWREC.SRWSHADE = " ";
+  COMMAREA.CAUSERA = SRWREC.SRWGRP;
+
+
+  if (converseVar.eventKey is pf7 /* page forward?*/
+   || converseVar.eventKey is pf8) /* page back?*/
+    exit stack;
+  end
+
+
+    /* if transfer pf key pressed, delete ts que before xfer*/
+  if (converseVar.eventKey is pf1  /* help*/
+   || converseVar.eventKey is pf3  /* appl menu*/
+   || converseVar.eventKey is pf4  /* main menu*/
+   || converseVar.eventKey is pf13 /* prepare batch*/
+   || converseVar.eventKey is pf14 /* correct header*/
+   || converseVar.eventKey is pf15 /* balance batch*/
+   || converseVar.eventKey is pf16 /* build direct ship*/
+   || converseVar.eventKey is pf17 /* this appl*/
+   || converseVar.eventKey is pf18 /* inq. batches*/
+   || converseVar.eventKey is pf19 /* adj. address*/
+   || converseVar.eventKey is pf20 /* correct product*/
+   || converseVar.eventKey is pf21) /* mtd rpt*/
+    SR0JS02(); /* purge ts que*/
+  end
+
+
+  XSSRS01(); /* check shiprec pf keys, xfer*/
+  if (converseVar.validationMsgNum != 0) /* invalid pf key*/
+    exit stack;
+  end
+  if (SRWREC.SRWMSG != " ") /* security access error on xfer*/
+    set SR0JM020.SR0JMSCH modified; /* force rebuild of que*/
+    exit stack;
+  end
+
+
+    /* check select columns*/
+  SR0JW01.SR0JWIX1 = 1; /* set map index*/
+  while (SR0JW01.SR0JWIX1 <= 10)
+    SR0JS35();
+                                   /* check select column, set flags, keys.*/
+    SR0JW01.SR0JWIX1 = SR0JW01.SR0JWIX1 + 1;
+  end
+
+
+  SR0JS37(); /* check whse/schedule*/
+
+
+    /* check for new next line request*/
+  set SR0JM020.SR0JMNXT initialAttributes;
+  if (SR0JM020.SR0JMNXT is modified)
+    if (SR0JM020.SR0JMNXT > SR0JW01.SR0JWMAX)
+      set SR0JM020.SR0JMNXT cursor, modified, bold;
+      converseLib.validationFailed(93); /* REQUESTED LINE > LINES AVAIL*/
+    else
+      if (SR0JM020.SR0JMNXT == 0)
+        set SR0JM020.SR0JMNXT cursor, modified, bold;
+        converseLib.validationFailed(105); /* next line cannot be zero*/
+      else
+        SR0JW01.SR0JWLNM = "Y"; /* line modified flag*/
+      end /* end if next line nbr = 0*/
+    end /* end if next line > max lines*/
+  end /* end if next line modified*/
+
+
+    /* check for new schedule and line select at same time*/
+  if (SR0JW01.SR0JWSEL != " "
+   && SR0JW01.SR0JWNSC != " ")
+    converseLib.validationFailed(94); /* CANNOT ENTER NEW SCH & SEL.*/
+  end
+
+
+    /* if no errors and line select requested, xfer to sr0c/sr0m*/
+  if (converseVar.validationMsgNum == 0
+   && SR0JM020.SR0JMMSG == " ")
+    if (SR0JW01.SR0JWSEL == "O")
+      SR0JS02(); /* purge ts que*/
+      COMMAREA.CAUSERA = SRWREC.SRWGRP;
+      COMMAREA.CATOAP = "SR0C"; /* to correct order header*/
+      XSEXIT();
+      set SR0JM020.SR0JMSCH modified; /* force rebuild of que*/
+      SRWREC.SRWMSG = COMMAREA.CAMSG;
+    end /* end if correct order selected*/
+    if (SR0JW01.SR0JWSEL == "P")
+      SR0JS02(); /* purge ts que*/
+      COMMAREA.CAUSERA = SRWREC.SRWGRP;
+      COMMAREA.CATOAP = "SR0M"; /* to correct product*/
+      XSEXIT();
+      set SR0JM020.SR0JMSCH modified; /* force rebuild of que*/
+      SRWREC.SRWMSG = COMMAREA.CAMSG;
+    end /* end if correct product selected*/
+  end /* end if no errors*/
+
+end // end SR0J020
+
+// select dprod.vsyreg01
+Function SR0JS-SEL-SY2000()
+
+
+   /* This statement group added for Canada -- August, 1995 --*/
+
+     /* get the product/region record*/
+
+  set SQLCA empty;
+  set WSY2000 empty;
+  WSY2000.XGP-GPC-CD = PKNREC.XGPCD;
+  WSY2000.SY-STY-NBR = PKNREC.SY1STNBR;
+  WSY2000.SY-COLR-CD-ID = PKNREC.SY2CLRID;
+  WSY2000.XDM-DIM-CD = PKNREC.XDMCD;
+  WSY2000.XDR-PROD-REG-CD = "05";
+  WSY2000.WSY2000-OPTION-CODE = "S ";
+  WSY2000.WSY2000-SUB-OPTION-CODE = "O";
+
+
+  call "SY2000" (WSY2000) {isNoRefresh = yes, isExternal = yes};
+
+  if (WSY2000.WSY2000-RETURN-CODE == "00")
+    PKNREC.XPRCD = WSY2000.XPR-PROD-TYP-CD;
+    PKNREC.XLCCD1 = WSY2000.XLC-LIFE-CYC-CD[1];
+    PKNREC.XLCCD2 = WSY2000.XLC-LIFE-CYC-CD[2];
+    PKNREC.XLCCD3 = WSY2000.XLC-LIFE-CYC-CD[3];
+    PKNREC.XLCCD4 = WSY2000.XLC-LIFE-CYC-CD[4];
+    PKNREC.SY2CEDT1 = WSY2000.SY-LIFE-CYC-EDT[1];
+    PKNREC.SY2CEDT2 = WSY2000.SY-LIFE-CYC-EDT[2];
+    PKNREC.SY2CEDT3 = WSY2000.SY-LIFE-CYC-EDT[3];
+    PKNREC.SY2CEDT4 = WSY2000.SY-LIFE-CYC-EDT[4];
+  else
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "POST";
+    TA1REC.TA1PGMNM = "SR0J";
+    TA1REC.TA1LOC = "SR0JS-SEL-SY2000";
+    SR0JW04.SR0JW-WSY2000-GPC-CD = PKNREC.XGPCD;
+    SR0JW04.SR0JW-WSY2000-STY-NBR = PKNREC.SY1STNBR;
+    SR0JW04.SR0JW-WSY2000-COLR-CD = PKNREC.SY2CLRID;
+    SR0JW04.SR0JW-WSY2000-DIM-CD = PKNREC.XDMCD;
+    SR0JW04.SR0JW-WSY2000-PROD-REG-CD = WSY2000.XDR-PROD-REG-CD;
+    SR0JW04.SR0JW-WSY2000-RETURN-CD = WSY2000.WSY2000-RETURN-CODE;
+    TAEREC.TAEDESC1 = SR0JW-WSY2000-POST-1;
+    TAEREC.TAEDESC2 = "RETURN FROM CALL TO SY2000 - BAD RETURN CODE";
+    TA1REC.TA1DBASE = "DPROD";
+    TA1REC.TA1TBLVU = "SYREG02";
+    TA1REC.TA1MAP = "SR0JM020";
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+  end
+
+
+
+end // end SR0JS-SEL-SY2000
+
+// purge temp storage que
+Function SR0JS02()
+   /* -----------  start stmt grp sr0js02  ----------------*/
+
+          /* purge temp storage que*/
+
+  SR0JW03.SR0JWAPL = "SR0J"; /* que name*/
+  SR0JW03.SR0JWFNC = "P"; /* function to purge*/
+
+  call "TA0050" (SR0JW02, SR0JW03) {isNoRefresh = yes, isExternal = yes};
+
+  if (SR0JW03.SR0JWRTN == 0 /* ok*/
+   || SR0JW03.SR0JWRTN == 4) /* que id error (ok)*/
+    /* next sentence*/
+  else
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    TA1REC.TA1TYPE = "   ";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "     ";
+    TA1REC.TA1TBLVU = "        ";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = SR0JW03.SR0JWRTN;
+    TA1REC.TA1LOC = "SR0JS02";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+   /* ----------  end stmt grp sr0js02  -------------------*/
+end // end SR0JS02
+
+// select order set
+Function SR0JS05()
+   /* -----------  start stmt grp sr0js05  ----------------*/
+
+       /* select set of orders within schedule*/
+
+  SR2REC.XWHCD = SR0JM020.SR0JMXWH;
+  SR2REC.PK1PKSCH = SR0JM020.SR0JMSCH;
+  SR2REC.OP1CUOID = -1; /* cust ord*/
+  SR2REC.OP1NORID = -1; /* nike ord*/
+  SR2REC.OP1NTMAL = -1; /* times alloc*/
+
+  call "IO0800" ("S2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0JW01.SR0JWSQL = SQLCA.SQLCAREC; /* save error sq*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0JW01.SR0JWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0JS05";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0js05  -------------------*/
+end // end SR0JS05
+
+// read next order
+Function SR0JS07()
+   /* -----------  start stmt grp sr0js07  ----------------*/
+
+       /* readnext order*/
+
+  call "IO0800" ("N2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* found*/
+   || SQLCA.VAGen_SQLCODE == 100) /* doesn't exist*/
+    /* next sentence*/
+  else /* sql error*/
+    SR0JW01.SR0JWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0JW01.SR0JWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0JS07";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0js07  -------------------*/
+end // end SR0JS07
+
+// fmt/write order ts record
+Function SR0JS10()
+   /* -----------  start stmt grp sr0js10  ----------------*/
+
+       /* fmt/write order temp storage record*/
+
+  set SR0JW02 empty;
+  SR0JW02.SR0JWLTH = 36;
+  SR0JW02.SR0JWORD = SR2REC.OP1CUOID;
+  SR0JW02.SR0JWSUB = SR2REC.OP1NORID;
+  SR0JW02.SR0JWTMA = SR2REC.OP1NTMAL;
+  SR0JW02.SR0JWSHP = SR2REC.SR2QTYSH;
+  /* DLVRUSA START*/
+  SR0JW02.SR0JGISS = SR2REC.SR2UIVCF;
+  /* DLVRUSA END*/
+  if (SR2REC.SR2DALFL == "Y") /* deallocated?*/
+    SR0JW02.SR0JWDEA = "Y";
+  end
+
+  SR0JW03.SR0JWAPL = "SR0J"; /* que name*/
+  SR0JW03.SR0JWFNC = "A"; /* function to add data*/
+
+  call "TA0050" (SR0JW02, SR0JW03) {isNoRefresh = yes, isExternal = yes};
+
+  if (SR0JW03.SR0JWRTN != 0)
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    TA1REC.TA1TYPE = "   ";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "     ";
+    TA1REC.TA1TBLVU = "        ";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = SR0JW03.SR0JWRTN;
+    TA1REC.TA1LOC = "SR0JS10";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0js10  -------------------*/
+end // end SR0JS10
+
+// select item set
+Function SR0JS12()
+   /* -----------  start stmt grp sr0js12  ----------------*/
+
+       /* select set of items within an order*/
+
+  SR3REC.XWHCD = SR2REC.XWHCD;
+  SR3REC.PK1PKSCH = SR2REC.PK1PKSCH;
+  SR3REC.OP1CUOID = SR2REC.OP1CUOID;
+  SR3REC.OP1NORID = SR2REC.OP1NORID;
+  SR3REC.OP1NTMAL = SR2REC.OP1NTMAL;
+
+  set SQLCA empty; /* initialize sqlcode (GDA)*/
+  call "SR1100" ("SS", SQLCA, SR3REC) {isNoRefresh = yes, isExternal = yes}; /* ss dship.vsritm01 view*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0JW01.SR0JWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0JW01.SR0JWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRITM01";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0JS12";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0js12  -------------------*/
+end // end SR0JS12
+
+// read next item
+Function SR0JS15()
+   /* -----------  start stmt grp sr0js15  ----------------*/
+
+       /* read next item row*/
+
+  call "SR1100" ("SN", SQLCA, SR3REC) {isNoRefresh = yes, isExternal = yes}; /* sn dship.vsritm01 view*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    SR0JW01.SR0JWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0JW01.SR0JWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRITM01";
+    TA1REC.TA1MAP = "SR0MJ020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0JS15";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0js15  -------------------*/
+end // end SR0JS15
+
+// get eff. life cycle
+Function SR0JS17()
+   /* -----------  start stmt grp sr0js17  ----------------*/
+
+       /* get life cycle from product db, determine*/
+       /* effective life cycle*/
+
+    /* build product db key*/
+  if (SR2REC.SR2STKTF == "Y")
+    PKNREC.XGPCD = SR3REC.XGPCD; /* gen. product class (item)*/
+  else
+    PKNREC.XGPCD = SR2REC.XGPCD;
+                                   /* gen. product class (order)*/
+  end
+  PKNREC.SY1STNBR = SR3REC.SY1STNBR; /* style*/
+  PKNREC.SY2CLRID = SR3REC.SY2CLRID; /* color*/
+  PKNREC.XDMCD = SR3REC.XDMCD; /* dimension*/
+
+  call "IO1810" ("S ", SQLCA, PKNREC) {isNoRefresh = yes, isExternal = yes}; /* read  dprod.vcolor01*/
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+
+    /* CANADA 08/25/95*/
+
+    if (SR0JW01.XCTCD == "CANA")
+
+      /* format ta1rec in case of bad return code from call to SY2000*/
+
+      TA1REC.TA1PGMNM = "SR0J"; /* CANA program name*/
+      TA1REC.TA1LOC = "SR0JS17"; /* CANA sgrp name*/
+
+      SR0JS-SEL-SY2000(); /* CANA call SY2000 to get*/
+                              /* product region record*/
+      if (WSY2000.WSY2000-RETURN-CODE != 0) /* CANA row not found*/
+        TA1REC.TA1FUNC = "ABND"; /* Termination function*/
+        TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+        TA1REC.TA1LOC = "CALL SY2000";
+        TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program appl*/
+        TA1REC.TA1PGMNM = "SR0JS17"; /* Program number*/
+        TA1REC.TA1MAP = "SR0JM020"; /* Map name*/
+        TA1REC.TA1DBASE = "DPROD  "; /* Data base name*/
+        TA1REC.TA1TBLVU = "VSYREG02"; /* Table view name*/
+        TA1REC.TA1TBLKE = PKNREC.PKNKEY; /* Table key*/
+
+                              /* Error diagnosis routine*/
+        call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes};
+
+      end
+    end
+  else
+    SR0JW01.SR0JWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0JW01.SR0JWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DPICK";
+    TA1REC.TA1TBLVU = "VPKSTY01";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = PKNREC.PKNKEY;
+    TA1REC.TA1LOC = "SR0JS17";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+    /* life cycle based on eff date/ship date*/
+  if (SR2REC.SR1SHPDT != 0) /* ship date at order lvl?*/
+    SR0JW01.SR0JWDAT = SR2REC.SR1SHPDT;
+  else
+    if (SR1REC.SR1SHPDT != 0) /* ship date at batch lvl?*/
+      SR0JW01.SR0JWDAT = SR1REC.SR1SHPDT;
+    else
+   /* -----------------------Y2K out begin---------------------*/
+   /* MOVE EZEDTE TO SR0JW01.SR0JWYMD;/* use todays date*/
+   /* MOVE 19 TO SR0JW01.SR0JWCC;*/
+   /* -----------------------Y2K out end ----------------------*/
+   /* -----------------------Y2K in  begin---------------------*/
+      SR0JW01.SR0JWDAT = VGVar.currentGregorianDate; /* use todays date*/
+   /* -----------------------Y2K in  end ----------------------*/
+    end
+  end
+  if (SR0JW01.SR0JWDAT >= PKNREC.SY2CEDT1)
+    SR0JW02.SR0JWXLC = PKNREC.XLCCD1;
+  else
+    if (SR0JW01.SR0JWDAT >= PKNREC.SY2CEDT2)
+      SR0JW02.SR0JWXLC = PKNREC.XLCCD2;
+    else
+      if (SR0JW01.SR0JWDAT >= PKNREC.SY2CEDT3)
+        SR0JW02.SR0JWXLC = PKNREC.XLCCD3;
+      else
+        if (SR0JW01.SR0JWDAT >= PKNREC.SY2CEDT4)
+          SR0JW02.SR0JWXLC = PKNREC.XLCCD4;
+        end
+      end
+    end
+  end
+
+   /* ----------  end stmt grp sr0js17  -------------------*/
+end // end SR0JS17
+
+// fmt/write item ts record
+Function SR0JS20()
+   /* -----------  start stmt grp sr0js20  ----------------*/
+
+       /* fmt/write item temp storage record*/
+
+  SR0JW02.SR0JWLTH = 37; /* data length*/
+  SR0JW02.SR0JWORD = SR3REC.OP1CUOID; /* cust order*/
+  SR0JW02.SR0JWSUB = SR3REC.OP1NORID; /* nike order*/
+  SR0JW02.SR0JWTMA = SR3REC.OP1NTMAL; /* times allocated*/
+  SR0JW02.SR0JWSTY = SR3REC.SY1STNBR; /* style*/
+  SR0JW02.SR0JWCLR = SR3REC.SY2CLRID; /* color*/
+  SR0JW02.SR0JWXDM = SR3REC.XDMCD; /* dimension*/
+   /* life cycle loaded in sr0js17*/
+  SR0JW02.SR0JWXQA = SR3REC.XQACD; /* quality*/
+  SR0JW02.SR0JWXSD = SR3REC.PC2INSEG; /* spec*/
+  SR0JW02.SR0JWXSA = SR3REC.XEGCD; /* shade*/
+  SR0JW02.SR0JWXUM = SR3REC.XUMCD; /* unit of measure*/
+  SR0JW02.SR0JWSHP = SR3REC.SR3TQTSH; /* items shipped*/
+  if (SR3REC.SR3DALFL == "Y") /* deallocated?*/
+    SR0JW02.SR0JWDEA = "Y";
+  else
+    SR0JW02.SR0JWDEA = " ";
+  end
+
+  SR0JW03.SR0JWAPL = "SR0J"; /* que name*/
+  SR0JW03.SR0JWFNC = "A"; /* function to add data*/
+
+  call "TA0050" (SR0JW02, SR0JW03) {isNoRefresh = yes, isExternal = yes};
+
+  if (SR0JW03.SR0JWRTN != 0)
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    TA1REC.TA1TYPE = "   ";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "     ";
+    TA1REC.TA1TBLVU = "        ";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = SR0JW03.SR0JWRTN;
+    TA1REC.TA1LOC = "SR0JS20";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0js20  -------------------*/
+end // end SR0JS20
+
+// close item set
+Function SR0JS22()
+   /* -----------  start stmt grp sr0js22  ----------------*/
+
+    /* close set of shiprec items*/
+
+  call "SR1100" ("CS", SQLCA, SR3REC) {isNoRefresh = yes, isExternal = yes}; /* cs dship.vsritm01 view*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0JW01.SR0JWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0JW01.SR0JWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRITM01";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0JS22";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0js22  -------------------*/
+end // end SR0JS22
+
+// close order set
+Function SR0JS25()
+   /* -----------  start stmt grp sr0js25  ----------------*/
+
+       /* close order set*/
+
+  call "IO0800" ("C2", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0JW01.SR0JWSQL = SQLCA.SQLCAREC; /* save error sq*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0JW01.SR0JWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0JS25";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0js25  -------------------*/
+end // end SR0JS25
+
+// read ts record, check return
+Function SR0JS27()
+   /* -----------  start stmt grp sr0js27  ----------------*/
+
+       /* read temp storage record, check return code*/
+
+  SR0JW03.SR0JWAPL = "SR0J"; /* application id for que name*/
+  SR0JW03.SR0JWRID = SR0JW01.SR0JWNXT; /* set relative rec id*/
+  SR0JW03.SR0JWFNC = "R"; /* function to add data*/
+  SR0JW02.SR0JWLTH = 37; /* data length*/
+
+  call "TA0050" (SR0JW02, SR0JW03) {isNoRefresh = yes, isExternal = yes};
+
+  if (SR0JW03.SR0JWRTN != 0)
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    TA1REC.TA1TYPE = "   ";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "     ";
+    TA1REC.TA1TBLVU = "        ";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = SR0JW03.SR0JWRTN;
+    TA1REC.TA1LOC = "SR0JS27";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+   /* ----------  end stmt grp sr0js27  -------------------*/
+end // end SR0JS27
+
+// load header data to map
+Function SR0JS30()
+   /* -----------  start stmt grp sr0js30  ----------------*/
+
+       /* move header data to map*/
+
+    /* format order number xxxxxxx.xx.xx*/
+  SR0JW01.SR0JWWOD = SR0JW02.SR0JWORD;
+  SR0JW01.SR0JWWSB = SR0JW02.SR0JWSUB;
+  SR0JM020.SR0JMORD[SR0JWIX1] = SR0JW01.SR0JWFOD; /* formated order nbr*/
+  SR0JM020.SR0JMOSH[SR0JWIX1] = SR0JW02.SR0JWSHP;
+                                   /* shipped for order*/
+  /* DLVRUSA START*/
+  SR0JW02.SR0JGISS = SR2REC.SR2UIVCF;
+  SR0JM020.SR0JGISS[SR0JWIX1] = SR0JW02.SR0JGISS; /* GOODS ISSUE*/
+  /* DLVRUSA END*/
+
+  if (SR0JW02.SR0JWDEA == "Y")
+    SR0JM020.SR0JMSEL[SR0JWIX1] = "*";
+    set SR0JM020.SR0JMSEL[SR0JWIX1] skip;
+    SR0JW01.SR0JWDEA = "Y"; /* order deallocated flag*/
+  else
+    SR0JW01.SR0JWDEA = " "; /* order deallocated flag*/
+  end
+
+   /* ----------  end stmt grp sr0js30  -------------------*/
+end // end SR0JS30
+
+// read order header, fmt ts rec
+Function SR0JS31()
+   /* -----------  start stmt grp sr0js31  ----------------*/
+
+       /* read order row*/
+
+  SR2REC.XWHCD = SR0JM020.SR0JMXWH;
+  SR2REC.PK1PKSCH = SR0JM020.SR0JMSCH;
+  SR2REC.OP1CUOID = SR0JW02.SR0JWORD;
+  SR2REC.OP1NORID = SR0JW02.SR0JWSUB;
+  SR2REC.OP1NTMAL = SR0JW02.SR0JWTMA;
+
+  call "IO0800" ("S ", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrord01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+    SR0JW01.SR0JWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0JW01.SR0JWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRORD01";
+    TA1REC.TA1MAP = "SR0MJ020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0JS31";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+  set SR0JW02 empty;
+  SR0JW02.SR0JWORD = SR2REC.OP1CUOID;
+  SR0JW02.SR0JWSUB = SR2REC.OP1NORID;
+  SR0JW02.SR0JWTMA = SR2REC.OP1NTMAL;
+  SR0JW02.SR0JWSHP = SR2REC.SR2QTYSH;
+  /* DLVRUSA START*/
+  SR0JW02.SR0JGISS = SR2REC.SR2UIVCF;
+  /* DLVRUSA END*/
+  if (SR2REC.SR2DALFL == "Y")
+    SR0JW02.SR0JWDEA = "Y";
+  end
+
+   /* ----------  end stmt grp sr0js31  -------------------*/
+end // end SR0JS31
+
+// load detail data to map
+Function SR0JS32()
+   /* -----------  start stmt grp sr0js32  ----------------*/
+
+       /* move detail data to map*/
+
+    /* format order number xxxxxxx.xx.xx*/
+  SR0JW01.SR0JWWOD = SR0JW02.SR0JWORD; /* save order for*/
+  SR0JW01.SR0JWWSB = SR0JW02.SR0JWSUB; /* line select*/
+  SR0JM020.SR0JMORD[SR0JWIX1] = SR0JW01.SR0JWFOD; /* formated order nbr*/
+  set SR0JM020.SR0JMORD[SR0JWIX1] skip, invisible;
+
+  SR0JM020.SR0JMSTY[SR0JWIX1] = SR0JW02.SR0JWSTY; /* style*/
+  SR0JM020.SR0JMCLR[SR0JWIX1] = SR0JW02.SR0JWCLR; /* color*/
+  SR0JM020.SR0JMXDM[SR0JWIX1] = SR0JW02.SR0JWXDM; /* dimension*/
+  SR0JM020.SR0JMXLC[SR0JWIX1] = SR0JW02.SR0JWXLC; /* life cycle*/
+  SR0JM020.SR0JMXQA[SR0JWIX1] = SR0JW02.SR0JWXQA; /* quality*/
+  SR0JM020.SR0JMXSD[SR0JWIX1] = SR0JW02.SR0JWXSD; /* spec diff.*/
+  SR0JM020.SR0JMXSA[SR0JWIX1] = SR0JW02.SR0JWXSA; /* shade*/
+  SR0JM020.SR0JMXUM[SR0JWIX1] = SR0JW02.SR0JWXUM; /* unit of measure*/
+  SR0JM020.SR0JMSHP[SR0JWIX1] = SR0JW02.SR0JWSHP; /* shipped for item*/
+  /* DLVRUSA START*/
+  SR0JM020.SR0JGISS[SR0JWIX1] = SR0JW02.SR0JGISS; /* GOODS ISSUE*/
+  set SR0JM020.SR0JGISS[SR0JWIX1] skip, invisible;
+  /* DLVRUSA END*/
+
+  if (SR0JW01.SR0JWDEA == "Y" /* order deallocated?*/
+   || SR0JW02.SR0JWDEA == "Y") /* item deallocated?*/
+    SR0JM020.SR0JMSEL[SR0JWIX1] = "*";
+    set SR0JM020.SR0JMSEL[SR0JWIX1] skip;
+  end
+
+   /* ----------  end stmt grp sr0js32  -------------------*/
+end // end SR0JS32
+
+// check select column
+Function SR0JS35()
+   /* -----------  start stmt grp sr0js35  ----------------*/
+
+       /* check select column*/
+       /* 1. only 's' allowed*/
+       /* 2. only one line may have select*/
+       /* 3. can't select from blank line*/
+       /* 4. if no error, move select key to srwrec*/
+
+  set SR0JM020.SR0JMSEL[SR0JWIX1] initialAttributes;
+
+  if (SR0JM020.SR0JMSEL[SR0JWIX1] == " " /* not selected*/
+   || SR0JM020.SR0JMSEL[SR0JWIX1] == "*") /* deallocated*/
+    return;
+  end
+
+
+  if (SR0JM020.SR0JMSEL[SR0JWIX1] != "S")
+    converseLib.validationFailed(95); /* SELECT VALUE MUST BE "S"*/
+    set SR0JM020.SR0JMSEL[SR0JWIX1] cursor, modified, bold;
+    return;
+  end
+
+
+    /* at this point option will always be 's'*/
+
+  if (SR0JW01.SR0JWSEL != " ") /* select option already picked*/
+    converseLib.validationFailed(96); /* CANNOT SELECT MORE THAN ONE LINE*/
+    set SR0JM020.SR0JMSEL[SR0JWIX1] cursor, modified, bold;
+    return;
+  end
+
+
+  if (SR0JM020.SR0JMORD[SR0JWIX1] == " " /* no order on line*/
+   && SR0JM020.SR0JMSTY[SR0JWIX1] == " ") /* no style*/
+    converseLib.validationFailed(97); /* NOTHING TO SELECT*/
+    set SR0JM020.SR0JMSEL[SR0JWIX1] cursor, modified, bold;
+    return;
+  end
+
+
+     /* save select key to system work record*/
+  SR0JW01.SR0JWFOD = SR0JM020.SR0JMORD[SR0JWIX1];
+                                   /* de-edit order nbr*/
+  SRWREC.SRWCUOID = SR0JW01.SR0JWWOD;
+  SRWREC.SRWNORID = SR0JW01.SR0JWWSB;
+
+  if (SR0JM020.SR0JMSTY[SR0JWIX1] == " ") /* header line?*/
+    SR0JW01.SR0JWSEL = "O"; /* select flag to order*/
+  else /* detail line*/
+    SR0JW01.SR0JWSEL = "P"; /* select flag to product*/
+    SRWREC.SRWSTYLE = SR0JM020.SR0JMSTY[SR0JWIX1];
+    SRWREC.SRWCOLOR = SR0JM020.SR0JMCLR[SR0JWIX1];
+    SRWREC.SRWDIM = SR0JM020.SR0JMXDM[SR0JWIX1];
+    SRWREC.SRWQUAL = SR0JM020.SR0JMXQA[SR0JWIX1];
+    SRWREC.SRWSPEC = SR0JM020.SR0JMXSD[SR0JWIX1];
+    SRWREC.SRWSHADE = SR0JM020.SR0JMXSA[SR0JWIX1];
+  end
+
+   /* ----------  end stmt grp sr0js35  -------------------*/
+end // end SR0JS35
+
+// check whse/schedule
+Function SR0JS37()
+   /* -----------  start stmt grp sr0js37  ----------------*/
+
+       /* check whse and schedule*/
+       /* 1. both are required*/
+       /* 2. whse must be valid*/
+       /* 3. schedule must be on file*/
+       /* 4. set new schedule flag*/
+
+  set SR0JM020.SR0JMSCH initialAttributes;
+  if (SR0JM020.SR0JMSCH == 0)
+    converseLib.validationFailed(14); /* pick schedule required*/
+    set SR0JM020.SR0JMSCH cursor, modified, bold;
+  else /* schedule nbr present*/
+    if (SR0JM020.SR0JMSCH is modified)
+      SR0JS40(); /* read batch header*/
+      if (SQLCA.VAGen_SQLCODE != 0)
+        converseLib.validationFailed(16); /* pick schedule nbr not on file*/
+        set SR0JM020.SR0JMSCH cursor, modified, bold;
+      else
+        SR0JW01.SR0JWNSC = "Y"; /* new sched. flag*/
+      end /* end if schedule found*/
+    end /* end if schedule field modified*/
+  end /* end if schedule nbr present*/
+
+
+  set SR0JM020.SR0JMXWH initialAttributes;
+  if (SR0JM020.SR0JMXWH != " ")
+    if (SR0JM020.SR0JMXWH in XWHTBL.XWHCD)
+      if (XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+        SR0JW01.XCTCD = XWHTBL.XCTCD[sysVar.arrayIndex]; /* CANA save country code*/
+      else
+        set SR0JM020.SR0JMXWH cursor, modified, bold;
+        converseLib.validationFailed(2); /* warehouse code inactive*/
+      end
+    else
+      set SR0JM020.SR0JMXWH cursor, modified, bold;
+      converseLib.validationFailed(1); /* warehouse code invalid*/
+    end
+  else
+    set SR0JM020.SR0JMXWH cursor, modified, bold;
+    converseLib.validationFailed(17); /* warehouse code required*/
+  end
+
+   /* ----------  end stmt grp sr0js37  -------------------*/
+end // end SR0JS37
+
+// read shiprec batch header
+Function SR0JS40()
+   /* ------------- start stmt grp sr0js40 ---------------*/
+
+    /* read shiprec batch hdr*/
+
+    /* build batch level key*/
+  SR1REC.XWHCD = SR0JM020.SR0JMXWH; /* whse*/
+  SR1REC.PK1PKSCH = SR0JM020.SR0JMSCH; /* schedule*/
+
+  call "IO0790" ("S ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* read dship.vsrhdr01*/
+
+  if (SQLCA.VAGen_SQLCODE != 0
+   && SQLCA.VAGen_SQLCODE != 100)
+    SR0JW01.SR0JWSQL = SQLCA.SQLCAREC; /* save error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    SQLCA.SQLCAREC = SR0JW01.SR0JWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1DBASE = "DSHIP";
+    TA1REC.TA1TBLVU = "VSRHDR01";
+    TA1REC.TA1MAP = "SR0JM020";
+    TA1REC.TA1TBLKE = " ";
+    TA1REC.TA1LOC = "SR0JS40";
+    TA1REC.TA1PGMNM = "CSP    ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+
+
+   /* -------------   end stmt grp sr0js40 ---------------*/
+end // end SR0JS40
+
+//*** RECORD=SR0JW01 ****
+// ********** order/item inq. misc fields work record *********
+// 
+// ***********************
+Record SR0JW01 type basicRecord
+  10 SR0JWIX1 SR0JWIX1 ; 
+  10 SR0JW2CH SR0JW2CH ; 
+  10 SR0JWSEL SR0JWSEL ; 
+  10 SR0JWNSC SR0JWNSC ; 
+  10 SR0JWLNM SR0JWLNM ; 
+  10 SR0JWDEA SR0JWDEA ; 
+  10 SR0JW1ST SR0JW1ST ; 
+  10 SR0JWMAX SR0JWMAX ; 
+  10 SR0JWNXT SR0JWNXT ; 
+  10 SR0JWFOD SR0JWFOD ; 
+    15 SR0JWWOD SR0JWWOD ; 
+    15 SR0JWP1 SR0JWP1 ; 
+    15 SR0JWWSB SR0JWWSB ; 
+  10 SR0JWDAT SR0JWDAT ; 
+    15 SR0JWCC SR0JWCC ; 
+    15 SR0JWYMD SR0JWYMD ; 
+  10 SR0JWHDR SR0JWHDR ; 
+  10 SR0JWDTL SR0JWDTL ; 
+  10 SR0JWSQL SR0JWSQL ; 
+  10 XCTCD XCTCD ; 
+end // end SR0JW01
+
+//*** RECORD=SR0JW02 ****
+// parameter 1 record for access to ta0050 (read/write ts).
+// contains the ts record image length and record image data.
+// ***********************
+Record SR0JW02 type basicRecord
+  10 SR0JWLTH SR0JWLTH ; 
+  10 SR0JWGRP SR0JWGRP ; 
+    15 SR0JWORD SR0JWORD ; 
+    15 SR0JWSUB SR0JWSUB ; 
+    15 SR0JWTMA SR0JWTMA ; 
+    15 SR0JWSTY SR0JWSTY ; 
+    15 SR0JWCLR SR0JWCLR ; 
+    15 SR0JWXDM SR0JWXDM ; 
+    15 SR0JWXLC SR0JWXLC ; 
+    15 SR0JWXQA SR0JWXQA ; 
+    15 SR0JWXSD SR0JWXSD ; 
+    15 SR0JWXSA SR0JWXSA ; 
+    15 SR0JWXUM SR0JWXUM ; 
+    15 SR0JWSHP SR0JWSHP ; 
+    15 SR0JWDEA SR0JWDEA ; 
+    15 SR0JGISS SR0JGISS ; 
+  10 * char(359) ; 
+end // end SR0JW02
+
+//*** RECORD=SR0JW03 ****
+// parameter 2 record for ta0050 (read/write ts).  this record
+// contains control parameters for temp storage i/o.
+// ***********************
+Record SR0JW03 type basicRecord
+  10 SR0JWAPL SR0JWAPL ; 
+  10 SR0JWRID SR0JWRID ; 
+  10 SR0JWFNC SR0JWFNC ; 
+  10 SR0JWRTN SR0JWRTN ; 
+end // end SR0JW03
+
+//*** RECORD=SR0JW04 ****
+// Working Storage to format application posting information
+// on a bad return from a call to SY2000.
+// 
+// 08/11/95  CBRINE  Initial setup.
+// ***********************
+Record SR0JW04 type basicRecord
+  10 SR0JW-WSY2000-POST-1 SR0JW-WSY2000-POST-1 ; 
+    15 SR0JW-WSY2000-GPC-CD SR0JW-WSY2000-GPC-CD ; 
+    15 SR0JW-WSY2000-DASH-1 SR0JW-WSY2000-DASH-1 ; 
+    15 SR0JW-WSY2000-STY-NBR SR0JW-WSY2000-STY-NBR ; 
+    15 SR0JW-WSY2000-DASH-2 SR0JW-WSY2000-DASH-2 ; 
+    15 SR0JW-WSY2000-COLR-CD SR0JW-WSY2000-COLR-CD ; 
+    15 SR0JW-WSY2000-DASH-3 SR0JW-WSY2000-DASH-3 ; 
+    15 SR0JW-WSY2000-DIM-CD SR0JW-WSY2000-DIM-CD ; 
+    15 SR0JW-WSY2000-DASH-4 SR0JW-WSY2000-DASH-4 ; 
+    15 SR0JW-WSY2000-PROD-REG-CD SR0JW-WSY2000-PROD-REG-CD ; 
+    15 SR0JW-WSY2000-DASH-5 SR0JW-WSY2000-DASH-5 ; 
+    15 SR0JW-WSY2000-RETURN-CD SR0JW-WSY2000-RETURN-CD ; 
+end // end SR0JW04
+
+//   deallocated flag
+DataItem SR0JGISS char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-COLR-CD char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-DASH-1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-DASH-2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-DASH-3 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-DASH-4 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-DASH-5 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-DIM-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-GPC-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-POST-1 char(22)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-PROD-REG-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-RETURN-CD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem SR0JW-WSY2000-STY-NBR char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 1st ts pointer on page
+DataItem SR0JW1ST num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// 2 char work field
+DataItem SR0JW2CH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// application id
+DataItem SR0JWAPL char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   century
+DataItem SR0JWCC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   color code
+DataItem SR0JWCLR char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work date
+DataItem SR0JWDAT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   deallocated flag
+DataItem SR0JWDEA char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// save area for detail
+DataItem SR0JWDTL char(35)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// function code
+DataItem SR0JWFNC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// formated order number
+DataItem SR0JWFOD char(12)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ts record data group
+DataItem SR0JWGRP char(37)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// save area for header
+DataItem SR0JWHDR char(35)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work index 1
+DataItem SR0JWIX1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// new line modified flag
+DataItem SR0JWLNM char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// data length
+DataItem SR0JWLTH num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// high used ts pointer
+DataItem SR0JWMAX num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// new schedule flag
+DataItem SR0JWNSC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// next temp storage pointer
+DataItem SR0JWNXT num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   customer order
+DataItem SR0JWORD int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   .
+DataItem SR0JWP1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// relative rec id
+DataItem SR0JWRID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// return code
+DataItem SR0JWRTN num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// select flag
+DataItem SR0JWSEL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   items shipped
+DataItem SR0JWSHP int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// save area for sqlca
+DataItem SR0JWSQL char(136)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   style code
+DataItem SR0JWSTY char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   nike order
+DataItem SR0JWSUB smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   times allocated
+DataItem SR0JWTMA smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   customer order
+DataItem SR0JWWOD num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   nike order
+DataItem SR0JWWSB num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   dimension
+DataItem SR0JWXDM char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   life cycle
+DataItem SR0JWXLC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   quality code
+DataItem SR0JWXQA char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   shade code
+DataItem SR0JWXSA char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   spec diff code
+DataItem SR0JWXSD char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   unit of measure code
+DataItem SR0JWXUM char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   year/month/day
+DataItem SR0JWYMD num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

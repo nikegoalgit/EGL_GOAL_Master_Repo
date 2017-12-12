@@ -1,0 +1,3888 @@
+package pk0z;
+import corpcom1.*;
+import corpcom2.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import ep.common.*;
+import fy.common.*;
+import in1.common.*;
+import ku.common.*;
+import op.common.*;
+import pc.common.*;
+import pg.common.*;
+import pk.common.*;
+import pw.common.*;
+import sm.common.*;
+import sp.common.*;
+import sr.common.*;
+import sy.common.*;
+import ta.common.*;
+import tf.common.*;
+import ts.common.*;
+import vv.common.*;
+import ww.common.*;
+//*** PROGRAM=PK0Z ****
+// This application displays the Product/Sales Program Inquiry.
+// 
+// There are two ways that this application may be entered:
+// 1) From a menu, PF key or FAST PATH with no initial key.
+// 2) Return from Order Inquiry with an array of order keys.
+// 
+// An initial display is provided to enter a product number or
+// sales program.
+// 
+// Orders are selected by product or program from both the
+// PICKING Order Pool and the SHIP/REC Order tables.  The
+// orders are merged into order number sequence and stored in
+// temporary storage, one display page per queue record.
+// 
+// The records are retrieved from temporary storage one at a
+// time, for display to the user.  The user may page forward
+// and backward, to view the orders that were selected.
+// 
+// The user may exit to any allowed application via PF key or
+// FAST PATH, at any time.
+// 
+// If displayed orders are selected for inquiry, the keys are
+// formatted into an array and control is passed to PK0B, the
+// Order Inquiry application.  When the user exits via PF3,
+// control is returned to this application.  The screen that
+// was displayed when the orders were selected is redisplayed,
+// with the viewed orders marked as viewed.
+// 
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+//          06/12/87  SPOPA   New application.
+// FIX      09/01/88  SPOPA   Reset temporary storage indicator
+//                            whenever storage is purged.
+//          11/29/88  JWOOD   ADDED NONCSP OPTION TO CALLS
+//          11/29/88  JWOOD   ADDED XSSEGTR LOGIC
+//          07-21-89  jcampb  changed xfer from pk0i to pk09
+//                            added pwirec for io1720
+//          08-01-89  jcampb  added code to pk0z160 to abort
+//                            attempted reads if rtn > 0
+// 1135    10-02-90  fwalke  change code to transfer header
+//                           detail to pk0c when pk key is
+//                          pressed and item was selected.
+// tblchg  03/06/91  SBEAUC  Change ref of sy2prdes to sy1sstnm
+//         11/20/91  SBEAUC  PF3 NOW EXITS TO PK0J
+// tblchg  06/25/92  MWALTO  Chg pk0z133 to handle renames of
+//                           xsdcd to pc2inset & xsacd to xegcd
+// CANADA  08/11/95  CBRINE  Added XCTCD to PKWREC
+// RETROFT 03/25/98  JCAREY  Added code for the warehouse 51
+//                           interface to DCMS package.
+// RETROFT 10/22/98  OVAZQU  Added order status to map.
+// RETROFT 12/14/98  KDENNE  Added mirror pool status of 'DA'
+//                           for 'de-allocated' orders.
+// *********************
+Program PK0Z type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "PK00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  EPAREC EPAREC; // record
+  EPIREC EPIREC; // record
+  PK0ZW01 PK0ZW01; // record
+  PK0ZW02 PK0ZW02; // record
+  PK0ZW03 PK0ZW03; // record
+  PK4REC PK4REC; // record
+  PKNREC PKNREC; // record
+  PKPREC PKPREC; // record
+  PKWREC PKWREC; // record
+  PKYREC PKYREC; // record
+  PWIREC PWIREC; // record
+  SP1REC SP1REC; // record
+  SQLCA SQLCA; // record
+  SR1REC SR1REC; // record
+  SR2REC SR2REC; // record
+  SRAREC SRAREC; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  VMPOLH01 VMPOLH01; // record
+  VMPOLHJ1 VMPOLHJ1; // record
+  VMPOLI01 VMPOLI01; // record
+  WSY2000 WSY2000; // record
+  XSPKW01 XSPKW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use PK0ZM.PK0ZM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPPK001: XPPK001();
+     /* ------------------------------------------------------------*/
+     /* Initialize working storage areas.*/
+     /* If an inquiry keys array exists, see if it was orders from*/
+     /* this application that were selected for inquiry.  Save the*/
+     /* information so that the display may be reestablished.*/
+     /* ------------------------------------------------------------*/
+
+    set PK0ZW01 empty; /* Initialize working storage*/
+    set PK0ZW02 empty; /* Initialize display storage*/
+    set PK0ZW03 empty; /* Initialize temporary storage*/
+
+    if (COMMAREA.CAFROMAP != COMMAREA.CACURRAP)
+
+      if (COMMAREA.CAFRMSYS == "PK"
+       || COMMAREA.CAFRMSYS == "PW")
+        EPAREC.EPAARRAY = COMMAREA.CA-USER-WORKAREA-2K-B;
+      else
+        set EPAREC empty;
+      end
+
+    end
+
+    if (PKWREC.PKWINDEX > 0) /* Inquiry keys array provided*/
+
+      if (PKWREC.PKWFRMAP[PKWINDEX] == "PK0Z") /* Orders from this application*/
+
+        PK0ZW02.PK0ZWKEY = PKWREC.PKWUSERA[PKWINDEX]; /* Current key*/
+        PKYREC.PKWARRAY = PKWREC.PKWARRAY[PKWINDEX];
+                                     /* Format key array*/
+        if (PK0ZW02.DCMS-SEL-FL == "Y")
+          EPAREC.EPAARRAY = COMMAREA.CA-USER-WORKAREA-2K-B;
+        end
+        PKWREC.XWHCD = PKYREC.XWHCD; /* Restore warehouse code*/
+        PKWREC.XWHABRV = PKYREC.XWHABRV; /* and warehouse abbreviation*/
+        converseLib.validationFailed(0); /* Clear any previous warehouse error*/
+
+        PK0ZW01.PK0ZWSWF = "Y";
+                                     /* Product or program was entered*/
+        PK0ZW01.PK0ZWSWR = "Y"; /* Indicate return from inquiry*/
+
+        PKWREC.PKWSLECT[PKWINDEX] = " "; /* Clear inquiry selections*/
+
+        PKWREC.PKWINDEX = PKWREC.PKWINDEX - 1; /* Decrement inquiry index*/
+
+      end
+
+    end
+
+    PK0ZW01.XWHCD = PKWREC.XWHCD; /* Initial warehouse code*/
+    PK0ZW01.XWHABRV = PKWREC.XWHABRV; /* and warehouse abbreviation*/
+
+    goto PK0Z001; /* Converse Product/Sales Program*/
+                                     /* Inquiry*/
+
+
+    PK0Z001: PK0Z001();
+    goto PK0Z001; /* Converse Product/Sales Program*/
+                                     /* Inquiry*/
+
+
+  end // end main
+end // end PK0Z
+
+// Select Count by Sales Program
+Function PK0Z-VMPOLH01-SC()
+   /* --------------------------------------------------------------*/
+   /* Select COUNT by Sales Program from teh Picking Mirror Order*/
+   /* Pool. If not found, no orders exist on the Mirror Pool*/
+   /* Database. If any error, indicate a system error.*/
+   /* --------------------------------------------------------------*/
+
+  set EPIREC empty;
+  set VMPOLH01 empty;
+
+  VMPOLH01.XWH-WHSE-CD = PK0ZW01.XWHCD;
+  VMPOLH01.SP-SPGM-ID = PK0ZW02.SP1ID;
+
+  EPIREC.EPI-DCMS-ORD-STAT-CD1 = "A";
+  EPIREC.EPI-DCMS-ORD-STAT-CD2 = "P";
+  EPIREC.EPI-DCMS-ORD-STAT-CD3 = "R";
+  EPIREC.EPI-DCMS-ORD-STAT-CD4 = "S";
+
+  EPIREC.EPI-IO-TASK = "T3";
+  call "VMPOLH01" (EPIREC, SQLCA, VMPOLH01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* No order header was found*/
+
+    EPIREC.EPI-PK-ORD-CNT = 0;
+    return;
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+
+    if (SQLCA.VAGen_SQLCODE == -911)
+
+      converseLib.validationFailed(28);
+      TA1REC.TA1FUNC = "POST";
+
+    else
+
+      converseLib.validationFailed(29);
+      TA1REC.TA1FUNC = "RETN";
+
+    end
+
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1PGMNM = "PK0Z-VMPOLH01-SC";
+    TA1REC.TA1LOC = "SELECT COUNT FROM MIRROR POOL";
+    TA1REC.TA1MAP = "PK0ZM001";
+    TA1REC.TA1DBASE = "DPICK  ";
+    TA1REC.TA1TBLVU = "VMPOLH01";
+    TA1REC.TA1TBLKE = VMPOLH01-KEY;
+
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+
+    PK0ZM001.XXXERRID = "PK0Z130";
+    return;
+
+  end
+
+end // end PK0Z-VMPOLH01-SC
+
+// Select Count by Product
+Function PK0Z-VMPOLI01-SC()
+   /* ----------------------------------------------------------*/
+   /* Select COUNT by Product from the Picking Mirror Order*/
+   /* Pool. If not found, no orders exist on the Mirror Pool*/
+   /* Database. If any error, indicate a system error.*/
+   /* ----------------------------------------------------------*/
+
+  set EPIREC empty;
+  set VMPOLI01 empty;
+
+  VMPOLI01.XWH-WHSE-CD = PK0ZW01.XWHCD; /* Warehouse*/
+  VMPOLI01.XGP-GPC-CD = PK0ZW02.XGPCD; /* Gpc*/
+  VMPOLI01.SY-STY-NBR = PK0ZW02.SY1STNBR; /* Style*/
+  VMPOLI01.SY-COLR-CD-ID = PK0ZW02.SY2CLRID; /* Color*/
+  VMPOLI01.XDM-DIM-CD = PK0ZW02.XDMCD; /* Dimension*/
+
+  if (PK0ZW02.XQACD > " ") /* Quality*/
+    VMPOLI01.XQA-QUAL-CD = PK0ZW02.XQACD;
+  else
+    VMPOLI01.XQA-QUAL-CD = "*";
+  end
+
+  if (PK0ZW02.XSDCD > " ")
+    VMPOLI01.PC-CU-IN-SEG-CD = PK0ZW02.XSDCD;
+  else
+    VMPOLI01.PC-CU-IN-SEG-CD = "*";
+  end
+
+  VMPOLI01.XEG-ENGR-DIFF-CD = "*"; /* Shading diff*/
+
+  if (PK0ZW02.XPGCD > " ")
+    VMPOLI01.XPG-PKG-TYP-CD = PK0ZW02.XPGCD;
+  else
+    VMPOLI01.XPG-PKG-TYP-CD = "*"; /* Packaging type*/
+  end
+
+  if (PK0ZW02.XUMCD > " ") /* Unit of measure*/
+    VMPOLI01.XUM-UOM-CD = PK0ZW02.XUMCD;
+  else
+    VMPOLI01.XUM-UOM-CD = "*";
+  end
+
+  if (PK0ZW02.XOWCD > " ") /* Owner group*/
+    VMPOLI01.XOW-OWN-GRP-CD = PK0ZW02.XOWCD;
+  else
+    VMPOLI01.XOW-OWN-GRP-CD = "*";
+  end
+
+  EPIREC.EPI-IO-TASK = "T1";
+  try
+    call "VMPOLI01" (EPIREC, SQLCA, VMPOLI01) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* No order items found*/
+
+    EPIREC.EPI-PK-ORD-CNT = 0;
+    return;
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+
+    if (SQLCA.VAGen_SQLCODE == -911)
+
+      converseLib.validationFailed(28);
+      TA1REC.TA1FUNC = "POST";
+
+    else
+
+      converseLib.validationFailed(29);
+      TA1REC.TA1FUNC = "RETN";
+
+    end
+
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1PGMNM = "PK0Z-VMPOLI01-SC";
+    TA1REC.TA1LOC = "SELECT COUNT FROM MIRROR POOL ITEM";
+    TA1REC.TA1MAP = "PK0ZM001";
+    TA1REC.TA1DBASE = "DPICK  ";
+    TA1REC.TA1TBLVU = "VMPOLI01";
+    TA1REC.TA1TBLKE = VMPOLI01-KEY;
+
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+
+    PK0ZM001.XXXERRID = "PK0Z130";
+    return;
+
+  end
+
+end // end PK0Z-VMPOLI01-SC
+
+// Product/Sales Program Inquiry
+Function PK0Z001()
+   /* ------------------------------------------------------------*/
+   /* Format map output area for display of map.*/
+   /* ------------------------------------------------------------*/
+
+  PK0Z100(); /* Format map output area*/
+
+  PK0ZM001.XXXRVNBR = "01"; /* Application revision number*/
+
+  converse PK0ZM001 ;
+
+   /* ------------------------------------------------------------*/
+   /* Check the attention identifier used to respond.*/
+   /* Reset highlighted fields to normal intensity.*/
+   /* Verify the data that was entered.*/
+   /* Process input request if not a cancel and no errors found.*/
+   /* ------------------------------------------------------------*/
+
+  PK0Z200(); /* Check attention identifier*/
+
+  PK0Z300(); /* Reset fields to normal intensity*/
+
+  PK0Z400(); /* Verify the entered data*/
+
+  if (converseVar.eventKey not pa2 /* Not a cancel request*/
+   && converseVar.validationMsgNum == 0) /* and no errors were found*/
+    PK0Z500(); /* Process valid input request*/
+  end
+
+
+end // end PK0Z001
+
+// Format the output display
+Function PK0Z100()
+   /* ------------------------------------------------------------*/
+   /* If first time through or no errors, format the map heading.*/
+   /* If a product or program number was entered, obtain the*/
+   /* product/program and order data to format in the map.*/
+   /* Highlight warehouse code if warehouse not valid.*/
+   /* Indicate sound audible alarm for any error message.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZW01.PK0ZWSW1 == " " /* First time through*/
+   || converseVar.validationMsgNum == 0) /* or no error messages*/
+
+    PK0Z110(); /* Format map heading area*/
+
+    if (PK0ZW01.PK0ZWSW1 == " " /* First time through*/
+     || converseVar.validationMsgNum == 0) /* or no errors were found*/
+
+      if (PK0ZW01.PK0ZWSWF == "Y") /* Product or program was entered*/
+
+        PK0Z120(); /* Verify the key data fields*/
+
+        if (converseVar.validationMsgNum == 0) /* No errors were found*/
+
+          if (converseVar.validationMsgNum == 0) /* No errors were found*/
+            PK0Z120(); /* Obtain product or program data*/
+          end
+
+          if (converseVar.validationMsgNum == 0) /* No errors were found*/
+            PK0Z130(); /* Select order sets*/
+          end
+
+          if (converseVar.validationMsgNum == 0) /* No errors were found*/
+
+            PK0ZW01.PK0ZWSWP = " "; /* Initialize picking orders eof*/
+            PK0ZW01.PK0ZWSWQ = " "; /* Initialize picking order read*/
+            PK0ZW01.PK0ZWSWS = " ";
+            PK0ZW01.PK0ZWSWM = " ";
+            PK0ZW01.PK0ZWSWN = " ";
+
+                                   /* Initialize shipping orders eof*/
+            PK0ZW01.PK0ZWSWT = " ";
+                                   /* Initialize shipping order read*/
+
+            set PK0ZW03 empty;
+                                   /* Clear temporary storage record*/
+            PK0ZW01.PK0ZWIXM = 1; /* Reset display line number*/
+
+            if (PK0ZW01.XWHCD == "51") /* If warehouse 51*/
+              PK0Z14A(); /* Initialize reads*/
+              while (PK0ZW01.PK0ZWSWP == " " /* until picking orders eof*/
+               || PK0ZW01.PK0ZWSWS == " " /* and shipping orders eof*/
+               || PK0ZW01.PK0ZWSWM == " ") /* and mirror orders eof*/
+                PK0Z14B(); /* Merge order sets and save*/
+              end
+            else
+              while (PK0ZW01.PK0ZWSWP == " " /* Until picking orders eof*/
+               || PK0ZW01.PK0ZWSWS == " ") /* and shipping orders eof*/
+                PK0Z140(); /* Merge order sets and save*/
+              end
+            end
+
+          end
+
+          if (converseVar.validationMsgNum == 0) /* No errors were found*/
+            PK0Z150(); /* Close order sets*/
+          end
+
+          if (converseVar.validationMsgNum == 0) /* No errors were found*/
+            PK0ZW01.PK0ZWSWF = "F"; /* Indicate display formatted*/
+          end
+
+        end
+
+      end
+
+    end
+
+    if (PK0ZW01.PK0ZWSWF != " ") /* Product or program was entered*/
+      PK0Z160(); /* Format product and order data*/
+    end
+
+  end
+
+  if (converseVar.validationMsgNum != 0) /* Error message to display*/
+
+    if (PKWREC.XWHABRV == " ") /* Warehouse missing or invalid*/
+
+      set PK0ZM001.XWHCD cursor, modified, bold; /* Highlight warehouse*/
+      PK0ZM001.XWHABRV = " "; /* Clear abbreviation*/
+      PK0ZM001.XXXERRID = "PK0Z100 "; /* Error location*/
+
+    end
+
+    set PK0ZM001 alarm; /* Indicate sound alarm*/
+
+  end
+
+  PK0ZW01.PK0ZWSW1 = "N"; /* Set first time switch*/
+
+
+end // end PK0Z100
+
+// Format the map heading
+Function PK0Z110()
+   /* ------------------------------------------------------------*/
+   /* Format the map heading.*/
+   /* ------------------------------------------------------------*/
+
+  set PK0ZM001 initial; /* Clear map output area*/
+  set PK4REC empty; /* Pool header record*/
+  set PKPREC empty; /* Pool header record*/
+  set PKNREC empty; /* Product style record*/
+  set SP1REC empty; /* Sales program record*/
+  set SR2REC empty; /* Ship/Rec header record*/
+  set SRAREC empty; /* Ship/Rec header record*/
+  set SQLCA empty; /* SQL communication area*/
+  set TA1REC empty; /* Error diagnosis parameters*/
+  set TA5REC empty; /* Temporary storage parameters*/
+  set VMPOLHJ1 empty; /* Mirror pool header/item join*/
+  set EPIREC empty; /* Mirror pool iomod option rcd*/
+
+  if (PK0ZW01.XWHCD == "51") /* Memphis Apparel warehouse*/
+    PK0ZM001.PK0ZM-SCHED-ID-LIT1 = "MANIFEST";
+    PK0ZM001.PK0ZM-SCHED-ID-LIT2 = " ID  ";
+    PK0ZM001.PK0ZM-ORD-STAT-HLD-LIT = " ST HL";
+  else
+    PK0ZM001.PK0ZM-SCHED-ID-LIT1 = "        ";
+    PK0ZM001.PK0ZM-SCHED-ID-LIT2 = "SCHED";
+    PK0ZM001.PK0ZM-ORD-STAT-HLD-LIT = "  HOLD";
+  end
+
+  PK0ZM001.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+
+  PK0ZM001.XWHCD = PK0ZW01.XWHCD; /* Warehouse code*/
+  PK0ZM001.XWHABRV = PK0ZW01.XWHABRV; /* Warehouse abbreviation*/
+
+  if (COMMAREA.CAITEM > " ") /* Application data exists*/
+
+    PK0ZM001.CAITEM = COMMAREA.CAITEM; /* Application data*/
+    set PK0ZM001.CAITEM modified; /* Set MDT on*/
+    COMMAREA.CAITEM = " "; /* Clear application data*/
+
+  end
+
+
+end // end PK0Z110
+
+// Obtain product / sales program
+Function PK0Z120()
+   /* ------------------------------------------------------------*/
+   /* If a sales program was entered, obtain the sales program*/
+   /* description.  Otherwise, obtain the product description.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZW02.SP1ID <= " ") /* Sales program not entered*/
+
+    PK0Z121(); /* Obtain product description*/
+  else
+    PK0Z122(); /* Obtain sales program description*/
+
+  end
+
+
+end // end PK0Z120
+
+// Obtain product description
+Function PK0Z121()
+   /* ------------------------------------------------------------*/
+   /* Obtain the Product Description Table row for the specified*/
+   /* product number.  If not found or not available, return an*/
+   /* error message to the user.  If any other error, indicate a*/
+   /* system error.  Format the description in the map.*/
+   /* ------------------------------------------------------------*/
+
+  PKNREC.XGPCD = PK0ZW02.XGPCD; /* GPC*/
+  PKNREC.SY1STNBR = PK0ZW02.SY1STNBR; /* Style*/
+  PKNREC.SY2CLRID = PK0ZW02.SY2CLRID; /* Color*/
+  PKNREC.XDMCD = PK0ZW02.XDMCD; /* Dimension*/
+
+  call "IO1810" ("S ", SQLCA, PKNREC) {isNoRefresh = yes, isExternal = yes}; /* Select table row*/
+
+  /* GET CANADA*/
+
+  if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+  )                           
+      /* CANADA 08/11/95*/
+
+    if (PKWREC.XCTCD == "CANA")
+
+        /* format ta1rec in case of bad return code from call to SY2000*/
+
+      TA1REC.TA1PGMNM = "PK0Z"; /* CANA program name*/
+      TA1REC.TA1LOC = "PK0Z121"; /* CANA sgrp name*/
+
+      XSPK-CALL-SY2000(); /* CANA call SY2000 to get*/
+                                /* product region record*/
+      if (WSY2000.WSY2000-RETURN-CODE == 0) /* CANA row found*/
+        /* next sentence*/
+      else
+        if (WSY2000.WSY2000-RETURN-CODE == 02) /* CANA row not found*/
+          set PK0ZM001.XGPCD cursor, modified, bold; /* Highlight GPC*/
+          set PK0ZM001.SY1STNBR modified, bold; /* Highlight style*/
+          set PK0ZM001.SY2CLRID modified, bold; /* Highlight color*/
+          set PK0ZM001.XDMCD modified, bold; /* Highlight dimension*/
+
+          converseLib.validationFailed(498); /* Indicate not on file*/
+          PK0ZM001.XXXERRID = "PK0Z121 "; /* Error location*/
+          return;
+        else
+          if (WSY2000.WSY2000-RETURN-CODE == 98) /* CANA database busy*/
+            converseLib.validationFailed(28); /* Indicate not available*/
+            TA1REC.TA1FUNC = "POST"; /* Termination function*/
+          else
+            converseLib.validationFailed(29); /* Indicate system error*/
+            TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+          end
+          TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+          TA1REC.TA1PGMNM = "PK0Z121 "; /* Process name*/
+          TA1REC.TA1LOC = "OBTAIN PRODUCT STYLE TABLE ROW";
+          TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+          TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+          TA1REC.TA1TBLVU = "VPKSTY01"; /* Table view name*/
+          TA1REC.TA1TBLKE = PKNREC.PKNKEY; /* Table key*/
+
+                                           /* Error diagnosis routine*/
+          call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+
+          PK0ZM001.XXXERRID = "PK0Z121"; /* Error location*/
+          return; /* Return to previous process*/
+
+        end
+      end
+    end
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+    set PK0ZM001.XGPCD cursor, modified, bold; /* Highlight GPC*/
+    set PK0ZM001.SY1STNBR modified, bold; /* Highlight style*/
+    set PK0ZM001.SY2CLRID modified, bold; /* Highlight color*/
+    set PK0ZM001.XDMCD modified, bold; /* Highlight dimension*/
+
+    converseLib.validationFailed(45); /* Indicate not on file*/
+    PK0ZM001.XXXERRID = "PK0Z121 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+
+      converseLib.validationFailed(28); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+    else
+
+      converseLib.validationFailed(29); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z121 "; /* Process name*/
+    TA1REC.TA1LOC = "OBTAIN PRODUCT STYLE TABLE ROW";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VPKSTY01"; /* Table view name*/
+    TA1REC.TA1TBLKE = PKNREC.PKNKEY; /* Table key*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z121"; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  PK0ZW02.SP1NM = PKNREC.SY1SSTNM; /* Product description*/
+
+
+end // end PK0Z121
+
+// Obtain program description
+Function PK0Z122()
+   /* ------------------------------------------------------------*/
+   /* Obtain the Sales Program Description Table row for the*/
+   /* specified program number.  If not found or not available,*/
+   /* return an error message to the user.  If any other error,*/
+   /* indicate system error.  Format the description in the map.*/
+   /* ------------------------------------------------------------*/
+
+  SP1REC.SP1ID = PK0ZW02.SP1ID; /* Program identification*/
+
+  call "IO0070" ("S ", SQLCA, SP1REC) {isNoRefresh = yes, isExternal = yes}; /* Select table row*/
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+
+    set PK0ZM001.SP1ID cursor, modified, bold; /* Highlight program*/
+
+    converseLib.validationFailed(46); /* Indicate not on file*/
+    PK0ZM001.XXXERRID = "PK0Z122 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+
+      converseLib.validationFailed(28); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+    else
+
+      converseLib.validationFailed(29); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z122 "; /* Process name*/
+    TA1REC.TA1LOC = "OBTAIN SALES PROGRAM TABLE ROW";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DSPGM   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSPGM001"; /* Table view name*/
+    TA1REC.TA1TBLKE = SP1REC.SP1KEY; /* Table key*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z122"; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  PK0ZW02.SP1NM = SP1REC.SP1NM; /* Program description*/
+
+
+end // end PK0Z122
+
+// Obtain requested order data
+Function PK0Z130()
+   /* ----------------------------------------------------------*/
+   /* NOTE: Once the Apparel Retrofit process is fully converted,*/
+   /* the following logic will need to be changed to always*/
+   /* select from the Mirror Order Pool only. The select against*/
+   /* the Pick Pool database will only be for ALL OTHER*/
+   /* warehouses.*/
+   /* ----------------------------------------------------------*/
+
+  PK0ZW01.PK0ZW-DCMS-SEL-FL = "N"; /* Reinit select flag*/
+  if (PK0ZW01.XWHCD == "51")
+    if (PK0ZW02.SP1ID <= " ")
+      PK0Z-VMPOLI01-SC(); /* Select Count by product*/
+      if (EPIREC.EPI-PK-ORD-CNT > 0)
+        PK0ZW01.PK0ZW-DCMS-SEL-FL = "Y";
+        PK0Z135(); /* Select by product*/
+      end
+    else
+      PK0Z-VMPOLH01-SC(); /* Select Count by sales program*/
+      if (EPIREC.EPI-PK-ORD-CNT > 0)
+        PK0ZW01.PK0ZW-DCMS-SEL-FL = "Y";
+        PK0Z136(); /* Select by sales program*/
+      end
+    end
+  end
+
+   /* NOTE: When the Apparel Retrofit process is fully converted*/
+   /* the folloiwng IF statement will only be valid for ALL OTHER*/
+   /* warehouses. Warehouse '51' should be excluded.*/
+
+   /* ------------------------------------------------------------*/
+   /* Select the orders to be displayed from the Picking Order*/
+   /* Pool Header Table.  If no errors, select the orders to be*/
+   /* displayed from the Shipping/Receiving Order Table.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZW02.SP1ID <= " ") /* Sales program not entered*/
+
+    PK0Z131(); /* Select picking orders by product*/
+  else
+    PK0Z132(); /* Select picking orders by program*/
+
+  end
+
+  if (converseVar.validationMsgNum == 0) /* No errors were found*/
+
+    if (PK0ZW02.SP1ID <= " ") /* Sales program not entered*/
+
+      PK0Z133(); /* Select shipped orders by product*/
+    else
+      PK0Z134(); /* Select shipped orders by program*/
+
+    end
+
+  end
+
+
+end // end PK0Z130
+
+// Select picking by product
+Function PK0Z131()
+   /* ------------------------------------------------------------*/
+   /* Select the set of orders for the specified product number*/
+   /* and warehouse from the Picking Order Pool Header Table.*/
+   /* If not available, return an error message to the user.*/
+   /* If any other, indicate system error.*/
+   /* ------------------------------------------------------------*/
+
+  PKPREC.XWHCD = PK0ZW01.XWHCD; /* Warehouse code*/
+  PKPREC.XGPCD = PK0ZW02.XGPCD; /* GPC code*/
+  PKPREC.SY1STNBR = PK0ZW02.SY1STNBR; /* Style number*/
+  PKPREC.SY2CLRID = PK0ZW02.SY2CLRID; /* Color identification*/
+  PKPREC.XDMCD = PK0ZW02.XDMCD; /* Dimension code*/
+
+  if (PK0ZW02.XQACD > " ") /* Quality was entered*/
+    PKPREC.XQACD = PK0ZW02.XQACD; /* Quality code*/
+  else
+    PKPREC.XQACD = "*"; /* Select all qualities*/
+  end
+
+  if (PK0ZW02.XSDCD > " ") /* Specification was entered*/
+    PKPREC.PC2INSEG = PK0ZW02.XSDCD; /* Specification code*/
+  else
+    PKPREC.PC2INSEG = "*"; /* Select all specifications*/
+  end
+
+  PKPREC.XEGCD = "*"; /* Select all shades*/
+
+  if (PK0ZW02.XPGCD > " ") /* Package type was entered*/
+    PKPREC.XPGCD = PK0ZW02.XPGCD; /* Package type code*/
+  else
+    PKPREC.XPGCD = "*"; /* Select all package types*/
+  end
+
+  if (PK0ZW02.XUMCD > " ") /* Unit of measure was entered*/
+    PKPREC.XUMCD = PK0ZW02.XUMCD; /* Unit of measure code*/
+  else
+    PKPREC.XUMCD = "*"; /* Select all units of measure*/
+  end
+
+  if (PK0ZW02.XOWCD > " ") /* Owner group was entered*/
+    PKPREC.XOWCD = PK0ZW02.XOWCD; /* Owner group code*/
+  else
+    PKPREC.XOWCD = "*"; /* Select all owner groups*/
+  end
+
+  call "IO1870" ("S1", SQLCA, PKPREC) {isNoRefresh = yes, isExternal = yes}; /* Select table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+
+      converseLib.validationFailed(28); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+    else
+
+      converseLib.validationFailed(29); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z131 "; /* Process name*/
+    TA1REC.TA1LOC = "SELECT ORDER POOL SET BY PRODUCT";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VPOOLH02"; /* Table view name*/
+    TA1REC.TA1TBLKE = PKPREC.PKPKEY; /* Table key*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z131 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PK0Z131
+
+// Select picking by program
+Function PK0Z132()
+   /* ------------------------------------------------------------*/
+   /* Select the set of orders for the specified program number*/
+   /* and warehouse from the Picking Order Pool Header Table.*/
+   /* If not available, return an error message to the user.*/
+   /* If any other, indicate system error.*/
+   /* ------------------------------------------------------------*/
+
+  PK4REC.XWHCD = PK0ZW01.XWHCD; /* Warehouse code*/
+  PK4REC.SP1ID = PK0ZW02.SP1ID; /* Sales program*/
+  PWIREC.PWIFUNC = "S1";
+
+  call "IO1720" (PWIREC, SQLCA, PK4REC) {isNoRefresh = yes, isExternal = yes}; /* Select table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+
+      converseLib.validationFailed(28); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+    else
+
+      converseLib.validationFailed(29); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z132 "; /* Process name*/
+    TA1REC.TA1LOC = "SELECT ORDER POOL SET BY PROGRAM";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VPOOLH01"; /* Table view name*/
+    TA1REC.TA1TBLKE = PK4REC.PK4GROUP; /* Table key*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z132 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PK0Z132
+
+// Select shipping by product
+Function PK0Z133()
+   /* ------------------------------------------------------------*/
+   /* Select the set of orders for the specified product number*/
+   /* and warehouse from the Shipping/Receiving Order Table.*/
+   /* If not available, return an error message to the user.*/
+   /* If any other, indicate system error.*/
+   /* ------------------------------------------------------------*/
+
+  SRAREC.XWHCD = PK0ZW01.XWHCD; /* Warehouse code*/
+  SRAREC.XGPCD = PK0ZW02.XGPCD; /* GPC code*/
+  SRAREC.SY1STNBR = PK0ZW02.SY1STNBR; /* Style number*/
+  SRAREC.SY2CLRID = PK0ZW02.SY2CLRID; /* Color identification*/
+  SRAREC.XDMCD = PK0ZW02.XDMCD; /* Dimension code*/
+
+  if (PK0ZW02.XQACD > " ") /* Quality was entered*/
+    SRAREC.XQACD = PK0ZW02.XQACD; /* Quality code*/
+  else
+    SRAREC.XQACD = "*"; /* Select all qualities*/
+  end
+
+  if (PK0ZW02.XSDCD > " ") /* Specification was entered*/
+    SRAREC.PC2INSEG = PK0ZW02.XSDCD; /* Specification code*/
+  else
+    SRAREC.PC2INSEG = "*"; /* Select all specifications*/
+  end
+
+  SRAREC.XEGCD = "*"; /* Select all shades*/
+
+  if (PK0ZW02.XPGCD > " ") /* Package type was entered*/
+    SRAREC.XPGCD = PK0ZW02.XPGCD; /* Package type code*/
+  else
+    SRAREC.XPGCD = "*"; /* Select all package types*/
+  end
+
+  if (PK0ZW02.XUMCD > " ") /* Unit of measure was entered*/
+    SRAREC.XUMCD = PK0ZW02.XUMCD; /* Unit of measure code*/
+  else
+    SRAREC.XUMCD = "*"; /* Select all units of measure*/
+  end
+
+  if (PK0ZW02.XOWCD > " ") /* Owner group was entered*/
+    SRAREC.XOWCD = PK0ZW02.XOWCD; /* Owner group code*/
+  else
+    SRAREC.XOWCD = "*"; /* Select all owner groups*/
+  end
+
+  call "IO2050" ("S1", SQLCA, SRAREC) {isNoRefresh = yes, isExternal = yes}; /* Select table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+
+      converseLib.validationFailed(28); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+    else
+
+      converseLib.validationFailed(29); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z133 "; /* Process name*/
+    TA1REC.TA1LOC = "SELECT SHIP/REC SET BY PRODUCT";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSRORD02"; /* Table view name*/
+    TA1REC.TA1TBLKE = SRAREC.SRAKEY; /* Table key*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z133 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PK0Z133
+
+// Select shipping by program
+Function PK0Z134()
+   /* ------------------------------------------------------------*/
+   /* Select the set of orders for the specified program number*/
+   /* and warehouse from the Shipping/Receiving Order Table.*/
+   /* If not available, return an error message to the user.*/
+   /* If any other, indicate system error.*/
+   /* ------------------------------------------------------------*/
+
+  SR2REC.XWHCD = PK0ZW01.XWHCD; /* Warehouse code*/
+  SR2REC.SP1ID = PK0ZW02.SP1ID; /* Sales program*/
+
+  call "IO0800" ("S4", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* Select table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+
+      converseLib.validationFailed(28); /* Indicate not available*/
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+
+    else
+
+      converseLib.validationFailed(29); /* Indicate system error*/
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    end
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z134 "; /* Process name*/
+    TA1REC.TA1LOC = "SELECT SHIP/REC SET BY PROGRAM";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSRORD01"; /* Table view name*/
+    TA1REC.TA1TBLKE = SR2REC.SR2GRP; /* Table key*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z134 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PK0Z134
+
+// Select by Product-Mirror Pool
+Function PK0Z135()
+   /* ---------------------------------------------------------------*/
+   /* Select by Product from Mirror Pick Pool*/
+   /* ---------------------------------------------------------------*/
+
+  set EPIREC empty;
+  set VMPOLHJ1 empty;
+
+  VMPOLHJ1.XWH-WHSE-CD = PK0ZW01.XWHCD; /* Warehouse*/
+  VMPOLHJ1.XGP-GPC-CD = PK0ZW02.XGPCD; /* General Product Code*/
+  VMPOLHJ1.SY-STY-NBR = PK0ZW02.SY1STNBR; /* Style*/
+  VMPOLHJ1.SY-COLR-CD-ID = PK0ZW02.SY2CLRID; /* Color*/
+  VMPOLHJ1.XDM-DIM-CD = PK0ZW02.XDMCD; /* Dimension*/
+
+  if (PK0ZW02.XQACD > " ") /* Quality Code*/
+    VMPOLHJ1.XQA-QUAL-CD = PK0ZW02.XQACD;
+  else
+    VMPOLHJ1.XQA-QUAL-CD = "*";
+  end
+
+  if (PK0ZW02.XSDCD > " ")
+    VMPOLHJ1.PC-CU-IN-SEG-CD = PK0ZW02.XSDCD;
+  else
+    VMPOLHJ1.PC-CU-IN-SEG-CD = "*";
+  end
+
+  VMPOLHJ1.XEG-ENGR-DIFF-CD = "*";
+
+  if (PK0ZW02.XPGCD > " ")
+    VMPOLHJ1.XPG-PKG-TYP-CD = PK0ZW02.XPGCD; /* Packaging Code*/
+  else
+    VMPOLHJ1.XPG-PKG-TYP-CD = "*";
+  end
+
+  if (PK0ZW02.XUMCD > " ") /* Unit of Measure*/
+    VMPOLHJ1.XUM-UOM-CD = PK0ZW02.XUMCD;
+  else
+    VMPOLHJ1.XUM-UOM-CD = "*";
+  end
+
+  if (PK0ZW02.XOWCD > " ")
+    VMPOLHJ1.XOW-OWN-GRP-CD = PK0ZW02.XOWCD; /* Owners groupd*/
+  else
+    VMPOLHJ1.XOW-OWN-GRP-CD = "*";
+  end
+
+  EPIREC.EPI-IO-TASK = "S1";
+  try
+    call "VMPOLHJ1" (EPIREC, SQLCA, VMPOLHJ1) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* No order header was found*/
+
+    EPIREC.EPI-PK-ORD-CNT = 0;
+    return;
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+
+    if (SQLCA.VAGen_SQLCODE == -911)
+
+      converseLib.validationFailed(28);
+      TA1REC.TA1FUNC = "POST";
+
+    else
+
+      converseLib.validationFailed(29);
+      TA1REC.TA1FUNC = "RETN";
+
+    end
+
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1PGMNM = "PK0Z135";
+    TA1REC.TA1LOC = "SELECT ORDERS BY PRODUCT";
+    TA1REC.TA1MAP = "PK0ZM001";
+    TA1REC.TA1DBASE = "DPICK  ";
+    TA1REC.TA1TBLVU = "VMPOLHJ1";
+    TA1REC.TA1TBLKE = VMPOLHJ1-KEY;
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes};
+
+    PK0ZM001.XXXERRID = "PK0Z130";
+    return;
+
+  end
+
+end // end PK0Z135
+
+// Select by Sales Pgm-Mirror Pl
+Function PK0Z136()
+   /* ---------------------------------------------------------------*/
+   /* Select by Sales Program from Mirror Pick Pool*/
+   /* ---------------------------------------------------------------*/
+
+  set EPIREC empty;
+  set VMPOLH01 empty;
+
+  VMPOLH01.XWH-WHSE-CD = PK0ZW01.XWHCD;
+  VMPOLH01.SP-SPGM-ID = PK0ZW02.SP1ID;
+
+  EPIREC.EPI-IO-TASK = "S3";
+  call "VMPOLH01" (EPIREC, SQLCA, VMPOLH01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != 0)
+
+    if (SQLCA.VAGen_SQLCODE == -911)
+
+      converseLib.validationFailed(28);
+      TA1REC.TA1FUNC = "POST";
+
+    else
+
+      converseLib.validationFailed(29);
+      TA1REC.TA1FUNC = "RETN";
+    end
+
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1PGMNM = "PK0Z136";
+    TA1REC.TA1LOC = "SELECT ORDERS BY SALES PROGRAM";
+    TA1REC.TA1MAP = "PK0ZM001";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VMPOLH01";
+    TA1REC.TA1TBLKE = VMPOLH01.VMPOLH01-KEY;
+
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+
+    PK0ZM001.XXXERRID = "PK0Z136";
+    return;
+
+  end
+end // end PK0Z136
+
+// Merge selected order sets
+Function PK0Z140()
+   /* ------------------------------------------------------------*/
+   /* Merge the selected picking and shipping order sets.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZW01.PK0ZWSWP == " " /* Not picking orders eof*/
+   && PK0ZW01.PK0ZWSWQ == " ") /* and no picking order was read*/
+
+    if (PK0ZW02.SP1ID <= " ") /* Sales program not entered*/
+
+      PK0Z141(); /* Fetch picking orders by product*/
+    else
+      PK0Z142(); /* Fetch picking orders by program*/
+
+    end
+
+  end
+
+  if (converseVar.validationMsgNum == 0 /* No errors were found*/
+   && PK0ZW01.PK0ZWSWS == " "           /* and not shipping orders eof*/
+   && PK0ZW01.PK0ZWSWT == " ")          /* and no shipping order was read*/
+
+    if (PK0ZW02.SP1ID <= " ") /* Sales program not entered*/
+
+      PK0Z143(); /* Fetch picking orders by product*/
+    else
+      PK0Z144(); /* Fetch picking orders by program*/
+
+    end
+
+  end
+
+  if (converseVar.validationMsgNum == 0) /* No errors were found*/
+
+    if (PK0ZW01.PK0ZWSWQ == "Y") /* Picking order was read*/
+
+      if (PK0ZW01.PK0ZWSWT == "Y") /* Shipping order was read*/
+
+        if (SR2REC.OP1CUOID < PK4REC.PK1CUOID)
+          PK0Z145(); /* Move Shipping order to display*/
+        end
+
+        if (SR2REC.OP1CUOID == PK4REC.PK1CUOID)
+
+          if (SR2REC.OP1NORID <= PK4REC.PK1NORID)
+            PK0Z145(); /* Move Shipping order to display*/
+          else
+            PK0Z146(); /* Move Picking order to display*/
+          end
+
+        end
+
+        if (SR2REC.OP1CUOID > PK4REC.PK1CUOID)
+          PK0Z146(); /* Move Picking order to display*/
+        end
+
+      else
+
+        PK0Z146(); /* Move Picking order to display*/
+
+      end
+
+    else
+
+      if (PK0ZW01.PK0ZWSWT == "Y") /* Shipping order was read*/
+        PK0Z145(); /* Move Shipping order to display*/
+      end
+
+    end
+
+    if (PK0ZW01.PK0ZWIXM > 12) /* Page is full*/
+      PK0Z147(); /* Add page to temporary storage*/
+
+    else
+
+      if (PK0ZW01.PK0ZWIXM > 1    /* Page was formatted*/
+       && PK0ZW01.PK0ZWSWP == "Y" /* and end of picking orders*/
+       && PK0ZW01.PK0ZWSWS == "Y") /* and end of shipping orders*/
+        PK0Z147(); /* Add page to temporary storage*/
+
+      end
+
+    end
+
+  end
+
+  if (converseVar.validationMsgNum != 0) /* Force exit if error was found*/
+
+    PK0ZW01.PK0ZWSWP = "Y"; /* Indicate picking orders eof*/
+    PK0ZW01.PK0ZWSWS = "Y"; /* Indicate shipping orders eof*/
+
+  end
+
+
+end // end PK0Z140
+
+// Fetch next picking by product
+Function PK0Z141()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next order from the selected picking orders set.*/
+   /* If end of file, set picking orders eof switch.*/
+   /* If any error, indicate a system error.*/
+   /* ------------------------------------------------------------*/
+
+  call "IO1870" ("N1", SQLCA, PKPREC) {isNoRefresh = yes, isExternal = yes}; /* Fetch the next row*/
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+    PK0ZW01.PK0ZWSWP = "Y"; /* Indicate end of file*/
+    return; /* Return to previous process*/
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z141 "; /* Process name*/
+    TA1REC.TA1LOC = "FETCH NEXT PICKING BY PRODUCT";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VPOOLH02"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z141 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  move PKPREC to PK4REC withV60Compat; /* Move columns to common area*/
+
+  PK0ZW01.PK0ZWSWQ = "Y"; /* Indicate picking order read*/
+
+
+end // end PK0Z141
+
+// Fetch next picking by program
+Function PK0Z142()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next order from the selected picking orders set.*/
+   /* If end of file, set picking orders eof switch.*/
+   /* If any error, indicate a system error.*/
+   /* ------------------------------------------------------------*/
+
+  PWIREC.PWIFUNC = "N1";
+  call "IO1720" (PWIREC, SQLCA, PK4REC) {isNoRefresh = yes, isExternal = yes}; /* Fetch the next row*/
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+    PK0ZW01.PK0ZWSWP = "Y"; /* Indicate end of file*/
+    return; /* Return to previous process*/
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z142 "; /* Process name*/
+    TA1REC.TA1LOC = "FETCH NEXT PICKING BY PROGRAM";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VPOOLH01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z151 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  PK0ZW01.PK0ZWSWQ = "Y"; /* Indicate picking order read*/
+
+
+end // end PK0Z142
+
+// Fetch next shipping by product
+Function PK0Z143()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next order from the selected shipping orders set.*/
+   /* If end of file, set shipping orders eof switch.*/
+   /* If any error, indicate a system error.*/
+   /* ------------------------------------------------------------*/
+
+  call "IO2050" ("N1", SQLCA, SRAREC) {isNoRefresh = yes, isExternal = yes}; /* Fetch the next row*/
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+    PK0ZW01.PK0ZWSWS = "Y"; /* Indicate end of file*/
+    return; /* Return to previous process*/
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z143 "; /* Process name*/
+    TA1REC.TA1LOC = "FETCH NEXT SHIP/REC BY PRODUCT";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSRORD02"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z143 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  move SRAREC to SR2REC withV60Compat; /* Move columns to common area*/
+
+  PK0ZW01.PK0ZWSWT = "Y"; /* Indicate shipping order read*/
+
+
+end // end PK0Z143
+
+// Fetch next shipping by program
+Function PK0Z144()
+   /* ------------------------------------------------------------*/
+   /* Fetch the next order from the selected shipping orders set.*/
+   /* If end of file, set shipping orders eof switch.*/
+   /* If any error, indicate a system error.*/
+   /* ------------------------------------------------------------*/
+
+  call "IO0800" ("N4", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* Fetch the next row*/
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+    PK0ZW01.PK0ZWSWS = "Y"; /* Indicate end of file*/
+    return; /* Return to previous process*/
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z144 "; /* Process name*/
+    TA1REC.TA1LOC = "FETCH NEXT SHIP/REC BY PROGRAM";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSRORD01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z144 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  PK0ZW01.PK0ZWSWT = "Y"; /* Indicate shipping order read*/
+
+
+end // end PK0Z144
+
+// Save shipping order data
+Function PK0Z145()
+   /* ------------------------------------------------------------*/
+   /* Obtain the shipping header record for the schedule.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZW01.XWHCD == "51")
+    SR1REC.XWHCD = PK0ZW01.XWHCD; /* Warehouse code*/
+    SR1REC.PK1PKSCH = SR2REC.PK1PKSCH; /* Schedule*/
+
+    call "IO0790" ("S ", SQLCA, SR1REC) {isNoRefresh = yes, isExternal = yes}; /* Select table row*/
+
+    if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+      if (SQLCA.VAGen_SQLCODE == -911) /* Resource not available*/
+        converseLib.validationFailed(28); /* Indicate not available*/
+        TA1REC.TA1FUNC = "POST"; /* Termination function*/
+      else
+        converseLib.validationFailed(29); /* Indicate system error*/
+        TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      end
+
+      TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+      TA1REC.TA1PGMNM = "PK0Z145 "; /* Process name*/
+      TA1REC.TA1LOC = "OBTAIN SHIP/REC HEADER TABLE ROW";
+      TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+      TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+      TA1REC.TA1TBLVU = "VSRHDR01"; /* Table view name*/
+      TA1REC.TA1TBLKE = SR1REC.SR1KEYS; /* Table key*/
+
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes}; /* Error diagnosis routine*/
+
+      PK0ZM001.XXXERRID = "PK0Z145"; /* Error location*/
+
+      return; /* Return to previous process*/
+    end
+  end
+
+
+   /* ------------------------------------------------------------*/
+   /* Move the fields from the shipping record to the temporary*/
+   /* storage display line.*/
+   /* ------------------------------------------------------------*/
+
+  PK0ZW03.PK1CUOID[PK0ZWIXM] = SR2REC.OP1CUOID;
+  PK0ZW03.PK1NORID[PK0ZWIXM] = SR2REC.OP1NORID;
+  PK0ZW03.XOTCD[PK0ZWIXM] = SR2REC.XOTCD;
+  PK0ZW03.PK1PKSCH[PK0ZWIXM] = SR2REC.PK1PKSCH;
+  PK0ZW03.KUCCOID[PK0ZWIXM] = SR2REC.KUCCOID;
+  PK0ZW03.OP1CUNDT[PK0ZWIXM] = SR2REC.OP1CUNDT;
+  PK0ZW03.OP1DSBDT[PK0ZWIXM] = SR2REC.OP1DSBDT;
+  PK0ZW03.OP1DSADT[PK0ZWIXM] = SR2REC.OP1DSADT;
+  PK0ZW03.PK4OTUNT[PK0ZWIXM] = SR2REC.SR2QTYSH;
+
+  if (PK0ZW01.XWHCD == "51")
+    if (SR1REC.SR1SHPDT == 0 /* Not shipped*/
+     || SR2REC.SR1PKSFL != "Y") /* or not picked*/
+      if (SR1REC.TF1CARNM == "DCMS") /* Order processed by DCMS*/
+        if (SR2REC.SR-STOP-ORD-SHP-FL == "Y")
+          PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "VO"; /* voided*/
+        else
+          if (SR1REC.SR1SHPDT == 0) /* Not shipped*/
+            PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "NB"; /* not billed*/
+          else
+            PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "SH"; /* shipped*/
+          end
+        end
+      else
+        if (SR2REC.SR1PKSFL == "Y") /* Picked status*/
+          PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "PK"; /* picked*/
+        else
+          PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "SC"; /* scheduled*/
+        end
+      end
+    else
+      PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "SH"; /* shipped*/
+    end
+  else
+    PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = " ";
+  end
+
+  PK0ZW01.PK0ZWSWT = " "; /* Reset for next shipping record*/
+
+  PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1; /* Increment line index*/
+
+
+end // end PK0Z145
+
+// Save picking order data
+Function PK0Z146()
+   /* ------------------------------------------------------------*/
+   /* Move the fields from the picking record to the temporary*/
+   /* storage display line.*/
+   /* ------------------------------------------------------------*/
+
+  PK0ZW03.PK1CUOID[PK0ZWIXM] = PK4REC.PK1CUOID;
+  PK0ZW03.PK1NORID[PK0ZWIXM] = PK4REC.PK1NORID;
+  PK0ZW03.XOTCD[PK0ZWIXM] = PK4REC.XOTCD;
+  PK0ZW03.KUCCOID[PK0ZWIXM] = PK4REC.KUCCOID;
+  PK0ZW03.OP1CUNDT[PK0ZWIXM] = PK4REC.OP1CUNDT;
+  PK0ZW03.OP1DSBDT[PK0ZWIXM] = PK4REC.OP1DSBDT;
+  PK0ZW03.OP1DSADT[PK0ZWIXM] = PK4REC.OP1DSADT;
+  PK0ZW03.PK4ORHLD[PK0ZWIXM] = PK4REC.PK4ORHLD;
+  PK0ZW03.PK4OTUNT[PK0ZWIXM] = PK4REC.PK4OTUNT;
+
+  if (PK0ZW01.XWHCD == "51")
+    if (PK4REC.PK4PLNDT == 0)
+      PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "AL";
+    else
+      PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "PA";
+    end
+  else
+    PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = " ";
+  end
+
+  PK0ZW01.PK0ZWSWQ = " "; /* Reset for next picking record*/
+
+  PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1; /* Increment line index*/
+
+
+end // end PK0Z146
+
+// Add page to temporary storage
+Function PK0Z147()
+   /* ------------------------------------------------------------*/
+   /* Add the next page to temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  PK0ZW03.PK0ZWLEN = 472; /* Temporary storage length*/
+  TA5REC.TA5APPID = "PK0Z"; /* Application identification*/
+  TA5REC.TA5FNCCD = "A"; /* Function code*/
+
+  call "TA0050" (PK0ZW03, TA5REC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z147 "; /* Process name*/
+    TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z147 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  PK0ZW01.TA5TSQIX = TA5REC.TA5TSQIX; /* Highest page number*/
+
+  set PK0ZW03 empty; /* Clear temporary storage record*/
+  PK0ZW01.PK0ZWIXM = 1; /* Reset display line number*/
+
+
+end // end PK0Z147
+
+// Fetch order by prod-Mirror Pl
+Function PK0Z148()
+   /* --------------------------------------------------------------*/
+   /* Fetch the next order by product from the selected Mirror Pool*/
+   /* order set. If end of file, set mirror pool orders eof switch.*/
+   /* If any error, indicate a system error.*/
+   /* --------------------------------------------------------------*/
+
+  EPIREC.EPI-IO-TASK = "N1";
+  try
+    call "VMPOLHJ1" (EPIREC, SQLCA, VMPOLHJ1) {isNoRefresh = yes, isExternal = yes};
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+    PK0ZW01.PK0ZWSWM = "Y"; /* Indicate end of file*/
+    return; /* Return to previous process*/
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z148"; /* Process name*/
+    TA1REC.TA1PGMNM = "FETCH ORDER BY PRODUCT";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VMPOLHJ1"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+
+    PK0ZM001.XXXERRID = "PK0Z148"; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  move VMPOLHJ1 to VMPOLH01 withV60Compat;
+
+  PK0ZW01.PK0ZWSWN = "Y"; /* Indicate picking order read*/
+
+end // end PK0Z148
+
+// Fetch next Mirror Pool order
+Function PK0Z149()
+   /* ----------------------------------------------------------------*/
+   /* Fetch the next order by sales program from the selected Mirror*/
+   /* Pool orders set. If end of file, set mirror pool orders eof*/
+   /* switch. If any error, indicate a system error.*/
+   /* ----------------------------------------------------------------*/
+
+  EPIREC.EPI-IO-TASK = "N3";
+  call "VMPOLH01" (EPIREC, SQLCA, VMPOLH01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+
+    PK0ZW01.PK0ZWSWM = "Y"; /* Indicate end of file*/
+    return; /* Return to previous process*/
+
+  end
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z149"; /* Process name*/
+    TA1REC.TA1LOC = "FETCH ORDER BY SALES PROGRAM";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VMPOLH01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+
+    PK0ZM001.XXXERRID = "PK0Z149"; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  PK0ZW01.PK0ZWSWN = "Y"; /* Indicate picking order read*/
+
+end // end PK0Z149
+
+// Initialize whse '51' fetches
+Function PK0Z14A()
+   /* -------------------------------------------------------------*/
+   /* Initialize the fetches from mirror pool, picking pool and*/
+   /* shipping.*/
+   /* -------------------------------------------------------------*/
+
+  PK0ZW01.PK0ZCUOID = 0; /* Initialize the running*/
+  PK0ZW01.PK0ZNORID = 0; /* compare fields*/
+
+  if (PK0ZW01.PK0ZWSWP == " " /* Not picking orders eof*/
+  )                          
+    if (PK0ZW02.SP1ID <= " ") /* Sales program not entered*/
+
+      PK0Z141(); /* Fetch Picking orders by product*/
+    else
+      PK0Z142(); /* Fetch Picking orders by program*/
+
+    end
+
+  end
+
+  if (converseVar.validationMsgNum == 0 /* No errors were found*/
+   && PK0ZW01.PK0ZWSWS == " ")          /* and not shipping orders eof*/
+
+    if (PK0ZW02.SP1ID <= " ") /* Sales program not entered*/
+
+      PK0Z143(); /* Fetch Shipping orders by product*/
+    else
+      PK0Z144(); /* Fetch Shipping orders by program*/
+
+    end
+
+  end
+
+  if (PK0ZW01.PK0ZW-DCMS-SEL-FL == "N")
+
+    PK0ZW01.PK0ZWSWM = "Y"; /* Set mirror pool eof*/
+
+  else
+
+    if (PK0ZW02.SP1ID <= " ")
+      PK0Z148(); /* Fetch Mirror by Product*/
+    else
+      PK0Z149(); /* Fetch Mirror by Sales Program*/
+    end
+
+  end
+
+  if (converseVar.validationMsgNum != 0) /* Force exit if error was found*/
+
+    PK0ZW01.PK0ZWSWP = "Y"; /* Indicate picking orders eof*/
+    PK0ZW01.PK0ZWSWS = "Y"; /* Indicate shipping orders eof*/
+    PK0ZW01.PK0ZWSWM = "Y";
+
+  end
+
+end // end PK0Z14A
+
+// Merge records for whse '51'
+Function PK0Z14B()
+   /* -------------------------------------------------------------*/
+   /* Merge records for warehouse 51. This includes mirror pool,*/
+   /* pick pool and shipping. Once everything is fully installed,*/
+   /* the pick pool portion can be deleted.*/
+   /*  */
+   /* Orders are listed from low to high. Each cycle through this*/
+   /* paragraph forces the lowest numbered order to be stored and*/
+   /* eventually printed.*/
+   /* -------------------------------------------------------------*/
+
+  PK0ZW01.PK0ZSCSW = " "; /* Initialize source switch*/
+  PK0ZW01.PK1CUOID = 0; /* Initialize compare order nbr*/
+  PK0ZW01.PK1NORID = 0; /* Initialize compare nike order*/
+
+  if (PK0ZW01.PK0ZWSWS == " ") /* Not shipping eof*/
+    PK0ZW01.PK1CUOID = SR2REC.OP1CUOID; /* Move nike order to*/
+    PK0ZW01.PK1NORID = SR2REC.OP1NORID; /* compare fields*/
+    PK0ZW01.PK0ZSCSW = "S"; /* Set source to picking*/
+  end
+
+  if (PK0ZW01.PK0ZWSWP == " ") /* Not picking order eof*/
+    if (PK0ZW01.PK1CUOID == 0                /* There are no mirror records*/
+     || PK4REC.PK1CUOID < PK0ZW01.PK1CUOID   /* or picking order is less*/
+     || (PK4REC.PK1CUOID == PK0ZW01.PK1CUOID /* than mirror order*/
+     && PK4REC.PK1NORID < PK0ZW01.PK1NORID))
+
+      PK0ZW01.PK1CUOID = PK4REC.PK1CUOID; /* Move nike order to*/
+      PK0ZW01.PK1NORID = PK4REC.PK1NORID; /* compare fields*/
+      PK0ZW01.PK0ZSCSW = "P"; /* Set source to picking*/
+
+    end
+  end
+
+  if (PK0ZW01.PK0ZWSWM == " ") /* Not mirror pool eof*/
+    if (PK0ZW01.PK1CUOID == 0                         /* There are no prior records*/
+     || VMPOLH01.PK-ORD-STKTF-ID < PK0ZW01.PK1CUOID   /* Lower order*/
+     || (VMPOLH01.PK-ORD-STKTF-ID == PK0ZW01.PK1CUOID /* number*/
+     && VMPOLH01.PK-NIKE-ORD-ID < PK0ZW01.PK1NORID)) 
+
+      PK0ZW01.PK1CUOID = VMPOLH01.PK-ORD-STKTF-ID;
+      PK0ZW01.PK1NORID = VMPOLH01.PK-NIKE-ORD-ID;
+      PK0ZW01.PK0ZSCSW = "M"; /* Set source to mirror pool*/
+    end
+  end
+
+  if (PK0ZW01.PK0ZSCSW == "S") /* Shipping order is lowest*/
+    PK0Z145(); /* Move shipping order to display*/
+    if (PK0ZW02.SP1ID <= " ") /**/
+      PK0Z143(); /* Select by product*/
+    else
+      PK0Z144(); /* Select by program*/
+    end
+
+  else
+    if (PK0ZW01.PK0ZSCSW == "P") /* Picking order is lowest*/
+      PK0Z146(); /* Move picking order to display*/
+      if (PK0ZW02.SP1ID <= " ") /**/
+        PK0Z141(); /* Select by product*/
+      else
+        PK0Z142(); /* Select by program*/
+      end
+
+    else
+      if (PK0ZW01.PK0ZSCSW == "M") /* Mirror order is lowest*/
+        PK0Z155(); /* Move mirror order to display*/
+        if (PK0ZW02.SP1ID <= " ") /**/
+          PK0Z148(); /* Select by product*/
+        else
+          PK0Z149(); /* Select by program*/
+        end
+      else
+        PK0ZW01.PK0ZWSWP = "Y"; /* Force eof on all files*/
+        PK0ZW01.PK0ZWSWS = "Y";
+        PK0ZW01.PK0ZWSWM = "Y";
+      end
+    end
+  end
+
+  PK0ZW01.PK0ZCUOID = PK0ZW01.PK1CUOID; /* store last displayed*/
+  PK0ZW01.PK0ZNORID = PK0ZW01.PK1NORID; /* order*/
+
+  if (PK0ZW01.PK0ZWIXM > 12) /* Page is full*/
+    PK0Z147(); /* Add page to temporary storage*/
+  else
+    if (PK0ZW01.PK0ZWIXM > 1    /* Page was formatted*/
+     && PK0ZW01.PK0ZWSWP == "Y" /* Pick pool eof*/
+     && PK0ZW01.PK0ZWSWS == "Y" /* Shipping eof*/
+     && PK0ZW01.PK0ZWSWM == "Y") /* Mirror pool eof*/
+      PK0Z147(); /* Add page to temporary storage*/
+    end
+
+  end
+end // end PK0Z14B
+
+// Close selected order sets
+Function PK0Z150()
+   /* ------------------------------------------------------------*/
+   /* Close the selected picking and shipping orders sets.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZW01.PK0ZW-DCMS-SEL-FL == "Y")
+    if (PK0ZW02.SP1ID <= " ")
+      PK0Z156(); /* Close Orders by Product*/
+    else
+      PK0Z157(); /* Close Orders by Sales Program*/
+    end
+  end
+
+  if (PK0ZW02.SP1ID <= " ") /* Sales program not entered*/
+
+    PK0Z151(); /* Close picking orders by product*/
+  else
+    PK0Z152(); /* Close picking orders by program*/
+
+  end
+
+  if (converseVar.validationMsgNum == 0) /* No errors were found*/
+
+    if (PK0ZW02.SP1ID <= " ") /* Sales program not entered*/
+
+      PK0Z153(); /* Close shipped orders by product*/
+    else
+      PK0Z154(); /* Close shipped orders by program*/
+
+    end
+
+  end
+
+
+end // end PK0Z150
+
+// Close picking by product
+Function PK0Z151()
+   /* ------------------------------------------------------------*/
+   /* Close the selected Picking Order Pool Header set.*/
+   /* If any error, indicate a system error.*/
+   /* ------------------------------------------------------------*/
+
+  call "IO1870" ("C1", SQLCA, PKPREC) {isNoRefresh = yes, isExternal = yes}; /* Close table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z151 "; /* Process name*/
+    TA1REC.TA1LOC = "CLOSE ORDER BY PRODUCT SET";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VPOOLH02"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z151 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PK0Z151
+
+// Close picking by program
+Function PK0Z152()
+   /* ------------------------------------------------------------*/
+   /* Close the selected Picking Order Pool Header set.*/
+   /* If any error, indicate a system error.*/
+   /* ------------------------------------------------------------*/
+
+  PWIREC.PWIFUNC = "C1";
+  call "IO1720" ("C1", SQLCA, PK4REC) {isNoRefresh = yes, isExternal = yes}; /* Close table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z152 "; /* Process name*/
+    TA1REC.TA1LOC = "CLOSE ORDER BY PROGRAM SET";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DPICK   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VPOOLH01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z152 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PK0Z152
+
+// Close shipping by product
+Function PK0Z153()
+   /* ------------------------------------------------------------*/
+   /* Close the selected Shipping/Receiving Order set.*/
+   /* If any error, indicate a system error.*/
+   /* ------------------------------------------------------------*/
+
+  call "IO2050" ("C1", SQLCA, SRAREC) {isNoRefresh = yes, isExternal = yes}; /* Close table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z153 "; /* Process name*/
+    TA1REC.TA1LOC = "CLOSE SHIP/REC BY PRODUCT SET";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSRORD02"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z153 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PK0Z153
+
+// Close shipping by program
+Function PK0Z154()
+   /* ------------------------------------------------------------*/
+   /* Close the selected Shipping/Receiving Order set.*/
+   /* If any error, indicate a system error.*/
+   /* ------------------------------------------------------------*/
+
+  call "IO0800" ("C4", SQLCA, SR2REC) {isNoRefresh = yes, isExternal = yes}; /* Close table set*/
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z154 "; /* Process name*/
+    TA1REC.TA1LOC = "CLOSE SHIP/REC BY PROGRAM SET";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    TA1REC.TA1DBASE = "DSHIP   "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VSRORD01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z154 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PK0Z154
+
+// Move mirror pool fields
+Function PK0Z155()
+   /* ---------------------------------------------------------*/
+   /* Move the fields from the mirror pool order record to*/
+   /* the temporary storage display line.*/
+   /* ---------------------------------------------------------*/
+
+  PK0ZW03.PK1CUOID[PK0ZWIXM] = VMPOLH01.PK-ORD-STKTF-ID;
+  PK0ZW03.PK1NORID[PK0ZWIXM] = VMPOLH01.PK-NIKE-ORD-ID;
+  PK0ZW03.PK1ALLNB[PK0ZWIXM] = VMPOLH01.PK-NBR-TIMES-ALOC;
+  PK0ZW03.XOTCD[PK0ZWIXM] = VMPOLH01.XOT-ORD-TYP-CD;
+  PK0ZW03.KUCCOID[PK0ZWIXM] = VMPOLH01.CU-CO-ID;
+  PK0ZW03.OP1CUNDT[PK0ZWIXM] = VMPOLH01.OP-CUST-NEED-DT;
+  PK0ZW03.OP1DSBDT[PK0ZWIXM] = VMPOLH01.OP-DNT-SHIP-BFR-DT;
+  PK0ZW03.OP1DSADT[PK0ZWIXM] = VMPOLH01.OP-DNT-SHIP-AFT-DT;
+  PK0ZW03.PK4ORHLD[PK0ZWIXM] = " ";
+  PK0ZW03.PK4OTUNT[PK0ZWIXM] = VMPOLH01.PK-TOT-ORD-QTY;
+  PK0ZW03.DCMS-SEL-FL[PK0ZWIXM] = "Y";
+
+  if (VMPOLH01.DCMS-ORD-STAT-CD == "A")
+    PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "PS";
+  else
+    if (VMPOLH01.DCMS-ORD-STAT-CD == "S")
+      PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "SL";
+    else
+      if (VMPOLH01.DCMS-ORD-STAT-CD == "R")
+        PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "RL";
+      else
+        if (VMPOLH01.DCMS-ORD-STAT-CD == "P")
+          PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "PH";
+        else
+          if (VMPOLH01.DCMS-ORD-STAT-CD == "D")
+            PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "DA";
+          else
+            if (VMPOLH01.DCMS-ERROR-FL == "Y")
+              PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "IR";
+            else
+              PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM] = "IN";
+            end
+          end
+        end
+      end
+    end
+  end
+
+  PK0ZW01.PK0ZWSWN = " "; /* Reset for next picking record*/
+
+  PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1;
+
+end // end PK0Z155
+
+// Close Mirr Pool Order-prod set
+Function PK0Z156()
+   /* ----------------------------------------------------------------*/
+   /* Close the selected Mirror Pool Order by product set. If any*/
+   /* error, indicate a system error.*/
+   /* ----------------------------------------------------------------*/
+
+  set EPIREC empty;
+
+  EPIREC.EPI-IO-TASK = "C1";
+  call "VMPOLHJ1" (EPIREC, SQLCA, VMPOLHJ1) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z156"; /* Process name*/
+    TA1REC.TA1LOC = "CLOSE ORDERS BY PRODUCT";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Mapname*/
+    TA1REC.TA1DBASE = "DPICK  "; /* Database name*/
+    TA1REC.TA1TBLVU = "VMPOLHJ1"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+
+    PK0ZM001.XXXERRID = "PK0Z156"; /* Error location*/
+    return; /* Return to previous proc*/
+
+  end
+
+end // end PK0Z156
+
+// Close Mirr Pool Order-sale pgm
+Function PK0Z157()
+   /* ----------------------------------------------------------------*/
+   /* Close the selected Mirror Pool Order by sales program set. If*/
+   /* any error, indicate a system error.*/
+   /* ----------------------------------------------------------------*/
+
+  set EPIREC empty;
+
+  EPIREC.EPI-IO-TASK = "C3";
+  call "VMPOLH01" (EPIREC, SQLCA, VMPOLH01) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != 0) /* Unexpected return code*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "DB2"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z157"; /* Process name*/
+    TA1REC.TA1LOC = "CLOSE ORDERS BY SALES PROGRAM";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Mapname*/
+    TA1REC.TA1DBASE = "DPICK  "; /* Database name*/
+    TA1REC.TA1TBLVU = "VMPOLH01"; /* Table view name*/
+
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+
+    PK0ZM001.XXXERRID = "PK0Z157"; /* Error location*/
+    return; /* Return to previous proc*/
+
+  end
+
+end // end PK0Z157
+
+// Format selected order data
+Function PK0Z160()
+   /* ------------------------------------------------------------*/
+   /* Format the product or program data in the map.*/
+   /* Obtain the next temporary storage page.*/
+   /* Format the order data in the map.*/
+   /* ------------------------------------------------------------*/
+
+  PK0ZM001.XGPCD = PK0ZW02.XGPCD; /* GPC code*/
+  PK0ZM001.SY1STNBR = PK0ZW02.SY1STNBR; /* Style number*/
+  PK0ZM001.SY2CLRID = PK0ZW02.SY2CLRID; /* Color identification*/
+  PK0ZM001.XDMCD = PK0ZW02.XDMCD; /* Dimension code*/
+  PK0ZM001.XQACD = PK0ZW02.XQACD; /* Quality code*/
+  PK0ZM001.XSDCD = PK0ZW02.XSDCD; /* Specification code*/
+  PK0ZM001.XPGCD = PK0ZW02.XPGCD; /* Package type code*/
+  PK0ZM001.XUMCD = PK0ZW02.XUMCD; /* Unit of measure code*/
+  PK0ZM001.XOWCD = PK0ZW02.XOWCD; /* Owner group code*/
+
+  PK0ZM001.SP1ID = PK0ZW02.SP1ID; /* Sales program*/
+
+  PK0ZM001.SP1NM = PK0ZW02.SP1NM; /* Product or program name*/
+
+  if (converseVar.validationMsgNum == 0) /* No errors were found*/
+
+    if (PK0ZW01.TA5TSQIX == 0) /* No orders to display*/
+
+      converseLib.validationFailed(31); /* Indicate no orders to display*/
+      PK0ZM001.XXXERRID = "PK0Z160 "; /* Error location*/
+
+    else
+
+      if (PK0ZW01.PK0ZWSWR == "Y") /* Return from selected order display*/
+        converseLib.validationFailed(0);
+        while (PK0ZW01.PK0ZWSWR == "Y"
+         /* Until display is reestablished*/
+         && converseVar.validationMsgNum == 0)
+
+          PK0ZW01.PK0ZWTSP = PK0ZW01.PK0ZWTSP + 1; /* Increment page number*/
+
+          PK0Z161(); /* Obtain temporary storage page*/
+
+          if (converseVar.validationMsgNum == 0)
+            PK0Z162(); /* Determine if this page was displayed*/
+
+            if (converseVar.validationMsgNum == 0
+             && PK0ZW01.PK0ZWSWR == "F") /* Displayed page was found*/
+              PK0Z163(); /* Update temporary storage page*/
+            end
+          end
+
+        end
+
+      else
+
+        PK0Z161(); /* Obtain temporary storage page*/
+
+      end
+
+      if (converseVar.validationMsgNum == 0)
+        set PK0ZMPGL skip; /* Display "PAGE" literal*/
+        set PK0ZMOFL skip; /* Display "OF" literal*/
+        PK0ZM001.PK0ZWTSP = PK0ZW01.PK0ZWTSP; /* Current page number*/
+        PK0ZM001.TA5TSQIX = PK0ZW01.TA5TSQIX; /* Highest page number*/
+
+        PK0ZW01.PK0ZWIXM = 1; /* Initialize map index*/
+
+        while (PK0ZW01.PK0ZWIXM <= 12 /* Until output display is full*/
+         && PK0ZW03.PK1CUOID[PK0ZWIXM] != 0) /* or all orders output*/
+          PK0Z164(); /* Format order display line*/
+        end
+      end
+
+    end
+
+  end
+
+
+end // end PK0Z160
+
+// Read temporary storage page
+Function PK0Z161()
+   /* ------------------------------------------------------------*/
+   /* Obtain the next page of orders to display.*/
+   /* ------------------------------------------------------------*/
+
+  PK0ZW03.PK0ZWLEN = 472; /* Temporary storage length*/
+  TA5REC.TA5APPID = "PK0Z"; /* Application identification*/
+  TA5REC.TA5TSQIX = PK0ZW01.PK0ZWTSP; /* Page number*/
+  TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+  call "TA0050" (PK0ZW03, TA5REC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z161 "; /* Process name*/
+    TA1REC.TA1LOC = "READ PAGE FROM TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z161 "; /* Error location*/
+    PK0ZW02.PK0ZWKEY = " ";
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PK0Z161
+
+// Determine if page displayed
+Function PK0Z162()
+   /* ------------------------------------------------------------*/
+   /* If this is the first request after returning from the*/
+   /* display of selected orders from this application, the page*/
+   /* that was displayed at the time of selection must be found.*/
+   /* The selection flag must be updated for all selected orders.*/
+   /* ------------------------------------------------------------*/
+
+  PK0ZW01.PK0ZWIXA = 1; /* Initialize array index*/
+
+  if (EPAREC.PK1CUOID[PK0ZWIXA] != 0)
+
+    while (PK0ZW01.PK0ZWIXA <= 12 /* Unit entire array is processed*/
+     && EPAREC.PK1CUOID[PK0ZWIXA] != 0) /* or all orders are processed*/
+
+      PK0ZW01.PK0ZWIXM = 1; /* Initialize map index*/
+
+      while (PK0ZW01.PK0ZWIXM <= 12) /* Until all lines are searched*/
+
+        if (EPAREC.PK1CUOID[PK0ZWIXA] == 
+        PK0ZW03.PK1CUOID[PK0ZWIXM]
+         && EPAREC.PK1NORID[PK0ZWIXA] == 
+        PK0ZW03.PK1NORID[PK0ZWIXM]
+         && EPAREC.PK1ALLNB[PK0ZWIXA] == 
+        PK0ZW03.PK1ALLNB[PK0ZWIXM]
+         && EPAREC.PK1PKSCH[PK0ZWIXA] == 
+        PK0ZW03.PK1PKSCH[PK0ZWIXM])
+
+          PK0ZW03.PK0ZMSEL[PK0ZWIXM] = EPAREC.EPAORACT[PK0ZWIXA];
+          PK0ZW01.PK0ZWSWR = "F"; /* Indicate page was found*/
+
+        end
+
+        PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1;
+
+      end
+
+      PK0ZW01.PK0ZWIXA = PK0ZW01.PK0ZWIXA + 1;
+
+    end
+
+  else
+
+    while (PK0ZW01.PK0ZWIXA <= 12 /* Until entire array is processed*/
+     && PKYREC.PK1CUOID[PK0ZWIXA] != 0) /* or all orders are processed*/
+
+      PK0ZW01.PK0ZWIXM = 1; /* Initialize map index*/
+
+      while (PK0ZW01.PK0ZWIXM <= 12) /* Until all lines are searched*/
+
+        if (PKYREC.PK1CUOID[PK0ZWIXA] == PK0ZW03.PK1CUOID[PK0ZWIXM]
+         && PKYREC.PK1NORID[PK0ZWIXA] == PK0ZW03.PK1NORID[PK0ZWIXM]
+         && PKYREC.PK1PKSCH[PK0ZWIXA] == PK0ZW03.PK1PKSCH[PK0ZWIXM])
+
+          PK0ZW03.PK0ZMSEL[PK0ZWIXM] = PKYREC.PKYORACT[PK0ZWIXA];
+          PK0ZW01.PK0ZWSWR = "F"; /* Indicate page was found*/
+
+        end
+
+        PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1; /* Increment map index*/
+
+      end
+
+      PK0ZW01.PK0ZWIXA = PK0ZW01.PK0ZWIXA + 1; /* Increment array index*/
+
+    end
+
+  end
+
+  if (PK0ZW01.PK0ZWSWR == "Y" /* Displayed page was not found*/
+   && PK0ZW01.PK0ZWTSP == PK0ZW01.TA5TSQIX) /* and last page in storage*/
+
+    PK0ZW01.PK0ZWSWR = " "; /* Force display of this page*/
+
+  end
+
+
+end // end PK0Z162
+
+// Update temporary storage page
+Function PK0Z163()
+   /* ------------------------------------------------------------*/
+   /* Update the page of orders in temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5FNCCD = "U"; /* Update page in temporary storage*/
+
+  call "TA0050" (PK0ZW03, TA5REC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z163 "; /* Process name*/
+    TA1REC.TA1LOC = "UPDATE PAGE IN TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK0ZM001.XXXERRID = "PK0Z163 "; /* Error location*/
+    PK0ZW02.PK0ZWKEY = " ";
+    return; /* Return to previous process*/
+
+  end
+
+
+end // end PK0Z163
+
+// Format display order line
+Function PK0Z164()
+   /* ------------------------------------------------------------*/
+   /* Format the fields from the temporary storage record line to*/
+   /* the output display line.*/
+   /* ------------------------------------------------------------*/
+
+  PK0ZM001.PK0ZMSEL[PK0ZWIXM] = PK0ZW03.PK0ZMSEL[PK0ZWIXM];
+
+  if (PK0ZW01.PK0ZWIXM == 1) /* First order line*/
+    set PK0ZM001.PK0ZMSEL[PK0ZWIXM] cursor, normal; /* Cursor and unprotect*/
+  else
+    set PK0ZM001.PK0ZMSEL[PK0ZWIXM] normal; /* Unprotect selection tag*/
+  end
+
+  if (PK0ZW03.PK0ZMSEL[PK0ZWIXM] == "S") /* Order selected not viewed*/
+    set PK0ZM001.PK0ZMSEL[PK0ZWIXM] modified; /* Set modified data tag*/
+    PK0ZW03.PK0ZMSEL[PK0ZWIXM] = " "; /* Clear select tag in storage*/
+  end
+
+  PK0ZM001.PK1CUOID[PK0ZWIXM] = PK0ZW03.PK1CUOID[PK0ZWIXM];
+  set PK0ZM001.PK0ZMONP[PK0ZWIXM] skip; /* Order number punctuation*/
+  PK0ZM001.PK1NORID[PK0ZWIXM] = PK0ZW03.PK1NORID[PK0ZWIXM];
+  PK0ZM001.XOTCD[PK0ZWIXM] = PK0ZW03.XOTCD[PK0ZWIXM];
+
+  if (PK0ZW03.PK1PKSCH[PK0ZWIXM] != 0)
+    PK0ZM001.PK1PKSCH[PK0ZWIXM] = PK0ZW03.PK1PKSCH[PK0ZWIXM];
+  end
+
+  PK0ZM001.KUCCOID[PK0ZWIXM] = PK0ZW03.KUCCOID[PK0ZWIXM];
+
+  if (PK0ZW03.OP1CUNDT[PK0ZWIXM] != 0)
+    PK0ZM001.OP1CUNDT[PK0ZWIXM] = PK0ZW03.OP1CUNDT[PK0ZWIXM];
+  end
+
+  if (PK0ZW03.OP1DSBDT[PK0ZWIXM] != 0)
+    PK0ZM001.OP1DSBDT[PK0ZWIXM] = PK0ZW03.OP1DSBDT[PK0ZWIXM];
+  end
+
+  if (PK0ZW03.OP1DSADT[PK0ZWIXM] != 0)
+    PK0ZM001.OP1DSADT[PK0ZWIXM] = PK0ZW03.OP1DSADT[PK0ZWIXM];
+  end
+
+  PK0ZM001.DCMS-ORD-STAT-CD[PK0ZWIXM] = PK0ZW03.DCMS-ORD-STAT-CD[PK0ZWIXM];
+  PK0ZM001.PK4ORHLD[PK0ZWIXM] = PK0ZW03.PK4ORHLD[PK0ZWIXM];
+  PK0ZM001.PK4OTUNT[PK0ZWIXM] = PK0ZW03.PK4OTUNT[PK0ZWIXM];
+
+  set PK0ZM001.PK0ZMALP[PK0ZWIXM] initialAttributes;
+  set PK0ZM001.PK1ALLNB[PK0ZWIXM] initialAttributes;
+
+  if (PK0ZW01.XWHCD == "51")
+    if (PK0ZW03.PK1ALLNB[PK0ZWIXM] > 0)
+      set PK0ZM001.PK0ZMALP[PK0ZWIXM] skip;
+    end
+    set PK0ZM001.PK1ALLNB[PK0ZWIXM] skip;
+    PK0ZM001.PK1ALLNB[PK0ZWIXM] = PK0ZW03.PK1ALLNB[PK0ZWIXM];
+  end
+
+  PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1; /* Increment line index*/
+
+end // end PK0Z164
+
+// Check attention identifier
+Function PK0Z200()
+   /* ------------------------------------------------------------*/
+   /* Check attention identifier used to invoke the transaction.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+
+    set PK0ZM001 initial; /* Clear map storage area*/
+
+    PKWREC.XWHCD = PK0ZW01.XWHCD; /* Restore warehouse code*/
+    PKWREC.XWHABRV = PK0ZW01.XWHABRV; /* and warehouse abbreviation*/
+    PK0ZW01.PK0ZWSW1 = " "; /* Reset first time switch*/
+
+    if (PK0ZW01.XWHCD == "51")
+      PK0ZM001.PK0ZM-SCHED-ID-LIT1 = "MANIFEST";
+      PK0ZM001.PK0ZM-SCHED-ID-LIT2 = " ID  ";
+    else
+      PK0ZM001.PK0ZM-SCHED-ID-LIT1 = "        ";
+      PK0ZM001.PK0ZM-SCHED-ID-LIT2 = "SCHED";
+    end
+
+    if (PK0ZW02.SP1ID == " "    /* No previous sales program*/
+     && PK0ZW02.XGPCD == " "    /* and no previous GPC*/
+     && PK0ZW02.SY1STNBR == " " /* and no previous style*/
+     && PK0ZW02.SY2CLRID == " " /* and no previous color*/
+     && PK0ZW02.XDMCD == " "    /* and no previous dimension*/
+     && PK0ZW02.XQACD == " "    /* and no previous quality*/
+     && PK0ZW02.XSDCD == " "    /* and no previous specification*/
+     && PK0ZW02.XPGCD == " "    /* and no previous package type*/
+     && PK0ZW02.XUMCD == " "    /* and no previous unit of measure*/
+     && PK0ZW02.XOWCD == " ")   /* and no previous owner group*/
+      PK0ZW01.PK0ZWSWF = " "; /* Reset format switch*/
+    end
+
+    return; /* Return to previous process*/
+
+  end
+
+  if (PK0ZM001.CATOAP > " ") /* FAST PATH was requested*/
+
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+
+      PK0Z210(); /* Execute FAST PATH request*/
+
+    else
+
+      set PK0ZM001.CATOAP cursor, modified, bold; /* Highlight application*/
+      converseLib.validationFailed(13); /* Indicate PF key not valid*/
+      PK0ZM001.XXXERRID = "PK0Z200 "; /* Error location*/
+
+      exit stack; /* Exit to redisplay map*/
+
+    end
+
+  end
+
+  if (converseVar.eventKey is pf3  /* PF3 was pressed*/
+   || converseVar.eventKey is pf13 /* or PF13 was pressed*/
+   || converseVar.eventKey is pf14 /* or PF14 was pressed*/
+   || converseVar.eventKey is pf15 /* or PF15 was pressed*/
+   || converseVar.eventKey is pf18 /* or PF18 was pressed*/
+   || converseVar.eventKey is pf19 /* or PF19 was pressed*/
+   || converseVar.eventKey is pf20) /* or PF20 was pressed*/
+
+    PK0Z220(); /* Transfer to another application*/
+     /* if selection was made on the screen and pf13,14, or 15 was*/
+     /* depressed, processing is continued*/
+    return; /* Exit to redisplay map*/
+
+  end
+
+  if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+
+    PK0Z211(); /* Purge any temporary storage*/
+
+    XSPF1(); /* Exit to the HELP facility*/
+
+    PK0Z110(); /* Format map heading areas*/
+
+    PK0ZM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    converseLib.validationFailed(); /* Force alarm to sound*/
+    PK0ZM001.XXXERRID = "PK0Z200 "; /* Error location*/
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+  if (converseVar.eventKey is pf4) /* PF4 was pressed*/
+
+    PK0Z211(); /* Purge any temporary storage*/
+
+    XSPF4(); /* Exit to system main menu*/
+
+    PK0Z110(); /* Format map heading areas*/
+
+    PK0ZM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    converseLib.validationFailed(); /* Force alarm to sound*/
+    PK0ZM001.XXXERRID = "PK0Z200 "; /* Error location*/
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf7   /* and PF7 was not pressed*/
+   && converseVar.eventKey not pf8)  /* and PF8 was not pressed*/
+
+    converseLib.validationFailed(12); /* Indicate invalid attention key*/
+    PK0ZM001.XXXERRID = "PK0Z200 "; /* Error location*/
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+
+end // end PK0Z200
+
+// Execute FAST PATH request
+Function PK0Z210()
+   /* ------------------------------------------------------------*/
+   /* Transfer to requested application via FAST PATH.*/
+   /* If transfer failed, display returned error message.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZM001.CATOAP == COMMAREA.CACURRAP)
+                                   /* TO application same as current*/
+
+    set PK0ZM001.CATOAP cursor, modified, bold; /* Highlight TO application*/
+    converseLib.validationFailed(1); /* Indicate invalid request*/
+    PK0ZM001.XXXERRID = "PK0Z210 "; /* Process name*/
+
+    exit stack; /* Exit to redisplay map*/
+
+  end
+
+  PK0Z211(); /* Purge any temporary storage*/
+
+  PKWREC.XWHCD = PK0ZM001.XWHCD; /* Save warehouse code*/
+
+  COMMAREA.CATOAP = PK0ZM001.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = PK0ZM001.CAITEM; /* Application data*/
+
+  COMMAREA.CAUSERA = PKWREC.PKWGRPLV; /* Application user area*/
+  COMMAREA.CA-USER-WORKAREA-2K-B = EPAREC.EPAARRAY;
+
+  XSEXIT(); /* Transfer to requested application*/
+
+  PK0Z110(); /* Format map heading areas*/
+
+  PK0ZM001.CATOAP = COMMAREA.CATOAP; /* TO application*/
+
+  set PK0ZM001.CATOAP cursor, modified, bold; /* Highlight to application*/
+
+  PK0ZM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+  converseLib.validationFailed(); /* Force alarm to sound*/
+  PK0ZM001.XXXERRID = "PK0Z210 "; /* Process name*/
+
+  COMMAREA.CATOAP = " "; /* Clear TO application*/
+
+  exit stack; /* Exit to redisplay map*/
+
+
+end // end PK0Z210
+
+// Purge any temporary storage
+Function PK0Z211()
+   /* ------------------------------------------------------------*/
+   /* Purge any temporary storage for this application.*/
+   /* Reset the display controls and clear the previous data.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5APPID = "PK0Z"; /* Application identification*/
+  TA5REC.TA5FNCCD = "P"; /* Function code*/
+
+  call "TA0050" (PK0ZW03, TA5REC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK0Z221 "; /* Process name*/
+    TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "PK0ZM001"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  end
+
+  PK0ZW01.PK0ZWTSP = 1; /* Reset current page number*/
+  PK0ZW01.TA5TSQIX = 0; /* Reset temporary storage index*/
+
+  PK0ZW01.PK0ZWSWF = " "; /* Reset format switch*/
+
+  set PK0ZW02 empty; /* Initialize display storage*/
+  set PK0ZW03 empty; /* Initialize temporary storage*/
+
+
+end // end PK0Z211
+
+// Exit to another application
+Function PK0Z220()
+   /* ------------------------------------------------------------*/
+   /* Set the "TO" application according to the PF key pressed.*/
+   /* If warehouse code was modified, save in common work area.*/
+   /* Purge temporary storage and transfer to the application.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+
+    if (PKWREC.PKWINDEX > 0) /* Previous application exists*/
+
+      COMMAREA.CATOAP = PKWREC.PKWFRMAP[PKWINDEX];
+    else
+      COMMAREA.CATOAP = "PK0J"; /* PICKING INQUIRY SUBMENU*/
+
+    end
+
+  end
+
+  if (converseVar.eventKey is pf13) /* PF13 was pressed*/
+    COMMAREA.CATOAP = "PK0B"; /* PICKING Order Inquiry*/
+  end
+
+  if (converseVar.eventKey is pf14) /* PF14 was pressed*/
+    COMMAREA.CATOAP = "PK0C"; /* PICKING Line Item Inquiry*/
+  end
+
+  if (converseVar.eventKey is pf15) /* PF16 was pressed*/
+    COMMAREA.CATOAP = "PK0D"; /* PICKING Customer Inquiry*/
+  end
+
+  if (converseVar.eventKey is pf18) /* PF18 was pressed*/
+    COMMAREA.CATOAP = "PK09"; /* PICKING Hold/Release*/
+  end
+
+  if (converseVar.eventKey is pf19) /* PF19 was pressed*/
+    COMMAREA.CATOAP = "PK0S"; /* PICK PLANNING Menu*/
+  end
+
+  if (converseVar.eventKey is pf20) /* PF20 was pressed*/
+    COMMAREA.CATOAP = "PK07"; /* PICKING SELECT Menu*/
+  end
+
+  if (converseVar.eventKey is pf13 /* PF13 was pressed*/
+   || converseVar.eventKey is pf14) /* PF14 was pressed*/
+    PK0ZW01.PK0ZWSWO = " "; /* Initialize orders selected switch*/
+    PK0ZW01.PK0ZWIXM = 1; /* Initialize line index*/
+
+    while (PK0ZW01.PK0ZWSWO == " " /* Until a selected line is found*/
+     && PK0ZW01.PK0ZWIXM <= 12) /* or all lines are searched*/
+      /* ------------------------------------------------------------*/
+       /* Search until the first selected order line is found.*/
+      /* ------------------------------------------------------------*/
+
+      if (PK0ZM001.PK0ZMSEL[PK0ZWIXM] == "S") /* Line was selected*/
+        PK0ZW01.PK0ZWSWO = "Y"; /* Indicate order selected*/
+      else
+        PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1; /* Increment line number*/
+      end
+    end
+    if (converseVar.eventKey is pf13) /* PF13 was pressed*/
+      if (PK0ZW01.PK0ZWSWO == "Y") /* indicate order selected*/
+        PK0Z222(); /* process for pk13 key data*/
+      else
+
+        set PKYREC empty; /* Clear order key array*/
+        set EPAREC empty;
+        PKWREC.PKWINDEX = 0;
+        PKWREC.PKWARRAY[1] = PKYREC.PKWARRAY;
+      end
+    end
+    if (converseVar.eventKey is pf14) /* PF14 was pressed*/
+      if (PK0ZW01.PK0ZWSWO == "Y") /* indicate order selected*/
+        PK0Z223(); /* process for pk14 key data*/
+      else
+        set PKYREC empty; /* Clear order key array*/
+        set EPAREC empty;
+        PKWREC.PKWINDEX = 0;
+        PKWREC.PKWARRAY[1] = PKYREC.PKWARRAY;
+      end /* ----------*/
+    end
+  end
+
+
+  PK0Z211(); /* Purge any temporary storage*/
+
+  PKWREC.XWHCD = PK0ZM001.XWHCD; /* Save warehouse code*/
+
+  COMMAREA.CAUSERA = PKWREC.PKWGRPLV; /* COMMAREA user area*/
+  COMMAREA.CA-USER-WORKAREA-2K-B = EPAREC.EPAARRAY;
+
+  XSEXIT(); /* Invoke selected application*/
+
+  PK0Z110(); /* Format map heading areas*/
+
+  PK0ZM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+  converseLib.validationFailed(); /* Force alarm to sound*/
+  PK0ZM001.XXXERRID = "PK0Z220 "; /* Error location*/
+
+  exit stack; /* Exit to redisplay map*/
+
+
+end // end PK0Z220
+
+// format line item array
+Function PK0Z222()
+   /* ------------------------------------------------------------*/
+   /* Format the array with the key of the displayed order.*/
+   /* ------------------------------------------------------------*/
+
+  PKWREC.PKWINDEX = 1;
+
+  PKWREC.PKWSLTYP[PKWINDEX] = "M"; /* Inquiry selection type*/
+  PKWREC.PKWFRMAP[PKWINDEX] = "PK0Z"; /* Previous application*/
+
+  set PKYREC empty; /* Clear order key array*/
+  set EPAREC empty;
+
+  PKYREC.PKYORACT[1] = "S"; /* Indicate selected*/
+
+  PKYREC.PK1CUOID[1] = PK0ZW03.PK1CUOID[PK0ZWIXM]; /* Order*/
+  PKYREC.PK1NORID[1] = PK0ZW03.PK1NORID[PK0ZWIXM]; /* Sub-order*/
+  PKYREC.PK1PKSCH[1] = PK0ZW03.PK1PKSCH[PK0ZWIXM]; /* Schedule*/
+
+  PKYREC.XWHCD = PK0ZW01.XWHCD; /* Warehouse code*/
+  PKYREC.XWHABRV = PK0ZW01.XWHABRV; /* and abbreviation*/
+
+  PKWREC.PKWARRAY[PKWINDEX] = PKYREC.PKWARRAY; /* Inquiry keys array*/
+  PKWREC.PKWUSERA[PKWINDEX] = PK0ZW02.PK0ZWKEY; /* current key*/
+
+  if (PK0ZW01.PK0ZW-DCMS-SEL-FL == "Y")
+    EPAREC.XWHCD = PK0ZW01.XWHCD;
+    EPAREC.XWHABRV = PK0ZW01.XWHABRV;
+    EPAREC.EPAORACT[1] = "S"; /* Indicate selected*/
+    EPAREC.PK1CUOID[1] = PK0ZW03.PK1CUOID[PK0ZWIXM];
+    EPAREC.PK1NORID[1] = PK0ZW03.PK1NORID[PK0ZWIXM];
+    EPAREC.PK1ALLNB[1] = PK0ZW03.PK1ALLNB[PK0ZWIXM];
+    EPAREC.PK1PKSCH[1] = PK0ZW03.PK1PKSCH[PK0ZWIXM];
+    PK0ZW02.DCMS-SEL-FL = "Y";
+  end
+
+  COMMAREA.CA-USER-WORKAREA-2K-B = EPAREC.EPAARRAY;
+
+end // end PK0Z222
+
+Function PK0Z223()
+   /* ------------------------------------------------------------*/
+   /* Format the array with the key of the displayed order.*/
+   /* ------------------------------------------------------------*/
+
+  set PKYREC empty; /* Clear order key array*/
+  set EPAREC empty;
+
+  PKWREC.PKWINDEX = 1;
+
+  PKWREC.PKWSLTYP[PKWINDEX] = "S"; /* Inquiry selection type*/
+  PKWREC.PKWFRMAP[PKWINDEX] = "PK0Z"; /* Previous application*/
+
+  PKYREC.PKYORACT[1] = "S"; /* Indicate selected*/
+
+  PKYREC.PK1CUOID[1] = PK0ZW03.PK1CUOID[PK0ZWIXM]; /* Order*/
+  PKYREC.PK1NORID[1] = PK0ZW03.PK1NORID[PK0ZWIXM]; /* Sub-order*/
+  PKYREC.PK1PKSCH[1] = PK0ZW03.PK1PKSCH[PK0ZWIXM]; /* Schedule*/
+
+
+
+  PKYREC.XWHCD = PK0ZW01.XWHCD; /* Warehouse code*/
+  PKYREC.XWHABRV = PK0ZW01.XWHABRV; /* and abbreviation*/
+
+  PKWREC.PKWARRAY[PKWINDEX] = PKYREC.PKWARRAY; /* Inquiry keys array*/
+  PKWREC.PKWUSERA[PKWINDEX] = PK0ZW02.PK0ZWKEY; /* current key*/
+
+  if (PK0ZW01.PK0ZW-DCMS-SEL-FL == "Y")
+    EPAREC.XWHCD = PK0ZW01.XWHCD;
+    EPAREC.XWHABRV = PK0ZW01.XWHABRV;
+    EPAREC.EPAORACT[1] = "S"; /* Indicate selected*/
+    EPAREC.PK1CUOID[1] = PK0ZW03.PK1CUOID[PK0ZWIXM];
+    EPAREC.PK1NORID[1] = PK0ZW03.PK1NORID[PK0ZWIXM];
+    EPAREC.PK1ALLNB[1] = PK0ZW03.PK1ALLNB[PK0ZWIXM];
+    EPAREC.PK1PKSCH[1] = PK0ZW03.PK1PKSCH[PK0ZWIXM];
+    PK0ZW02.DCMS-SEL-FL = "Y";
+  end
+
+  COMMAREA.CA-USER-WORKAREA-2K-B = EPAREC.EPAARRAY;
+
+end // end PK0Z223
+
+// Reset highlighted fields
+Function PK0Z300()
+   /* ------------------------------------------------------------*/
+   /* Reset field attributes to normal intensity.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZW01.XWHCD == "51")
+    PK0ZM001.PK0ZM-SCHED-ID-LIT1 = "MANIFEST";
+    PK0ZM001.PK0ZM-SCHED-ID-LIT2 = " ID  ";
+  else
+    PK0ZM001.PK0ZM-SCHED-ID-LIT1 = "        ";
+    PK0ZM001.PK0ZM-SCHED-ID-LIT2 = "SCHED";
+  end
+
+  set PK0ZM001.XWHCD initialAttributes; /* Warehouse code*/
+  set PK0ZM001.XGPCD initialAttributes; /* GPC code*/
+  set PK0ZM001.SY1STNBR initialAttributes; /* Style number*/
+  set PK0ZM001.SY2CLRID initialAttributes; /* Color identification*/
+  set PK0ZM001.XDMCD initialAttributes; /* Dimension code*/
+  set PK0ZM001.XQACD initialAttributes; /* Quality code*/
+  set PK0ZM001.XSDCD initialAttributes; /* Specification code*/
+  set PK0ZM001.XPGCD initialAttributes; /* Package type code*/
+  set PK0ZM001.XUMCD initialAttributes; /* Unit of measure code*/
+  set PK0ZM001.XOWCD initialAttributes; /* Owner group code*/
+  set PK0ZM001.SP1ID initialAttributes; /* Sales program*/
+
+  PK0ZW01.PK0ZWIXM = 1; /* Initialize index*/
+
+  while (PK0ZW01.PK0ZWIXM <= 12) /* Until all lines are reset*/
+    PK0Z310(); /* Reset attributes in each line*/
+  end
+
+  set PK0ZM001.CATOAP initialAttributes; /* FAST PATH application*/
+  set PK0ZM001.CAITEM initialAttributes; /* Application data*/
+
+
+end // end PK0Z300
+
+// Reset highlights on each line
+Function PK0Z310()
+   /* ------------------------------------------------------------*/
+   /* Reset input field attributes on the line.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZM001.PK1CUOID[PK0ZWIXM] != 0) /* Order line formatted*/
+    set PK0ZM001.PK0ZMSEL[PK0ZWIXM] normal; /* Reset select tag*/
+  end
+
+  PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1; /* Increment line index*/
+
+
+end // end PK0Z310
+
+// Verify the entered data
+Function PK0Z400()
+   /* ------------------------------------------------------------*/
+   /* Check for proper select tag.  Ensure that product and sales*/
+   /* program are valid.  If warehouse code, product or program*/
+   /* is modified, ensure that no order was selected for inquiry.*/
+   /* Save and verify warehouse code.*/
+   /* Determine whether a valid request to scroll was entered.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZM001.CAITEM > " ") /* Application data was entered*/
+
+    set PK0ZM001.CAITEM cursor, modified, bold; /* Highlight data*/
+    converseLib.validationFailed(15); /* Enter only with FAST PATH*/
+    PK0ZM001.XXXERRID = "PK0Z400 "; /* Error location*/
+
+  end
+
+  PK0ZW01.PK0ZWIXM = 12; /* Initialize map line index*/
+
+  while (PK0ZW01.PK0ZWIXM > 0) /* Until all lines are verified*/
+    PK0Z410(); /* Validate any select tags*/
+
+  end
+
+  if (converseVar.eventKey not pa2) /* Not a cancel request*/
+
+    if (PK0ZM001.XWHCD != PK0ZW01.XWHCD       /* Warehouse changed*/
+     || PK0ZM001.XGPCD != PK0ZW02.XGPCD       /* or GPC changed*/
+     || PK0ZM001.SY1STNBR != PK0ZW02.SY1STNBR /* or style changed*/
+     || PK0ZM001.SY2CLRID != PK0ZW02.SY2CLRID /* or color changed*/
+     || PK0ZM001.XDMCD != PK0ZW02.XDMCD       /* or dimension changed*/
+     || PK0ZM001.XQACD != PK0ZW02.XQACD       /* or quality changed*/
+     || PK0ZM001.XSDCD != PK0ZW02.XSDCD       /* or specification changed*/
+     || PK0ZM001.XPGCD != PK0ZW02.XPGCD       /* or package type changed*/
+     || PK0ZM001.XUMCD != PK0ZW02.XUMCD       /* or unit of measure changed*/
+     || PK0ZM001.XOWCD != PK0ZW02.XOWCD       /* or owner group changed*/
+     || PK0ZM001.SP1ID != PK0ZW02.SP1ID)      /* or sales program changed*/
+
+      if (PK0ZM001.SP1ID > " ") /* Sales program was entered*/
+
+        if (PK0ZM001.XGPCD > " "    /* If GPC was entered*/
+         || PK0ZM001.SY1STNBR > " " /* or style was entered*/
+         || PK0ZM001.SY2CLRID > " " /* or color was entered*/
+         || PK0ZM001.XDMCD > " "    /* or dimension was entered*/
+         || PK0ZM001.XQACD > " "    /* or quality was entered*/
+         || PK0ZM001.XSDCD > " "    /* or specification was entered*/
+         || PK0ZM001.XPGCD > " "    /* or package type was entered*/
+         || PK0ZM001.XUMCD > " "    
+         /* or unit of measure was entered*/
+         || PK0ZM001.XOWCD > " ")   /* or owner group was entered*/
+
+          set PK0ZM001.SP1ID cursor, modified, bold; /* Highlight program*/
+          converseLib.validationFailed(36); /* Enter either product or program*/
+          PK0ZM001.XXXERRID = "PK0Z400 "; /* Error location*/
+
+        end
+
+      end
+
+      if (PK0ZM001.XGPCD > " "    /* If GPC was entered*/
+       || PK0ZM001.SY1STNBR > " " /* or style was entered*/
+       || PK0ZM001.SY2CLRID > " " /* or color was entered*/
+       || PK0ZM001.XDMCD > " "    /* or dimension was entered*/
+       || PK0ZM001.XQACD > " "    /* or quality was entered*/
+       || PK0ZM001.XSDCD > " "    /* or specification was entered*/
+       || PK0ZM001.XPGCD > " "    /* or package type was entered*/
+       || PK0ZM001.XUMCD > " "    /* or unit of measure was entered*/
+       || PK0ZM001.XOWCD > " ")   /* or owner group was entered*/
+
+        if (PK0ZM001.XGPCD == "02" /* Footwear GPC*/
+         || PK0ZM001.XGPCD == "03") /* or apparel GPC*/
+
+          if (PK0ZM001.XGPCD == "02" /* Footwear GPC*/
+           && PK0ZM001.SY2CLRID <= " ") /* and color not entered*/
+            PK0ZM001.SY2CLRID = "00 "; /* Default color*/
+          end
+
+          if (PK0ZM001.XDMCD <= " ") /* Dimension not entered*/
+            PK0ZM001.XDMCD = "00"; /* Default dimension*/
+          end
+
+        end
+
+        if (PK0ZM001.XDMCD <= " ") /* Dimension missing or invalid*/
+
+          set PK0ZM001.XDMCD cursor, modified, bold; /* Highlight*/
+          converseLib.validationFailed(50); /* Indicate dimension missing*/
+          PK0ZM001.XXXERRID = "PK0Z400 "; /* Error location*/
+
+        end
+
+        if (PK0ZM001.SY2CLRID <= " ") /* Color missing or invalid*/
+
+          set PK0ZM001.SY2CLRID cursor, modified, bold; /* Highlight*/
+          converseLib.validationFailed(49); /* Indicate color missing*/
+          PK0ZM001.XXXERRID = "PK0Z400 "; /* Error location*/
+
+        end
+
+        if (PK0ZM001.SY1STNBR <= " ") /* Style missing or invalid*/
+
+          set PK0ZM001.SY1STNBR cursor, modified, bold; /* Highlight style*/
+          converseLib.validationFailed(48); /* Indicate style missing*/
+          PK0ZM001.XXXERRID = "PK0Z400 "; /* Error location*/
+
+        end
+
+        if (PK0ZM001.XGPCD <= " ") /* GPC missing or invalid*/
+
+          set PK0ZM001.XGPCD cursor, modified, bold; /* Highlight GPC*/
+          converseLib.validationFailed(47); /* Indicate GPC missing*/
+          PK0ZM001.XXXERRID = "PK0Z400 "; /* Error location*/
+
+        end
+
+      end
+
+      PK0ZW01.PK0ZWIXM = 12; /* Initialize map line index*/
+
+      while (PK0ZM001.XXXERRID != "PK0Z420 " /* Until an error is found*/
+       && PK0ZW01.PK0ZWIXM > 0) /* or all lines are verified*/
+
+        PK0Z420(); /* See if any lines were selected*/
+
+      end
+
+    end
+
+    PKWREC.XWHCD = PK0ZM001.XWHCD; /* Save warehouse code*/
+
+  end
+
+  XPPK002(); /* Verify warehouse code*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   || converseVar.eventKey is pf8) /* or scroll forward request*/
+
+    PK0Z430(); /* Verify scroll request*/
+
+  end
+
+
+end // end PK0Z400
+
+// Verify selection tags
+Function PK0Z410()
+   /* ------------------------------------------------------------*/
+   /* Indicate an error if the line was not selected properly.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZM001.PK0ZMSEL[PK0ZWIXM] != PK0ZW03.PK0ZMSEL[PK0ZWIXM]
+   && PK0ZM001.PK0ZMSEL[PK0ZWIXM] != " " /* Line was selected*/
+   && PK0ZM001.PK0ZMSEL[PK0ZWIXM] != "S") /* and not with an "S"*/
+
+    set PK0ZM001.PK0ZMSEL[PK0ZWIXM] cursor, modified, bold; /* Highlight*/
+    converseLib.validationFailed(14); /* Only "S" is valid for tag*/
+    PK0ZM001.XXXERRID = "PK0Z410 "; /* Error location*/
+
+  end
+
+  PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM - 1; /* Decrement line number*/
+
+
+end // end PK0Z410
+
+// Highlight any modified data
+Function PK0Z420()
+   /* ------------------------------------------------------------*/
+   /* Indicate an error if the line was selected and product or*/
+   /* sales program was changed.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZM001.PK0ZMSEL[PK0ZWIXM] != PK0ZW03.PK0ZMSEL[PK0ZWIXM]
+   && PK0ZM001.PK0ZMSEL[PK0ZWIXM] != " ") /* Line was selected*/
+
+    if (PK0ZM001.SP1ID != PK0ZW02.SP1ID) /* Sales program was changed*/
+
+      set PK0ZM001.SP1ID cursor, modified, bold; /* Highlight sales program*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+    if (PK0ZM001.XOWCD != PK0ZW02.XOWCD) /* Owner group was changed*/
+
+      set PK0ZM001.XOWCD cursor, modified, bold; /* Highlight owner group*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+    if (PK0ZM001.XUMCD != PK0ZW02.XUMCD) /* Unit of measure was changed*/
+
+      set PK0ZM001.XUMCD cursor, modified, bold; /* Highlight unit measure*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+    if (PK0ZM001.XPGCD != PK0ZW02.XPGCD) /* Package type was changed*/
+
+      set PK0ZM001.XPGCD cursor, modified, bold; /* Highlight package type*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+    if (PK0ZM001.XSDCD != PK0ZW02.XSDCD) /* Specification was changed*/
+
+      set PK0ZM001.XSDCD cursor, modified, bold; /* Highlight specification*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+    if (PK0ZM001.XQACD != PK0ZW02.XQACD) /* Quality was changed*/
+
+      set PK0ZM001.XQACD cursor, modified, bold; /* Highlight quality*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+    if (PK0ZM001.XDMCD != PK0ZW02.XDMCD) /* Dimension was changed*/
+
+      set PK0ZM001.XDMCD cursor, modified, bold; /* Highlight dimension*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+    if (PK0ZM001.SY2CLRID != PK0ZW02.SY2CLRID) /* Color was changed*/
+
+      set PK0ZM001.SY2CLRID cursor, modified, bold; /* Highlight color*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+    if (PK0ZM001.SY1STNBR != PK0ZW02.SY1STNBR) /* Style was changed*/
+
+      set PK0ZM001.SY1STNBR cursor, modified, bold; /* Highlight style*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+    if (PK0ZM001.XGPCD != PK0ZW02.XGPCD) /* GPC was changed*/
+
+      set PK0ZM001.XGPCD cursor, modified, bold; /* Highlight GPC*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+    if (PK0ZM001.XWHCD != PK0ZW01.XWHCD) /* Warehouse was changed*/
+
+      set PK0ZM001.XWHCD cursor, modified, bold; /* Highlight warehouse*/
+      converseLib.validationFailed(40); /* Modifications not allowed*/
+      PK0ZM001.XXXERRID = "PK0Z420 "; /* Error location*/
+
+    end
+
+  end
+
+  PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM - 1; /* Decrement line number*/
+
+
+end // end PK0Z420
+
+// Verify scroll request
+Function PK0Z430()
+   /* ------------------------------------------------------------*/
+   /* Ensure that pages exist to scroll forward or back.*/
+   /* Indicate an error for any data that was modified.*/
+   /* ------------------------------------------------------------*/
+
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   && PK0ZW01.PK0ZWTSP < 2)       /* and no previous pages*/
+
+    converseLib.validationFailed(37); /* No previous page to display*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (converseVar.eventKey is pf8 /* Scroll forward request*/
+   && PK0ZW01.PK0ZWTSP >= PK0ZW01.TA5TSQIX) /* and no more pages*/
+
+    converseLib.validationFailed(38); /* No more pages to display*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  PK0ZW01.PK0ZWIXM = 12; /* Initialize map line index*/
+
+  while (PK0ZW01.PK0ZWIXM > 0) /* Until all lines are verified*/
+    PK0Z431(); /* See if any lines were selected*/
+  end
+
+  if (PK0ZM001.SP1ID != PK0ZW02.SP1ID) /* Sales program was changed*/
+
+    set PK0ZM001.SP1ID cursor, modified, bold; /* Highlight sales program*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (PK0ZM001.XOWCD != PK0ZW02.XOWCD) /* Owner group was changed*/
+
+    set PK0ZM001.XOWCD cursor, modified, bold; /* Highlight owner group*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (PK0ZM001.XUMCD != PK0ZW02.XUMCD) /* Unit of measure was changed*/
+
+    set PK0ZM001.XUMCD cursor, modified, bold; /* Highlight unit of measure*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (PK0ZM001.XPGCD != PK0ZW02.XPGCD) /* Package type was changed*/
+
+    set PK0ZM001.XPGCD cursor, modified, bold; /* Highlight package type*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (PK0ZM001.XSDCD != PK0ZW02.XSDCD) /* Specification was changed*/
+
+    set PK0ZM001.XSDCD cursor, modified, bold; /* Highlight specification*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (PK0ZM001.XQACD != PK0ZW02.XQACD) /* Quality was changed*/
+
+    set PK0ZM001.XQACD cursor, modified, bold; /* Highlight quality*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (PK0ZM001.XDMCD != PK0ZW02.XDMCD) /* Dimension was changed*/
+
+    set PK0ZM001.XDMCD cursor, modified, bold; /* Highlight dimension*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (PK0ZM001.SY2CLRID != PK0ZW02.SY2CLRID) /* Color was changed*/
+
+    set PK0ZM001.SY2CLRID cursor, modified, bold; /* Highlight color*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (PK0ZM001.SY1STNBR != PK0ZW02.SY1STNBR) /* Style was changed*/
+
+    set PK0ZM001.SY1STNBR cursor, modified, bold; /* Highlight style*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (PK0ZM001.XGPCD != PK0ZW02.XGPCD) /* GPC was changed*/
+
+    set PK0ZM001.XGPCD cursor, modified, bold; /* Highlight GPC*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+  if (PK0ZM001.XWHCD != PK0ZW01.XWHCD) /* Warehouse was changed*/
+
+    set PK0ZM001.XWHCD cursor, modified, bold; /* Highlight department*/
+    converseLib.validationFailed(39); /* Modifications not allowed*/
+    PK0ZM001.XXXERRID = "PK0Z430 "; /* Error location*/
+
+  end
+
+
+end // end PK0Z430
+
+// Highlight any selected lines
+Function PK0Z431()
+   /* ------------------------------------------------------------*/
+   /* Indicate an error if the line was selected.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZM001.PK0ZMSEL[PK0ZWIXM] != PK0ZW03.PK0ZMSEL[PK0ZWIXM]
+   && PK0ZM001.PK0ZMSEL[PK0ZWIXM] != " ") /* Line was selected*/
+
+    set PK0ZM001.PK0ZMSEL[PK0ZWIXM] cursor, modified, bold; /* Highlight*/
+    converseLib.validationFailed(52); /* Select not allowed with scroll*/
+    PK0ZM001.XXXERRID = "PK0Z431 "; /* Error location*/
+
+  end
+
+  PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM - 1; /* Decrement line number*/
+
+
+end // end PK0Z431
+
+// Process valid input request
+Function PK0Z500()
+   /* ------------------------------------------------------------*/
+   /* Save any of the data that was changed in temporary storage.*/
+   /* If a scroll request, adjust temporary storage page number.*/
+   /* Save warehouse code and product/sales program, if modified.*/
+   /* If orders were selected for inquiry, format the order keys*/
+   /* in the common work area and exit to Order Inquiry.*/
+   /* ------------------------------------------------------------*/
+
+  PK0Z510(); /* Save changes in temporary storage*/
+
+  if (converseVar.eventKey is pf7) /* Scroll back requested*/
+
+    PK0ZW01.PK0ZWTSP = PK0ZW01.PK0ZWTSP - 1; /* Decrement page number*/
+    return; /* Return to previous process*/
+
+  end
+
+  if (converseVar.eventKey is pf8) /* Scroll forward requested*/
+
+    PK0ZW01.PK0ZWTSP = PK0ZW01.PK0ZWTSP + 1; /* Increment page number*/
+    return; /* Return to previous process*/
+
+  end
+
+  if (PK0ZM001.XWHCD != PK0ZW01.XWHCD       /* Warehouse changed*/
+   || PK0ZM001.XGPCD != PK0ZW02.XGPCD       /* or GPC changed*/
+   || PK0ZM001.SY1STNBR != PK0ZW02.SY1STNBR /* or style changed*/
+   || PK0ZM001.SY2CLRID != PK0ZW02.SY2CLRID /* or color changed*/
+   || PK0ZM001.XDMCD != PK0ZW02.XDMCD       /* or dimension changed*/
+   || PK0ZM001.XQACD != PK0ZW02.XQACD       /* or quality changed*/
+   || PK0ZM001.XSDCD != PK0ZW02.XSDCD       /* or specification changed*/
+   || PK0ZM001.XPGCD != PK0ZW02.XPGCD       /* or package type changed*/
+   || PK0ZM001.XUMCD != PK0ZW02.XUMCD       /* or unit of measure changed*/
+   || PK0ZM001.XOWCD != PK0ZW02.XOWCD       /* or owner group changed*/
+   || PK0ZM001.SP1ID != PK0ZW02.SP1ID)      /* or sales program changed*/
+
+    PK0Z520(); /* Save changed product/sales program*/
+
+  end
+
+  PK0ZW01.PK0ZWSWO = " "; /* Initialize orders selected switch*/
+  PK0ZW01.PK0ZWIXM = 1; /* Initialize line index*/
+
+  while (PK0ZW01.PK0ZWSWO == " " /* Until a selected line is found*/
+   && PK0ZW01.PK0ZWIXM <= 12) /* or all lines are searched*/
+
+    PK0Z530(); /* Search for selected order*/
+
+  end
+
+  if (PK0ZW01.PK0ZWSWO == "Y") /* Orders selected for inquiry*/
+    PK0Z540(); /* Transfer to Order Inquiry*/
+  end
+
+
+end // end PK0Z500
+
+// Save temporary storage changes
+Function PK0Z510()
+   /* ------------------------------------------------------------*/
+   /* Save any modified select tags and update the page in*/
+   /* temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  PK0ZW01.PK0ZWSWO = " "; /* Initialize change switch*/
+  PK0ZW01.PK0ZWIXM = 1; /* Initialize line index*/
+
+  while (PK0ZW01.PK0ZWIXM <= 12) /* Until all lines are searched*/
+
+    if (PK0ZM001.PK0ZMSEL[PK0ZWIXM] != PK0ZW03.PK0ZMSEL[PK0ZWIXM]
+     && PK0ZM001.PK0ZMSEL[PK0ZWIXM] != "S") /* Line was not selected*/
+
+      PK0ZW01.PK0ZWSWO = "Y"; /* Indicate tag was changed*/
+      PK0ZW03.PK0ZMSEL[PK0ZWIXM] = PK0ZM001.PK0ZMSEL[PK0ZWIXM];
+
+    end
+
+    PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1; /* Increment map index*/
+
+  end
+
+  if (PK0ZW01.PK0ZWSWO == "Y") /* Select tags were changed*/
+    PK0Z163(); /* Update temporary storage page*/
+  end
+
+
+end // end PK0Z510
+
+// Save changed product/program
+Function PK0Z520()
+   /* ------------------------------------------------------------*/
+   /* If warehouse code, product or sales program changed, purge*/
+   /* temporary storage and save the new warehouse and customer*/
+   /* data.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZM001.XWHCD != PK0ZW01.XWHCD       /* Warehouse changed*/
+   || PK0ZM001.XGPCD != PK0ZW02.XGPCD       /* or GPC changed*/
+   || PK0ZM001.SY1STNBR != PK0ZW02.SY1STNBR /* or style changed*/
+   || PK0ZM001.SY2CLRID != PK0ZW02.SY2CLRID /* or color changed*/
+   || PK0ZM001.XDMCD != PK0ZW02.XDMCD       /* or dimension changed*/
+   || PK0ZM001.XQACD != PK0ZW02.XQACD       /* or quality changed*/
+   || PK0ZM001.XSDCD != PK0ZW02.XSDCD       /* or specification changed*/
+   || PK0ZM001.XPGCD != PK0ZW02.XPGCD       /* or package type changed*/
+   || PK0ZM001.XUMCD != PK0ZW02.XUMCD       /* or unit of measure changed*/
+   || PK0ZM001.XOWCD != PK0ZW02.XOWCD       /* or owner group changed*/
+   || PK0ZM001.SP1ID != PK0ZW02.SP1ID)      /* or sales program changed*/
+
+    PK0Z211(); /* Purge any temporary storage*/
+
+    PK0ZW01.XWHCD = PKWREC.XWHCD; /* Warehouse code*/
+    PK0ZW01.XWHABRV = PKWREC.XWHABRV; /* Warehouse abbreviation*/
+
+    if (PK0ZM001.XGPCD > " "    /* GPC entered*/
+     || PK0ZM001.SY1STNBR > " " /* or style entered*/
+     || PK0ZM001.SY2CLRID > " " /* or color entered*/
+     || PK0ZM001.XDMCD > " "    /* or dimension entered*/
+     || PK0ZM001.XQACD > " "    /* or quality entered*/
+     || PK0ZM001.XSDCD > " "    /* or specification entered*/
+     || PK0ZM001.XPGCD > " "    /* or package type entered*/
+     || PK0ZM001.XUMCD > " "    /* or unit of measure entered*/
+     || PK0ZM001.XOWCD > " "    /* or owner group entered*/
+     || PK0ZM001.SP1ID > " ")   /* or sales program entered*/
+
+      PK0ZW02.XGPCD = PK0ZM001.XGPCD; /* GPC*/
+      PK0ZW02.SY1STNBR = PK0ZM001.SY1STNBR; /* Style*/
+      PK0ZW02.SY2CLRID = PK0ZM001.SY2CLRID; /* Color*/
+      PK0ZW02.XDMCD = PK0ZM001.XDMCD; /* Dimension*/
+      PK0ZW02.XQACD = PK0ZM001.XQACD; /* Quality*/
+      PK0ZW02.XSDCD = PK0ZM001.XSDCD; /* Specification*/
+      PK0ZW02.XPGCD = PK0ZM001.XPGCD; /* Package type*/
+      PK0ZW02.XUMCD = PK0ZM001.XUMCD; /* Unit of measure*/
+      PK0ZW02.XOWCD = PK0ZM001.XOWCD; /* Owner group*/
+      PK0ZW02.SP1ID = PK0ZM001.SP1ID; /* Sales program*/
+
+      PK0ZW01.PK0ZWSWF = "Y"; /* Set format switch*/
+
+    end
+
+  end
+
+
+end // end PK0Z520
+
+// Search for selected orders
+Function PK0Z530()
+   /* ------------------------------------------------------------*/
+   /* Search until the first selected order line is found.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZM001.PK0ZMSEL[PK0ZWIXM] == "S") /* Line was selected*/
+    PK0ZW01.PK0ZWSWO = "Y"; /* Indicate order selected*/
+  end
+
+  PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1; /* Increment line number*/
+
+
+end // end PK0Z530
+
+// Transfer to Order Inquiry
+Function PK0Z540()
+   /* ------------------------------------------------------------*/
+   /* Clear the common order key array and move the selected*/
+   /* order numbers into it.  Purge any temporary storage.*/
+   /* Transfer control to the Order Inquiry application.*/
+   /* ------------------------------------------------------------*/
+
+  PKWREC.PKWINDEX = PKWREC.PKWINDEX + 1; /* Increment inquiry index*/
+
+  if (PKWREC.PKWINDEX > 3) /* More than three levels of inquiry*/
+    PKWREC.PKWINDEX = 3; /* Restrict to three levels*/
+  end
+
+  PKWREC.PKWSLTYP[PKWINDEX] = "O"; /* Inquiry selection type*/
+  PKWREC.PKWFRMAP[PKWINDEX] = "PK0Z"; /* Previous application*/
+
+  set PKYREC empty; /* Clear order key array*/
+  set EPAREC empty;
+
+  PK0ZW01.PK0ZWIXA = 1; /* Initialize array index*/
+  PK0ZW01.PK0ZWIXM = 1; /* Initialize map index*/
+
+  while (PK0ZW01.PK0ZWIXM <= 12) /* Until end of order lines*/
+    PK0Z541(); /* Move selected order numbers*/
+  end
+
+  PKYREC.XWHCD = PK0ZW01.XWHCD; /* Save warehouse code*/
+  PKYREC.XWHABRV = PK0ZW01.XWHABRV; /* and warehouse abbreviation*/
+
+  PKWREC.PKWARRAY[PKWINDEX] = PKYREC.PKWARRAY; /* Inquiry keys array*/
+
+  PKWREC.PKWUSERA[PKWINDEX] = PK0ZW02.PK0ZWKEY; /* Current key*/
+
+  PK0Z211(); /* Purge any temporary storage*/
+
+  if (PK0ZW01.PK0ZW-DCMS-SEL-FL == "Y")
+    EPAREC.XWHCD = PK0ZW01.XWHCD;
+    EPAREC.XWHABRV = PK0ZW01.XWHABRV;
+    PK0ZW02.DCMS-SEL-FL = "Y";
+  end
+
+  COMMAREA.CA-USER-WORKAREA-2K-B = EPAREC.EPAARRAY;
+
+  if (converseVar.eventKey is pf13) /* PF13 was pressed*/
+    PKWREC.PKWSLTYP[PKWINDEX] = "S"; /* Inquiry selection type*/
+  else
+    if (converseVar.eventKey is pf14) /* PF14 was pressed*/
+      PKWREC.PKWSLTYP[PKWINDEX] = "S"; /* Inquiry selection type*/
+    else
+      if (converseVar.eventKey is pf15) /* PF15 was pressed*/
+        PKWREC.PKWSLTYP[PKWINDEX] = "C"; /* Inquiry selection type*/
+      else
+
+        COMMAREA.CATOAP = "PK0B"; /* PICKING Order Inquiry*/
+      end
+    end
+  end
+
+  COMMAREA.CAUSERA = PKWREC.PKWGRPLV; /* COMMAREA user area*/
+
+  XSEXIT(); /* Transfer to Order Inquiry*/
+
+  set PK0ZM001 initial; /* Clear map output area*/
+
+  if (PK0ZW01.XWHCD == "51")
+    PK0ZM001.PK0ZM-SCHED-ID-LIT1 = "MANIFEST";
+    PK0ZM001.PK0ZM-SCHED-ID-LIT2 = " ID  ";
+  else
+    PK0ZM001.PK0ZM-SCHED-ID-LIT1 = "        ";
+    PK0ZM001.PK0ZM-SCHED-ID-LIT2 = "SCHED";
+  end
+
+  PK0ZM001.XWHCD = PK0ZW01.XWHCD; /* Warehouse code*/
+  PK0ZM001.XWHABRV = PK0ZW01.XWHABRV; /* and abbreviation*/
+
+  PK0ZM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+  converseLib.validationFailed(); /* Force alarm to sound*/
+  PK0ZM001.XXXERRID = "PK0Z540 "; /* Error location*/
+
+  exit stack; /* Exit to redisplay map*/
+
+
+end // end PK0Z540
+
+// Move selected order numbers
+Function PK0Z541()
+   /* ------------------------------------------------------------*/
+   /* If the line was selected for inquiry, move the order number*/
+   /* to the common key array.*/
+   /* ------------------------------------------------------------*/
+
+  if (PK0ZM001.PK0ZMSEL[PK0ZWIXM] == "S") /* Selected for inquiry*/
+
+    if (PK0ZW01.PK0ZW-DCMS-SEL-FL == "Y")
+      EPAREC.EPAORACT[PK0ZWIXA] = PK0ZM001.PK0ZMSEL[PK0ZWIXM];
+      EPAREC.PK1CUOID[PK0ZWIXA] = PK0ZW03.PK1CUOID[PK0ZWIXM];
+      EPAREC.PK1NORID[PK0ZWIXA] = PK0ZW03.PK1NORID[PK0ZWIXM];
+      EPAREC.PK1ALLNB[PK0ZWIXA] = PK0ZW03.PK1ALLNB[PK0ZWIXM];
+      EPAREC.PK1PKSCH[PK0ZWIXA] = PK0ZW03.PK1PKSCH[PK0ZWIXM];
+    else
+      PKYREC.PKYORACT[PK0ZWIXA] = PK0ZM001.PK0ZMSEL[PK0ZWIXM];
+      PKYREC.PK1CUOID[PK0ZWIXA] = PK0ZW03.PK1CUOID[PK0ZWIXM];
+      PKYREC.PK1NORID[PK0ZWIXA] = PK0ZW03.PK1NORID[PK0ZWIXM];
+      PKYREC.PK1PKSCH[PK0ZWIXA] = PK0ZW03.PK1PKSCH[PK0ZWIXM];
+    end
+
+    PK0ZW01.PK0ZWIXA = PK0ZW01.PK0ZWIXA + 1; /* Increment array index*/
+
+  end
+
+  PK0ZW01.PK0ZWIXM = PK0ZW01.PK0ZWIXM + 1; /* Increment map index*/
+
+
+end // end PK0Z541
+
+//*** RECORD=PK0ZW01 ****
+// Working storage for PK0Z - Product/Sales Program Inquiry
+// ***********************
+Record PK0ZW01 type basicRecord
+  10 XWHCD XWHCD ; 
+  10 XWHABRV XWHABRV ; 
+  10 PK0ZWIXM PK0ZWIXM ; 
+  10 PK0ZWIXA PK0ZWIXA ; 
+  10 PK0ZWSW1 PK0ZWSW1 ; 
+  10 PK0ZWSWF PK0ZWSWF ; 
+  10 PK0ZWSWO PK0ZWSWO ; 
+  10 PK0ZWSWP PK0ZWSWP ; 
+  10 PK0ZWSWQ PK0ZWSWQ ; 
+  10 PK0ZWSWR PK0ZWSWR ; 
+  10 PK0ZWSWS PK0ZWSWS ; 
+  10 PK0ZWSWT PK0ZWSWT ; 
+  10 PK0ZWTSP PK0ZWTSP ; 
+  10 TA5TSQIX TA5TSQIX ; 
+  10 PK0ZWSWM PK0ZWSWM ; 
+  10 PK0ZWSWN PK0ZWSWN ; 
+  10 PK0ZW-DCMS-SEL-FL PK0ZW-DCMS-SEL-FL ; 
+  10 PK0ZSCSW PK0ZSCSW ; 
+  10 PK1CUOID PK1CUOID ; 
+  10 PK1NORID PK1NORID ; 
+  10 PK0ZCUOID PK0ZCUOID ; 
+  10 PK0ZNORID PK0ZNORID ; 
+end // end PK0ZW01
+
+//*** RECORD=PK0ZW02 ****
+// Display storage for PK0Z - Product/Sales Program Inquiry
+// ***********************
+Record PK0ZW02 type basicRecord
+  10 PK0ZWKEY PK0ZWKEY ; 
+    15 XGPCD XGPCD ; 
+    15 SY1STNBR SY1STNBR ; 
+    15 SY2CLRID SY2CLRID ; 
+    15 XDMCD XDMCD ; 
+    15 XQACD XQACD ; 
+    15 XSDCD XSDCD ; 
+    15 XPGCD XPGCD ; 
+    15 XUMCD XUMCD ; 
+    15 XOWCD XOWCD ; 
+    15 SP1ID SP1ID ; 
+  10 SP1NM SP1NM ; 
+  10 DCMS-SEL-FL DCMS-SEL-FL ; 
+end // end PK0ZW02
+
+//*** RECORD=PK0ZW03 ****
+// Temporary storage for PK0Z - Product/Sales Program Inquiry
+// ***********************
+Record PK0ZW03 type basicRecord
+  5 PK0ZW-GROUP char(472) ; 
+    10 PK0ZWLEN PK0ZWLEN ; 
+    10 PK0ZMSEL PK0ZMSEL [12] ; 
+    10 PK1CUOID PK1CUOID [12] ; 
+    10 PK1NORID PK1NORID [12] ; 
+    10 PK1ALLNB PK1ALLNB [12] ; 
+    10 XOTCD XOTCD [12] ; 
+    10 PK1PKSCH PK1PKSCH [12] ; 
+    10 KUCCOID KUCCOID [12] ; 
+    10 OP1CUNDT OP1CUNDT [12] ; 
+    10 OP1DSBDT OP1DSBDT [12] ; 
+    10 OP1DSADT OP1DSADT [12] ; 
+    10 PK4ORHLD PK4ORHLD [12] ; 
+    10 PK4OTUNT PK4OTUNT [12] ; 
+    10 DCMS-SEL-FL DCMS-SEL-FL [12] ; 
+    10 DCMS-ORD-STAT-CD DCMS-ORD-STAT-CD [12] ; 
+end // end PK0ZW03
+
+//*** RECORD=SRAREC ****
+// ************* SHIPPING/RECEIVING ORDER TABLE ***************
+// 
+// DB2 TABLE VIEW:      DSHIP.VSRORD02
+// 
+// COPYLIB MEMBER:      DCL00322
+// 
+// I/O MODULE:          IO2050
+// 
+// KEY TO DB2 TABLE:    XWHCD
+//                      XGPCD
+//                      SY1STNBR
+//                      SY2CLRID
+//                      XDMCD
+//                      XQACD
+//                      XSDCD
+//                      XSACD
+//                      XPGCD
+//                      XUMCD
+//                      XOWCD
+// 
+// DATE CREATED:        06/16/87
+// 
+// MAINTENANCE LOG:
+// 
+//   DATE    INIT.      COMMENT
+// --------  -----      ---------------------------------------
+// 06/16/87   SHP       New record definition.
+// 04/02/90  mchow      Added XBCCD to record.
+// 06/17/92  mchow      Added KUMSLFID, KUJSLFID to record;
+//                      increased SRAGRP from 72 to 90 bytes.
+// 06/29/92  mchow      Moved KUMSLFID, KUJSLFID to match
+//                      placement in DCL00322.
+// **********************
+Record SRAREC type basicRecord
+  5 SRAGROUP SRAGROUP ; 
+    10 XWHCD XWHCD ; 
+    10 PK1PKSCH PK1PKSCH ; 
+    10 OP1CUOID OP1CUOID ; 
+    10 OP1NORID OP1NORID ; 
+    10 OP1NTMAL OP1NTMAL ; 
+    10 KUCCOID KUCCOID ; 
+    10 KUMSTRID KUMSTRID ; 
+    10 XNXCD XNXCD ; 
+    10 XDVCD XDVCD ; 
+    10 XBCCD XBCCD ; 
+    10 OP1CUNDT OP1CUNDT ; 
+    10 OP1DSADT OP1DSADT ; 
+    10 OP1DSBDT OP1DSBDT ; 
+    10 XOTCD XOTCD ; 
+    10 XDSCD XDSCD ; 
+    10 KUMSLFID KUMSLFID ; 
+    10 KUJSLFID KUJSLFID ; 
+    10 SR2QTYSH SR2QTYSH ; 
+    10 SRAKEY SRAKEY ; 
+      15 XGPCD XGPCD ; 
+      15 SY1STNBR SY1STNBR ; 
+      15 SY2CLRID SY2CLRID ; 
+      15 XDMCD XDMCD ; 
+      15 XQACD XQACD ; 
+      15 PC2INSEG PC2INSEG ; 
+      15 XEGCD XEGCD ; 
+      15 XPGCD XPGCD ; 
+      15 XUMCD XUMCD ; 
+      15 XOWCD XOWCD ; 
+end // end SRAREC
+
+//*** RECORD=VMPOLHJ1 ****
+// ************* Mirror Pool Join of Header/Item **************
+// 
+// DB2 TABLE VIEW:        DPICK.VMPOLHJ1
+// 
+// COPYLIB MEMBER:        VMPOLHJ1
+// 
+// I/O MODULE:            VMPOLHJ1
+// 
+// KEY TO DB2 TABLE:      XWH-WHSE-CD
+//                        XGP-GPC-CD
+//                        SY-STY-NBR
+//                        SY-COLR-CD-ID
+//                        XDM-DIM-CD
+//                        XQA-QUAL-CD
+//                        XPG-PKG-TYP-CD
+//                        XUM-UOM-CD
+//                        XOW-OWN-GRP-CD
+// 
+//   DATE      NAME    DESCRIPTION
+// --------   ------   ----------------------------------------
+// 03/04/98   Kdenne   New Table
+// ************************
+Record VMPOLHJ1 type basicRecord
+  5 VMPOLHJ1-GROUP VMPOLHJ1-GROUP ; 
+    10 VMPOLHJ1-KEY VMPOLHJ1-KEY ; 
+      15 XWH-WHSE-CD XWH-WHSE-CD ; 
+      15 PK-ORD-PART-CHAR PK-ORD-PART-CHAR ; 
+      15 PK-ORD-STKTF-ID PK-ORD-STKTF-ID ; 
+      15 PK-NIKE-ORD-ID PK-NIKE-ORD-ID ; 
+      15 PK-NBR-TIMES-ALOC PK-NBR-TIMES-ALOC ; 
+    10 DCMS-ORD-STAT-CD DCMS-ORD-STAT-CD ; 
+    10 DCMS-ERROR-FL DCMS-ERROR-FL ; 
+    10 PK-STKTF-FL PK-STKTF-FL ; 
+    10 CU-CO-ID CU-CO-ID ; 
+    10 CU-STOR-ID CU-STOR-ID ; 
+    10 XNX-DEPT-ID-XREF XNX-DEPT-ID-XREF ; 
+    10 XDV-DIV-CD XDV-DIV-CD ; 
+    10 XBC-BRAND-CD XBC-BRAND-CD ; 
+    10 OP-CUST-NEED-DT OP-CUST-NEED-DT ; 
+    10 OP-DNT-SHIP-AFT-DT OP-DNT-SHIP-AFT-DT ; 
+    10 OP-DNT-SHIP-BFR-DT OP-DNT-SHIP-BFR-DT ; 
+    10 XOT-ORD-TYP-CD XOT-ORD-TYP-CD ; 
+    10 XOC-ORD-CLS-CD XOC-ORD-CLS-CD ; 
+    10 PK-TOT-ORD-QTY PK-TOT-ORD-QTY ; 
+    10 PK-ORD-HLD-FL PK-ORD-HLD-FL ; 
+    10 PK-CUST-HLD-FL PK-CUST-HLD-FL ; 
+    10 PK-SEL-IND PK-SEL-IND ; 
+    10 PK-LINE-ITEM-NBR PK-LINE-ITEM-NBR ; 
+    10 XGP-GPC-CD XGP-GPC-CD ; 
+    10 SY-STY-NBR SY-STY-NBR ; 
+    10 SY-COLR-CD-ID SY-COLR-CD-ID ; 
+    10 XDM-DIM-CD XDM-DIM-CD ; 
+    10 OP-COOR-GRP-CD OP-COOR-GRP-CD ; 
+    10 XQA-QUAL-CD XQA-QUAL-CD ; 
+    10 PC-CU-IN-SEG-CD PC-CU-IN-SEG-CD ; 
+    10 XEG-ENGR-DIFF-CD XEG-ENGR-DIFF-CD ; 
+    10 XPG-PKG-TYP-CD XPG-PKG-TYP-CD ; 
+    10 XUM-UOM-CD XUM-UOM-CD ; 
+    10 XOW-OWN-GRP-CD XOW-OWN-GRP-CD ; 
+end // end VMPOLHJ1
+
+// hold last order displayed
+DataItem PK0ZCUOID int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Selection tag
+DataItem PK0ZMSEL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hold last nike ord displayed
+DataItem PK0ZNORID smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Merge source switch
+DataItem PK0ZSCSW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Select item for DCMS
+DataItem PK0ZW-DCMS-SEL-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for array fields
+DataItem PK0ZWIXA smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem PK0ZWIXM smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Current inquiry key
+DataItem PK0ZWKEY char(28)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Temporary storage length
+DataItem PK0ZWLEN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// First time through switch
+DataItem PK0ZWSW1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Display format switch
+DataItem PK0ZWSWF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Mirror Pool eof switch
+DataItem PK0ZWSWM char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Mirror Pool read switch
+DataItem PK0ZWSWN char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Orders selected switch
+DataItem PK0ZWSWO char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Picking orders eof switch
+DataItem PK0ZWSWP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Picking order read switch
+DataItem PK0ZWSWQ char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Return from inquiry switch
+DataItem PK0ZWSWR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Shipping orders eof switch
+DataItem PK0ZWSWS char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Shipping order read switch
+DataItem PK0ZWSWT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Current temporary storage page
+DataItem PK0ZWTSP num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Record group level
+DataItem SRAGROUP char(90)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Key group level
+DataItem SRAKEY char(27)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Record Group Level
+DataItem VMPOLHJ1-GROUP char(81)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Record Key Level
+DataItem VMPOLHJ1-KEY char(11)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

@@ -1,0 +1,2602 @@
+package pk04;
+import corpcom1.*;
+import corpcom3.*;
+import corpcom4.*;
+import corpcom5.*;
+import corpcom6.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import in1.common.*;
+import pk.common.*;
+import sw.common.*;
+import sy.common.*;
+import ta.common.*;
+import ts.common.*;
+//*** PROGRAM=PK04 ****
+// ;-----------------------------------------------------------
+// ; maintenance carton class dimension table
+// ;-----------------------------------------------------------
+// ;
+// ; maintance history
+// ;------------------
+// ;
+// ; control   date    init   reason
+// ;-------- -------- ------  ---------------------------------
+// ;e0000000 08/23/89 jcampb  creation
+// ;e0000000 08/29/89 jcampb  change "volume" to "cubic" on map
+// ;e0000000 12/19/89 jcampb  change spelling of maintenance
+// ;e0000000 08/13/90 mwalto  fixed error reporting throughout
+// ;                          the pgm, plus add activate option
+// ;e0000000 11/13/91 DPETTI  ADDED FACTORY CARTON CODE ABILITY
+// ;                          EITHER BOX OR FULL CASE DIMS OR
+// ;                          BOTH ARE REQUIRED.
+// ;         09/06/92 SMACMI  Added logic to inquire on dimen-
+// ;         sion range; i.e. enter length, width, height and
+// ;         get all rows which are within an inch of the re-
+// ;         quested dimension. Each row is saved in temp stor-
+// ;         age and is fetched using PF5.
+// ;pk#140   06/04/93 ovazqu  Before deactivating a carton
+// ;                          class, the program will check the
+// ;                          Dpick.Vpcart01 table, if the
+// ;                          carton class is found on this
+// ;                          table, the deactivation request
+// ;                          will be dropped.
+// ;CANADA   08/11/95 CBRINE  Added XCTCD to PKWREC
+// ;pkmaint  03/17/98 kviswa  fixed conversion of carton volume
+// ;                          carton volume is now converted to
+// ;                          and stored in cubic feet instead
+// ;                          of cubic inches - see pk04320
+// ;         00/00/00 XXXXXX  ................................
+// ;TT#11222 04/20/01 SVENKA  Accomodate 'weight' field in the
+// ;                          screen PK04 and change the
+// ;                          application.The new column has
+// ;                          been added to the new view as,
+// ;                         pk_fulcs_crtn_wt to DPICK.VCRTN002
+// ;                          Bug-fix to check if all the
+// ;                          dimensions are less than equal to
+// ;                          zero and only then add can be
+// ;                          done.
+// ;tt13281  07/18/01 sgopal  change in pklrec1/pklgrp field
+// *********************
+Program PK04 type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "PK00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  PK04W01 PK04W01; // record
+  PK04W02 PK04W02; // record
+  PK04W03 PK04W03; // record
+  PK04W04 PK04W04; // record
+  PKCREC PKCREC; // record
+  PKKREC PKKREC; // record
+  PKLREC1 PKLREC1; // record
+  PKWREC PKWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA5REC TA5REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use PK04M.PK04M100 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    PK04010: PK04010();
+    goto PK04020;
+    PK04020: PK04020();
+    goto PK04020;
+  end // end main
+end // end PK04
+
+// application initialization
+Function PK04010()
+
+  XPPK001(); /* application init*/
+
+  set PKKREC empty;
+  set PKCREC empty;
+  set PK04W01 empty;
+  set PK04W04 empty;
+  set PK04M100 initial;
+  set PK04M100.PKKBXCWD[2] skip;
+  set PK04M100.PKKBXCHG[2] skip;
+  set PK04M100.PKKBXCLN[2] skip;
+  set PK04M100.PKKBXCF3[2] skip;
+  set PK04M100.PKLCTNWD[2] skip;
+  set PK04M100.PKLCTNHG[2] skip;
+  set PK04M100.PKLCTNLN[2] skip;
+  set PK04M100.PKLCTNF3[2] skip;
+
+   /* load constants used in calculations*/
+
+  PK04W01.PK04WUOM = "U"; /* set unit of measure to inches*/
+  PK04M100.PK04MUOM = "U"; /* set unit of measure to inches*/
+   /* TT#11222 SVENKA CHANGES BEGIN*/
+  PK04M100.PK04WTUNT = "LBS"; /* set unit of weight to LBS*/
+   /* TT#11222 SVENKA CHANGES END*/
+  PK04W01.PK04WCFM = .3048; /* 1 foot = .3048 meters*/
+  PK04W01.PK04WCIC = .3937; /* 1 inch = .3937 centimeters*/
+  PK04W01.PK04WCFV = .0280; /* 1 cubic foot = .0280 cubic meters*/
+  PK04W01.PK04WBMC = "CUBIC METERS";
+  PK04W01.PK04WCMC = "CUBIC METERS";
+
+end // end PK04010
+
+// main application driver
+Function PK04020()
+   /* ------------------- pk04020 - main driver ------------------*/
+
+  PK04030(); /* setup screen*/
+
+  PK04100(); /* converse screen*/
+
+  PK04150(); /* reset highlighted fields*/
+
+  PK04200(); /* check attention identifier*/
+
+  PK04300(); /* determin function and edit*/
+
+  PK04400(); /* do update/adds*/
+
+end // end PK04020
+
+// setup and get data for screen
+Function PK04030()
+   /* ------------ pk04030 - get data and setup screen -----------*/
+
+  if (PK04W01.PK04WSCR == "Y" /* need to get single row of*/
+   || PK04W01.PK04W-DIM-FLAG == "Y") /* data or multiple rows ?*/
+    /* next sentence                /* then continue*/
+  else
+    return; /* otherwise, get out*/
+  end
+
+   /* TT#11222 SVENKA CHANGES BEGIN*/
+  if (converseVar.validationMsgNum == 532) /* when the dim is > 999.99 errors out*/
+    return; /* otherwise, get out*/
+  end
+   /* TT#11222 SVENKA CHANGES END*/
+
+  if (PK04W01.PK04W-DIM-FLAG == "Y") /* if inquire on dims*/
+
+    if (converseVar.eventKey is pf5)
+      PK04045(); /* get next dimension in range*/
+    else
+      PK04046(); /* get dimension range*/
+    end
+  else
+    if (PK04M100.PKKBXCCD != " ")
+      PK04040(); /* get carton class record*/
+    end
+  end
+
+  if (converseVar.validationMsgNum == 0   
+   || converseVar.validationMsgNum == 32  /* table update was successful*/
+   || converseVar.validationMsgNum == 111 /* carton class is inactive*/
+   || converseVar.validationMsgNum == 316) /* carton class inactive, tbl not updtd*/
+    PK04060(); /* calculate screen qtys*/
+  end
+
+  if (converseVar.validationMsgNum == 114)
+    PK04070(); /* not found - clear old data*/
+  end
+
+  PK04W01.PK04WSCR = "N";
+
+end // end PK04030
+
+// get carton class dim data
+Function PK04040()
+   /* --- get the single product box dimensions*/
+
+  PK04W01.PK04WGOT = "Y";
+  set PKKREC empty;
+  PKKREC.PKKBXCCD = PK04M100.PKKBXCCD;
+  PKKREC.XXXSTAT = "A";
+  PK04050();
+
+  if (SQLCA.VAGen_SQLCODE == 100)
+    if (PK04M100.PK04MACT == "I") /* inquiry*/
+      PKKREC.XXXSTAT = "I";
+      PK04050(); /* look for inactive carton class*/
+    else
+      if (PK04M100.PK04MACT == "C") /* change*/
+        PKKREC.XXXSTAT = "I";
+        converseLib.validationFailed(316); /* carton class inactive, tbl not updtd*/
+        PK04050(); /* look for inactive carton class*/
+      end
+    end
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (PK04M100.PK04MACT == "A"
+     && converseVar.validationMsgNum != 32)
+      converseLib.validationFailed(103); /* carton class exists*/
+      PK04M100.XXXERRID = "PK04040";
+      set PK04M100.PKKBXCCD cursor, bold;
+      PK04W01.PK04WGOT = "N";
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      PK04W01.PK04WGOT = "N";
+      converseLib.validationFailed(114); /* carton class not found*/
+      PK04M100.XXXERRID = "PK04040";
+      set PK04M100.PKKBXCCD cursor, bold;
+      return;
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(108);
+        PK04M100.XXXERRID = "PK04040";
+        return;
+      end
+    end
+  end
+
+   /* --- now get the full case dimensions*/
+
+  set PKLREC1 empty;
+  PKLREC1.PKLCTNCD = PK04M100.PKKBXCCD;
+  PKLREC1.XXXSTAT = "A";
+  PK04055();
+
+  if (SQLCA.VAGen_SQLCODE == 100)
+    if (PK04M100.PK04MACT == "I") /* inquiry*/
+      PKLREC1.XXXSTAT = "I";
+      converseLib.validationFailed(111); /* carton class is inactive*/
+      PK04055(); /* look for inactive carton class*/
+    else
+      if (PK04M100.PK04MACT == "C") /* change*/
+        PKLREC1.XXXSTAT = "I";
+        converseLib.validationFailed(316); /* carton class inactive, tbl not updtd*/
+        PK04055(); /* look for inactive carton class*/
+      end
+    end
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (PK04M100.PK04MACT == "A"
+     && converseVar.validationMsgNum != 32)
+      converseLib.validationFailed(103); /* carton class exists*/
+      PK04M100.XXXERRID = "PK04040";
+      set PK04M100.PKKBXCCD cursor, bold;
+      PK04W01.PK04WGOT = "N";
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      PK04W01.PK04WGOT = "N";
+      converseLib.validationFailed(114); /* carton class not found*/
+      PK04M100.XXXERRID = "PK04040";
+      set PK04M100.PKKBXCCD cursor, bold;
+      return;
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(108);
+        PK04M100.XXXERRID = "PK04040";
+        return;
+      end
+    end
+  end
+end // end PK04040
+
+// get next dimension in range
+Function PK04045()
+   /* --- get the next dimension in the requested range --- **/
+
+  PK04W01.PK04WGOT = "Y";
+  set PKKREC empty;
+  PKKREC.XXXSTAT = "A";
+
+  PK04W01.PK04WTSP = PK04W01.PK04WTSP + 1; /* get next page*/
+
+  if (PK04W01.PK04WTSP > PK04W01.TA5TSQIX) /* if page doesn't exist*/
+    PK04M100.VAGen_EZEMSG = "THERE ARE NO MORE DIMENSIONS TO DISPLAY";
+    PK04M100.XXXERRID = "PK04040";
+    PK04W01.PK04WTSP = PK04W01.PK04WTSP - 1; /* get last page again*/
+    PK04901(); /* read temp storage*/
+    PK04W01.PK04WGOT = "N";
+    return; /* get out*/
+
+  else
+
+    if (PK04W01.PK04WTSP == PK04W01.TA5TSQIX) /* if last page*/
+      PK04M100.VAGen_EZEMSG = "THERE ARE NO MORE DIMENSIONS TO DISPLAY";
+      PK04901(); /* read temp storage*/
+      return; /* get out*/
+    else
+      PK04M100.VAGen_EZEMSG = "PRESS PF5 FOR MORE DIMENSIONS";
+      PK04901(); /* read temp storage*/
+      return; /* get out*/
+    end
+
+  end
+
+  /* *********** pk04045 end ****************************************/
+end // end PK04045
+
+// get dimension ranges requested
+Function PK04046()
+   /* --- get the dimensions for the requested range ---*/
+
+  PK04W01.PK04WGOT = "Y";
+  set PKKREC empty;
+  PKKREC.XXXSTAT = "A";
+
+  if (PK04WSCR == "K"
+   || PK04WSCR == "L")
+    PK04W01.PK04WIXM = 1; /* reset display line number*/
+    PK04W01.PK04WTSP = 1; /* reset current page number*/
+    PK04W01.TA5TSQIX = 0; /* reset highest page number*/
+
+    PK04902(); /* purge temp storage*/
+
+    if (PK04WSCR == "K") /* use pkkrec*/
+
+  /* **** get cursor from dpick.vboxes01 and save each row as a *******/
+  /* **** page in temp storage                                  *******/
+
+      PK04052(); /* get cursor*/
+      PK04053(); /* get page of data*/
+
+      if (SQLCA.VAGen_SQLCODE == 0)
+
+        while (SQLCA.VAGen_SQLCODE == 0)
+          PK04051(); /* move it to temp rec*/
+          PK04900(); /* save it in temp storage*/
+          PK04053(); /* get page of data*/
+        end
+
+        PK04054(); /* close the cursor*/
+        PK04901(); /* read temp storage*/
+        PK04WSCR = "Y"; /* reset flag*/
+
+        if (PK04W01.PK04WTSP == PK04W01.TA5TSQIX) /* no more dims*/
+          PK04M100.VAGen_EZEMSG = "THERE ARE NO MORE DIMENSIONS TO DISPLAY";
+        else /* more dims*/
+          PK04M100.VAGen_EZEMSG = "PRESS PF5 FOR MORE DIMENSIONS";
+        end
+
+      else
+        PK04054(); /* close the cursor*/
+        PK04W01.PK04WGOT = "N";
+        PK04M100.XXXERRID = "PK04040";
+        set PK04M100.PKKBXCLN cursor, bold;
+        set PK04M100.PKKBXCWD bold;
+        set PK04M100.PKKBXCHG bold;
+        PK04M100.PKLCTNLN[1] = 0;
+        PK04M100.PKLCTNLN[2] = 0;
+        PK04M100.PKLCTNWD[1] = 0;
+        PK04M100.PKLCTNWD[2] = 0;
+        PK04M100.PKLCTNHG[1] = 0;
+        PK04M100.PKLCTNHG[2] = 0;
+        converseLib.validationFailed(445); /* 'dims for boxes not found'*/
+      end
+
+    else /* use pklrec1*/
+
+  /* **** get cursor from dpick.vcrtn001 and save each row as a *******/
+  /* **** page in temp storage                                  *******/
+
+      PK04057(); /* get cursor*/
+      PK04058(); /* get page of data*/
+
+      if (SQLCA.VAGen_SQLCODE == 0)
+
+        while (SQLCA.VAGen_SQLCODE == 0)
+          PK04056(); /* move it to temp rec*/
+          PK04900(); /* save it in temp storage*/
+          PK04058(); /* get page of data*/
+        end
+
+        PK04059(); /* close the cursor*/
+        PK04901(); /* read temp storage*/
+        PK04WSCR = "Y"; /* reset flag*/
+
+        if (PK04W01.PK04WTSP == PK04W01.TA5TSQIX) /* no more dims*/
+          PK04M100.VAGen_EZEMSG = "THERE ARE NO MORE DIMENSIONS TO DISPLAY";
+        else /* more dims*/
+          PK04M100.VAGen_EZEMSG = "PRESS PF5 FOR MORE DIMENSIONS";
+        end
+
+      else
+        PK04059(); /* close the cursor*/
+        PK04W01.PK04WGOT = "N";
+        PK04M100.XXXERRID = "PK04040";
+        set PK04M100.PKLCTNLN cursor, bold;
+        set PK04M100.PKLCTNWD bold;
+        set PK04M100.PKLCTNHG bold;
+        PK04M100.PKKBXCLN[1] = 0;
+        PK04M100.PKKBXCLN[2] = 0;
+        PK04M100.PKKBXCWD[1] = 0;
+        PK04M100.PKKBXCWD[2] = 0;
+        PK04M100.PKKBXCHG[1] = 0;
+        PK04M100.PKKBXCHG[2] = 0;
+        converseLib.validationFailed(446); /* 'dims for carton not found'*/
+      end
+
+    end
+
+  end
+
+  PK04M100.PKKBXCF3[1] = 0; /* zero out volume*/
+  PK04M100.PKKBXCF3[2] = 0; /* zero out volume*/
+  PK04M100.PKLCTNF3[1] = 0; /* zero out volume*/
+  PK04M100.PKLCTNF3[2] = 0; /* zero out volume*/
+
+  /* ************** pk04046 end *********************************/
+end // end PK04046
+
+// access dpick.vboxes01
+Function PK04050()
+
+  call "IO4560" ("S ", SQLCA, PKKREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != +100
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04050 ";
+    TA1REC.TA1LOCAT[1] = "IO4560  ";
+    TA1REC.TA1LOCAT[3] = "SELECT  ";
+    TA1REC.TA1LOCAT[4] = "UNIQUE  ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VBOXES01";
+    TA1REC.TA1TBLKE = PKKREC.PKKKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+end // end PK04050
+
+// save pkk data in w/s
+Function PK04051()
+   /* --------------------- pk04051 save -----------------------*/
+
+
+
+  PK04W03.PK04W-BOX-CLASS-CD = PKKREC.PKKBXCCD;
+  PK04W03.PK04W-BOX-LENGTH = PKKREC.PKKBXCLN;
+  PK04W03.PK04W-BOX-WIDTH = PKKREC.PKKBXCWD;
+  PK04W03.PK04W-BOX-HEIGHT = PKKREC.PKKBXCHG;
+  PK04W03.PK04W-BOX-VOLUME = PKKREC.PKKBXCF3;
+
+
+
+
+   /* --------------------- pk04051 end  -----------------------*/
+end // end PK04051
+
+// select set dpick.vboxes01
+Function PK04052()
+
+  PK04W02.PK04W-IO-TASK = "S1";
+  call "PK3040" (PK04W02, SQLCA, PKKREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04051 ";
+    TA1REC.TA1LOCAT[1] = "PK3040  ";
+    TA1REC.TA1LOCAT[3] = "SELECT  ";
+    TA1REC.TA1LOCAT[4] = "SET     ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VBOXES01";
+    TA1REC.TA1TBLKE = PKKREC.PKKKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+end // end PK04052
+
+// select next dpick.vboxes01
+Function PK04053()
+
+  PK04W02.PK04W-IO-TASK = "N1";
+  call "PK3040" (PK04W02, SQLCA, PKKREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != +100
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04052 ";
+    TA1REC.TA1LOCAT[1] = "PK3040  ";
+    TA1REC.TA1LOCAT[3] = "SELECT  ";
+    TA1REC.TA1LOCAT[4] = "NEXT    ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VBOXES01";
+    TA1REC.TA1TBLKE = PKKREC.PKKKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+end // end PK04053
+
+// close set dpick.vboxes01
+Function PK04054()
+
+  PK04W02.PK04W-IO-TASK = "C1";
+  call "PK3040" (PK04W02, SQLCA, PKKREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04053 ";
+    TA1REC.TA1LOCAT[1] = "PK3040  ";
+    TA1REC.TA1LOCAT[3] = "CLOSE   ";
+    TA1REC.TA1LOCAT[4] = "SET     ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VBOXES01";
+    TA1REC.TA1TBLKE = PKKREC.PKKKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+end // end PK04054
+
+// select dpick.vcrtn001
+Function PK04055()
+
+   /* TT#11222 svenka changes begin*/
+  call "VCRTN002" ("S ", SQLCA, PKLREC1) {isNoRefresh = yes, isExternal = yes};
+   /* CALL IO4730 'S ',SQLCA,PKLREC (NOMAPS,NONCSP;*/
+   /* TT#11222 svenka changes end*/
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != +100
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04055 ";
+    TA1REC.TA1LOCAT[1] = "VCRTN002";
+    TA1REC.TA1LOCAT[3] = "SELECT  ";
+    TA1REC.TA1LOCAT[4] = "UNIQUE  ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VCRTN002";
+    TA1REC.TA1TBLKE = PKLREC1.PKLKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+end // end PK04055
+
+// save pkl data in w/s
+Function PK04056()
+   /* --------------------- pk04056 save -----------------------*/
+
+
+
+  PK04W03.PK04W-CRTN-CLASS-CD = PKLREC1.PKLCTNCD;
+  PK04W03.PK04W-CRTN-LENGTH = PKLREC1.PKLCTNLN;
+  PK04W03.PK04W-CRTN-WIDTH = PKLREC1.PKLCTNWD;
+  PK04W03.PK04W-CRTN-HEIGHT = PKLREC1.PKLCTNHG;
+  PK04W03.PK04W-CRTN-VOLUME = PKLREC1.PKLCTNF3;
+   /* TT#11222 svenka changes begin*/
+  PK04W03.PK04W-CRTN-WEIGHT = PKLREC1.PKLCTNWT; /* move from table*/
+   /* TT#11222 svenka changes end*/
+
+
+end // end PK04056
+
+// select set dpick.vcrtn001
+Function PK04057()
+
+  PK04W02.PK04W-IO-TASK = "S1";
+   /* TT#11222 svenka changes begin*/
+  call "VCRTN002" (PK04W02, SQLCA, PKLREC1) {isNoRefresh = yes, isExternal = yes};
+   /* CALL PK3050 PK04W02,SQLCA,PKLREC (NOMAPS,NONCSP;*/
+   /* TT#11222 svenka changes end*/
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04056 ";
+    TA1REC.TA1LOCAT[1] = "VCRTN002";
+    TA1REC.TA1LOCAT[3] = "SELECT  ";
+    TA1REC.TA1LOCAT[4] = "SET     ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VCRTN002";
+    TA1REC.TA1TBLKE = PKLREC1.PKLKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+end // end PK04057
+
+// select next dpick.vcrtn001
+Function PK04058()
+
+  PK04W02.PK04W-IO-TASK = "N1";
+   /* TT#11222 svenka changes begin*/
+  call "VCRTN002" (PK04W02, SQLCA, PKLREC1) {isNoRefresh = yes, isExternal = yes};
+   /* CALL PK3050 PK04W02,SQLCA,PKLREC (NOMAPS,NONCSP;*/
+   /* TT#11222 svenka changes begin*/
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != +100
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04057 ";
+    TA1REC.TA1LOCAT[1] = "VCRTN002";
+    TA1REC.TA1LOCAT[3] = "SELECT  ";
+    TA1REC.TA1LOCAT[4] = "NEXT    ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VCRTN002";
+    TA1REC.TA1TBLKE = PKLREC1.PKLKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+end // end PK04058
+
+// close set dpick.vcrtn001
+Function PK04059()
+
+  PK04W02.PK04W-IO-TASK = "C1";
+   /* TT#11222 svenka changes begin*/
+  call "VCRTN002" (PK04W02, SQLCA, PKLREC1) {isNoRefresh = yes, isExternal = yes};
+   /* CALL PK3050 PK04W02,SQLCA,PKLREC (NOMAPS,NONCSP;*/
+   /* TT#11222 svenka changes end*/
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04058 ";
+    TA1REC.TA1LOCAT[1] = "VCRTN002";
+    TA1REC.TA1LOCAT[3] = "CLOSE   ";
+    TA1REC.TA1LOCAT[4] = "SET     ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VCRTN002";
+    TA1REC.TA1TBLKE = PKLREC1.PKLKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+end // end PK04059
+
+// move data to screen
+Function PK04060()
+  if (PK04W01.PK04WSCR != "Y")
+    return;
+  end
+
+  if (PK04M100.PK04MUOM == "M")
+     /* The requested unit of measure is "meters" & conversion*/
+     /* of data from "inches" must take place before any converse*/
+   /* TT#11222 SVENKA CHANGES BEGIN*/
+    if (PK04M100.PK04MACT != "C")
+      PK04W01.PK04WWK5 = PKLREC1.PKLCTNWT;
+      PK04WWK5 = PK04WWK5 / 2.2046;
+      PK04M100.PKLCWTVAL = PK04W01.PK04WWK5;
+    end
+   /* TT#11222 SVENKA CHANGES END*/
+    PK04W01.PK04WSUB = 1;
+   /* TT#11222 svenka changes begin*/
+    PK04M100.PK04WTUNT = "KGS";
+   /* TT#11222 svenka changes end*/
+  else
+    PK04W01.PK04WSUB = 2;
+  end
+
+
+   /* convert height to centimeters*/
+  PK04W01.PK04WWK1 = mathLib.round(PKKREC.PKKBXCHG / PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+  PK04M100.PKKBXCHG[PK04WSUB] = PK04W01.PK04WWK1;
+
+  PK04W01.PK04WWK1 = mathLib.round(PKLREC1.PKLCTNHG / PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+  PK04M100.PKLCTNHG[PK04WSUB] = PK04W01.PK04WWK1;
+
+   /* convert width to centimeters*/
+  PK04W01.PK04WWK1 = mathLib.round(PKKREC.PKKBXCWD / PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+  PK04M100.PKKBXCWD[PK04WSUB] = PK04W01.PK04WWK1;
+
+  PK04W01.PK04WWK1 = mathLib.round(PKLREC1.PKLCTNWD / PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+  PK04M100.PKLCTNWD[PK04WSUB] = PK04W01.PK04WWK1;
+
+   /* convert length to centimeters*/
+  PK04W01.PK04WWK1 = mathLib.round(PKKREC.PKKBXCLN / PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+  PK04M100.PKKBXCLN[PK04WSUB] = PK04W01.PK04WWK1;
+
+  PK04W01.PK04WWK1 = mathLib.round(PKLREC1.PKLCTNLN / PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+  PK04M100.PKLCTNLN[PK04WSUB] = PK04W01.PK04WWK1;
+
+   /* calculate cubic centimeters and convert to meters*/
+  PK04WWK1 = mathLib.round(PK04M100.PKKBXCHG[PK04WSUB] * PK04M100.PKKBXCWD[PK04WSUB], -mathLib.decimals(PK04WWK1));
+  PK04WWK1 = mathLib.round(PK04WWK1 * PK04M100.PKKBXCLN[PK04WSUB], -mathLib.decimals(PK04WWK1));
+  if (PK04W01.PK04WWK1 < 999.99)
+    PK04W01.PK04WBMC = "CUBIC CENTIMETERS";
+    PK04M100.PKKBXCF3[PK04WSUB] = PK04W01.PK04WWK1;
+  else
+    PK04W01.PK04WBMC = "CUBIC METERS";
+    PK04WWK1 = PK04WWK1 * .000001;
+    PK04M100.PKKBXCF3[PK04WSUB] = PK04W01.PK04WWK1;
+    if (PK04M100.PKKBXCF3[PK04WSUB] < .01)
+      PK04M100.PKKBXCF3[PK04WSUB] = .01;
+    end
+  end
+
+   /* calculate cubic centimeters and convert to meters*/
+  PK04WWK1 = mathLib.round(PK04M100.PKLCTNHG[PK04WSUB] * PK04M100.PKLCTNWD[PK04WSUB], -mathLib.decimals(PK04WWK1));
+  PK04WWK1 = mathLib.round(PK04WWK1 * PK04M100.PKLCTNLN[PK04WSUB], -mathLib.decimals(PK04WWK1));
+  if (PK04W01.PK04WWK1 < 999.99)
+    PK04W01.PK04WCMC = "CUBIC CENTIMETERS";
+    PK04M100.PKLCTNF3[PK04WSUB] = PK04W01.PK04WWK1;
+  else
+    PK04W01.PK04WCMC = "CUBIC METERS";
+    PK04WWK1 = PK04WWK1 * .000001;
+    PK04M100.PKLCTNF3[PK04WSUB] = PK04W01.PK04WWK1;
+    if (PK04M100.PKLCTNF3[PK04WSUB] < .01)
+      PK04M100.PKKBXCF3[PK04WSUB] = .01;
+    end
+  end
+
+
+  if (PK04M100.PK04MUOM == "U")
+    PK04W01.PK04WSUB = 1;
+   /* TT#11222 svenka changes begin*/
+    PK04M100.PKLCWTVAL = PKLREC1.PKLCTNWT;
+    PK04M100.PK04WTUNT = "LBS";
+   /* TT#11222 svenka changes end*/
+  else
+    PK04W01.PK04WSUB = 2;
+  end
+
+  PK04M100.PKKBXCHG[PK04WSUB] = PKKREC.PKKBXCHG;
+  PK04M100.PKKBXCWD[PK04WSUB] = PKKREC.PKKBXCWD;
+  PK04M100.PKKBXCLN[PK04WSUB] = PKKREC.PKKBXCLN;
+  PK04M100.PKKBXCF3[PK04WSUB] = PKKREC.PKKBXCF3;
+  PK04M100.PKLCTNHG[PK04WSUB] = PKLREC1.PKLCTNHG;
+  PK04M100.PKLCTNWD[PK04WSUB] = PKLREC1.PKLCTNWD;
+  PK04M100.PKLCTNLN[PK04WSUB] = PKLREC1.PKLCTNLN;
+  PK04M100.PKLCTNF3[PK04WSUB] = PKLREC1.PKLCTNF3;
+  if (PK04M100.PKLCTNF3[PK04WSUB] < .01)
+    PK04M100.PKLCTNF3[PK04WSUB] = .01;
+  end
+
+  if (PK04W01.PK04W-DIM-FLAG == "Y") /* if inquiring on dims only*/
+    if (PK04M100.PKKBXCLN[1] == 0)
+      PK04M100.PKKBXCCD = PKLREC1.PKLCTNCD;
+      PK04M100.PKKBXCHG[1] = 0; /* zero dimensions for boxes*/
+      PK04M100.PKKBXCHG[2] = 0;
+      PK04M100.PKKBXCWD[1] = 0;
+      PK04M100.PKKBXCWD[2] = 0;
+      PK04M100.PKKBXCLN[1] = 0;
+      PK04M100.PKKBXCLN[2] = 0;
+      PK04M100.PKKBXCF3[1] = 0;
+      PK04M100.PKKBXCF3[2] = 0;
+    else
+      PK04M100.PKKBXCCD = PKKREC.PKKBXCCD;
+      PK04M100.PKLCTNHG[1] = 0; /* zero dimensions for cartons*/
+      PK04M100.PKLCTNHG[2] = 0;
+      PK04M100.PKLCTNWD[1] = 0;
+      PK04M100.PKLCTNWD[2] = 0;
+      PK04M100.PKLCTNLN[1] = 0;
+      PK04M100.PKLCTNLN[2] = 0;
+      PK04M100.PKLCTNF3[1] = 0;
+      PK04M100.PKLCTNF3[2] = 0;
+    end
+  end
+
+end // end PK04060
+
+// not found - zero old qtys
+Function PK04070()
+   /* ---------------- pk04070 - zero screen qtys ------------*/
+
+  PK04M100.PKKBXCHG[1] = 0;
+  PK04M100.PKKBXCHG[2] = 0;
+  PK04M100.PKKBXCWD[1] = 0;
+  PK04M100.PKKBXCWD[2] = 0;
+  PK04M100.PKKBXCLN[1] = 0;
+  PK04M100.PKKBXCLN[2] = 0;
+  PK04M100.PKKBXCF3[1] = 0;
+  PK04M100.PKKBXCF3[2] = 0;
+
+  PK04M100.PKLCTNHG[1] = 0;
+  PK04M100.PKLCTNHG[2] = 0;
+  PK04M100.PKLCTNWD[1] = 0;
+  PK04M100.PKLCTNWD[2] = 0;
+  PK04M100.PKLCTNLN[1] = 0;
+  PK04M100.PKLCTNLN[2] = 0;
+  PK04M100.PKLCTNF3[1] = 0;
+  PK04M100.PKLCTNF3[2] = 0;
+   /* TT#11222 SVENKA CHANGES BEGIN*/
+  PK04M100.PKLCWTVAL = 0; /* To claer the weight field*/
+   /* TT#11222 SVENKA CHANGES END*/
+
+  if (converseVar.validationMsgNum == 114
+   && PK04M100.PK04MACT == "A")
+    converseLib.validationFailed(0);
+  end
+
+end // end PK04070
+
+// converse carton class scrn
+Function PK04100()
+   /* -------------- pk04m100 - converse screen ---------------*/
+
+
+  if (PK04M100.PK04MUOM == "M")
+    PK04W01.PK04WSUB = 1;
+  else
+    PK04W01.PK04WSUB = 2;
+  end
+  PK04M100.PK04MBMH[PK04WSUB] = "CENTIMETERS";
+  PK04M100.PK04MBMW[PK04WSUB] = "CENTIMETERS";
+  PK04M100.PK04MBML[PK04WSUB] = "CENTIMETERS";
+  PK04M100.PK04MCMH[PK04WSUB] = "CENTIMETERS";
+  PK04M100.PK04MCMW[PK04WSUB] = "CENTIMETERS";
+  PK04M100.PK04MCML[PK04WSUB] = "CENTIMETERS";
+  PK04M100.PK04MBMC[PK04WSUB] = PK04W01.PK04WBMC;
+  PK04M100.PK04MCMC[PK04WSUB] = PK04W01.PK04WCMC;
+
+  if (PK04M100.PK04MUOM == "U")
+    PK04W01.PK04WSUB = 1;
+  else
+    PK04W01.PK04WSUB = 2;
+  end
+
+  PK04M100.PK04MBMH[PK04WSUB] = "INCHES";
+  PK04M100.PK04MBMW[PK04WSUB] = "INCHES";
+  PK04M100.PK04MBML[PK04WSUB] = "INCHES";
+  PK04M100.PK04MCMH[PK04WSUB] = "INCHES";
+  PK04M100.PK04MCMW[PK04WSUB] = "INCHES";
+  PK04M100.PK04MCML[PK04WSUB] = "INCHES";
+  PK04M100.PK04MBMC[PK04WSUB] = "CUBIC FEET";
+  PK04M100.PK04MCMC[PK04WSUB] = "CUBIC FEET";
+
+  PK04M100.XXXCURDT = VGVar.currentShortGregorianDate;
+  PK04W01.PK04WCTM = VGVar.currentFormattedTime;
+  PK04M100.PK04MTIM = PK04W01.PK04WSHM;
+  PK04M100.PK04MUOM = PK04W01.PK04WUOM;
+
+  converse PK04M100 ;
+
+end // end PK04100
+
+// reset highlighted fields
+Function PK04150()
+   /* ----------- pk04150 - reset highlighted fields -----------*/
+
+  set PK04M100.PK04MACT normal;
+  set PK04M100.PK04MUOM normal;
+  set PK04M100.PKKBXCCD normal;
+  set PK04M100.PKKBXCHG[1] normal;
+  set PK04M100.PKKBXCWD[1] normal;
+  set PK04M100.PKKBXCLN[1] normal;
+  set PK04M100.PKLCTNHG[1] normal;
+  set PK04M100.PKLCTNWD[1] normal;
+  set PK04M100.PKLCTNLN[1] normal;
+   /* TT#11222 svenka changes begin*/
+  set PK04M100.PKLCWTVAL normal;
+  PK04W01.PK04LMTFL = "N";
+  if (PK04M100.PK04MUOM == "U") /* when UOM is U then LBS is moved*/
+    PK04M100.PK04WTUNT = "LBS";
+    set PK04M100.PK04WTUNT protect;
+  end
+  if (PK04M100.PK04MUOM == "M") /* when UOM is M then KGS is moved*/
+    PK04M100.PK04WTUNT = "KGS";
+    set PK04M100.PK04WTUNT protect;
+  end
+   /* SET PK04M100.PK04WTUNT NORMAL;*/
+   /* SET PK04M100.PK04WTUNT PROTECT;*/
+   /* TT#11222 svenka changes end*/
+
+end // end PK04150
+
+// check attention identifier
+Function PK04200()
+
+  if (converseVar.eventKey is enter)
+    if (PK04M100.CATOAP == " ")
+      if (PK04M100.CAITEM == " ")
+        return;
+      else
+        converseLib.validationFailed(15);
+        PK04M100.XXXERRID = "PK04200";
+        set PK04M100.CAITEM cursor, bold;
+        return;
+      end
+    end
+  end
+
+  if (converseVar.eventKey is pf5 /* if pk5 to check next dimension*/
+   && PK04W01.PK04W-DIM-FLAG == "Y")
+    PK04W01.PK04WSCR = "Y"; /* set up the screen*/
+    PK04W01.PK04WUOM = PK04M100.PK04MUOM; /* save unit of measure*/
+    exit stack;
+  end
+
+  if (converseVar.eventKey is enter)
+    /* ------------------------------------------------------------*/
+     /* Transfer to requested application via FAST PATH.*/
+     /* If transfer failed, display returned error message.*/
+    /* ------------------------------------------------------------*/
+
+    if (PK04M100.CATOAP == COMMAREA.CACURRAP)
+      set PK04M100.CATOAP cursor, modified, bold;
+      converseLib.validationFailed(1); /* Indicate invalid request*/
+      PK04M100.XXXERRID = "PK04200 "; /* Process name*/
+      exit stack; /* Exit to redisplay map*/
+    end
+
+    COMMAREA.CATOAP = PK04M100.CATOAP; /* TO application*/
+    COMMAREA.CAITEM = PK04M100.CAITEM; /* Application data*/
+    COMMAREA.CAUSERA = PKWREC.PKWGRPLV; /* Application user area*/
+    PK04902(); /* purge temp storage*/
+    XSEXIT(); /* Transfer to requested application*/
+    PK04M100.CATOAP = COMMAREA.CATOAP; /* To application*/
+    set PK04M100.CATOAP cursor, bold; /* Highlight TO application*/
+    PK04M100.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    converseLib.validationFailed(); /* Force alarm to sound*/
+    PK04M100.XXXERRID = "PK04200 "; /* Process name*/
+    COMMAREA.CATOAP = " "; /* Clear TO application*/
+    exit stack; /* Exit to redisplay map*/
+  else
+    if (converseVar.eventKey is pa2) /* cancel*/
+      COMMAREA.CAUSERA = PKWREC.PKWGRPLV;
+      COMMAREA.CATOAP = "PK04";
+      PK04902(); /* purge temp storage*/
+      XSEXIT();
+      converseLib.validationFailed(); /* Force alarm to sound*/
+      PK04M100.XXXERRID = "PK04200";
+      PK04M100.VAGen_EZEMSG = COMMAREA.CAMSG;
+      COMMAREA.CATOAP = " ";
+      exit stack; /* Exit to redisplay map*/
+    end
+
+    if (converseVar.eventKey is pf1) /* help*/
+      PK04902(); /* purge temp storage*/
+      COMMAREA.CAUSERA = " "; /* clear user commarea*/
+      XSPF1();
+      converseLib.validationFailed(); /* Force alarm to sound*/
+      PK04M100.XXXERRID = "PK04200";
+      PK04M100.VAGen_EZEMSG = COMMAREA.CAMSG;
+      COMMAREA.CATOAP = " ";
+      exit stack; /* Exit to redisplay map*/
+    end
+
+    if (converseVar.eventKey is pf3) /* exit to menu*/
+      COMMAREA.CAUSERA = PKWREC.PKWGRPLV;
+      COMMAREA.CATOAP = "PK0A";
+      PK04902(); /* purge temp storage*/
+      XSEXIT();
+      converseLib.validationFailed(); /* Force alarm to sound*/
+      PK04M100.XXXERRID = "PK04200";
+      PK04M100.VAGen_EZEMSG = COMMAREA.CAMSG;
+      COMMAREA.CATOAP = " ";
+      exit stack; /* Exit to redisplay map*/
+    end
+
+    if (converseVar.eventKey is pf4) /* master menu*/
+      PK04902(); /* purge temp storage*/
+      COMMAREA.CAUSERA = PKWREC.PKWGRPLV;
+      COMMAREA.CAUSERA = " "; /* clear user commarea*/
+      XSPF4();
+      converseLib.validationFailed(); /* Force alarm to sound*/
+      PK04M100.XXXERRID = "PK04200";
+      PK04M100.VAGen_EZEMSG = COMMAREA.CAMSG;
+      COMMAREA.CATOAP = " ";
+      exit stack; /* Exit to redisplay map*/
+    end
+
+    if (converseVar.eventKey is pf19) /* picking select menu*/
+      COMMAREA.CAUSERA = " "; /* clear user commarea*/
+      COMMAREA.CAUSERA = PKWREC.PKWGRPLV;
+      COMMAREA.CATOAP = "PK07";
+      PK04902(); /* purge temp storage*/
+      XSEXIT();
+      PK04M100.VAGen_EZEMSG = COMMAREA.CAMSG;
+      PK04M100.XXXERRID = "PK04200";
+      converseLib.validationFailed(); /* Force alarm to sound*/
+      PK04M100.VAGen_EZEMSG = COMMAREA.CAMSG;
+      COMMAREA.CATOAP = " ";
+      exit stack; /* Exit to redisplay map*/
+    end
+
+    if (converseVar.eventKey is pf20) /* picking main menu*/
+      COMMAREA.CAUSERA = " "; /* clear user commarea*/
+      COMMAREA.CAUSERA = PKWREC.PKWGRPLV;
+      COMMAREA.CATOAP = "PK0S";
+      PK04902(); /* purge temp storage*/
+      XSEXIT();
+      converseLib.validationFailed(); /* Force alarm to sound*/
+      PK04M100.XXXERRID = "PK04200";
+      PK04M100.VAGen_EZEMSG = COMMAREA.CAMSG;
+      COMMAREA.CATOAP = " ";
+      exit stack; /* Exit to redisplay map*/
+    end
+  end
+
+  converseLib.validationFailed(012); /* invalid pf key*/
+
+
+   /* ************************************************************/
+
+end // end PK04200
+
+// edit data
+Function PK04300()
+   /* --------------------- pk04300 edit -----------------------*/
+
+  PK04W01.PK04WSCR = "N";
+  PK04W01.PK04WUPD = "N";
+
+   /* -------------------- SECURITY CHECK ----------------------*/
+
+  PK04310();
+  if (converseVar.validationMsgNum != 0)
+    return;
+  end
+
+   /* ---------------- VALIDATE UNIT OF MEASURE -----------------*/
+
+  if (PK04M100.PK04MUOM != "U" /* US*/
+   && PK04M100.PK04MUOM != "M") /* Metric*/
+    converseLib.validationFailed(307);
+    PK04M100.XXXERRID = "PK04300";
+    set PK04M100.PK04MUOM cursor, bold;
+    return;
+  else
+    if (PK04M100.PK04MUOM != PK04W01.PK04WUOM)
+      if (PK04M100.PK04MACT == PK04W01.PK04WACT
+       && PK04M100.PKKBXCCD == PK04W01.PKKBXCCD)
+        PK04W01.PK04WSCR = "Y";
+      end
+      PK04W01.PK04WUOM = PK04M100.PK04MUOM;
+    end
+  end
+
+   /* --------------------- VALIDATE FUNCTION --------------------*/
+
+  if (PK04M100.PK04MACT != "A" /* add*/
+   && PK04M100.PK04MACT != "C" /* change*/
+   && PK04M100.PK04MACT != "D" /* de-activate*/
+   && PK04M100.PK04MACT != "I" /* inquire*/
+   && PK04M100.PK04MACT != " ") /* inquire*/
+    converseLib.validationFailed(104); /* need valid function*/
+    PK04M100.XXXERRID = "PK04300";
+    set PK04M100.PK04MACT cursor, bold;
+    return;
+  else
+    PK04W01.PK04WACT = PK04M100.PK04MACT;
+  end
+
+   /* -------------- VALIDATE CARTON CLASS ----------------*/
+   /* --spaces in function & class are allowed for doing---*/
+   /* ------- us/metric metric/us conversions only --------*/
+
+  if (PK04M100.PK04MACT == " "
+   || PK04M100.PK04MACT == "I")
+   /* next sentence*/
+  else
+    if (PK04M100.PKKBXCCD == " ")
+      converseLib.validationFailed(009); /* class is not valid*/
+      PK04M100.XXXERRID = "PK04300";
+      set PK04M100.PKKBXCCD cursor, bold;
+      return;
+    end
+  end
+
+   /* ------ IF FUNCTION IS SPACE, BUT HAVE A CARTON CODE, -------*/
+   /* --------------- FORCE FUNCTION TO BE INQUIRY ---------------*/
+
+  if (PK04M100.PK04MACT == " "
+   && PK04M100.PKKBXCCD != " ")
+    PK04M100.PK04MACT = "I";
+  end
+
+   /* ------------- CHECK FOR DIFFERENT CARTON CODE -------------*/
+
+  if (PK04M100.PKKBXCCD != PK04W01.PKKBXCCD)
+    PK04W01.PK04WGOT = "N";
+    PK04W01.PK04WSCR = "Y";
+    PK04W01.PKKBXCCD = PK04M100.PKKBXCCD;
+    if (PK04M100.PK04MACT == "C")
+      set PK04M100.PKKBXCLN cursor;
+      return;
+    end
+  end
+
+
+   /* ------- IF INQUIRE ON BLANK CARTON CLASS, MAKE SURE --------*/
+   /* ------- DIMENSIONS ARE ENTERED                      --------*/
+
+  if (PK04M100.PK04MACT == "I"
+   && PK04M100.PKKBXCCD == " ")
+    PK04W01.PK04W-DIM-FLAG = "Y";
+    PK04315(); /* inquire on dimensions*/
+    return;
+  else
+    PK04W01.PK04W-DIM-FLAG = "N";
+  end
+
+
+   /* ------- CHECK IF ALL DIMENSIONS ON SCREEN ARE SAME ---------*/
+
+  if (PK04W01.PK04WGOT == "Y"
+   && PK04M100.PKKBXCCD == PK04W01.PKKBXCCD
+   && PK04M100.PKKBXCLN == PK04W01.PKKBXCLN
+   && PK04M100.PKKBXCWD == PK04W01.PKKBXCWD
+   && PK04M100.PKKBXCHG == PK04W01.PKKBXCHG
+   && PK04M100.PKLCTNLN == PK04W01.PKLCTNLN
+   && PK04M100.PKLCTNWD == PK04W01.PKLCTNWD
+   && PK04M100.PKLCTNHG == PK04W01.PKLCTNHG)
+    return;
+  end
+
+   /* -------- CHECK THAT DIMENSION LENGTH, WIDTH & HEIGHT -------*/
+   /* ---------------- ARE ALL GREATER THAN ZERO -----------------*/
+
+  PK04W-BOX-DIM-OR-FULL-CASE-DIM = "N";
+  PK04W-FULL-CASE = "N";
+
+  if (PK04M100.PK04MACT == "A"
+   || PK04M100.PK04MACT == "C"
+   || PK04M100.PK04MACT == " ")
+    if (PK04M100.PK04MACT == "C"
+     && PK04W01.PK04WGOT == "N")
+      /* next sentence*/
+    else
+      if (PK04M100.PK04MACT == "I"
+       && PK04M100.PKKBXCCD == " ")
+      else
+        /* TT#11222-BUG FIX-CHANGES BEGIN*/
+        if (PK04M100.PKKBXCLN <= 0 /* Check if the dimensions r less than*/
+         || PK04M100.PKKBXCLN == 0 /* equal to zero for product box*/
+         || PK04M100.PKKBXCWD <= 0 
+         || PK04M100.PKKBXCWD == 0 
+         || PK04M100.PKKBXCHG <= 0 
+         || PK04M100.PKKBXCHG == 0)
+          /* NEXT SENTENCE*/
+        else
+          PK04W-BOX-DIM-OR-FULL-CASE-DIM = "Y";
+        end
+        /* IF PK04M100.PK04MACT = 'I'*/
+        /* AND PK04M100.PKKBXCCD EQ ' ';*/
+        /* ;/* next sentence*/
+        /* ELSE;*/
+        /* IF PK04M100.PKKBXCLN LE 0;*/
+        /* ;/* NEXT SENTENCE*/
+        /* ELSE;*/
+        /* MOVE 'Y' TO PK04W-BOX-DIM-OR-FULL-CASE-DIM;*/
+        /* END;*/
+        /* IF PK04M100.PKKBXCWD LE 0;*/
+        /* ;/* NEXT SENTENCE*/
+        /* ELSE;*/
+        /* MOVE 'Y' TO PK04W-BOX-DIM-OR-FULL-CASE-DIM;*/
+        /* END;*/
+        /* IF PK04M100.PKKBXCHG LE 0;*/
+        /* ;/* NEXT SENTENCE*/
+        /* ELSE;*/
+        /* MOVE 'Y' TO PK04W-BOX-DIM-OR-FULL-CASE-DIM;*/
+        /* END;*/
+        /* TT#11222-BUG FIX-CHANGES END*/
+      end
+    end
+  end
+
+  if (PK04M100.PK04MACT == "A"
+   || PK04M100.PK04MACT == "C"
+   || PK04M100.PK04MACT == " ")
+    if (PK04M100.PK04MACT == "C"
+     && PK04W01.PK04WGOT == "N")
+      /* next sentence*/
+    else
+      if (PK04M100.PK04MACT == "I"
+       && PK04M100.PKKBXCCD == " ")
+        /* next sentence*/
+      else
+        /* TT#11222-BUG FIX-CHANGES BEGIN*/
+        if (PK04M100.PKLCTNLN <= 0 /* Check if the dimensions r less than*/
+         || PK04M100.PKLCTNLN == 0 /* equal to zero for full case*/
+         || PK04M100.PKLCTNWD <= 0 
+         || PK04M100.PKLCTNWD == 0 
+         || PK04M100.PKLCTNHG <= 0 
+         || PK04M100.PKLCTNHG == 0 
+         || PK04M100.PKLCWTVAL <= 0
+         || PK04M100.PKLCWTVAL == 0
+        )                          /* NEXT SENTENCE*/
+        else
+          /* MOVE 'Y' TO PK04W-BOX-DIM-OR-FULL-CASE-DIM;*/
+          PK04W-FULL-CASE = "Y";
+        end
+        /* IF PK04M100.PK04MACT = 'I'*/
+        /* AND PK04M100.PKKBXCCD EQ ' ';*/
+        /* ;/* next sentence*/
+        /* ELSE;*/
+        /* IF PK04M100.PKLCTNLN LE 0;*/
+        /* ;/* NEXT SENTENCE*/
+        /* ELSE;*/
+        /* MOVE 'Y' TO PK04W-BOX-DIM-OR-FULL-CASE-DIM;*/
+        /* END;*/
+        /* IF PK04M100.PKLCTNWD LE 0;*/
+        /* ;/* NEXT SENTENCE*/
+        /* ELSE;*/
+        /* MOVE 'Y' TO PK04W-BOX-DIM-OR-FULL-CASE-DIM;*/
+        /* END;*/
+        /* IF PK04M100.PKLCTNHG LE 0;*/
+        /* ;/* NEXT SENTENCE*/
+        /* ELSE;*/
+        /* MOVE 'Y' TO PK04W-BOX-DIM-OR-FULL-CASE-DIM;*/
+        /* END;*/
+        /* IF PK04M100.PKLCWTVAL LE 0;*/
+        /* ;/* NEXT SENTENCE*/
+        /* ELSE;*/
+        /* MOVE 'Y' TO PK04W-BOX-DIM-OR-FULL-CASE-DIM;*/
+        /* END;*/
+        /* TT#11222-BUG FIX-CHANGES END*/
+      end
+    end
+  end
+
+
+  if (PK04M100.PK04MACT == "A"
+   || PK04M100.PK04MACT == "C"
+   || PK04M100.PK04MACT == " ")
+    if (PK04M100.PK04MACT == "C"
+     && PK04W01.PK04WGOT == "N")
+      /* next sentence*/
+    else
+      if (PK04M100.PK04MACT == "I"
+       && PK04M100.PKKBXCCD == " ")
+        /* next sentence*/
+      else
+        if (PK04W-BOX-DIM-OR-FULL-CASE-DIM == "N") /* when prod box is error*/
+          converseLib.validationFailed(533); /* length must be > 0*/
+          PK04W01.PK04WSCR = "N";
+          PK04M100.XXXERRID = "PK04300";
+          set PK04M100.PKLCTNHG cursor, bold;
+          set PK04M100.PKKBXCHG cursor, bold;
+          set PK04M100.PKLCTNWD cursor, bold;
+          set PK04M100.PKKBXCWD cursor, bold;
+          set PK04M100.PKLCTNLN cursor, bold;
+          set PK04M100.PKKBXCLN cursor, bold;
+          return;
+        end
+        /* TT#11222-SVENKA CHANGES BEGIN*/
+        if (PK04W-FULL-CASE == "N") /* when full case dimesnions r error*/
+          converseLib.validationFailed(533); /* length must be > 0*/
+          PK04W01.PK04WSCR = "N";
+          PK04M100.XXXERRID = "PK04300";
+          set PK04M100.PKLCTNHG cursor, bold;
+          set PK04M100.PKKBXCHG cursor, bold;
+          set PK04M100.PKLCTNWD cursor, bold;
+          set PK04M100.PKKBXCWD cursor, bold;
+          set PK04M100.PKLCTNLN cursor, bold;
+          set PK04M100.PKKBXCLN cursor, bold;
+          return;
+        end
+        /* TT#11222-SVENKA CHANGES BEGIN*/
+      end
+    end
+  end
+
+
+   /* --------------------- CALCULATE VALUES ---------------------*/
+
+  PK04320();
+
+
+   /* ------ WHEN DEACTIVATING A CARTON CLASS, -------------------*/
+   /* ------ MAKE SURE THE IT DOES NOT EXIST ON DPICK.VPCART01 ---*/
+
+  if (PK04M100.PK04MACT == "D")
+
+    PK04330();
+    if (PK04W04.PK04RCNT > 0)
+      converseLib.validationFailed(462); /* cannot deactivate carton class*/
+      PK04W01.PK04WSCR = "N";
+      PK04M100.XXXERRID = "PK04300";
+      set PK04M100.PK04MACT cursor, bold;
+      set PK04M100.PKKBXCCD bold;
+      return;
+    end
+
+  end
+
+   /* ----- CONVERSION ONLY MODE, NO UPDATES ARE TO BE DONE ------*/
+
+  if (PK04M100.PK04MACT == " "
+   && PK04M100.PKKBXCCD == " ") /* calculate only mode*/
+    PK04W01.PK04WSCR = "Y"; /* display screen with conversion*/
+    PK04W01.PK04WUPD = "N"; /* no updates*/
+    PK04W01.PK04WGOT = "N"; /* no updates*/
+    return;
+  end
+
+   /* -------------- SET UPDATE AND GET SCREEN FLAGS -------------*/
+
+  if (PK04M100.PK04MACT == "A" /* add*/
+   || PK04M100.PK04MACT == "D") /* de-activate*/
+    PK04W01.PK04WSCR = "N"; /* get screen*/
+    PK04W01.PK04WUPD = "Y"; /* ok to update*/
+  else
+    if (PK04M100.PK04MACT == "C" /* change*/
+     && PK04W01.PK04WGOT == "Y")
+      PK04W01.PK04WUPD = "Y"; /* ok to update*/
+      PK04W01.PK04WSCR = "Y"; /* get screen*/
+    else
+      if (PK04M100.PK04MACT == "I") /* inquiry*/
+        PK04W01.PK04WSCR = "Y"; /* get screen*/
+      end
+    end
+  end
+
+
+end // end PK04300
+
+// security check
+Function PK04310()
+   /* -------------- pk04310 - security check -----------------*/
+
+  if (PK04M100.PK04MACT == "A"
+   && COMMAREA.CAADDFL != "Y")
+    converseLib.validationFailed(275);
+  end
+
+  if (PK04M100.PK04MACT == "C"
+   && COMMAREA.CACHGFL != "Y")
+    converseLib.validationFailed(275);
+  end
+
+  if (PK04M100.PK04MACT == "D"
+   && COMMAREA.CADELFL != "Y")
+    converseLib.validationFailed(275);
+  end
+
+  if (converseVar.validationMsgNum != 0)
+    set PK04M100.PK04MACT cursor, bold;
+    PK04M100.XXXERRID = "PK04310";
+    PK04W01.PK04WGOT = "N";
+    PK04W01.PK04WSCR = "N";
+    PK04W01.PK04WUPD = "N";
+    exit stack;
+  end
+
+end // end PK04310
+
+// edit data
+Function PK04315()
+   /* --------------------- pk04315 edit -----------------------*/
+
+
+   /* -------- CHECK THAT DIMENSION LENGTH, WIDTH & HEIGHT -------*/
+   /* ---------------- ARE ALL GREATER THAN ZERO -----------------*/
+
+  PK04W-BOX-DIM-OR-FULL-CASE-DIM = "N";
+
+  if (PK04M100.PKKBXCLN <= 0
+   && PK04M100.PKKBXCWD <= 0
+   && PK04M100.PKKBXCHG <= 0
+   && PK04M100.PKLCTNLN <= 0
+   && PK04M100.PKLCTNWD <= 0
+   && PK04M100.PKLCTNHG <= 0)
+    converseLib.validationFailed(443); /* 'class, box or carton dims must enter'*/
+    PK04W01.PK04WSCR = "N";
+    PK04M100.XXXERRID = "PK04315";
+    set PK04M100.PKKBXCCD cursor, bold;
+    set PK04M100.PKLCTNLN bold;
+    set PK04M100.PKKBXCLN bold;
+    return;
+  end
+
+
+  if (PK04M100.PKKBXCLN > 0
+   || PK04M100.PKKBXCWD > 0
+   || PK04M100.PKKBXCHG > 0)
+
+    if (PK04M100.PKKBXCHG <= 0)
+      set PK04M100.PKKBXCHG cursor, bold;
+      converseLib.validationFailed(447); /* all box dims must be entered*/
+      PK04W01.PK04WSCR = "N";
+      PK04M100.XXXERRID = "PK04315";
+    end
+    if (PK04M100.PKKBXCWD <= 0)
+      set PK04M100.PKKBXCWD cursor, bold;
+      converseLib.validationFailed(447); /* all box dims must be entered*/
+      PK04W01.PK04WSCR = "N";
+      PK04M100.XXXERRID = "PK04315";
+    end
+    if (PK04M100.PKKBXCLN <= 0)
+      set PK04M100.PKKBXCLN cursor, bold;
+      converseLib.validationFailed(447); /* all box dims must be entered*/
+      PK04W01.PK04WSCR = "N";
+      PK04M100.XXXERRID = "PK04315";
+    end
+    if (PK04M100.PKLCTNLN > 0
+     || PK04M100.PKLCTNWD > 0
+     || PK04M100.PKLCTNHG > 0)
+      set PK04M100.PKLCTNHG bold;
+      set PK04M100.PKLCTNWD bold;
+      set PK04M100.PKLCTNLN cursor, bold;
+      converseLib.validationFailed(444); /* boxes or cartons, not both*/
+      PK04W01.PK04WSCR = "N";
+      PK04M100.XXXERRID = "PK04315";
+    end
+
+   /* --------------------- CALCULATE VALUES ---------------------*/
+    if (converseVar.validationMsgNum == 0)
+      PK04320();
+      PK04W02.PK04W-LENGTH-LO = PKKREC.PKKBXCLN - 1;
+      PK04W02.PK04W-LENGTH-HI = PKKREC.PKKBXCLN + 1;
+      PK04W02.PK04W-WIDTH-LO = PKKREC.PKKBXCWD - 1;
+      PK04W02.PK04W-WIDTH-HI = PKKREC.PKKBXCWD + 1;
+      PK04W02.PK04W-HEIGHT-LO = PKKREC.PKKBXCHG - 1;
+      PK04W02.PK04W-HEIGHT-HI = PKKREC.PKKBXCHG + 1;
+      PK04WSCR = "K"; /* flag set to select set*/
+    else
+      return;
+    end
+
+  else
+
+    if (PK04M100.PKLCTNHG <= 0)
+      set PK04M100.PKLCTNHG cursor, bold;
+      converseLib.validationFailed(448); /* all carton dims must be entered*/
+      PK04W01.PK04WSCR = "N";
+      PK04M100.XXXERRID = "PK04315";
+    end
+    if (PK04M100.PKLCTNWD <= 0)
+      set PK04M100.PKLCTNWD cursor, bold;
+      converseLib.validationFailed(448); /* all carton dims must be entered*/
+      PK04W01.PK04WSCR = "N";
+      PK04M100.XXXERRID = "PK04315";
+    end
+    if (PK04M100.PKLCTNLN <= 0)
+      set PK04M100.PKLCTNLN cursor, bold;
+      converseLib.validationFailed(448); /* all carton dims must be entered*/
+      PK04W01.PK04WSCR = "N";
+      PK04M100.XXXERRID = "PK04315";
+    end
+    if (PK04M100.PKKBXCLN > 0
+     || PK04M100.PKKBXCWD > 0
+     || PK04M100.PKKBXCHG > 0)
+      set PK04M100.PKKBXCLN cursor, bold;
+      set PK04M100.PKKBXCWD bold;
+      set PK04M100.PKKBXCHG bold;
+      converseLib.validationFailed(444); /* boxes or cartons, not both*/
+      PK04W01.PK04WSCR = "N";
+      PK04M100.XXXERRID = "PK04315";
+    end
+   /* --------------------- CALCULATE VALUES ---------------------*/
+    if (converseVar.validationMsgNum == 0)
+      PK04320();
+      PK04W02.PK04W-LENGTH-LO = PKLREC1.PKLCTNLN - 1;
+      PK04W02.PK04W-LENGTH-HI = PKLREC1.PKLCTNLN + 1;
+      PK04W02.PK04W-WIDTH-LO = PKLREC1.PKLCTNWD - 1;
+      PK04W02.PK04W-WIDTH-HI = PKLREC1.PKLCTNWD + 1;
+      PK04W02.PK04W-HEIGHT-LO = PKLREC1.PKLCTNHG - 1;
+      PK04W02.PK04W-HEIGHT-HI = PKLREC1.PKLCTNHG + 1;
+      PK04WSCR = "L"; /* flag set to select set*/
+    else
+      return;
+    end
+
+  end
+
+  /* ****************** pk04315 end *******************************/
+end // end PK04315
+
+// calc. feet/meters for output
+Function PK04320()
+   /* ---------------- pk04320 calculate feet/meters -------------*/
+
+   /* calculate cubic volume from hight/width/length entered*/
+   /* don't know yet if inches or centimeters*/
+
+
+   /* move measurment data to pkkrec*/
+
+  if (PK04M100.PK04MUOM == "U") /* US standard*/
+
+    PKKREC.PKKBXCHG = PK04M100.PKKBXCHG;
+    PKKREC.PKKBXCWD = PK04M100.PKKBXCWD;
+    PKKREC.PKKBXCLN = PK04M100.PKKBXCLN;
+    PK04WWK1 = PKKREC.PKKBXCHG * PKKREC.PKKBXCWD * PKKREC.PKKBXCLN;
+    PK04WWK1 = PK04WWK1 / 1728;
+    if (PK04W01.PK04WWK1 < .01)
+      PK04W01.PK04WWK1 = .01;
+    end
+    PKKREC.PKKBXCF3 = PK04W01.PK04WWK1;
+    PK04M100.PKKBXCF3 = PKKREC.PKKBXCF3;
+
+    PKLREC1.PKLCTNHG = PK04M100.PKLCTNHG;
+    PKLREC1.PKLCTNWD = PK04M100.PKLCTNWD;
+    PKLREC1.PKLCTNLN = PK04M100.PKLCTNLN;
+    /* TT#11222 svenka changes begin*/
+    PKLREC1.PKLCTNWT = PK04M100.PKLCWTVAL; /* move the screen value*/
+    /* TT#11222 svenka changes end*/
+    PK04WWK1 = mathLib.round(PKLREC1.PKLCTNHG * PKLREC1.PKLCTNWD * PKLREC1.PKLCTNLN, -mathLib.decimals(PK04WWK1));
+    PK04WWK1 = PK04WWK1 / 1728;
+    if (PK04W01.PK04WWK1 < .01)
+      PK04W01.PK04WWK1 = .01;
+    end
+    PKLREC1.PKLCTNF3 = PK04W01.PK04WWK1;
+    PK04M100.PKLCTNF3 = PKLREC1.PKLCTNF3;
+    PKLREC1.PKLCTNF3 = PK04M100.PKLCTNF3;
+
+  else
+     /* Requested unit of measure is "metric" and conversion*/
+     /* of the data to "US" must take place before any update*/
+     /* or add to the database*/
+
+     /* change data for pkkrec*/
+
+     /* convert length*/
+    PK04W01.PK04WWK1 = mathLib.round(PK04M100.PKKBXCHG * PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+    PKKREC.PKKBXCHG = PK04WWK1;
+
+     /* convert width*/
+    PK04W01.PK04WWK1 = mathLib.round(PK04M100.PKKBXCWD * PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+    PKKREC.PKKBXCWD = PK04WWK1;
+
+     /* convert height*/
+    PK04W01.PK04WWK1 = mathLib.round(PK04M100.PKKBXCLN * PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+    PKKREC.PKKBXCLN = PK04WWK1;
+
+     /* calculate cubic feet*/
+    PK04WWK1 = mathLib.round(PKKREC.PKKBXCHG * PKKREC.PKKBXCWD * PKKREC.PKKBXCLN, -mathLib.decimals(PK04WWK1));
+     /* logistics changes begin - kviswa*/
+    PK04WWK1 = PK04WWK1 / 1728;
+     /* logistics changes end   - kviswa*/
+    if (PK04W01.PK04WWK1 < .01)
+      PK04W01.PK04WWK1 = .01;
+    end
+    PKKREC.PKKBXCF3 = PK04W01.PK04WWK1;
+
+     /* change data for pklrec1*/
+
+     /* convert length*/
+    PK04W01.PK04WWK1 = mathLib.round(PK04M100.PKLCTNHG * PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+    PKLREC1.PKLCTNHG = PK04WWK1;
+
+     /* convert width*/
+    PK04W01.PK04WWK1 = mathLib.round(PK04M100.PKLCTNWD * PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+    PKLREC1.PKLCTNWD = PK04WWK1;
+
+     /* convert height*/
+    PK04W01.PK04WWK1 = mathLib.round(PK04M100.PKLCTNLN * PK04W01.PK04WCIC, -mathLib.decimals(PK04W01.PK04WWK1));
+    PKLREC1.PKLCTNLN = PK04WWK1;
+
+     /* calculate cubic feet*/
+    PK04WWK1 = mathLib.round(PKLREC1.PKLCTNHG * PKLREC1.PKLCTNWD * PKLREC1.PKLCTNLN, -mathLib.decimals(PK04WWK1));
+     /* logistics changes begin - kviswa*/
+    PK04WWK1 = PK04WWK1 / 1728;
+     /* logistics changes end   - kviswa*/
+    if (PK04W01.PK04WWK1 < .01)
+      PK04W01.PK04WWK1 = .01;
+    end
+    PKLREC1.PKLCTNF3 = PK04W01.PK04WWK1;
+
+    /* Calculate weight from KGS to LBS when UOM is 'M' FOR 'ADD'*/
+    /* TT#11222 svenka changes begin*/
+    if (PK04M100.PK04MACT != "I")
+      PK04W01.PK04WWK4 = PK04M100.PKLCWTVAL;
+      PK04WWK4 = PK04WWK4 * 2.2046;
+      if (PK04W01.PK04WWK4 > 999.99)
+        PK04W01.PK04LMTFL = "Y"; /* error when the value is > 999.99*/
+      else
+        PK04W01.PK04LMTFL = "N";
+        PKLREC1.PKLCTNWT = PK04W01.PK04WWK4;
+      end
+    end
+    /* TT#11222 svenka changes end*/
+  end
+end // end PK04320
+
+// count dpick.vpcart01 rows
+Function PK04330()
+
+  set PK04W04 empty;
+  PK04W04.PK04FUNC = "T1"; /* count rows*/
+  PK04W04.PK04RCNT = 0; /* row count*/
+
+  set PKCREC empty;
+  PKCREC.PKCCRTCL[1] = PK04M100.PKKBXCCD; /* carton class*/
+  PKCREC.XXXSTAT = "A";
+
+  call "IO1970" (PK04W04, SQLCA, PKCREC) {isNoRefresh = yes, isExternal = yes};
+
+  if (SQLCA.VAGen_SQLCODE != +0)
+    PK04W04.PK04RCNT = 0;
+  end
+
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != +100
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04330 ";
+    TA1REC.TA1LOCAT[1] = "IO1970  ";
+    TA1REC.TA1LOCAT[3] = "SELECT  ";
+    TA1REC.TA1LOCAT[4] = "COUNT   ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VPCART01";
+    TA1REC.TA1TBLKE = PKCREC.PKCCRTCL[1];
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+
+end // end PK04330
+
+// process updates
+Function PK04400()
+   /* ----------------- pk04400- process updates -------------*/
+
+   /* TT#11222 SVENKA CHANGES BEGIN*/
+  if (PK04W01.PK04LMTFL != "N") /* flag to check if dim > 999.99*/
+    converseLib.validationFailed(532);
+    return;
+  end
+   /* TT#11222 SVENKA CHANGES END*/
+
+  if (PK04W01.PK04WUPD != "Y")
+    return;
+  end
+
+  PK04W01.PK04WUPD = "N";
+
+  PK04410(); /* see if dpick.vboxes01 is there*/
+  if (converseVar.validationMsgNum == 0)
+
+    PK04420(); /* set pkkrec data*/
+
+    if (PK04M100.PK04MACT == "A")
+      PKKREC.ZZZSDT = TA2REC.TA2GRGGN;
+      if (PK04W01.PK04WADD == "Y")
+        PK04430(); /* add row dpick.vboxes01*/
+        PK04440(); /* add row dpick.vcrtn001*/
+      else
+        PK04450(); /* update row dpick.vboxes01*/
+        PK04460(); /* update row dpick.vcrtn001*/
+      end
+    else
+      if (PK04M100.PK04MACT == "C")
+        PK04450(); /* update row dpick.vboxes01*/
+        PK04460(); /* update row dpick.vcrtn001*/
+      else
+        if (PK04M100.PK04MACT == "D"
+         && PK04W01.PK04STAT == "A") /* status isn't already 'i'*/
+          PKKREC.XXXSTAT = "I";
+          PKLREC1.XXXSTAT = "I";
+          PK04450(); /* update row dpick.vboxes01*/
+          PK04460(); /* update row dpick.vcrtn001*/
+        end
+      end
+    end
+  end
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (converseVar.validationMsgNum == 0)
+      PK04M100.XXXERRID = "PK04600";
+      converseLib.validationFailed(32);
+      if (PK04M100.PK04MACT == "A"
+       || PK04M100.PK04MACT == "C")
+        PK04W01.PK04WSCR = "Y";
+      end
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      PK04M100.XXXERRID = "PK04600";
+      converseLib.validationFailed(108);
+    end
+  end
+
+end // end PK04400
+
+// determine mode of add option
+Function PK04410()
+   /* ------------------- PK04410 -----------------------*/
+   /* ----- see if carton code is in vboxes table -------*/
+
+  set PKKREC empty;
+  PKKREC.PKKBXCCD = PK04M100.PKKBXCCD;
+  PKKREC.XXXSTAT = "A";
+  PK04050();
+  if (SQLCA.VAGen_SQLCODE == 100)
+    PKKREC.XXXSTAT = "I";
+    PK04050();
+  end
+
+  PK04W01.PK04STAT = PKKREC.XXXSTAT;
+
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (PKKREC.XXXSTAT == "A")
+      if (PK04M100.PK04MACT == "A")
+        converseLib.validationFailed(103); /* carton class exists*/
+        PK04M100.XXXERRID = "PK04410";
+        set PK04M100.PKKBXCCD cursor, bold;
+      end
+    else
+      if (PK04M100.PK04MACT == "D")
+        converseLib.validationFailed(111); /* carton class inactive*/
+      else
+        if (PK04M100.PK04MACT != "A")
+          converseLib.validationFailed(114); /* carton class not found*/
+          PK04M100.XXXERRID = "PK04410";
+          set PK04M100.PKKBXCCD cursor, bold;
+        end
+      end
+    end
+
+  else
+
+    if (SQLCA.VAGen_SQLCODE == 100)
+      if (PK04M100.PK04MACT == "A")
+        PK04W01.PK04WADD = "Y";
+      else
+        converseLib.validationFailed(114); /* carton class not found*/
+        PK04M100.XXXERRID = "PK04410";
+        set PK04M100.PKKBXCCD cursor, bold;
+      end
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(108);
+        PK04M100.XXXERRID = "PK04410";
+      end
+    end
+  end
+
+
+   /* ----- see if carton code is in vcrtn table --------*/
+
+  if (converseVar.validationMsgNum == 0)
+    set PKLREC1 empty;
+    PKLREC1.PKLCTNCD = PK04M100.PKKBXCCD;
+    PKLREC1.XXXSTAT = "A";
+    PK04055();
+    if (SQLCA.VAGen_SQLCODE == 100)
+      PKLREC1.XXXSTAT = "I";
+      PK04055();
+    end
+
+    PK04W01.PK04STAT = PKLREC1.XXXSTAT;
+
+    if (SQLCA.VAGen_SQLCODE == 0)
+      if (PKLREC1.XXXSTAT == "A")
+        if (PK04M100.PK04MACT == "A")
+          converseLib.validationFailed(103); /* carton class exists*/
+          PK04M100.XXXERRID = "PK04410";
+          set PK04M100.PKKBXCCD cursor, bold;
+        end
+      else
+        if (PK04M100.PK04MACT == "D")
+          converseLib.validationFailed(111); /* carton class inactive*/
+        else
+          if (PK04M100.PK04MACT != "A")
+            converseLib.validationFailed(114); /* carton class not found*/
+            PK04M100.XXXERRID = "PK04410";
+            set PK04M100.PKKBXCCD cursor, bold;
+          end
+        end
+      end
+
+    else
+
+      if (SQLCA.VAGen_SQLCODE == 100)
+        if (PK04M100.PK04MACT == "A")
+          PK04W01.PK04WADD = "Y";
+        else
+          converseLib.validationFailed(114); /* carton class not found*/
+          PK04M100.XXXERRID = "PK04410";
+          set PK04M100.PKKBXCCD cursor, bold;
+        end
+      else
+        if (SQLCA.VAGen_SQLCODE == -911)
+          converseLib.validationFailed(108);
+          PK04M100.XXXERRID = "PK04410";
+        end
+      end
+    end
+  end
+
+end // end PK04410
+
+// setup pkkrec and pklrec
+Function PK04420()
+   /* ---------- pk04420 - setup pkkrec and pklrec1 ------*/
+
+      /* get time and date stamp*/
+
+  set TA2REC empty;
+  TA2REC.TA2DTOPT = "GETDATE";
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+
+  PKKREC.PKKBXCCD = PK04M100.PKKBXCCD;
+  PKKREC.PKKALWCD[1] = PK04M100.PKKBXCCD;
+  PKKREC.XXXSTAT = "A";
+  PKKREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+  PKKREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+
+  PKLREC1.PKLCTNCD = PK04M100.PKKBXCCD;
+  PKLREC1.XXXSTAT = "A";
+  PKLREC1.ZZZCHGDT = TA2REC.TA2GRGGN;
+  PKLREC1.ZZZCHGTM = TA2REC.TA2TIMHM;
+
+
+   /* calculate cubic volume from hight/width/length entered*/
+   /* don't know yet if inches or centimeters*/
+
+  PK04320(); /* convert data to feet*/
+
+end // end PK04420
+
+// insert dpick.vboxes01
+Function PK04430()
+   /* ------------ pk04430 - add row to database ---------------*/
+
+
+  call "IO4560" ("A ", SQLCA, PKKREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04430 ";
+    TA1REC.TA1LOCAT[1] = "IO4560  ";
+    TA1REC.TA1LOCAT[2] = "INSERT  ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VBOXES01";
+    TA1REC.TA1TBLKE = PKKREC.PKKKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+end // end PK04430
+
+// insert dpick.vcrtn001
+Function PK04440()
+   /* ------------- pk04440 - update dpick.vcrtn001 ------------*/
+
+   /* TT#11222 svenka changes begin*/
+  call "VCRTN002" ("A ", SQLCA, PKLREC1) {isNoRefresh = yes, isExternal = yes};
+   /* CALL IO4730 'A ',SQLCA,PKLREC (NOMAPS,NONCSP;*/
+   /* TT#11222 svenka changes end*/
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04440 ";
+    TA1REC.TA1LOCAT[1] = "VCRTN002";
+    TA1REC.TA1LOCAT[2] = "INSERT  ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VCRTN002";
+    TA1REC.TA1TBLKE = PKLREC1.PKLKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+
+end // end PK04440
+
+// update dpick.vboxes01
+Function PK04450()
+   /* ------------- pk04450 - update dpick.vboxes01 ------------*/
+
+  call "IO4560" ("U ", SQLCA, PKKREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04450 ";
+    TA1REC.TA1LOCAT[1] = "IO4560  ";
+    TA1REC.TA1LOCAT[3] = "UPDATE  ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VBOXES01";
+    TA1REC.TA1TBLKE = PKKREC.PKKKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == +100)
+      XXXERRID = "PK04450";
+      PK04W01.PK04WSCR = "N";
+      PK04W01.PK04WUPD = "N";
+      PK04W01.PK04WGOT = "N";
+      if (PK04W01.PK04STAT == "I")
+        converseLib.validationFailed(316); /* carton class is inactive, data not updated*/
+      else
+        converseLib.validationFailed(29); /* notify systems development*/
+      end
+      exit stack;
+    else
+      XSPF4();
+      exit program;
+    end
+  end
+
+end // end PK04450
+
+// update dpick.vcrtn001
+Function PK04460()
+   /* ------------- pk04460 - update dpick.vcart001 ------------*/
+
+   /* TT#11222 svenka changes begin*/
+  call "VCRTN002" ("U ", SQLCA, PKLREC1) {isNoRefresh = yes, isExternal = yes};
+   /* CALL IO4730 'U ',SQLCA,PKLREC (NOMAPS,NONCSP;*/
+   /* TT#11222 svenka changes end*/
+  if (SQLCA.VAGen_SQLCODE != +0
+   && SQLCA.VAGen_SQLCODE != -911)
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "PK04460 ";
+    TA1REC.TA1LOCAT[1] = "VCRTN002";
+    TA1REC.TA1LOCAT[2] = "UPDATE  ";
+    TA1REC.TA1DBASE = "DPICK   ";
+    TA1REC.TA1TBLVU = "VCRTN002";
+    TA1REC.TA1TBLKE = PKLREC1.PKLKEY;
+    move SQLCA to ERRSQLCA withV60Compat;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback();
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == +100)
+      XXXERRID = "PK04460";
+      PK04W01.PK04WSCR = "N";
+      PK04W01.PK04WUPD = "N";
+      PK04W01.PK04WGOT = "N";
+      if (PK04W01.PK04STAT == "I")
+        converseLib.validationFailed(316); /* carton class is inactive, data not updated*/
+      else
+        converseLib.validationFailed(29); /* notify systems development*/
+      end
+      exit stack;
+    else
+      XSPF4();
+      exit program;
+    end
+  end
+
+end // end PK04460
+
+// add page to temp storage
+Function PK04900()
+   /* ------------------------------------------------------------*/
+   /* Add the next page to temporary storage.*/
+   /* ------------------------------------------------------------*/
+
+  PK04W03.PK04WLEN = 34; /* Temporary storage length*/
+  TA5REC.TA5APPID = "PK04"; /* Application identification*/
+  TA5REC.TA5FNCCD = "A"; /* Function code*/
+
+  call "TA0050" (PK04W03, TA5REC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK04900 "; /* Process name*/
+    TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "PK04M100"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK04M100.XXXERRID = "PK04900 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+  PK04W01.TA5TSQIX = TA5REC.TA5TSQIX; /* Highest page number*/
+
+  set PK04W03 empty; /* Clear temporary storage record*/
+  PK04W01.PK04WIXM = 1; /* Reset display line number*/
+
+
+
+end // end PK04900
+
+// read page from temp storage
+Function PK04901()
+   /* ------------------------------------------------------------*/
+   /* Obtain the next page of temp storage*/
+   /* ------------------------------------------------------------*/
+
+  PK04W03.PK04WLEN = 34; /* Temporary storage length*/
+  TA5REC.TA5APPID = "PK04"; /* Application identification*/
+  TA5REC.TA5TSQIX = PK04W01.PK04WTSP; /* Page number*/
+  TA5REC.TA5FNCCD = "R"; /* Function code*/
+
+  call "TA0050" (PK04W03, TA5REC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    converseLib.validationFailed(29); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK04901 "; /* Process name*/
+    TA1REC.TA1LOC = "READ PAGE FROM TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "PK04M100"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+    PK04M100.XXXERRID = "PK04901 "; /* Error location*/
+    return; /* Return to previous process*/
+
+  end
+
+   /* --------save temp storage data in the record --------*/
+
+  PKKREC.PKKBXCCD = PK04W03.PK04W-BOX-CLASS-CD;
+  PKKREC.PKKBXCLN = PK04W03.PK04W-BOX-LENGTH;
+  PKKREC.PKKBXCWD = PK04W03.PK04W-BOX-WIDTH;
+  PKKREC.PKKBXCHG = PK04W03.PK04W-BOX-HEIGHT;
+  PKKREC.PKKBXCF3 = PK04W03.PK04W-BOX-VOLUME;
+
+  PKLREC1.PKLCTNCD = PK04W03.PK04W-CRTN-CLASS-CD;
+  PKLREC1.PKLCTNLN = PK04W03.PK04W-CRTN-LENGTH;
+  PKLREC1.PKLCTNWD = PK04W03.PK04W-CRTN-WIDTH;
+  PKLREC1.PKLCTNHG = PK04W03.PK04W-CRTN-HEIGHT;
+  PKLREC1.PKLCTNF3 = PK04W03.PK04W-CRTN-VOLUME;
+   /* TT#11222 SVENKA CHANGES BEGIN*/
+  PKLREC1.PKLCTNWT = PK04W03.PK04W-CRTN-WEIGHT; /* to disp wt usin PF5*/
+   /* TT#11222 SVENKA CHANGES END*/
+
+   /* ************ pk04902 end ********************************************/
+end // end PK04901
+
+// purge all temp storage
+Function PK04902()
+   /* ------------------------------------------------------------*/
+   /* Purge any temporary storage for this application.*/
+   /* ------------------------------------------------------------*/
+
+  TA5REC.TA5APPID = "PK04"; /* Application identification*/
+  TA5REC.TA5FNCCD = "P"; /* Function code*/
+
+  call "TA0050" (PK04W03, TA5REC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Temporary storage subroutine*/
+
+  if (TA5REC.TA5RTNCD != 0) /* Error was found*/
+
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+    TA1REC.TA1PGMNM = "PK04902 "; /* Process name*/
+    TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE";
+    TA1REC.TA1MAP = "PK04M100"; /* Map name*/
+    SQLCA.SQLCAREC = TA5REC.TA5DATA; /* Subroutine parameters*/
+
+    call "TA0020" (TA1REC, SQLCA) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+
+  end
+
+  set PK04W03 empty; /* Initialize temporary storage*/
+
+  PK04W01.PK04WTSP = 1; /* Reset current page number*/
+  PK04W01.TA5TSQIX = 0; /* Reset temporary storage index*/
+
+
+
+
+end // end PK04902
+
+//*** RECORD=PK04W01 ****
+// allocation working storage.
+// this area is the working storage unique to
+// application AL0A for rule set selection for batch processing
+// ***********************
+Record PK04W01 type basicRecord
+  5 PK04WGRP PK04WGRP ; 
+    10 XXXCDTE XXXCDTE ; 
+      15 XXXCCC XXXCCC ; 
+      15 XXXCYY XXXCYY ; 
+      15 XXXCMM XXXCMM ; 
+      15 XXXCDD XXXCDD ; 
+    10 XXXCTIME XXXCTIME ; 
+      15 XXXCHHMM XXXCHHMM ; 
+        20 XXXCHRS XXXCHRS ; 
+        20 XXXCMINS XXXCMINS ; 
+      15 XXXCSECS XXXCSECS ; 
+    10 PK04WCTM PK04WCTM ; 
+      15 PK04WSHM PK04WSHM ; 
+      15 * char(3) ; 
+    10 PK04WSCR PK04WSCR ; 
+    10 PK04WERR PK04WERR ; 
+    10 PK04WADD PK04WADD ; 
+    10 PK04WUPD PK04WUPD ; 
+    10 PK04WGOT PK04WGOT ; 
+    10 PK04W-BOX-DIM-OR-FULL-CASE-DIM PK04W-BOX-DIM-OR-FULL-CASE-DIM ; 
+    10 PK04W-FULL-CASE PK04W-FULL-CASE ; 
+    10 PK04W-DIM-FLAG PK04W-DIM-FLAG ; 
+    10 PK04WSUB PK04WSUB ; 
+    10 PK04WWK1 PK04WWK1 ; 
+    10 PK04WWK2 PK04WWK2 ; 
+    10 PK04WWK3 PK04WWK3 ; 
+    10 PK04WWK4 PK04WWK4 ; 
+    10 PK04WWK5 PK04WWK5 ; 
+    10 PK04LMTFL PK04LMTFL ; 
+    10 PK04WCFV PK04WCFV ; 
+    10 PK04WCFM PK04WCFM ; 
+    10 PK04WCIC PK04WCIC ; 
+    10 PK04WBMC PK04WBMC ; 
+    10 PK04WCMC PK04WCMC ; 
+    10 PK04STAT PK04STAT ; 
+    10 PK04WIXM PK04WIXM ; 
+    10 PK04WTSP PK04WTSP ; 
+    10 TA5TSQIX TA5TSQIX ; 
+    10 * char(29) ; 
+      15 PK04WACT PK04WACT ; 
+      15 PK04WUOM PK04WUOM ; 
+      15 PKKBXCCD PKKBXCCD ; 
+      15 PKKBXCHG PKKBXCHG ; 
+      15 PKKBXCWD PKKBXCWD ; 
+      15 PKKBXCLN PKKBXCLN ; 
+      15 PKKBXCF3 PKKBXCF3 ; 
+      15 PKLCTNHG PKLCTNHG ; 
+      15 PKLCTNWD PKLCTNWD ; 
+      15 PKLCTNLN PKLCTNLN ; 
+      15 PKLCTNF3 PKLCTNF3 ; 
+end // end PK04W01
+
+//*** RECORD=PK04W02 ****
+// working storage used pass parms to i/o module
+// ***********************
+Record PK04W02 type basicRecord
+  5 PK04W-IO-TASK PK04W-IO-TASK ; 
+  5 PK04W-LENGTH-LO PK04W-LENGTH-LO ; 
+  5 PK04W-LENGTH-HI PK04W-LENGTH-HI ; 
+  5 PK04W-WIDTH-LO PK04W-WIDTH-LO ; 
+  5 PK04W-WIDTH-HI PK04W-WIDTH-HI ; 
+  5 PK04W-HEIGHT-LO PK04W-HEIGHT-LO ; 
+  5 PK04W-HEIGHT-HI PK04W-HEIGHT-HI ; 
+end // end PK04W02
+
+//*** RECORD=PK04W03 ****
+// working storage used to write pk04 screen to temp storage
+// ***********************
+Record PK04W03 type basicRecord
+  5 PK04WLEN PK04WLEN ; 
+  5 PK04W-BOX-CLASS-CD PK04W-BOX-CLASS-CD ; 
+  5 PK04W-BOX-LENGTH PK04W-BOX-LENGTH ; 
+  5 PK04W-BOX-WIDTH PK04W-BOX-WIDTH ; 
+  5 PK04W-BOX-HEIGHT PK04W-BOX-HEIGHT ; 
+  5 PK04W-BOX-VOLUME PK04W-BOX-VOLUME ; 
+  5 PK04W-CRTN-CLASS-CD PK04W-CRTN-CLASS-CD ; 
+  5 PK04W-CRTN-LENGTH PK04W-CRTN-LENGTH ; 
+  5 PK04W-CRTN-WIDTH PK04W-CRTN-WIDTH ; 
+  5 PK04W-CRTN-HEIGHT PK04W-CRTN-HEIGHT ; 
+  5 PK04W-CRTN-VOLUME PK04W-CRTN-VOLUME ; 
+  5 PK04W-CRTN-WEIGHT PK04W-CRTN-WEIGHT ; 
+end // end PK04W03
+
+//*** RECORD=PK04W04 ****
+// work record used as io area for calling IO1970 subprogram
+// ***********************
+Record PK04W04 type basicRecord
+  10 PK04FUNC PK04FUNC ; 
+  10 PK04RCNT PK04RCNT ; 
+end // end PK04W04
+
+//*** RECORD=PKLREC1 ****
+// * ----------------------------------------------------------
+// *
+// * db2 table: dpick.vcrtn001
+// * declgen:   dcl00774
+// * i/o mod:   io4730
+// *
+// *
+// * maintenance history
+// *
+// *  ref.    date    init   reason
+// * ------ --------  ----   ------------------------------
+// * pk#106 09/20/89  jbc    creation(dumb)
+// *        03/06/92  SHENDE Add SWPMXCP and SWPMNCP for March
+// *                         table changes.
+// * ----------------------------------------------------------
+// *
+// *
+// ***********************
+Record PKLREC1 type basicRecord
+  5 PKLGRP1 PKLGRP1 ; 
+    10 PKLKEY PKLKEY ; 
+      15 PKLCTNCD PKLCTNCD ; 
+    10 PKLKEY2 PKLKEY2 ; 
+      15 PKLCTNLN PKLCTNLN ; 
+      15 PKLCTNWD PKLCTNWD ; 
+      15 PKLCTNHG PKLCTNHG ; 
+    10 PKLCTNF3 PKLCTNF3 ; 
+    10 PKLCTNWT PKLCTNWT ; 
+    10 SWPMNCP SWPMNCP [4] ; 
+    10 SWPMXCP SWPMXCP [4] ; 
+    10 XXXSTAT XXXSTAT ; 
+    10 ZZZSDT ZZZSDT ; 
+    10 ZZZCHGDT ZZZCHGDT ; 
+    10 ZZZCHGTM ZZZCHGTM ; 
+    10 ZZZCHGCT ZZZCHGCT ; 
+end // end PKLREC1
+
+// io call function code
+DataItem PK04FUNC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem PK04LMTFL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// io call row count
+DataItem PK04RCNT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// xxx_stat
+DataItem PK04STAT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// box class code
+DataItem PK04W-BOX-CLASS-CD char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// got data flag
+DataItem PK04W-BOX-DIM-OR-FULL-CASE-DIM char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// box height
+DataItem PK04W-BOX-HEIGHT decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// box length
+DataItem PK04W-BOX-LENGTH decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// box volume
+DataItem PK04W-BOX-VOLUME decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// box width
+DataItem PK04W-BOX-WIDTH decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// carton class code
+DataItem PK04W-CRTN-CLASS-CD char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// carton height
+DataItem PK04W-CRTN-HEIGHT decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// carton length
+DataItem PK04W-CRTN-LENGTH decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// carton volume
+DataItem PK04W-CRTN-VOLUME decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// carton volume
+DataItem PK04W-CRTN-WEIGHT decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// carton width
+DataItem PK04W-CRTN-WIDTH decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// inquire on dimension flag
+DataItem PK04W-DIM-FLAG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// inquire on dimension flag
+DataItem PK04W-FULL-CASE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// box width low range
+DataItem PK04W-HEIGHT-HI decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// box width low range
+DataItem PK04W-HEIGHT-LO decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// IO TASK
+DataItem PK04W-IO-TASK char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// box length low range
+DataItem PK04W-LENGTH-HI decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// box length low range
+DataItem PK04W-LENGTH-LO decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// box length hi range
+DataItem PK04W-WIDTH-HI decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// box length hi range
+DataItem PK04W-WIDTH-LO decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hold action code
+DataItem PK04WACT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// add data flag
+DataItem PK04WADD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem PK04WBMC char(17)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// foot to meter constant
+DataItem PK04WCFM decimal(5,5)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cubic ft to meter constant
+DataItem PK04WCFV decimal(5,5)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// inch to centimeter constant
+DataItem PK04WCIC decimal(5,5)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem PK04WCMC char(17)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// screen time(ezetim)
+DataItem PK04WCTM char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// fatal error flag
+DataItem PK04WERR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// got data flag
+DataItem PK04WGOT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem PK04WGRP char(154)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// index
+DataItem PK04WIXM num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// length of w/s page
+DataItem PK04WLEN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// setup screen flag
+DataItem PK04WSCR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// screen hh:mm
+DataItem PK04WSHM char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// subscript
+DataItem PK04WSUB num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current page
+DataItem PK04WTSP num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// unit of measure (inch,cmeter)
+DataItem PK04WUOM char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// update flag
+DataItem PK04WUPD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// numeric work area1
+DataItem PK04WWK1 decimal(12,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// numeric work area2
+DataItem PK04WWK2 decimal(12,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// numeric work area2
+DataItem PK04WWK3 decimal(12,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// numeric work area2
+DataItem PK04WWK4 decimal(12,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// numeric work area2
+DataItem PK04WWK5 decimal(12,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem PKLCTNWT decimal(5,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem PKLGRP1 char(47)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

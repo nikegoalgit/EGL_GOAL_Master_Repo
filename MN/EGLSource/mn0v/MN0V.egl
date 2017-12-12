@@ -1,0 +1,412 @@
+package mn0v;
+import corpcom1.*;
+import corpcom5.*;
+import corpcom7.*;
+import corpx1.*;
+import corpx2.*;
+import corpz3.*;
+import mn.common.*;
+import ta.common.*;
+//*** PROGRAM=MN0V ****
+// Application Name: MN0V
+// Author:           Vern Cowan, Technology Support
+// Date Written:     September 1995
+// Install Date:     September 1996
+// Orig Requestor:   Michael Hallstead, Global Product Systems
+// 
+// This application is used to validate which USERs are allowed
+// to maintenance given CSP Applications per a unique CSP Goal
+// Security Tran ID record that has the following format of
+// sscc, where
+//   ss = CSP System Prefix
+//   cc = a 2-character ID as defined by the user of the system
+// prefix.  For Example:  for the SY prefix, this value will be
+// R1, R2 ... R9 and RA, RB ... RZ where R1 equals Region 1; R2
+// equals Region 2; RA equals Region 10; and so forth.
+// 
+// A given USER can have one or many for the above described
+// Goal Security Tran ID Records associated with their USERID.
+// 
+// PROGRAMMING REQUIREMENTS:
+// The Calling CSP Appliation must use the following statements
+// when calling CSP Application MN0V:
+// 
+//   SET MNVREC EMPTY;            /* Initialize MNVREC
+//   ;   build Goal Security Tran Code
+//   MOVE (map's system prefix)
+//     TO MNVREC.XXX-SYS-PFX;    /*  Initialize System Prefix
+//   MOVE (map's 2-char Code Identifer)
+//     TO MNVREC.MNV-GOAL-SCTY-SUF-TRAN-CD; /* Suffix tran code
+//   ;
+//   CALL MN0V COMMAREA,MNVREC (NOMAPS,REPLY;
+// 
+// 
+// PASS-RECORD DEFINITION:
+// MN0V will return the following information via MNVREC
+//          ---- TOTAL LENGTH = 250 CHARS ----
+//   2-char Function code for Accessing the GOAL Security File
+//     'S ' - Select Unique (VSAM INQUIRY Option)
+//     'SN' - Scan Next Record (VSAM SCAN Option)
+//   2-char System Prefix from calling application
+//   2-char GOAL Security Suffix Tran ID, supplied by USER
+//   4-Numeric Retrun Code
+//     0000 - record found on GOAL Security File
+//     0100 - EOF when using SCAN Option
+//     1010 - record not found on GOAL Security File
+//     1020 - system error - cannot read GOAL Security File
+//     2010 - System Prefix passed is equal to spaces
+//     2020 - 2-char GOAL Security Suffix Tran ID is spaces
+//     3010 - Invalid FUNCTION Code; not 'S ' or 'SN'
+//   4-char GOAL Secuurity Tran ID: format ppcc, where
+//     pp = 2-char System Prefix
+//     cc = 2-char GOAL Security Suffix Tran ID
+//  11-char ADD Flag & Sub Flags for GOAL Security Tran ID
+//  11-char CHG Flag & Sub Flags for GOAL Security Tran ID
+//  11-char DEL Flag & Sub Flags for GOAL Security Tran ID
+//  11-char INQ Flag & Sub Flags for GOAL Security Tran ID
+// 192-char reserved for future use
+// 
+// ************************************************************
+//          Maintenance Log
+// 
+//  DATE     USERID   DESCRIPTION OF MAINTENANCE
+// 09/07/95  VCowan   Original Specs
+// 
+// 
+// *********************
+Program MN0V type textUIProgram //VAGen Info - called text program
+  (
+   COMMAREA COMMAREA, // record
+   MNVREC MNVREC // record
+  )
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes
+  }
+
+  // Data Declarations
+  MN0VW00 MN0VW00; // record
+  MN1REC MN1REC; // record
+  MN3REC MN3REC { redefines = MN1REC } ; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  //  use  MN0VM // VAGen Info - unused formGroup    {
+  //    pfKeyEquate = no
+  //  };
+  
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    MN0V-10000: MN0V-10000();
+
+
+    exit program; /* return to caller*/
+
+
+  end // end main
+end // end MN0V
+
+// edit mnvrec, ck sel-opt
+Function MN0V-10000()
+  set MN1REC empty; /* set record empty*/
+  set MN0VW00 empty; /* set record empty*/
+
+   /* ------------------------------------------------------------------*/
+   /* this process is used to read the user/appl record on goal security*/
+   /* set up file key for application read*/
+   /* ------------------------------------------------------------------*/
+
+  MN3REC.MN1KEY = " "; /* clear key area*/
+  MN3REC.MN1TYPE1 = "3"; /* set record type-1 value*/
+  MN3REC.MN1USER = COMMAREA.CAUSERID; /* get user id value*/
+  MN3REC.MN1TYPE2 = "3"; /* set record type-2 value*/
+
+  MN0VS-EDIT-MNVREC(); /* validate MNVrec data*/
+
+  if (MNV-RTN-CODE != 0) /* if error-code not = 0*/
+    return; /* return to calling program*/
+  end
+
+  if (MNV-SEL-OPT == "S ") /* vsam INQUIRY option*/
+    MN0V-10010(); /* perform INQUIRY using mn1rec info*/
+  end
+
+  if (MNV-SEL-OPT == "SN") /* vsam SCAN NEST Option*/
+    MN0V-10010(); /* perform INQUIRY using mn1rec info*/
+    if (MNV-RTN-CODE != 0) /* if error-code not = 0*/
+      return; /* return to calling program*/
+    end
+    MN0V-10020(); /* perform SCAN NEXT using mn1rec info*/
+  end
+
+  if (MNV-SEL-OPT != "S " /* vsam INQUIRY option*/
+   && MNV-SEL-OPT != "SN") /* vsam SCAN NEST Option*/
+    MNVREC.MNV-RTN-CODE = 3010; /* set error code*/
+  end
+
+
+  if (MNV-RTN-CODE != 0) /* if error-code not = 0*/
+    return; /* return to calling program*/
+  else
+    MNVREC.MN1APPL = MN3REC.MN1APPL; /* returned appl "tran cd"*/
+    MNVREC.MN3ADD = MN3REC.MN3ADD; /* returned add levels*/
+    MNVREC.MN3CHG = MN3REC.MN3CHG; /* returned chg levels*/
+    MNVREC.MN3DEL = MN3REC.MN3DEL; /* returned del levels*/
+    MNVREC.MN3INQ = MN3REC.MN3INQ; /* returned inq levels*/
+  end
+
+
+end // end MN0V-10000
+
+// vsam INQUIRY process
+Function MN0V-10010()
+
+   /* ------------------------------------------------------------------*/
+   /* this process is used to read the user/appl record on goal security*/
+   /* set up file key for application read*/
+   /* ------------------------------------------------------------------*/
+
+  MN3REC.MN1KEY = " "; /* clear key area*/
+  MN3REC.MN1TYPE1 = "3"; /* set record type-1 value*/
+  MN3REC.MN1USER = COMMAREA.CAUSERID; /* get user id value*/
+  MN3REC.MN1TYPE2 = "3"; /* set record type-2 value*/
+
+
+  MN0VW00.XXX-SYS-PFX = MNVREC.XXX-SYS-PFX; /* system prefix*/
+  MN0VW00.MNV-GOAL-SCTY-SUF-TRAN-CD = MNVREC.MNV-GOAL-SCTY-SUF-TRAN-CD; /* goal-scty-suf-tran-cd*/
+
+
+  MN3REC.MN1APPL = MN0VW00.MN1APPL; /* get "appl" id*/
+  MNVREC.MN1APPL = MN0VW00.MN1APPL; /* get "appl" id*/
+  try
+    get MN1REC ;
+    onException MN0VS-P10010-ERROR() ;
+  end
+
+
+  if (MN1REC is noRecordFound /* not found contidion*/
+   || MN1REC is ioError)      /* error reading scty file*/
+    MNVREC.MNV-RTN-CODE = 1010; /* set error code*/
+    MN0VW00.MN0VW-RTN-ERR-MSG-VAR1 = "MN0V1010I";
+    MN0VW00.MN0VW-RTN-ERR-MSG-LIT1 = " -- USER ";
+    MN0VW00.MN0VW-RTN-ERR-MSG-VAR2 = COMMAREA.CAUSERID;
+    MN0VW00.MN0VW-RTN-ERR-MSG-LIT2 = "ACCESS NOT AUTHORIZED FOR  REGION CODE: ";
+    MN0VW00.MN0VW-RTN-ERR-MSG-VAR3 = MNVREC.MNV-GOAL-SCTY-SUF-TRAN-CD;
+    MN0VW00.MN0VW-RTN-ERR-MSG-LIT3 = " ";
+    MNVREC.MNV-RTN-ERR-MSG = MN0VW00.MN0VW-RTN-ERR-MSG;
+  else
+    MNVREC.MNV-RTN-CODE = 0000; /* set error code*/
+    MNVREC.MNV-RTN-ERR-MSG = " ";
+    MNVREC.MN3ADD = MN3REC.MN3ADD; /* set add levels*/
+    MNVREC.MN3CHG = MN3REC.MN3CHG; /* set chg levels*/
+    MNVREC.MN3DEL = MN3REC.MN3DEL; /* set del levels*/
+    MNVREC.MN3INQ = MN3REC.MN3INQ; /* set inq levels*/
+  end
+
+
+end // end MN0V-10010
+
+// vsam SCAN process
+Function MN0V-10020()
+
+   /* ------------------------------------------------------------------*/
+   /* this process is used to SCAN the user/appl record on goal security*/
+   /* set up file key for application read*/
+   /* ------------------------------------------------------------------*/
+
+  MN3REC.MN1KEY = " "; /* clear key area*/
+  MN3REC.MN1TYPE1 = "3"; /* set record type-1 value*/
+  MN3REC.MN1USER = COMMAREA.CAUSERID; /* get user id value*/
+  MN3REC.MN1TYPE2 = "3"; /* set record type-2 value*/
+
+  MN0VW00.XXX-SYS-PFX = MNVREC.XXX-SYS-PFX; /* system prefix*/
+  MN0VW00.MNV-GOAL-SCTY-SUF-TRAN-CD = MNVREC.MNV-GOAL-SCTY-SUF-TRAN-CD; /* goal-scty-suf-tran-cd*/
+
+  MN3REC.MN1APPL = MN0VW00.MN1APPL; /* get "appl" id*/
+  MNVREC.MN1APPL = MN0VW00.MN1APPL; /* get "appl" id*/
+
+  set MN1REC position; /* initialize for scan process*/
+
+  try
+    get next MN1REC ;
+    onException MN0VS-P10020-ERROR() ;
+  end
+
+
+  if (MN1REC is noRecordFound /* not found contidion*/
+   || MN1REC is ioError)      /* error reading scty file*/
+    MNVREC.MNV-RTN-CODE = 1010; /* set error code*/
+    MN0VW00.MN0VW-RTN-ERR-MSG-VAR1 = "MN0V1010I";
+    MN0VW00.MN0VW-RTN-ERR-MSG-LIT1 = " -- USER ";
+    MN0VW00.MN0VW-RTN-ERR-MSG-VAR2 = COMMAREA.CAUSERID;
+    MN0VW00.MN0VW-RTN-ERR-MSG-LIT2 = "ACCESS NOT AUTHORIZED FOR COUNTRY CODE: ";
+    MN0VW00.MN0VW-RTN-ERR-MSG-VAR3 = MNVREC.MNV-GOAL-SCTY-SUF-TRAN-CD;
+    MN0VW00.MN0VW-RTN-ERR-MSG-LIT3 = " ";
+    MNVREC.MNV-RTN-ERR-MSG = MN0VW00.MN0VW-RTN-ERR-MSG;
+  end
+
+  if (MN1REC is endOfFile) /* end of scan process*/
+    MNVREC.MNV-RTN-CODE = 0100; /* set error code*/
+    MN0VW00.MN0VW-RTN-ERR-MSG-VAR1 = "MN0V0100I";
+    MN0VW00.MN0VW-RTN-ERR-MSG-LIT1 = " -- USER ";
+    MN0VW00.MN0VW-RTN-ERR-MSG-VAR2 = COMMAREA.CAUSERID;
+    MN0VW00.MN0VW-RTN-ERR-MSG-LIT2 = "EOF FOR SCAN -- NO MORE RECORDS FOUND   ";
+    MN0VW00.MN0VW-RTN-ERR-MSG-VAR3 = " ";
+    MN0VW00.MN0VW-RTN-ERR-MSG-LIT3 = " ";
+    MNVREC.MNV-RTN-ERR-MSG = MN0VW00.MN0VW-RTN-ERR-MSG;
+  end
+
+
+  if (MN1REC is noRecordFound /* not found contidion*/
+   || MN1REC is ioError       /* error reading scty file*/
+   || MN1REC is endOfFile)    /* end of scan process*/
+      /* next sentence*/
+  else
+    MNVREC.MNV-RTN-CODE = 0000; /* set error code*/
+    MNVREC.MNV-RTN-ERR-MSG = " ";
+    MNVREC.MN3ADD = MN3REC.MN3ADD; /* set add levels*/
+    MNVREC.MN3CHG = MN3REC.MN3CHG; /* set chg levels*/
+    MNVREC.MN3DEL = MN3REC.MN3DEL; /* set del levels*/
+    MNVREC.MN3INQ = MN3REC.MN3INQ; /* set inq levels*/
+  end
+
+
+end // end MN0V-10020
+
+// validate MNVrec passed data
+Function MN0VS-EDIT-MNVREC()
+
+   /* ************************************************************/
+    /* edit MNVREC to see if valid data has been passed*/
+   /* ************************************************************/
+
+  MNVREC.MNV-RTN-CODE = 0000; /* initialize MNV-rtn-code*/
+
+  /* GET MN0V-10000*/
+
+  if (MNV-SEL-OPT != "S " /* vsam INQUIRY option*/
+   && MNV-SEL-OPT != "SN") /* vsam SCAN NEST Option*/
+    MNVREC.MNV-RTN-CODE = 3010; /* set error code*/
+    return;
+  end
+
+
+  if (MNVREC.XXX-SYS-PFX == " ") /* if systems prefix passed is spaces*/
+    MNVREC.MNV-RTN-CODE = 2010;
+    return;
+  end
+
+
+  if (MNV-SEL-OPT == "SN" /* vsam INQUIRY option*/
+   && MNVREC.MNV-GOAL-SCTY-SUF-TRAN-CD == "  ")
+                                   /* if 2-char goal scty suffix spaces*/
+    MNVREC.MNV-RTN-CODE = 2020;
+    return;
+  end
+
+
+end // end MN0VS-EDIT-MNVREC
+
+// vsam INQUIRY error
+Function MN0VS-P10010-ERROR()
+
+
+   /* ************************************************************/
+      /* this statement group is invoked when an INQUIRY error*/
+      /* had occured when reading the GOAL SECURITY vsam file*/
+   /* ************************************************************/
+
+
+  if (MN1REC is noRecordFound) /* not found contidion*/
+    MNVREC.MNV-RTN-CODE = 1010; /* set error code*/
+  else
+    MNVREC.MNV-RTN-CODE = 1020; /* set error code*/
+  end
+
+
+end // end MN0VS-P10010-ERROR
+
+// vsam SCAN error
+Function MN0VS-P10020-ERROR()
+
+
+   /* ************************************************************/
+      /* this statement group is invoked when an SCAN error*/
+      /* had occured when reading the GOAL SECURITY vsam file*/
+   /* ************************************************************/
+
+
+  if (MN1REC is noRecordFound) /* not found contidion*/
+    MNVREC.MNV-RTN-CODE = 1010; /* set error code*/
+  else
+    if (MN1REC is endOfFile) /* EOF after last SCAN*/
+      MNVREC.MNV-RTN-CODE = 0100; /* set error code*/
+    else
+      MNVREC.MNV-RTN-CODE = 1020; /* set error code*/
+    end
+  end
+
+
+end // end MN0VS-P10020-ERROR
+
+//*** RECORD=MN0VW00 ****
+// Pass Record for MN0T
+// ***********************
+Record MN0VW00 type basicRecord
+  10 MN1APPL MN1APPL ; 
+    15 XXX-SYS-PFX XXX-SYS-PFX ; 
+    15 MNV-GOAL-SCTY-SUF-TRAN-CD MNV-GOAL-SCTY-SUF-TRAN-CD ; 
+  10 MN0VW-RTN-ERR-MSG MN0VW-RTN-ERR-MSG ; 
+    15 MN0VW-RTN-ERR-MSG-VAR1 MN0VW-RTN-ERR-MSG-VAR1 ; 
+    15 MN0VW-RTN-ERR-MSG-LIT1 MN0VW-RTN-ERR-MSG-LIT1 ; 
+    15 MN0VW-RTN-ERR-MSG-VAR2 MN0VW-RTN-ERR-MSG-VAR2 ; 
+    15 MN0VW-RTN-ERR-MSG-LIT2 MN0VW-RTN-ERR-MSG-LIT2 ; 
+    15 MN0VW-RTN-ERR-MSG-VAR3 MN0VW-RTN-ERR-MSG-VAR3 ; 
+    15 MN0VW-RTN-ERR-MSG-LIT3 MN0VW-RTN-ERR-MSG-LIT3 ; 
+end // end MN0VW00
+
+// menu application id
+DataItem MN0VW-RTN-ERR-MSG char(78)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem MN0VW-RTN-ERR-MSG-LIT1 char(9)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem MN0VW-RTN-ERR-MSG-LIT2 char(40)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem MN0VW-RTN-ERR-MSG-LIT3 char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem MN0VW-RTN-ERR-MSG-VAR1 char(9)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem MN0VW-RTN-ERR-MSG-VAR2 char(9)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem MN0VW-RTN-ERR-MSG-VAR3 char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+
