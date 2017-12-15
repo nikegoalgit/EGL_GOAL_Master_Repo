@@ -1,0 +1,646 @@
+package ne0p;
+
+import corpcom2.XCTHREC;
+import corpcom3.XPTA0P;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.COMMAREA;
+import corpcom6.SQLCA;
+import corpcom6.UT2REC;
+import corpx1.XLATBL;
+import ne.common.NEWREC;
+import ta.common.TA1REC;
+import ta.common.TA3APLID;
+import ta.common.TA6REC;
+import ta.common.TAEREC;
+//*** PROGRAM=NE0P ****
+// ************************************************************
+// * NE0P: jcl submiter for NIL Sales Cutoff Process          *
+// *----------------------------------------------------------*
+// * description:                                             *
+// * -- this application submits test and                     *
+// *    production jcl.                                       *
+// * -- test jcl does not use ucc7.                           *
+// * -- production jcl uses ucc7.                             *
+// *                                                          *
+// * maintenance:                                             *
+// *----------------------------------------------------      *
+// *  1-07-94  JJUDKI Created                                 *
+// *  6-08-94  kshaw  added user table logic, deleted all     *
+// *                  tables except 02, 03, 52 added          *
+// *                  logic to creat jcl from one table       *
+// *                  and using passed parms for overrides    *
+// *                                                          *
+// *                                                          *
+// ************************************************************
+// *                                                          *
+// *********************
+Program NE0P type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "NL00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  NE0PW01 NE0PW01; // record
+  NE0PW99 NE0PW99; // record
+  NEWREC NEWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA6REC TA6REC; // record
+  TAEREC TAEREC; // record
+  UT2REC UT2REC; // record
+  XCTHREC XCTHREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use NE0PT02 {deleteAfterUse = yes}; // table
+  use NE0PT03 {deleteAfterUse = yes}; // table
+  use NE0PT52 {deleteAfterUse = yes}; // table
+  use XLATBL {deleteAfterUse = yes}; // table
+  //  use  NE0PM // VAGen Info - unused formGroup    {
+  //    pfKeyEquate = no
+  //  };
+  
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    NE0P-001: NE0P-001();
+    NE0P-050: NE0P-050();
+    NE0P-800: NE0P-800();
+  end // end main
+end // end NE0P
+
+// initialize process
+Function NE0P-001()
+  ;
+   /* *********************************************************/
+   /* Initialize Application*/
+   /* *********************************************************/
+  ;
+  XSENTRY();
+  XSSEGTR();
+  ;
+  set NE0PW01 empty; /* clear working storage*/
+  set NE0PW99 empty; /* "*/
+  set NEWREC empty; /* "*/
+  set SQLCA empty; /* "*/
+  set TA1REC empty; /* "*/
+  set XCTHREC empty; /* "*/
+  set TA6REC empty; /* "*/
+  NEWREC.NEW-GROUP = COMMAREA.CAUSERA;
+  ;
+   /* *********************************************************/
+   /* check for illegal entry to application*/
+   /* *********************************************************/
+  if (COMMAREA.CAFROMAP != "NE0F") /* SCO Reports Menu*/
+    COMMAREA.CATOAP = "NE0A"; /* go to main menu*/
+    COMMAREA.CAITEM = " "; /* go to main menu*/
+    XSEXIT();
+    XSPF4();
+  end
+  NE0PW01.NE0PW-01-ERR = "N"; /* error flag setting*/
+  NE0PW01.NE0PW-01-FL3 = "N"; /* process flag*/
+   /* *********************************************************/
+   /* determine region of execution prod/test*/
+   /* *********************************************************/
+  ;
+  call "XC0910" (XCTHREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (XCTHREC.XCTH-THEATER-RUNTYPE == " ")
+    TA1REC.TA1LOCAT[1] = "NE0P100 ";
+    TA1REC.TA1LOCAT[2] = "XC0910  ";
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1PGMNM = "NE0P";
+    TA1REC.TA1FUNC = "POST";
+    call "TA0020" (TA1REC, SQLCA);
+    NE0PW01.NE0PW-01-ERR = "Y"; /* set error message flag*/
+  end
+  ;
+  ;
+end // end NE0P-001
+
+// prepare for submission
+Function NE0P-050()
+  ;
+   /* *********************************************************/
+    /* all 'prod' regions are supposed to be production...*/
+   /* *********************************************************/
+  ;
+  if (NE0PW01.NE0PW-01-ERR == "N") /* if not errors*/
+    if (XCTHREC.XCTH-THEATER-RUNTYPE == "PROD") /* if production region*/
+      NE0P-100(); /* submit production job stream*/
+    else
+      NE0P-105(); /* submit test job stream*/
+    end
+  end
+  ;
+  ;
+end // end NE0P-050
+
+// submit production jcl
+Function NE0P-100()
+  ;
+   /* *********************************************************/
+   /* this routine processes the production jcl csp tables*/
+   /* *********************************************************/
+  ;
+  NE0PW01.NE0PW-01-FL3 = "N"; /* the end of process flag*/
+  NE0PW01.NE0PW-01-SUB = 1; /* set table index to 1*/
+  TA6REC.TA6ROW = " ";
+  ;
+  while (NE0PW01.NE0PW-01-FL3 == "N" /* process a job stream table*/
+   && NE0PW01.NE0PW-01-ERR == "N")
+    ;
+    /* **************** SCO Job Submit ****************/
+    ;
+    NE0PW99.NE0PWJCL = NE0PT02.NE0PT-JCL[NE0PW-01-SUB];
+    NE0PW01.NE0PW-01-TTYP = NE0PT02.NE0PT-TTYP[NE0PW-01-SUB];
+    ;
+    NE0PS-FMAT-TA6REC(); /* MOVE JCL TO TA6REC*/
+    NE0PW-01-SUB = NE0PW-01-SUB + 1; /* increment table index*/
+    ;
+  end
+  ;
+  NE0PS-FMAT-JCL(); /* SUBMIT JCL VIA TA0P*/
+  ;
+  ;
+end // end NE0P-100
+
+// submit test jcl
+Function NE0P-105()
+   /* *********************************************************/
+   /* this routine processes the test jcl tables*/
+   /* *********************************************************/
+  ;
+  NE0PW01.NE0PW-01-FL3 = "N"; /* the end of process flag*/
+  NE0PW01.NE0PW-01-SUB = 1; /* set table index to 1*/
+  move " " to TA6REC.TA6ROW[1] for all;
+  ;
+  while (NE0PW01.NE0PW-01-FL3 == "N" /* process a job stream table*/
+   && NE0PW01.NE0PW-01-ERR == "N")
+    ;
+    /* **************** SCO Print Table for TEST ****/
+    ;
+    NE0PW99.NE0PWJCL = NE0PT52.NE0PT-JCL[NE0PW-01-SUB];
+    NE0PW01.NE0PW-01-TTYP = NE0PT52.NE0PT-TTYP[NE0PW-01-SUB];
+    ;
+    NE0PS-FMAT-TA6REC(); /* FORMAT TA6REC*/
+    NE0PW-01-SUB = NE0PW-01-SUB + 1; /* increment table index*/
+    ;
+  end
+  ;
+  NE0PS-FMAT-JCL(); /* SUBMIT JOB TO READER*/
+  ;
+  ;
+  ;
+end // end NE0P-105
+
+// return to calling appli
+Function NE0P-800()
+  ;
+  COMMAREA.CAUSERA = NEWREC.NEW-GROUP; /* send record back*/
+  COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+  COMMAREA.CAITEM = " "; /* go to main menu*/
+  COMMAREA.CAFROMAP = "NE0P"; /* coming back from NE0P*/
+  XSEXIT();
+  XSPF4();
+  ;
+end // end NE0P-800
+
+// format jcl if user exists
+Function NE0PS-DETR-USR-RMT()
+   /* *********************************************************/
+   /* this routine processes the jcl tables by user and rmt*/
+   /* *********************************************************/
+  ;
+  NE0PW-01-Q-REMOTE-CARD = NE0PW99.NE0PWJCL;
+                   /* move jcl to ws jcl for user printer table*/
+  if (COMMAREA.CAUSERID in NE0PT03.XXXUSRID)
+    NE0PW-01-Q-REMOTE-PRINTER = NE0PT03.NE0PT-RMT-PRT[sysVar.arrayIndex];
+  end
+  ;
+  NE0PW99.NE0PWJCL = NE0PW-01-Q-REMOTE-CARD;
+                   /* move mod ws-jcl to original jcl*/
+end // end NE0PS-DETR-USR-RMT
+
+// FORMAT JCL FOR TA0P
+Function NE0PS-FMAT-JCL()
+   /* ------------------------------------------------------------*/
+   /* Format JCL For TA0P*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA6REC.TA6SUBSW = "S"; /* Tailor and submit JCL*/
+  TA6REC.TA6MSGSW = "Y"; /* EOJ online message switch*/
+  ;
+  XPTA0P(); /* SUBMIT JCL FOR BACKGROUND JOB*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If submit was successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA6REC.TA6RTNCD == "0")        /* and normal return*/
+    NEWREC.NEW-MSG-NBR = 51; /* Submission was a success*/
+    return; /* Return to previous process*/
+  else
+    NEWREC.NEW-MSG-NBR = 91; /* Submission was unsuccessful*/
+    return; /* Return to previous process*/
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* If not successful, indicate unexpected error has occurred.*/
+   /* ------------------------------------------------------------*/
+  if (sysVar.errorCode != "00000000" /* Call not successful*/
+   || TA6REC.TA6RTNCD > "1")         /* or unexpected error*/
+    TA1REC.TA1LOCAT[1] = "NE0P100 ";
+    TA1REC.TA1LOCAT[2] = "TA0P    ";
+    TA1REC.TA1LOCAT[3] = "RTN CD -";
+    TA1REC.TA1LOCAT[4] = TA6REC.TA6RTNCD;
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1PGMNM = "NE0P";
+    TA1REC.TA1FUNC = "POST";
+    call "TA0020" (TA1REC, SQLCA);
+  end
+  ;
+end // end NE0PS-FMAT-JCL
+
+// FORMAT TA6REC
+Function NE0PS-FMAT-TA6REC()
+   /* *********************************************************/
+   /* Format the variable areas of the JCL statement.*/
+   /* Write Job Control Language to the Internal Reader queue.*/
+   /* If error occurred, report to the error diagnosis facility.*/
+   /* Indicate the job was submitted when end of file is written.*/
+   /* 1.  J = job control card*/
+   /* 2.  N = notify card*/
+   /* 3.  O = report format information and number of copies*/
+   /* 4.  U = UCC7 interface*/
+   /* 5.  P = Parameter card for the JCL*/
+   /* 6.  S = submit job card*/
+   /* 7.  C = proc to execute card*/
+   /* 8.  D = program override card*/
+   /* 9.  Q = program override card*/
+   /* *********************************************************/
+  ;
+  if (NE0PW01.NE0PW-01-TTYP == "P") /* Parameter statement*/
+    NE0PW-01-PARM-CARD = NEWREC.NEW-REPORT-PARAMETERS;
+    NE0PW99.NE0PWJCL = NE0PW-01-PARM-CARD;
+  end
+  ;
+  if (NE0PW01.NE0PW-01-TTYP == "N") /* NOTIFY CARD*/
+    NE0PW-01-N-NOTIFY-CARD = NE0PW99.NE0PWJCL;
+    NE0PW-01-N-NOTIFY = COMMAREA.CAUSERID;
+    NE0PW99.NE0PWJCL = NE0PW-01-N-NOTIFY-CARD;
+  end
+  ;
+  if (NE0PW01.NE0PW-01-TTYP == "S") /* SUBMIT JOB CARD*/
+    NE0PW-01-S-SUBMIT-JOB-CARD = NE0PW99.NE0PWJCL;
+    NE0PW-01-S-JOB-NUMBER = NEWREC.XXX-PGM-NBR;
+    NE0PW99.NE0PWJCL = NE0PW-01-S-SUBMIT-JOB-CARD;
+  end
+  ;
+  if (NE0PW01.NE0PW-01-TTYP == "C") /* PROC TO BE USED*/
+    NE0PW-01-C-PROC-CARD = NE0PW99.NE0PWJCL;
+    NE0PW-01-C-PROC-NUMBER = NEWREC.XXX-PGM-NBR;
+    NE0PW-01-C-PROC-INSERT-TWO = 2;
+    NE0PW99.NE0PWJCL = NE0PW-01-C-PROC-CARD;
+  end
+  ;
+  if (NE0PW01.NE0PW-01-TTYP == "D") /* PROGRAM TO USE*/
+    NE0PW-01-D-PROGRAM-CARD = NE0PW99.NE0PWJCL;
+    NE0PW-01-D-PROGRAM-NUMBER = NEWREC.XXX-PGM-NBR;
+    NE0PW-01-D-PROGRAM-INSERT-ZERO = 0;
+    NE0PW99.NE0PWJCL = NE0PW-01-D-PROGRAM-CARD;
+  end
+  ;
+  if (NE0PW01.NE0PW-01-TTYP == "Q") /* remote printer*/
+    NE0PS-DETR-USR-RMT();
+  end
+  ;
+  TA6REC.TARJCL[NE0PW-01-SUB] = NE0PW99.NE0PWJCL;
+  TA6REC.TARTYPE[NE0PW-01-SUB] = NE0PW01.NE0PW-01-TTYP;
+  ;
+  if (NE0PW99.NE0PWJCL == "/*EOF") /* End of file*/
+    NE0PW01.NE0PW-01-FL3 = "Y"; /* Indicate end of table*/
+  end
+  ;
+  ;
+end // end NE0PS-FMAT-TA6REC
+
+//*** RECORD=NE0PW01 ****
+// Working storage for NE0P - SCO Job Request  Parameters
+// ***********************
+Record NE0PW01 type basicRecord
+  5 NE0PW-01-GRP NE0PW-01-GRP ; 
+    10 NE0PW-01-PARM-CARD NE0PW-01-PARM-CARD ; 
+      15 NE0PW-01-XGP-GPC-CD NE0PW-01-XGP-GPC-CD ; 
+      15 NE0PW-01-ZPS-PROD-SRC-CD NE0PW-01-ZPS-PROD-SRC-CD ; 
+      15 NE0PW-01-XXX-SUM-CD NE0PW-01-XXX-SUM-CD ; 
+      15 NE0PW-01-XAU-ACCT-CLS-CD NE0PW-01-XAU-ACCT-CLS-CD ; 
+      15 NE0PW-01-XCT-CTRY-CD NE0PW-01-XCT-CTRY-CD ; 
+      15 NE0PW-01-CU-CO-ID NE0PW-01-CU-CO-ID ; 
+      15 NE0PW-01-FROM-DATE NE0PW-01-FROM-DATE ; 
+      15 NE0PW-01-TO-DATE NE0PW-01-TO-DATE ; 
+      15 * char(44) ; 
+    10 NE0PW-01-TTYP NE0PW-01-TTYP ; 
+    10 NE0PW-01-TSPC NE0PW-01-TSPC ; 
+    10 TA3APLID TA3APLID ; 
+      15 * char(5) ; 
+      15 NE0PW-01-REG NE0PW-01-REG ; 
+      15 * char(1) ; 
+    10 NE0PW-01-ERR NE0PW-01-ERR ; 
+    10 NE0PW-01-SUB NE0PW-01-SUB ; 
+    10 NE0PW-01-FL3 NE0PW-01-FL3 ; 
+    10 NE0PW-01-N-NOTIFY-CARD NE0PW-01-N-NOTIFY-CARD ; 
+      15 NE0PW-01-N-FILLER1 NE0PW-01-N-FILLER1 ; 
+      15 NE0PW-01-N-NOTIFY NE0PW-01-N-NOTIFY ; 
+      15 NE0PW-01-N-FILLER2 NE0PW-01-N-FILLER2 ; 
+    10 NE0PW-01-S-SUBMIT-JOB-CARD NE0PW-01-S-SUBMIT-JOB-CARD ; 
+      15 NE0PW-01-S-FILLER1 NE0PW-01-S-FILLER1 ; 
+      15 NE0PW-01-S-JOB-NUMBER NE0PW-01-S-JOB-NUMBER ; 
+      15 NE0PW-01-S-FILLER2 NE0PW-01-S-FILLER2 ; 
+    10 NE0PW-01-C-PROC-CARD NE0PW-01-C-PROC-CARD ; 
+      15 NE0PW-01-C-FILLER1 NE0PW-01-C-FILLER1 ; 
+      15 NE0PW-01-C-PROC-NUMBER NE0PW-01-C-PROC-NUMBER ; 
+        20 NE0PW-01-C-PROC-FIRST5CHAR NE0PW-01-C-PROC-FIRST5CHAR ; 
+        20 NE0PW-01-C-PROC-INSERT-TWO NE0PW-01-C-PROC-INSERT-TWO ; 
+      15 NE0PW-01-C-FILLER2 NE0PW-01-C-FILLER2 ; 
+    10 NE0PW-01-D-PROGRAM-CARD NE0PW-01-D-PROGRAM-CARD ; 
+      15 NE0PW-01-D-FILLER1 NE0PW-01-D-FILLER1 ; 
+      15 NE0PW-01-D-PROGRAM-NUMBER NE0PW-01-D-PROGRAM-NUMBER ; 
+        20 NE0PW-01-D-PROGRAM-FIRST5CHAR NE0PW-01-D-PROGRAM-FIRST5CHAR ; 
+        20 NE0PW-01-D-PROGRAM-INSERT-ZERO NE0PW-01-D-PROGRAM-INSERT-ZERO ; 
+      15 NE0PW-01-D-FILLER2 NE0PW-01-D-FILLER2 ; 
+    10 NE0PW-01-Q-REMOTE-CARD NE0PW-01-Q-REMOTE-CARD ; 
+      15 NE0PW-01-Q-FILLER1 NE0PW-01-Q-FILLER1 ; 
+      15 NE0PW-01-Q-REMOTE-PRINTER NE0PW-01-Q-REMOTE-PRINTER ; 
+      15 NE0PW-01-Q-FILLER2 NE0PW-01-Q-FILLER2 ; 
+end // end NE0PW01
+
+//*** RECORD=NE0PW99 ****
+// System internal reader queue (INTR) record definition.
+// ***********************
+Record NE0PW99 type serialRecord  {
+  fileName = "INTR"
+  }
+  10 NE0PWJCL NE0PWJCL ; 
+end // end NE0PW99
+
+// // FILLER
+DataItem NE0PW-01-C-FILLER1 char(15)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// REMAINNING    CHAR
+DataItem NE0PW-01-C-FILLER2 char(59)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// PROC TO BE EXECUTED
+DataItem NE0PW-01-C-PROC-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// FIRST 5 CHAR OF JOB NUM
+DataItem NE0PW-01-C-PROC-FIRST5CHAR char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// MOVEING 0 TO LAST CHAR
+DataItem NE0PW-01-C-PROC-INSERT-TWO char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// PROC TO RUN
+DataItem NE0PW-01-C-PROC-NUMBER char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// customer number
+DataItem NE0PW-01-CU-CO-ID int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// // FILLER
+DataItem NE0PW-01-D-FILLER1 char(12)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// REMAINNING    CHAR
+DataItem NE0PW-01-D-FILLER2 char(62)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// PROG TO BE EXECUTED
+DataItem NE0PW-01-D-PROGRAM-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// FIRST 5 CHAR OF JOB NUM
+DataItem NE0PW-01-D-PROGRAM-FIRST5CHAR char(5)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// MOVEING 0 TO LAST CHAR
+DataItem NE0PW-01-D-PROGRAM-INSERT-ZERO char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// PROG TO RUN
+DataItem NE0PW-01-D-PROGRAM-NUMBER char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error flag
+DataItem NE0PW-01-ERR char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// process flag
+DataItem NE0PW-01-FL3 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem NE0PW-01-FROM-DATE num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem NE0PW-01-GRP char(502)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// // FILLER
+DataItem NE0PW-01-N-FILLER1 char(22)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// REMAINNING 59 CHAR
+DataItem NE0PW-01-N-FILLER2 char(52)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SUBMITTER
+DataItem NE0PW-01-N-NOTIFY char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// NOTIFY CARD
+DataItem NE0PW-01-N-NOTIFY-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jcl card
+DataItem NE0PW-01-PARM-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// // FILLER
+DataItem NE0PW-01-Q-FILLER1 char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// REMAINNING    CHAR
+DataItem NE0PW-01-Q-FILLER2 char(54)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// spool to remote   D
+DataItem NE0PW-01-Q-REMOTE-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// remote printer
+DataItem NE0PW-01-Q-REMOTE-PRINTER char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// cics region number
+DataItem NE0PW-01-REG char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// // FILLER
+DataItem NE0PW-01-S-FILLER1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// REMAINNING 72 CHAR
+DataItem NE0PW-01-S-FILLER2 char(72)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// JOB TO RUN
+DataItem NE0PW-01-S-JOB-NUMBER char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// JOB TO BE SUBMITTED CARD
+DataItem NE0PW-01-S-SUBMIT-JOB-CARD char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// index
+DataItem NE0PW-01-SUB num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem NE0PW-01-TO-DATE num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem NE0PW-01-TSPC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// record type
+DataItem NE0PW-01-TTYP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// account class
+DataItem NE0PW-01-XAU-ACCT-CLS-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// country
+DataItem NE0PW-01-XCT-CTRY-CD char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// gpc
+DataItem NE0PW-01-XGP-GPC-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// management region
+DataItem NE0PW-01-XXX-SUM-CD char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// source type
+DataItem NE0PW-01-ZPS-PROD-SRC-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// jcl card
+DataItem NE0PWJCL char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+
