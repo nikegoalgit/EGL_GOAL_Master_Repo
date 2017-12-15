@@ -1,0 +1,2888 @@
+package nb0d;
+
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSPF1;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.CLYREC;
+import corpcom5.COMMAREA;
+import corpcom6.SQLCA;
+import corpcom7.ZZZSTM;
+import corpx1.XBCCD;
+import corpx1.XBCTBL;
+import corpx1.XDVCD;
+import corpx1.XGPCD;
+import corpx2.XNXCD;
+import corpy2.YADCD;
+import corpy2.YADTBL;
+import corpy2.YCPCD;
+import corpz3.ZZZCHGCT;
+import corpz3.ZZZCHGDT;
+import corpz3.ZZZCHGTM;
+import corpz3.ZZZSDT;
+import ku.common.KUCCOID;
+import ku.common.KULREC;
+import ku.common.KUMREC;
+import ku.common.KUMSTRID;
+import ku.common.KUNREC;
+import nb.common.NB-ADV-PERIOD-CD;
+import nb.common.NB1CUST;
+import nb.common.NB1GRPCD;
+import nb.common.NB1REC;
+import nb.common.NB2REC;
+import nb.common.NB4PRBAL;
+import nb.common.NB4TRAMT;
+import nb.common.NB4XREF;
+import nb.common.NB4XSEQ;
+import sp.common.SP1ID;
+import ta.common.TA1REC;
+import vv.common.VCOPER01;
+//*** PROGRAM=NB0D ****
+// 
+//  *********      NB0D: NIKE BANK SYSTEM         *************
+//                single account fund transfer
+// 
+// 
+// PURPOSE: to move funds from one account to another.
+// 
+// 
+// NARRATIVE:
+//    application is designed to transfer funds between two
+//    existing nike bank accounts within an ad program. if
+//    the receiving account is not currently existing within
+//    the bank system, it can be added if a customer master
+//    exists (kucrec - nike company, not nike bank system).
+// 
+//    NOTE: fund transfers must be within the same ad program
+//    except for co-op.  here, prior year co-op, current
+//    year co-op, and forfeit co-op are considered to be the
+//    same ad program.
+// 
+//  MAINTENANCE HISTORY:
+// 
+//    DATE    NAME        DESCRIPTION
+//  --------  ---------  --------------------------------------
+//  01-18-87  sjob       creation........
+//  03-02-88  sjob   e0:modified PFkeys to bank standard pf's
+//  06-01-88  sjob   e28:new handling of transfers as claims
+//  07-21-88  sjob       convert access to corp.table ycatbl
+//                       to database  CLYREC  in nb0d350.
+//  08-08-88  sjob   e00:use userid to obtain co-op analyst cd
+//  08-24-88  sjob   B11: support deletion of ycatbl.
+//  11-21-88  sjob       change length of company from 8 to 7
+//  11-28-88  sjob   e33: transfers are to be treated as
+//                       claims.'FROM'acct:curr bal & processed
+//                       are decreased - 'TO' acct increased.
+//  03-30-89  sjob   e43:add division of 01 (domestic)
+//  04-13-89  sjob   e43:support multiple divisions.
+//  04-26-89  jwood      added noncsp option to calls
+//  04-26-89  jwood      added xssegtr logic
+//  11-09-89  sjob   e59: allow transfer between co-op quarters
+//  11-09-89  sjob   e54: allow transfer of negative dollars.
+//  04-03-90  sjob   e65:defect allow.flag deleted from nb1rec.
+//  06-11-90  sjob   e69:convert from division to  div/brand
+//  10-10-90  SJOB   e0:DB CHANGES- ADD BRAND TO CUSTOMER REC.
+//  11-27-90  SJOB   b1:when xfers create new accounts, add the
+//                      transfered $$ to processed amount.
+//  12-03-90  SJOB   e1:one time xfer of aa $ to forfeit co-op
+//  10-14-91  ORICHA add 'to' gpc to map and restrict user
+//                   processing.  m001,w01,000,100,200,210,220,
+//                   240,330,332,334,350,400. nb0dt01 new table
+//                   added for user causerid security.
+//  10-28-91  oricha nb0d100: w.s. was not reflecting most
+//                   current gpc from map.
+//                   added brand code edit also.
+//  04-13-92  ORICHA NB0A350. DATABASE CHG ON NB4REC; ADDED
+//                   NB-ADV-PERIOD-CD, SP1ID.
+//  05-38-92  ORICHA ALLOW TO TRANSFER SALES PROGRAM DOLLARS.
+//  11-16-93  lgross Changed the size of NB0DWCC0, NB0DWCDP
+//                   AND NB0DWCAI. Changed: NB0DW01
+// ************************************************************
+// *********************
+Program NB0D type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "NB00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  CLYREC CLYREC; // record
+  COMMAREA COMMAREA ; // record
+  KULREC KULREC; // record
+  KUMREC KUMREC; // record
+  KUNREC KUNREC; // record
+  NB0DW01 NB0DW01; // record
+  NB1REC NB1REC; // record
+  NB2REC NB2REC; // record
+  NB4REC NB4REC; // record
+  NB9REC NB9REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  VCOPER01 VCOPER01; // record
+  VSPGMP01 VSPGMP01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XBCTBL; // table
+  use YADTBL; // table
+  use NB0DT01; // table
+  use NB0DM.NB0DM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    NB0D000: NB0D000();
+    ;
+    goto NB0D050;
+    ;
+    ;
+    ;
+    NB0D050: NB0D050();
+    ;
+    ;
+    goto NB0D050; /* continue this loop.*/
+    ;
+    ;
+    ;
+  end // end main
+end // end NB0D
+
+// initial process
+Function NB0D000()
+  ;
+   /* ----------------------------------------------------------*/
+   /* initialization process....*/
+   /* ----------------------------------------------------------*/
+  ;
+  ;
+  XSENTRY();
+  XSSEGTR(); /* set segmented transaction id*/
+  ;
+  ;
+  set NB0DM001 empty; /* ; clear maps & work record*/
+  set NB0DW01 empty;
+  set SQLCA empty;
+  ;
+  ;
+  COMMAREA.CAITEM = " ";
+  ;
+  ;
+  NB0DM001.XXXRVNBR = "02"; /* revision*/
+  NB0DM001.XXXERRID = "NB0D400"; /* initial map display proc.*/
+  NB0DM001.XXXCURDT = VGVar.currentShortGregorianDate; /* date.*/
+  NB0DW01.NB0DWVWF = "N"; /* view only pass*/
+  ;
+  ;
+  ;
+   /* -------------  end process nb0d000  --------------------*/
+end // end NB0D000
+
+// master loop
+Function NB0D050()
+  ;
+  ;
+  ;
+   /* -------------------------------------------------------*/
+   /* note: two flags are used to indicate a new acct could*/
+   /* be added.  NB0DWNAF (new account flag) is set in nb0d220*/
+   /* and reset on a change in 'to' account key.  nb0dwvwf*/
+   /* (view only flag) is set in nb0d240 when the new acct*/
+   /* is approved and reset below.  nb0dwvwf forces a 'new*/
+   /* acct will be created msg' the first time the amt > 0.*/
+   /* -------------------------------------------------------*/
+  ;
+  ;
+  NB0D100(); /* edit screen*/
+  ;
+  if (converseVar.validationMsgNum == 0)
+    NB0D200(); /* check for key change*/
+    if (converseVar.validationMsgNum == 0)
+      if (NB0DM001.NB0DMAMT == 0) /* no transfer amt*/
+        if (NB0DW01.NB0DWNAF == "Y") /* new acct that could be added*/
+          converseLib.validationFailed(92); /* not currently a bank customer*/
+        end
+      else
+        if (NB0DW01.NB0DWTOK == "Y") /* 'to' acct passes all edits*/
+          if (NB0DW01.NB0DWNAF == "Y" /* this would be a new account*/
+           && NB0DW01.NB0DWVWF == "Y") /* new acct msg hasn't been seen*/
+            converseLib.validationFailed(84); /* new acct-will be added,press enter*/
+            NB0DW01.NB0DWVWF = "N"; /* reset msg cycle flag*/
+          else
+            NB0D300(); /* make transfer*/
+          end
+        end
+      end
+    end
+  end
+  ;
+  ;
+  ;
+  NB0D400(); /* converse map..*/
+  ;
+  ;
+  NB0D500(); /* edit pf keys*/
+  ;
+  NB0D600(); /* reset mdt's*/
+  ;
+  ;
+  ;
+  ;
+   /* ------------------- end nb0d050 -------------------------*/
+end // end NB0D050
+
+// edit screen entry
+Function NB0D100()
+  ;
+  ;
+      /* --------------------------------------------------------*/
+                      /* apply default values*/
+      /* --------------------------------------------------------*/
+  ;
+  ;
+  if (NB0DM001.NB0DMFST <= 0) /* blank store (from)*/
+    NB0DM001.NB0DMFST = 0;
+  end
+  ;
+  ;
+  if (NB0DM001.NB0DMTST <= 0) /* blank store(to)*/
+    NB0DM001.NB0DMTST = 0;
+  end
+  ;
+  ;
+  if (NB0DM001.NB0DMFDP <= 0) /* blank  dept (from)*/
+    NB0DM001.NB0DMFDP = 0;
+  end
+  ;
+  ;
+  if (NB0DM001.NB0DMTDP <= 0) /* blank  dept (to)*/
+    NB0DM001.NB0DMTDP = 0;
+  end
+  ;
+  if (NB0DM001.NB0DMTAP == " ") /* no receiving ad pgm.*/
+    if (NB0DM001.NB0DMFAP > " ") /* exist.from ad pgm.*/
+      NB0DM001.NB0DMTAP = NB0DM001.NB0DMFAP; /* move from ad pgm. in*/
+    end
+  end
+  ;
+      /* --------------------------------------------------------*/
+                         /* edit screen*/
+      /* --------------------------------------------------------*/
+  if (NB0DM001.NB0DMFCO == NB0DM001.NB0DMTCO /* same co.*/
+   && NB0DM001.NB0DMFST == NB0DM001.NB0DMTST /* same store*/
+   && NB0DM001.NB0DMFDP == NB0DM001.NB0DMTDP /* same dept*/
+   && NB0DM001.NB0DMFGP == NB0DM001.NB0DMTGP /* same group*/
+   && NB0DM001.NB0DMFBC == NB0DM001.NB0DMTBC /* same brand*/
+   && NB0DM001.NB0DMFAP == NB0DM001.NB0DMTAP /* same ad program*/
+   && NB0DM001.NB0DMFGC == NB0DM001.NB0DMTGC /* same gpc*/
+   && NB0DM001.NB0DMFSP == NB0DM001.NB0DMTSP) /* same sales program*/
+    ;
+    converseLib.validationFailed(91); /* can not transfer to itself*/
+  end
+  ;
+  ;
+  ;
+  if (NB0DM001.NB0DMFAP != NB0DM001.NB0DMTAP)
+    ;
+    set SQLCA empty;
+    set VCOPER01 empty;
+    set TA1REC empty;
+    ;
+    VCOPER01.NB-ADV-PERIOD-CD = NB0DM001.NB0DMFAP;
+    NB0D110(); /* VALIDATE FROM PROGRAM*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == +100)
+      sysVar.arrayIndex = 1;
+      if (NB0DM001.NB0DMFAP in YADTBL.YADCD from sysVar.arrayIndex
+       && NB0DM001.NB0DMFAP != "AA"
+       && NB0DM001.NB0DMFAP != "TD"
+       && NB0DM001.NB0DMFAP != "DA")
+    /* NEXT SENTENCE - ONLY FORFEIT IS ALLOWED*/
+      else
+        set NB0DM001.NB0DMFAP cursor, modified, bold;
+        set NB0DM001.NB0DMTAP modified, bold;
+        converseLib.validationFailed(86);
+      end
+    end
+    ;
+    ;
+    set SQLCA empty;
+    set TA1REC empty;
+    set VCOPER01 empty;
+    ;
+    VCOPER01.NB-ADV-PERIOD-CD = NB0DM001.NB0DMTAP;
+    NB0D110(); /* VALIDATE TO PROGRAM*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == +100)
+      sysVar.arrayIndex = 1;
+      if (NB0DM001.NB0DMTAP in YADTBL.YADCD from sysVar.arrayIndex
+       && NB0DM001.NB0DMTAP != "AA"
+       && NB0DM001.NB0DMTAP != "TD"
+       && NB0DM001.NB0DMTAP != "DA")
+    /* NEXT SENTENCE - ONLY FORFEIT IS ALLOWED*/
+      else
+        set NB0DM001.NB0DMFAP cursor, modified, bold;
+        set NB0DM001.NB0DMTAP modified, bold;
+        converseLib.validationFailed(86);
+      end
+    end
+  end
+  ;
+  if (NB0DM001.NB0DMFAP == "  ") /* ad program (from)*/
+    set NB0DM001.NB0DMFAP cursor, modified, bold;
+    converseLib.validationFailed(82); /* ad prog required*/
+  end
+  ;
+  ;
+  if (NB0DM001.NB0DMFGC == "02" /* footwear (from)*/
+   || NB0DM001.NB0DMFGC == "03") /* apparel*/
+   /* ---- default 'from' gpc to 'to' gpc if empty*/
+    if (COMMAREA.CAUSERID in NB0DT01.CAUSERID)
+      if (NB0DM001.NB0DMTGC == " ")
+        NB0DM001.NB0DMTGC = NB0DM001.NB0DMFGC;
+      end
+    else
+      NB0DM001.NB0DMTGC = NB0DM001.NB0DMFGC;
+    end
+    ;
+    if (NB0DM001.NB0DMTGC == "02" /* footwear (to)*/
+     || NB0DM001.NB0DMTGC == "03") /* apparel*/
+      /* ok...continue*/
+    else
+      set NB0DM001.NB0DMTGC cursor, modified, bold;
+      converseLib.validationFailed(87); /* invalid gpc code*/
+    end
+  else
+    set NB0DM001.NB0DMFGC cursor, modified, bold;
+    converseLib.validationFailed(87); /* invalid gpc code*/
+  end
+  ;
+  ;
+  if (NB0DM001.NB0DMTCO == 0) /* no company*/
+    set NB0DM001.NB0DMTCO cursor, modified, bold;
+    converseLib.validationFailed(31); /* comp.required(to)*/
+  end
+  ;
+  if (NB0DM001.NB0DMFCO == 0) /* no company*/
+    set NB0DM001.NB0DMFCO cursor, modified, bold;
+    converseLib.validationFailed(31); /* comp.required(from)*/
+  end
+  ;
+  ;
+  if (NB0DM001.NB0DMTST > 0 /* store id & grp code*/
+   && NB0DM001.NB0DMTGP > " ") /* (to   acct)*/
+    set NB0DM001.NB0DMTST cursor, modified, bold;
+    set NB0DM001.NB0DMTGP modified, bold;
+    converseLib.validationFailed(70);
+  end
+  ;
+  ;
+  if (NB0DM001.NB0DMFST > 0 /* store id & grp code*/
+   && NB0DM001.NB0DMFGP > " ") /* (from acct)*/
+    set NB0DM001.NB0DMFST cursor, modified, bold;
+    set NB0DM001.NB0DMFGP modified, bold;
+    converseLib.validationFailed(70);
+  end
+  ;
+  ;
+  if (NB0DM001.NB0DMTBC == "  ") /* no brand*/
+    NB0DM001.NB0DMTBC = "01"; /* default domestic*/
+  else
+    if (NB0DM001.NB0DMTBC in XBCTBL.XBCCD) /* valid brand?*/
+    /* next sentence*/
+    else
+      converseLib.validationFailed(97); /* /*/
+      set NB0DM001.NB0DMTBC cursor, modified, bold;
+    end
+  end
+  ;
+  if (NB0DM001.NB0DMFBC == "  ") /* no brand*/
+    NB0DM001.NB0DMFBC = "01"; /* default domestic*/
+  else
+    if (NB0DM001.NB0DMFBC in XBCTBL.XBCCD) /* valid brand?*/
+    /* next sentence*/
+    else
+      converseLib.validationFailed(97); /* /*/
+      set NB0DM001.NB0DMFBC cursor, modified, bold;
+    end
+  end
+  ;
+  ;
+  if (converseVar.validationMsgNum == 0)
+      /* ok*/
+  else
+    NB0DM001.NB0DMFCB = 0; /* clear screen balances*/
+    NB0DM001.NB0DMTCB = 0;
+    ;
+    NB0DW01.NB0DWFCO = 0;
+    NB0DW01.NB0DWFST = 0;
+    NB0DW01.NB0DWFDP = 0;
+    NB0DW01.NB0DWFGP = " ";
+    NB0DW01.NB0DWFAP = " ";
+    NB0DW01.NB0DWFSP = " "; /* SALES PROGRAM*/
+    NB0DW01.NB0DWFBC = " "; /* brand*/
+    ;
+    NB0DW01.NB0DWTCO = 0;
+                                   /* clear any hold over key*/
+    NB0DW01.NB0DWTST = 0;
+    NB0DW01.NB0DWTDP = 0;
+    NB0DW01.NB0DWTGP = " ";
+    NB0DW01.NB0DWTAP = " ";
+    NB0DW01.NB0DWTSP = " ";
+    NB0DW01.NB0DWTBC = " "; /* brand*/
+    NB0DW01.NB0DWFGC = " ";
+    NB0DW01.NB0DWTGC = " ";
+    ;
+  end
+  ;
+  ;
+  ;
+   /* ------------------- end nb0d100 -------------------------*/
+end // end NB0D100
+
+// VALIDATE AD PROGRAM
+Function NB0D110()
+  ;
+  ;
+  call "IO1860" ("SE", SQLCA, VCOPER01) {isNoRefresh = yes, isExternal = yes}; /**/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0
+   || SQLCA.VAGen_SQLCODE == +100
+   || SQLCA.VAGen_SQLCODE == -811)
+    /* NEXT SENTENCE*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(16); /* database in use - try again later*/
+      NB0DM001.XXXERRID = "NB0D110"; /* error process*/
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "NB0D";
+      TA1REC.TA1LOCAT[1] = "SE";
+      TA1REC.TA1LOCAT[2] = "NB0D110";
+      TA1REC.TA1LOCAT[3] = "IO1860 ";
+      TA1REC.TA1LOCAT[4] = "NB0DM001";
+      TA1REC.TA1DBASE = "DNBANK.";
+      TA1REC.TA1TBLVU = "VNBDLY01";
+      NB0DW01.NB0DWCKX = " "; /* clear key display*/
+      NB0DW01.NB0DWCCX = NB0DM001.NB0DMTCO; /* convert co. to display*/
+      NB0DW01.NB0DWCSX = NB0DM001.NB0DMTST; /* convert str.to display*/
+      NB0DW01.NB0DWCDX = NB0DM001.NB0DMTDP; /* convert dpt.to display*/
+      NB0DW01.NB0DWCGX = NB0DM001.NB0DMTGP; /* convert grp.to display*/
+      NB0DW01.NB0DWCXX = NB0DM001.NB0DMTBC; /* convert brand  display*/
+      TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+      ;
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D110
+
+// check for key change
+Function NB0D200()
+  ;
+      /* --------------------------------------------------------*/
+      /* check for any change originating account :*/
+            /* (from #,gpc, or from ad pgm)*/
+      /* --------------------------------------------------------*/
+  ;
+  NB0D210();
+  ;
+  ;
+  ;
+      /* --------------------------------------------------------*/
+      /* check for any change in receiving account number.*/
+            /* ( account #,gpc, or to ad pgm)*/
+      /* --------------------------------------------------------*/
+  ;
+  NB0D220();
+  ;
+  ;
+      /* --------------------------------------------------------*/
+              /* ARE THERE ENOUGH FUNDS TO TRANSFER?*/
+      /* **  A neg. amt.transfered out can not exceed the*/
+                               /* neg. amt in the account.*/
+      /* ex: acct = -100.00... can xfer out -100.00, but not -101*/
+      /* --------------------------------------------------------*/
+  ;
+  if (NB0DM001.NB0DMAMT > 0) /* transfer requested*/
+    if (NB0DM001.NB0DMAMT > NB0DM001.NB0DMFCB)
+      converseLib.validationFailed(88); /* not enough $$!*/
+      set NB0DM001.NB0DMFCB modified, bold;
+      set NB0DM001.NB0DMAMT cursor, modified, bold;
+    end
+  else
+    if (NB0DM001.NB0DMAMT < NB0DM001.NB0DMFCB /* causeing more negative bal*/
+     && NB0DM001.NB0DMAMT < 0)                /* transfer requested*/
+      converseLib.validationFailed(88);
+      set NB0DM001.NB0DMFCB modified, bold;
+      set NB0DM001.NB0DMAMT cursor, modified, bold;
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D200
+
+// edit from acct.
+Function NB0D210()
+  ;
+  ;
+      /* --------------------------------------------------------*/
+      /* check for any change originating account :*/
+            /* (from #,gpc, or from ad pgm)*/
+      /* --------------------------------------------------------*/
+  ;
+  ;
+  if (NB0DM001.NB0DMFCO != NB0DW01.NB0DWFCO /* change in company*/
+   || NB0DM001.NB0DMFST != NB0DW01.NB0DWFST /* change in store*/
+   || NB0DM001.NB0DMFDP != NB0DW01.NB0DWFDP /* change in depart.*/
+   || NB0DM001.NB0DMFGP != NB0DW01.NB0DWFGP /* change in group*/
+   || NB0DM001.NB0DMFBC != NB0DW01.NB0DWFBC /* change in brand*/
+   || NB0DM001.NB0DMFAP != NB0DW01.NB0DWFAP /* change in ad pgm.*/
+   || NB0DM001.NB0DMFGC != NB0DW01.NB0DWFGC /* change in gpc code*/
+   || NB0DM001.NB0DMFSP != NB0DW01.NB0DWFSP) /* change in SALES PROGRAM*/
+    ;
+    ;
+    set NB2REC empty;
+    ;
+    set NB0DM001.NB0DMREF protect, invisible; /* darken the last ref#*/
+    set NB0DM001.NB0DMXRF protect, invisible; /* darken heading: ref#*/
+    ;
+    ;
+    NB2REC.NB1CUST = NB0DM001.NB0DMFCO;
+    NB2REC.KUMSTRID = NB0DM001.NB0DMFST;
+    NB2REC.XNXCD = NB0DM001.NB0DMFDP;
+    NB2REC.XDVCD = "01"; /* division*/
+    NB2REC.XBCCD = NB0DM001.NB0DMFBC; /* brand*/
+    NB2REC.NB1GRPCD = NB0DM001.NB0DMFGP;
+    NB2REC.NB-ADV-PERIOD-CD = NB0DM001.NB0DMFAP;
+    NB2REC.SP1ID = NB0DM001.NB0DMFSP;
+    ;
+    NB0D230(); /* get acct balance.*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0
+     && converseVar.validationMsgNum == 0)
+      ;
+      NB0DW01.NB0DWFCO = NB0DM001.NB0DMFCO; /* hold from acct#*/
+      NB0DW01.NB0DWFST = NB0DM001.NB0DMFST;
+      NB0DW01.NB0DWFDP = NB0DM001.NB0DMFDP;
+      NB0DW01.NB0DWFGP = NB0DM001.NB0DMFGP;
+      NB0DW01.NB0DWFBC = NB0DM001.NB0DMFBC; /* brand*/
+      NB0DW01.NB0DWFAP = NB0DM001.NB0DMFAP;
+      NB0DW01.NB0DWFGC = NB0DM001.NB0DMFGC; /* from-gpc*/
+      NB0DW01.NB0DWFSP = NB0DM001.NB0DMFSP;
+      ;
+      NB0DW01.NB0DWFDT = NB2REC.ZZZCHGCT; /* from-chg.counter*/
+      ;
+      if (NB0DM001.NB0DMFGC == "02") /* footwear*/
+        NB0DM001.NB0DMFCB = NB2REC.NB2FTWCB; /* current balance*/
+      else
+        NB0DM001.NB0DMFCB = NB2REC.NB2APRCB; /* current balance*/
+      end
+      ;
+      ;
+    else
+      if (converseVar.validationMsgNum == 0)
+        NB0DM001.NB0DMFCB = 0; /* current balance doesn't exist*/
+        NB0DW01.NB0DWFDT = 0; /* from-chg.counter*/
+        converseLib.validationFailed(83); /* sending rec has no acct.*/
+        set NB0DM001.NB0DMFCO cursor, modified, bold;
+        set NB0DM001.NB0DMFST modified, bold;
+        set NB0DM001.NB0DMFDP modified, bold;
+        set NB0DM001.NB0DMFGP modified, bold;
+        set NB0DM001.NB0DMFBC modified, bold;
+        ;
+        NB0DW01.NB0DWFCO = 0; /* force key change*/
+        NB0DW01.NB0DWFST = 0; /* store*/
+        NB0DW01.NB0DWFDP = 0; /* depart.*/
+        NB0DW01.NB0DWFGP = " "; /* group*/
+        NB0DW01.NB0DWFAP = " "; /* ad pgm.*/
+        NB0DW01.NB0DWFSP = " "; /* SALES PGM*/
+        NB0DW01.NB0DWFBC = " "; /* brand*/
+        ;
+      end
+    end
+    ;
+    NB0DM001.NB0DMREF = 0;
+  end
+  ;
+  ;
+  ;
+end // end NB0D210
+
+// edit 'to' account
+Function NB0D220()
+  ;
+  ;
+      /* --------------------------------------------------------*/
+      /* check for any change in receiving account number.*/
+            /* ( account #,gpc, or to ad pgm)*/
+      /* --------------------------------------------------------*/
+  ;
+  ;
+  if (NB0DM001.NB0DMTCO != NB0DW01.NB0DWTCO /* change in company*/
+   || NB0DM001.NB0DMTST != NB0DW01.NB0DWTST /* change in store*/
+   || NB0DM001.NB0DMTDP != NB0DW01.NB0DWTDP /* change in depart.*/
+   || NB0DM001.NB0DMTGP != NB0DW01.NB0DWTGP /* change in group*/
+   || NB0DM001.NB0DMTBC != NB0DW01.NB0DWTBC /* change in brand*/
+   || NB0DM001.NB0DMTAP != NB0DW01.NB0DWTAP /* change in ad pgm.*/
+   || NB0DM001.NB0DMTSP != NB0DW01.NB0DWTSP /* change in SALES PGM*/
+   || NB0DM001.NB0DMTGC != NB0DW01.NB0DWTGC /* change in gpc code*/
+  )                                        
+    ;
+    if (NB0DM001.NB0DMTSP > " ") /* if sales program entered*/
+      NB0D222(); /* edit it*/
+    end
+    ;
+    if (converseVar.validationMsgNum != 99) /* NO PROBLEM WITH AD PGM/SALES PROGRAM*/
+      NB0DW01.NB0DWNAF = "N"; /* reset new account flag*/
+      NB0D224(); /* process 'to' account balance*/
+    end
+    ;
+    ;
+    NB0DM001.NB0DMREF = 0;
+  end
+  ;
+  ;
+  ;
+end // end NB0D220
+
+// edit sales program
+Function NB0D222()
+  ;
+  ;
+  ;
+  set VSPGMP01 empty;
+  set TA1REC empty;
+  set SQLCA empty;
+  ;
+  VSPGMP01.NB-ADV-PERIOD-CD = NB0DM001.NB0DMTAP;
+  VSPGMP01.SP1ID = NB0DM001.NB0DMTSP;
+  ;
+  call "IO1780" ("S ", SQLCA, VSPGMP01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0)
+    /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == +100)
+      converseLib.validationFailed(99); /* invalid program/sales program*/
+                                   /* combination*/
+      set NB0DM001.NB0DMTAP cursor, modified, bold;
+      set NB0DM001.NB0DMTSP modified, bold;
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(16); /* db in use-try later*/
+        NB0DM001.XXXERRID = "NB0D222"; /* error process*/
+      else
+        TA1REC.TA1TYPE = "DB2";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "NB0D";
+        TA1REC.TA1LOCAT[1] = "S ";
+        TA1REC.TA1LOCAT[2] = "NB0D222";
+        TA1REC.TA1LOCAT[3] = "IO1780 ";
+        TA1REC.TA1LOCAT[4] = " ";
+        TA1REC.TA1LOCAT[4] = "NB0DM001";
+        TA1REC.TA1DBASE = "DNBANK ";
+        TA1REC.TA1TBLVU = "VSPGMP01";
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+        XSPF4();
+        NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+      end
+    end
+  end
+  ;
+end // end NB0D222
+
+// process 'to' account balance
+Function NB0D224()
+  set NB2REC empty;
+  ;
+  set NB0DM001.NB0DMREF protect, invisible; /* dark last ref#*/
+  set NB0DM001.NB0DMXRF protect, invisible; /* dark heading*/
+  ;
+  ;
+  NB2REC.NB1CUST = NB0DM001.NB0DMTCO;
+  NB2REC.KUMSTRID = NB0DM001.NB0DMTST;
+  NB2REC.XNXCD = NB0DM001.NB0DMTDP;
+  NB2REC.XDVCD = "01"; /* division*/
+  NB2REC.XBCCD = NB0DM001.NB0DMTBC; /* brand*/
+  NB2REC.NB1GRPCD = NB0DM001.NB0DMTGP;
+  NB2REC.NB-ADV-PERIOD-CD = NB0DM001.NB0DMTAP;
+  NB2REC.SP1ID = NB0DM001.NB0DMTSP;
+  ;
+  NB0D230(); /* get acct balance.*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0
+   && converseVar.validationMsgNum == 0)
+    ;
+    NB0DW01.NB0DWTOK = "Y"; /* valid acct?*/
+    ;
+    NB0DW01.NB0DWTCO = NB0DM001.NB0DMTCO; /* hold to acct#*/
+    NB0DW01.NB0DWTST = NB0DM001.NB0DMTST;
+    NB0DW01.NB0DWTDP = NB0DM001.NB0DMTDP;
+    NB0DW01.NB0DWTGP = NB0DM001.NB0DMTGP;
+    NB0DW01.NB0DWTBC = NB0DM001.NB0DMTBC; /* brand*/
+    NB0DW01.NB0DWTAP = NB0DM001.NB0DMTAP;
+    NB0DW01.NB0DWTSP = NB0DM001.NB0DMTSP;
+    NB0DW01.NB0DWTGC = NB0DM001.NB0DMTGC;
+    ;
+    ;
+    NB0DW01.NB0DWTDT = NB2REC.ZZZCHGCT; /* to-chg.cntr.*/
+    ;
+    if (NB0DM001.NB0DMTGC == "02") /* gpc occurs once!*/
+      NB0DM001.NB0DMTCB = NB2REC.NB2FTWCB; /* current balance*/
+    else
+      NB0DM001.NB0DMTCB = NB2REC.NB2APRCB; /* current balance*/
+    end
+  else
+    if (converseVar.validationMsgNum == 0)
+      ;
+      NB0DW01.NB0DWTOK = "N"; /* invalid acct.*/
+      ;
+      NB0DM001.NB0DMTCB = 0; /* no curr bal*/
+      NB0DW01.NB0DWTDT = 0; /* no chg.counter*/
+      ;
+      NB0D240(); /* can this be added?*/
+      ;
+      if (NB0DW01.NB0DWTOK == "N") /* can not add*/
+        converseLib.validationFailed(85); /* not a nike comp/store*/
+        set NB0DM001.NB0DMTCO cursor, modified, bold;
+        set NB0DM001.NB0DMTST modified, bold;
+        set NB0DM001.NB0DMTDP modified, bold;
+        set NB0DM001.NB0DMTGP modified, bold;
+        set NB0DM001.NB0DMTBC modified, bold;
+        NB0DW01.NB0DWTCO = 0; /* force key change.*/
+        NB0DW01.NB0DWTST = 0; /* store*/
+        NB0DW01.NB0DWTDP = 0; /* dept.*/
+        NB0DW01.NB0DWTGP = " "; /* group*/
+        NB0DW01.NB0DWTAP = " "; /* ad pgm.*/
+        NB0DW01.NB0DWTSP = " "; /* SALES PGM*/
+        NB0DW01.NB0DWTBC = " "; /* brand*/
+        NB0DW01.NB0DWTGC = " "; /* gpc*/
+      else
+        NB0DW01.NB0DWNAF = "Y"; /* new acct may be added*/
+      end
+    end
+    ;
+  end
+end // end NB0D224
+
+// get nb2rec - bank account data
+Function NB0D230()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+           /* get bank account data.......*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set TA1REC empty;
+  ;
+  ;
+  call "IO2200" ("S ", SQLCA, NB2REC) {isNoRefresh = yes, isExternal = yes}; /* obtain acct mstr*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    ;
+       /* .... we found a live one!*/
+    ;
+    ;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+         /* ...fall thru - handled in #d200.*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(16);
+        NB0DM001.XXXERRID = "NB0D210"; /* error process*/
+      else
+        ;
+        TA1REC.TA1TYPE = "DB2";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "NB0D";
+        TA1REC.TA1LOCAT[2] = "NB0D210";
+        TA1REC.TA1LOCAT[3] = "IO2200 ";
+        TA1REC.TA1LOCAT[4] = "NB0DM001";
+        TA1REC.TA1DBASE = "DNBANK.";
+        TA1REC.TA1TBLVU = "VNBXCP01";
+        NB0DW01.NB0DWCKX = " "; /* clear key display*/
+        NB0DW01.NB0DWCCX = NB0DW01.NB0DWCCO;
+                                   /* convert co. to display*/
+        NB0DW01.NB0DWCSX = NB0DW01.NB0DWCST;
+                                   /* convert str.to display*/
+        NB0DW01.NB0DWCDX = NB0DW01.NB0DWCDP;
+                                   /* convert dpt.to display*/
+        NB0DW01.NB0DWCGX = NB0DW01.NB0DWCGP;
+                                   /* convert grp.to display*/
+        TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX;
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+        XSPF4();
+        NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+        ;
+      end
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D230
+
+// find store (kumrec) record
+Function NB0D240()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+                    /* find store data*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set KUMREC empty;
+  set SQLCA empty;
+  set TA1REC empty;
+  ;
+  KUMREC.KUCCOID = NB0DM001.NB0DMTCO; /* company*/
+  KUMREC.KUMSTRID = NB0DM001.NB0DMTST; /* store*/
+  ;
+  call "IO0340" ("S ", SQLCA, KUMREC) {isNoRefresh = yes, isExternal = yes}; /* obtain store record*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    ;
+    NB0DW01.NB0DWTOK = "Y"; /* 'to'acct.can be added.*/
+    NB0DW01.NB0DWVWF = "Y"; /* view only - this pass*/
+    ;
+     /* -----  hold this key in w.s. to stop it from returning here*/
+    ;
+    NB0DW01.NB0DWTCO = NB0DM001.NB0DMTCO; /* hold 'to' acct#*/
+    NB0DW01.NB0DWTST = NB0DM001.NB0DMTST;
+    NB0DW01.NB0DWTDP = NB0DM001.NB0DMTDP;
+    NB0DW01.NB0DWTGP = NB0DM001.NB0DMTGP;
+    NB0DW01.NB0DWTBC = NB0DM001.NB0DMTBC; /* brand*/
+    NB0DW01.NB0DWTAP = NB0DM001.NB0DMTAP;
+    NB0DW01.NB0DWTSP = NB0DM001.NB0DMTSP;
+    NB0DW01.NB0DWTGC = NB0DM001.NB0DMTGC;
+    ;
+  else /* x*/
+    if (SQLCA.VAGen_SQLCODE == +100) /* not nike bank acct.*/
+      NB0DW01.NB0DWTOK = "N"; /* 'to' acct.can't add*/
+      converseLib.validationFailed(49); /* not nike comp/store*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(16); /* db in use-try later*/
+        NB0DM001.XXXERRID = "NB0D220"; /* error process*/
+      else
+        TA1REC.TA1TYPE = "DB2";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "NB0D";
+        TA1REC.TA1LOCAT[1] = "S ";
+        TA1REC.TA1LOCAT[2] = "NB0D220";
+        TA1REC.TA1LOCAT[3] = "IO0340 ";
+        TA1REC.TA1LOCAT[4] = " ";
+        TA1REC.TA1LOCAT[4] = "NB0DM001";
+        TA1REC.TA1DBASE = "DCUST. ";
+        TA1REC.TA1TBLVU = "VSTORE01";
+        NB0DW01.NB0DWCKX = " "; /* clear key display area*/
+        NB0DW01.NB0DWCCX = NB0DW01.NB0DWFCO; /* convert co. display*/
+        NB0DW01.NB0DWCSX = NB0DW01.NB0DWFST; /* convert st. display*/
+        TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX; /* display key used.*/
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+        XSPF4();
+        NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+      end
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D240
+
+// update database process
+Function NB0D300()
+  ;
+  ;
+      /* ---------------------------------------*/
+      /* - date reformatted for updating recs. -*/
+      /* ---------------------------------------*/
+  ;
+  ;
+  NB0DW01.NB0DWDT1 = VGVar.currentShortGregorianDate; /* set up date for updates*/
+  NB0DW01.NB0DWHYY = NB0DW01.NB0DWD1Y; /* year*/
+  NB0DW01.NB0DWHMM = NB0DW01.NB0DWD1M; /* month*/
+  NB0DW01.NB0DWHDD = NB0DW01.NB0DWD1D; /* day*/
+  ;
+  if (NB0DW01.NB0DWHYY <= 51) /* complete century*/
+    NB0DW01.NB0DWHCC = 20; /* century*/
+  else
+    NB0DW01.NB0DWHCC = 19; /* century*/
+  end
+  ;
+      /* ---------------------------------------*/
+  ;
+  NB0DW01.NB0DWNFB = 0; /* hold area for new bal.*/
+  NB0DW01.NB0DWNTB = 0; /* hold area for new bal.*/
+  ;
+  NB0D310(); /* get the next ref #*/
+  ;
+  if (converseVar.validationMsgNum == 0) /* we have a new #*/
+    ;
+    ;
+    NB0D320(); /* update from account*/
+    ;
+    if (converseVar.validationMsgNum == 0)
+      NB0D330(); /* update the to acct*/
+      ;
+      if (converseVar.validationMsgNum == 0)
+        NB0D340(); /* update customer rec -to acct.*/
+        ;
+        if (converseVar.validationMsgNum == 0)
+          NB0D350(); /* write a activity rec*/
+          ;
+        end
+      end
+    end
+  end
+  ;
+  ;
+  ;
+  if (converseVar.validationMsgNum == 0)
+    ;
+    converseLib.validationFailed(19); /* update successful*/
+    ;
+    NB0DM001.NB0DMMSG = "    TRANSFER AMOUNT:";
+    NB0DM001.NB0DMAT2 = NB0DM001.NB0DMAMT; /* trans. message*/
+    NB0DM001.NB0DMAMT = 0; /* clear trans. field*/
+    ;
+    NB0DM001.NB0DMFCB = NB0DW01.NB0DWNFB; /* move new bal.to map(from)*/
+    NB0DM001.NB0DMTCB = NB0DW01.NB0DWNTB; /* move new bal.to map(to)*/
+    ;
+    set NB0DM001.NB0DMXRF initialAttributes;
+    NB0DM001.NB0DMXRF = "REFERENCE:"; /* reference # heading*/
+    set NB0DM001.NB0DMREF initialAttributes;
+    NB0DM001.NB0DMREF = NB9REC.NB9NXFER; /* reference #*/
+    ;
+    ;
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.commit();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* commit the entire transfer*/
+    ;
+  else
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+                                   /* partial trans - back out*/
+    ;
+  end
+  ;
+  ;
+  ;
+end // end NB0D300
+
+// get nb9rec - control record.
+Function NB0D310()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+           /* get next transfer acct. number from nb9rec.*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set TA1REC empty;
+  set NB9REC empty;
+  ;
+  ;
+  call "IO2290" ("U ", SQLCA, NB9REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0)
+    ;
+     /* found  the next available reference #*/
+    ;
+    ;
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(16);
+      NB0DM001.XXXERRID = "NB0D310"; /* error process*/
+    else
+      ;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "NB0D";
+      TA1REC.TA1LOCAT[1] = "S ";
+      TA1REC.TA1LOCAT[2] = "NB0D310";
+      TA1REC.TA1LOCAT[3] = "IO2290 ";
+      TA1REC.TA1LOCAT[4] = "NB0DM001";
+      TA1REC.TA1DBASE = "DNBANK.";
+      TA1REC.TA1TBLVU = "VNBCTL01";
+      TA1REC.TA1TBLKE = " ";
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+      ;
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D310
+
+// obtain 'from' account
+Function NB0D320()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+          /* obtain the 'from' account......*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set TA1REC empty;
+  set NB2REC empty;
+  ;
+  NB2REC.NB1CUST = NB0DM001.NB0DMFCO; /* from company id*/
+  NB2REC.KUMSTRID = NB0DM001.NB0DMFST; /* from store*/
+  NB2REC.XNXCD = NB0DM001.NB0DMFDP; /* from dept*/
+  NB2REC.XDVCD = "01"; /* from division*/
+  NB2REC.XBCCD = NB0DM001.NB0DMFBC; /* from brand*/
+  NB2REC.NB1GRPCD = NB0DM001.NB0DMFGP; /* from group code*/
+  NB2REC.NB-ADV-PERIOD-CD = NB0DM001.NB0DMFAP;
+  NB2REC.SP1ID = NB0DM001.NB0DMFSP;
+  ;
+  ;
+  call "IO2200" ("S ", SQLCA, NB2REC) {isNoRefresh = yes, isExternal = yes}; /* obtain acct mstr*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    ;
+    if (NB2REC.ZZZCHGCT == NB0DW01.NB0DWFDT) /* matching chg ctr*/
+      ;
+      NB0D322(); /* update record*/
+      ;
+    else
+      converseLib.validationFailed(17); /* prior update*/
+      NB0DM001.XXXERRID = "NB0D320"; /* error location*/
+      NB0DW01.NB0DWFDT = NB2REC.ZZZCHGCT; /* change counter*/
+      ;
+      if (NB0DM001.NB0DMFGC == "02") /* 'from' gpc*/
+        NB0DM001.NB0DMFCB = NB2REC.NB2FTWCB; /* current balance*/
+      else
+        NB0DM001.NB0DMFCB = NB2REC.NB2APRCB; /* current balance*/
+      end
+    end
+    ;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      converseLib.validationFailed(37); /* rec. deleted*/
+      NB0DM001.XXXERRID = "NB0D320"; /* error location*/
+      ;
+       /* ----------------------------------------*/
+       /* ----- ** hilite deleted account **  ----*/
+       /* ----------------------------------------*/
+      ;
+      set NB0DM001.NB0DMFCO cursor, bold; /* from company id*/
+      set NB0DM001.NB0DMFST bold; /* from store*/
+      set NB0DM001.NB0DMFDP bold; /* from dept*/
+      set NB0DM001.NB0DMFGP bold; /* from group code*/
+      set NB0DM001.NB0DMFBC bold; /* from brand*/
+      NB0DM001.NB0DMFCB = 0; /* from current bal.*/
+      ;
+       /* ----------------------------------------*/
+       /* ----- ** clear w/s key hold area ** ----*/
+       /* ----------------------------------------*/
+      ;
+      NB0DW01.NB0DWFCO = 0; /* from company*/
+      NB0DW01.NB0DWFST = 0; /* from store*/
+      NB0DW01.NB0DWFDP = 0; /* from dept*/
+      NB0DW01.NB0DWFGP = " "; /* from group code*/
+      NB0DW01.NB0DWFBC = " "; /* from brand*/
+      ;
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(16);
+        NB0DM001.XXXERRID = "NB0D320"; /* error process*/
+      else
+        ;
+        TA1REC.TA1TYPE = "DB2";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "NB0D";
+        TA1REC.TA1LOCAT[1] = "S ";
+        TA1REC.TA1LOCAT[2] = "NB0D320";
+        TA1REC.TA1LOCAT[3] = "IO2200 ";
+        TA1REC.TA1LOCAT[4] = "NB0DM001";
+        TA1REC.TA1DBASE = "DNBANK.";
+        TA1REC.TA1TBLVU = "VBACCT01";
+        NB0DW01.NB0DWCKX = " "; /* clear key display*/
+        NB0DW01.NB0DWCCX = NB0DW01.NB0DWFCO;
+                                   /* convert co. to display*/
+        NB0DW01.NB0DWCSX = NB0DW01.NB0DWFST;
+                                   /* convert str.to display*/
+        NB0DW01.NB0DWCDX = NB0DW01.NB0DWFDP;
+                                   /* convert dpt.to display*/
+        NB0DW01.NB0DWCGX = NB0DW01.NB0DWFGP;
+                                   /* convert grp.to display*/
+        NB0DW01.NB0DWCXX = NB0DW01.NB0DWFBC; /* convert brand display*/
+        TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX;
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+        XSPF4();
+        NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+        ;
+      end
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D320
+
+// update nb2rec-(bank acct.)
+Function NB0D322()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+          /* update the 'from' account......*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set TA1REC empty;
+  ;
+  ;
+  if (NB0DM001.NB0DMFGC == "02") /* footwear*/
+    NB2REC.NB2FTWCB = NB2REC.NB2FTWCB - NB0DM001.NB0DMAMT; /* current bal*/
+    NB2REC.NB2FWCLM = NB2REC.NB2FWCLM - NB0DM001.NB0DMAMT;
+                                   /* decrease claim*/
+  else
+    NB2REC.NB2APRCB = NB2REC.NB2APRCB - NB0DM001.NB0DMAMT;
+    NB2REC.NB2APCLM = NB2REC.NB2APCLM - NB0DM001.NB0DMAMT;
+                                   /* decrease claim*/
+  end
+  ;
+  NB2REC.NB2CHRSN = "XFR"; /* last change reason*/
+  NB2REC.ZZZCHGDT = NB0DW01.NB0DWHDT; /* last change date*/
+  ;
+  NB0DW01.NB0DWT1 = VGVar.currentFormattedTime;
+  NB0DW01.NB0DWTHH = NB0DW01.NB0DWTHR; /* hours*/
+  NB0DW01.NB0DWTMN = NB0DW01.NB0DWTMI; /* minutes*/
+  NB2REC.ZZZCHGTM = NB0DW01.NB0DWT2; /* last change time*/
+  ;
+  ;
+  call "IO2200" ("U ", SQLCA, NB2REC) {isNoRefresh = yes, isExternal = yes}; /* update acct mstr*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    ;
+    NB0DW01.NB0DWFDT = NB0DW01.NB0DWFDT + 1; /* up the change ctr.*/
+    ;
+    if (NB0DM001.NB0DMFGC == "02") /* footwear*/
+      NB0DW01.NB0DWNFB = NB2REC.NB2FTWCB; /* hold new 'from' balance*/
+    else
+      NB0DW01.NB0DWNFB = NB2REC.NB2APRCB; /* hold new 'from' balance*/
+    end
+    ;
+  else
+    ;
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(16);
+      NB0DM001.XXXERRID = "NB0D220"; /* error process*/
+    else
+      ;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "NB0D";
+      TA1REC.TA1LOCAT[1] = "U ";
+      TA1REC.TA1LOCAT[2] = "NB0D322";
+      TA1REC.TA1LOCAT[3] = "IO2200 ";
+      TA1REC.TA1LOCAT[4] = "NB0DM001";
+      TA1REC.TA1DBASE = "DNBANK.";
+      TA1REC.TA1TBLVU = "VBACCT01";
+      NB0DW01.NB0DWCKX = " "; /* clear key display*/
+      NB0DW01.NB0DWCCX = NB0DW01.NB0DWFCO; /* convert co. to display*/
+      NB0DW01.NB0DWCSX = NB0DW01.NB0DWFST; /* convert str.to display*/
+      NB0DW01.NB0DWCDX = NB0DW01.NB0DWFDP; /* convert dpt.to display*/
+      NB0DW01.NB0DWCGX = NB0DW01.NB0DWFGP; /* convert grp.to display*/
+      NB0DW01.NB0DWCXX = NB0DW01.NB0DWFBC; /* convert brand  display*/
+      TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+      ;
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D322
+
+// obtain 'to' account
+Function NB0D330()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+          /* obtain the 'to' account......*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set TA1REC empty;
+  set NB2REC empty;
+  ;
+  NB2REC.NB1CUST = NB0DM001.NB0DMTCO; /* to company id*/
+  NB2REC.KUMSTRID = NB0DM001.NB0DMTST; /* to store*/
+  NB2REC.XNXCD = NB0DM001.NB0DMTDP; /* to dept*/
+  NB2REC.XDVCD = "01"; /* to division*/
+  NB2REC.XBCCD = NB0DM001.NB0DMTBC; /* to brand*/
+  NB2REC.NB1GRPCD = NB0DM001.NB0DMTGP; /* to group code*/
+  NB2REC.NB-ADV-PERIOD-CD = NB0DM001.NB0DMTAP; /* TO AD PGM*/
+  NB2REC.SP1ID = NB0DM001.NB0DMTSP; /* SALES PROGRAM*/
+  ;
+  ;
+  call "IO2200" ("S ", SQLCA, NB2REC) {isNoRefresh = yes, isExternal = yes}; /* obtain acct mstr*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    ;
+    if (NB2REC.ZZZCHGCT == NB0DW01.NB0DWTDT) /* matching chg ctr*/
+      ;
+      NB0D332(); /* update record*/
+      ;
+    else
+         /* -----------------------------------------*/
+         /* -  this has been updated by someone else-*/
+         /* -  move new values to map & w/s.*/
+         /* -----------------------------------------*/
+      converseLib.validationFailed(17); /* updated prior*/
+      NB0DM001.XXXERRID = "NB0D330"; /* error process*/
+      NB0DW01.NB0DWTDT = NB2REC.ZZZCHGCT; /* change counter*/
+      ;
+       /* ----------------------------------------*/
+         /* prior update - move current balances*/
+         /* from databases onto the screen.*/
+       /* ----------------------------------------*/
+      if (NB0DM001.NB0DMTGC == "02") /* gpc code*/
+        NB0DM001.NB0DMTCB = NB2REC.NB2FTWCB; /* current balance*/
+      else
+        NB0DM001.NB0DMTCB = NB2REC.NB2APRCB; /* current balance*/
+      end
+    end
+    ;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+       /* ----------------------------------------*/
+             /* add a new customer account.*/
+       /* ----------------------------------------*/
+      NB0D334(); /* add new record.*/
+      ;
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        converseLib.validationFailed(16);
+        NB0DM001.XXXERRID = "NB0D330"; /* error process*/
+      else
+        ;
+        TA1REC.TA1TYPE = "DB2";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "NB0D";
+        TA1REC.TA1LOCAT[1] = "S ";
+        TA1REC.TA1LOCAT[2] = "NB0D330";
+        TA1REC.TA1LOCAT[3] = "IO2200 ";
+        TA1REC.TA1LOCAT[4] = "NB0DM001";
+        TA1REC.TA1DBASE = "DNBANK.";
+        TA1REC.TA1TBLVU = "VBACCT01";
+        NB0DW01.NB0DWCKX = " "; /* clear key display*/
+        NB0DW01.NB0DWCCX = NB0DW01.NB0DWTCO;
+                                   /* convert co. to display*/
+        NB0DW01.NB0DWCSX = NB0DW01.NB0DWTST;
+                                   /* convert str.to display*/
+        NB0DW01.NB0DWCDX = NB0DW01.NB0DWTDP;
+                                   /* convert dpt.to display*/
+        NB0DW01.NB0DWCGX = NB0DW01.NB0DWTGP;
+                                   /* convert grp.to display*/
+        NB0DW01.NB0DWCXX = NB0DW01.NB0DWTBC;
+                                   /* convert brand  display*/
+        TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX;
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+        XSPF4();
+        NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+        ;
+      end
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D330
+
+// update nb2rec-(bank acct.)
+Function NB0D332()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+          /* update the 'to' account......*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set TA1REC empty;
+  ;
+  ;
+  if (NB0DM001.NB0DMTGC == "02") /* footwear*/
+    NB2REC.NB2FTWCB = NB2REC.NB2FTWCB + NB0DM001.NB0DMAMT; /* current bal*/
+    NB2REC.NB2FWCLM = NB2REC.NB2FWCLM + NB0DM001.NB0DMAMT; /* adj. claims*/
+  else
+    NB2REC.NB2APRCB = NB2REC.NB2APRCB + NB0DM001.NB0DMAMT; /* current bal*/
+    NB2REC.NB2APCLM = NB2REC.NB2APCLM + NB0DM001.NB0DMAMT; /* adj. claims*/
+  end
+  ;
+  NB2REC.NB2CHRSN = "XFR"; /* last change reason*/
+  NB2REC.ZZZCHGDT = NB0DW01.NB0DWHDT; /* last change date*/
+  ;
+  NB0DW01.NB0DWT1 = VGVar.currentFormattedTime;
+  NB0DW01.NB0DWTHH = NB0DW01.NB0DWTHR; /* hours*/
+  NB0DW01.NB0DWTMN = NB0DW01.NB0DWTMI; /* minutes*/
+  NB2REC.ZZZCHGTM = NB0DW01.NB0DWT2; /* last change time*/
+  ;
+  ;
+  call "IO2200" ("U ", SQLCA, NB2REC) {isNoRefresh = yes, isExternal = yes}; /* update acct mstr*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    ;
+    NB0DW01.NB0DWTDT = NB0DW01.NB0DWTDT + 1; /* up the change ctr.*/
+    ;
+    if (NB0DM001.NB0DMTGC == "02") /* footwear*/
+      NB0DW01.NB0DWNTB = NB2REC.NB2FTWCB; /* hold new 'to'balances*/
+    else
+      NB0DW01.NB0DWNTB = NB2REC.NB2APRCB; /* hold new 'to'balances*/
+    end
+    ;
+  else
+    ;
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(16);
+      NB0DM001.XXXERRID = "NB0D332"; /* error process*/
+    else
+      ;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "NB0D";
+      TA1REC.TA1LOCAT[1] = "U ";
+      TA1REC.TA1LOCAT[2] = "NB0D332";
+      TA1REC.TA1LOCAT[3] = "IO2200 ";
+      TA1REC.TA1LOCAT[4] = "NB0DM001";
+      TA1REC.TA1DBASE = "DNBANK.";
+      TA1REC.TA1TBLVU = "VBACCT01";
+      NB0DW01.NB0DWCKX = " "; /* clear key display*/
+      NB0DW01.NB0DWCCX = NB0DW01.NB0DWTCO; /* convert co. to display*/
+      NB0DW01.NB0DWCSX = NB0DW01.NB0DWTST; /* convert str.to display*/
+      NB0DW01.NB0DWCDX = NB0DW01.NB0DWTDP; /* convert dpt.to display*/
+      NB0DW01.NB0DWCGX = NB0DW01.NB0DWTGP; /* convert grp.to display*/
+      NB0DW01.NB0DWCXX = NB0DW01.NB0DWTBC; /* convert brand  display*/
+      TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+      ;
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D332
+
+// add new receiving acct rec
+Function NB0D334()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+          /* add new receiving account (nb2rec)*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set TA1REC empty;
+  set NB2REC empty;
+  ;
+  NB2REC.NB1CUST = NB0DM001.NB0DMTCO; /* to company id*/
+  NB2REC.KUMSTRID = NB0DM001.NB0DMTST; /* to store*/
+  NB2REC.XNXCD = NB0DM001.NB0DMTDP; /* to dept*/
+  NB2REC.XDVCD = "01"; /* to division*/
+  NB2REC.XBCCD = NB0DM001.NB0DMTBC; /* to brand*/
+  NB2REC.NB1GRPCD = NB0DM001.NB0DMTGP; /* to group code*/
+  NB2REC.NB-ADV-PERIOD-CD = NB0DM001.NB0DMTAP;
+  NB2REC.SP1ID = NB0DM001.NB0DMTSP;
+  ;
+   /* -------------------------------------*/
+  ;
+  NB0DW01.NB0DW-COPER-YAD-FL = "N";
+  NB0D336(); /* find yadcd, open cursor*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0)
+    NB0D337(); /* fetch*/
+    if (SQLCA.VAGen_SQLCODE == +0)
+      while (SQLCA.VAGen_SQLCODE == +0
+       && NB0DW01.NB0DW-COPER-YAD-FL == "N")
+        NB0D337(); /* fetch until found*/
+        if (SQLCA.VAGen_SQLCODE == +0
+         && VCOPER01.NB-ADV-PERIOD-CD == NB0DM001.NB0DMTAP)
+          NB0DW01.NB0DW-COPER-YAD-FL = "Y";
+        end
+      end
+    end
+  end
+  ;
+  if (NB0DW01.NB0DW-COPER-YAD-FL == "Y")
+    NB2REC.YADCD = VCOPER01.YADCD;
+  else
+    NB2REC.YADCD = NB0DM001.NB0DMTAP;
+  end
+  ;
+  NB0D338(); /* close cursor*/
+   /* -----------------------------------------*/
+  ;
+  if (NB0DM001.NB0DMTGC == "02") /* footwear*/
+    NB2REC.NB2FTWCB = NB0DM001.NB0DMAMT; /* current balance*/
+    NB2REC.NB2FWCLM = NB2REC.NB2FWCLM + NB0DM001.NB0DMAMT; /* claims*/
+    NB0DW01.NB0DWNTB = NB0DM001.NB0DMAMT; /* hold new balance*/
+  else
+    NB2REC.NB2APRCB = NB0DM001.NB0DMAMT; /* current balance*/
+    NB2REC.NB2APCLM = NB2REC.NB2APCLM + NB0DM001.NB0DMAMT; /* claims*/
+    NB0DW01.NB0DWNTB = NB0DM001.NB0DMAMT; /* hold new balance*/
+  end
+  ;
+  ;
+  NB2REC.NB2CHRSN = "XFR"; /* last change rsn*/
+  ;
+  NB2REC.ZZZSDT = NB0DW01.NB0DWHDT; /* set up date*/
+  NB2REC.ZZZCHGDT = NB0DW01.NB0DWHDT; /* last change date.*/
+  ;
+  ;
+  call "IO2200" ("A ", SQLCA, NB2REC) {isNoRefresh = yes, isExternal = yes}; /* add acct mstr*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    ;
+    NB0DW01.NB0DWTDT = 1; /* set up chg count.*/
+    ;
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(16);
+      NB0DM001.XXXERRID = "NB0D334"; /* error process*/
+    else
+      ;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "NB0D";
+      TA1REC.TA1LOCAT[1] = "S ";
+      TA1REC.TA1LOCAT[2] = "NB0D334";
+      TA1REC.TA1LOCAT[3] = "IO2200 ";
+      TA1REC.TA1LOCAT[4] = "NB0DM001";
+      TA1REC.TA1DBASE = "DNBANK.";
+      TA1REC.TA1TBLVU = "VBACCT01";
+      NB0DW01.NB0DWCKX = " "; /* clear key display*/
+      NB0DW01.NB0DWCCX = NB0DW01.NB0DWTCO; /* convert co. to display*/
+      NB0DW01.NB0DWCSX = NB0DW01.NB0DWTST; /* convert str.to display*/
+      NB0DW01.NB0DWCDX = NB0DW01.NB0DWTDP; /* convert dpt.to display*/
+      NB0DW01.NB0DWCGX = NB0DW01.NB0DWTGP; /* convert grp.to display*/
+      NB0DW01.NB0DWCXX = NB0DW01.NB0DWTBC; /* convert brand  display*/
+      TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+      ;
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D334
+
+// find yadcd for adding acct
+Function NB0D336()
+  set VCOPER01 empty;
+  set TA1REC empty;
+  set SQLCA empty;
+  ;
+  call "IO1860" ("S1", SQLCA, VCOPER01) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == +0
+  ) /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(16);
+      NB0DM001.XXXERRID = "NB0D336";
+    else
+      TA1REC.TA1LOCAT[1] = "S1";
+      TA1REC.TA1LOCAT[2] = "IO1860";
+      TA1REC.TA1LOCAT[3] = "NB0D336";
+      TA1REC.TA1DBASE = "DNBANK";
+      TA1REC.TA1TBLVU = "VCOPER01";
+      TA1REC.TA1TBLKE = NB0DM001.NB0DMTAP;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+    end
+  end
+end // end NB0D336
+
+// vcoper01 fetch
+Function NB0D337()
+  set SQLCA empty;
+  ;
+  call "IO1860" ("N1", SQLCA, VCOPER01) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == +0
+   || SQLCA.VAGen_SQLCODE == +100)
+    /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(16);
+      NB0DM001.XXXERRID = "NB0D336";
+    else
+      TA1REC.TA1LOCAT[1] = "N1";
+      TA1REC.TA1LOCAT[2] = "IO1860";
+      TA1REC.TA1LOCAT[3] = "NB0D336";
+      TA1REC.TA1DBASE = "DNBANK";
+      TA1REC.TA1TBLVU = "VCOPER01";
+      TA1REC.TA1TBLKE = NB0DM001.NB0DMTAP;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+    end
+  end
+end // end NB0D337
+
+// close coper cursor
+Function NB0D338()
+  ;
+  call "IO1860" ("C1", SQLCA, VCOPER01) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == +0
+  ) /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "C1";
+    TA1REC.TA1LOCAT[2] = "IO1860";
+    TA1REC.TA1LOCAT[3] = "NB0D336";
+    TA1REC.TA1DBASE = "DNBANK";
+    TA1REC.TA1TBLVU = "VCOPER01";
+    TA1REC.TA1TBLKE = NB0DM001.NB0DMTAP;
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    XSPF4();
+    NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+  end
+end // end NB0D338
+
+// get  bank customer (nb1rec)
+Function NB0D340()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+            /* bank customer master...(nb1rec)*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set NB1REC empty;
+  set TA1REC empty;
+  ;
+  ;
+  NB1REC.NB1CUST = NB0DW01.NB0DWTCO; /* company*/
+  NB1REC.KUMSTRID = NB0DW01.NB0DWTST; /* store*/
+  NB1REC.XNXCD = NB0DW01.NB0DWTDP; /* dept.*/
+  NB1REC.XDVCD = "01"; /* div field*/
+  NB1REC.XBCCD = NB0DW01.NB0DWTBC; /* brand*/
+  NB1REC.NB1GRPCD = NB0DW01.NB0DWTGP; /* group*/
+  ;
+  TA1REC.TA1LOCAT[1] = "S ";
+  call "IO2210" ("S ", SQLCA, NB1REC) {isNoRefresh = yes, isExternal = yes}; /* get acct master*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    ;
+     /* CURRENTLY A CUSTOMER*/
+    ;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* add customer rec.*/
+      ;
+      set NB1REC empty;
+      NB1REC.NB1CUST = NB0DM001.NB0DMTCO; /* to company*/
+      NB1REC.KUMSTRID = NB0DM001.NB0DMTST; /* to store*/
+      NB1REC.XNXCD = NB0DM001.NB0DMTDP; /* to dept.*/
+      NB1REC.NB1GRPCD = NB0DM001.NB0DMTGP; /* to group*/
+      NB1REC.XDVCD = "01"; /* ;     division*/
+      NB1REC.XBCCD = NB0DM001.NB0DMTBC; /* brand*/
+      NB1REC.ZZZSDT = NB0DW01.NB0DWHDT; /* set up date*/
+      ;
+      NB0D342(); /* load new values*/
+      ;
+      TA1REC.TA1LOCAT[1] = "A ";
+      call "IO2210" ("A ", SQLCA, NB1REC) {isNoRefresh = yes, isExternal = yes};
+    end
+  end
+  ;
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    ;
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(16); /* db in use-try later*/
+      NB0DM001.XXXERRID = "NB0D340"; /* error location*/
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "NB0D";
+      TA1REC.TA1LOCAT[2] = "NB0D340";
+      TA1REC.TA1LOCAT[3] = "IO2210 ";
+      TA1REC.TA1LOCAT[4] = "NB0DM001";
+      TA1REC.TA1DBASE = "DNBANK.";
+      TA1REC.TA1TBLVU = "VBCUST01";
+      NB0DW01.NB0DWCKX = " "; /* clear key display area*/
+      NB0DW01.NB0DWCCX = NB0DM001.NB0DMTCO; /* convert co. to display*/
+      NB0DW01.NB0DWCSX = NB0DM001.NB0DMTST; /* convert store -display*/
+      NB0DW01.NB0DWCDX = NB0DM001.NB0DMTDP; /* convert dept  -display*/
+      NB0DW01.NB0DWCGX = NB0DM001.NB0DMTGP; /* convert group -display*/
+      NB0DW01.NB0DWCXX = NB0DM001.NB0DMTBC; /* convert brand*/
+      TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D340
+
+// load nb1rec with data
+Function NB0D342()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+            /* bank customer master...(nb1rec)*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set TA1REC empty;
+  ;
+  NB1REC.NB1CPFL = "Y"; /* customer stat. print flags*/
+  NB1REC.NB1AAFL = "N";
+  NB1REC.NB1TDFL = "N";
+  NB1REC.NB1FCFL = "N";
+  ;
+  NB1REC.NB1CFREQ = "QT"; /* cust stmt freq*/
+  NB1REC.NB1SFREQ = "MO"; /* srep stmt freq*/
+  NB1REC.NB1CMBFL = "N"; /* combined fw/ap flag*/
+  ;
+  NB1REC.NB1CRADR = 0; /* credit address id*/
+  NB1REC.NB1STADR = 0; /* srep address id*/
+  ;
+  ;
+  NB1REC.NB1BTYPE = "AA"; /* customer status*/
+  ;
+  NB1REC.ZZZSDT = NB0DW01.NB0DWHDT; /* set up date*/
+  ;
+  ;
+  ;
+end // end NB0D342
+
+// write trans.rec(nb4rec)
+Function NB0D350()
+  ;
+  ;
+    /* ----------------------------------------------------*/
+      /* write transfer rec  (nb4rec)  for sending acct.*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set TA1REC empty;
+  set NB4REC empty;
+  ;
+  NB4REC.NB4XREF = NB9REC.NB9NXFER;
+  NB4REC.NB4XSEQ = 1;
+  NB4REC.NB4XFCST = NB0DM001.NB0DMTCO; /* to company*/
+  NB4REC.NB4XFSTR = NB0DM001.NB0DMTST; /* to store*/
+  NB4REC.NB4XFDPT = NB0DM001.NB0DMTDP; /* to dept*/
+  NB4REC.NB4XFDIV = "01"; /* ;     to division*/
+  NB4REC.NB4XFBC = NB0DM001.NB0DMTBC; /* to brand*/
+  NB4REC.NB4XFGRP = NB0DM001.NB0DMTGP; /* to group*/
+  ;
+  NB4REC.XGPCD = NB0DM001.NB0DMFGC; /* gpc code*/
+  NB4REC.NB-ADV-PERIOD-CD = NB0DM001.NB0DMFAP;
+   /* -------------------------------------*/
+  ;
+  NB0DW01.NB0DW-COPER-YAD-FL = "N";
+  NB0D336(); /* find yadcd, open cursor*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0)
+    NB0D337(); /* fetch*/
+    if (SQLCA.VAGen_SQLCODE == +0)
+      while (SQLCA.VAGen_SQLCODE == +0
+       && NB0DW01.NB0DW-COPER-YAD-FL == "N")
+        NB0D337(); /* fetch until found*/
+        if (SQLCA.VAGen_SQLCODE == +0
+         && VCOPER01.NB-ADV-PERIOD-CD == NB0DM001.NB0DMFAP)
+          NB0DW01.NB0DW-COPER-YAD-FL = "Y";
+        end
+      end
+    end
+  end
+  ;
+  if (NB0DW01.NB0DW-COPER-YAD-FL == "Y")
+    NB4REC.YADCD = VCOPER01.YADCD;
+  else
+    NB4REC.YADCD = NB0DM001.NB0DMFAP;
+  end
+  ;
+  NB0D338(); /* close cursor*/
+   /* --------------------------------------*/
+  NB4REC.SP1ID = NB0DM001.NB0DMFSP;
+  NB4REC.NB4XFPB = NB0DM001.NB0DMTCB; /* to  acct prior bal.*/
+  NB4REC.NB4XFAB = NB0DW01.NB0DWNTB; /* to  bal after trans.*/
+  ;
+  ;
+  NB4REC.NB1CUST = NB0DM001.NB0DMFCO; /* from company*/
+  NB4REC.KUMSTRID = NB0DM001.NB0DMFST; /* from store*/
+  NB4REC.XNXCD = NB0DM001.NB0DMFDP; /* from dept*/
+  NB4REC.XDVCD = "01"; /* ;       from division*/
+  NB4REC.XBCCD = NB0DM001.NB0DMFBC; /* from brand*/
+  NB4REC.NB1GRPCD = NB0DM001.NB0DMFGP; /* from group*/
+  ;
+  NB4REC.NB4PRBAL = NB0DM001.NB0DMFCB; /* from acct prior bal.*/
+  NB4REC.NB4AFBAL = NB0DW01.NB0DWNFB; /* from bal after trans.*/
+  ;
+  NB4REC.NB4TRAMT = NB0DM001.NB0DMAMT * -1; /* transfer amt.*/
+  ;
+   /* *************************************************************/
+   /* **     ycatbl may not be maintenanced. substituting database*/
+   /* **     call to clyrec for the same data.  ssj (7-20-88)*/
+   /* *************************************************************/
+  ;
+  ;
+  set CLYREC empty;
+  CLYREC.XXXUSRID = COMMAREA.CAUSERID;
+  ;
+  call "IO2650" ("SB", SQLCA, CLYREC) {isNoRefresh = yes, isExternal = yes}; /* use secondary index*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    NB4REC.YCPCD = CLYREC.YCPCD; /* co-op analyst code*/
+  else
+    NB4REC.YCPCD = 0;
+                                   /* do not abend for bad rtn.*/
+  end
+  ;
+   /* *************************************************************/
+  ;
+  ;
+  NB4REC.ZZZSDT = NB0DW01.NB0DWHDT; /* set up date*/
+  NB0DW01.NB0DWT1 = VGVar.currentFormattedTime;
+  NB0DW01.NB0DWTHH = NB0DW01.NB0DWTHR; /* hours*/
+  NB0DW01.NB0DWTMN = NB0DW01.NB0DWTMI; /* minutes*/
+  NB4REC.ZZZSTM = NB0DW01.NB0DWT2; /* set up time*/
+  ;
+  ;
+  call "IO2260" ("A ", SQLCA, NB4REC) {isNoRefresh = yes, isExternal = yes}; /* obtain acct mstr*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    /* o.k.*/
+    ;
+  else
+    ;
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(16);
+      NB0DM001.XXXERRID = "NB0D350"; /* error process*/
+    else
+      ;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "NB0D";
+      TA1REC.TA1LOCAT[1] = "A ";
+      TA1REC.TA1LOCAT[2] = "NB0D350";
+      TA1REC.TA1LOCAT[3] = "IO2260 ";
+      TA1REC.TA1LOCAT[4] = "NB0DM001";
+      TA1REC.TA1DBASE = "DNBANK.";
+      TA1REC.TA1TBLVU = "VNBDLY01";
+      NB0DW01.NB0DWCKX = " "; /* clear key display*/
+      NB0DW01.NB0DWCCX = NB0DM001.NB0DMFCO; /* convert co. to display*/
+      NB0DW01.NB0DWCSX = NB0DM001.NB0DMFST; /* convert str.to display*/
+      NB0DW01.NB0DWCDX = NB0DM001.NB0DMFDP; /* convert dpt.to display*/
+      NB0DW01.NB0DWCGX = NB0DM001.NB0DMFGP; /* convert grp.to display*/
+      NB0DW01.NB0DWCXX = NB0DM001.NB0DMFBC; /* convert brand  display*/
+      TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+      ;
+    end
+  end
+  ;
+  ;
+  ;
+    /* ----------------------------------------------------*/
+      /* write transfer rec  (nb4rec)  for receiving acct.*/
+    /* ----------------------------------------------------*/
+  ;
+  ;
+  set TA1REC empty;
+  set NB4REC empty;
+  ;
+  NB4REC.NB4XREF = NB9REC.NB9NXFER;
+  NB4REC.NB4XSEQ = 2;
+  NB4REC.NB4XFCST = NB0DM001.NB0DMFCO; /* from company*/
+  NB4REC.NB4XFSTR = NB0DM001.NB0DMFST; /* from store*/
+  NB4REC.NB4XFDPT = NB0DM001.NB0DMFDP; /* from dept*/
+  NB4REC.NB4XFGRP = NB0DM001.NB0DMFGP; /* from group*/
+  NB4REC.NB4XFDIV = "01"; /* ;     from division*/
+  NB4REC.NB4XFBC = NB0DM001.NB0DMFBC; /* from brand*/
+  ;
+  NB4REC.XGPCD = NB0DM001.NB0DMTGC; /* to gpc code*/
+  NB4REC.NB-ADV-PERIOD-CD = NB0DM001.NB0DMTAP;
+   /* -------------------------------------*/
+  ;
+  NB0DW01.NB0DW-COPER-YAD-FL = "N";
+  NB0D336(); /* find yadcd, open cursor*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0)
+    NB0D337(); /* fetch*/
+    if (SQLCA.VAGen_SQLCODE == +0)
+      while (SQLCA.VAGen_SQLCODE == +0
+       && NB0DW01.NB0DW-COPER-YAD-FL == "N")
+        NB0D337(); /* fetch until found*/
+        if (SQLCA.VAGen_SQLCODE == +0
+         && VCOPER01.NB-ADV-PERIOD-CD == NB0DM001.NB0DMTAP)
+          NB0DW01.NB0DW-COPER-YAD-FL = "Y";
+        end
+      end
+    end
+  end
+  ;
+  if (NB0DW01.NB0DW-COPER-YAD-FL == "Y")
+    NB4REC.YADCD = VCOPER01.YADCD;
+  else
+    NB4REC.YADCD = NB0DM001.NB0DMTAP;
+  end
+  ;
+  NB0D338(); /* close cursor*/
+   /* --------------------------------------*/
+  NB4REC.SP1ID = NB0DM001.NB0DMTSP;
+  NB4REC.NB4XFPB = NB0DM001.NB0DMFCB; /* from acct prior bal.*/
+  NB4REC.NB4XFAB = NB0DW01.NB0DWNFB; /* from bal after trans.*/
+  ;
+  ;
+  NB4REC.NB1CUST = NB0DM001.NB0DMTCO; /* to company*/
+  NB4REC.KUMSTRID = NB0DM001.NB0DMTST; /* to store*/
+  NB4REC.XNXCD = NB0DM001.NB0DMTDP; /* to dept*/
+  NB4REC.NB1GRPCD = NB0DM001.NB0DMTGP; /* to group*/
+  NB4REC.XDVCD = "01"; /* to division*/
+  NB4REC.XBCCD = NB0DM001.NB0DMTBC; /* to brand*/
+  ;
+  NB4REC.NB4PRBAL = NB0DM001.NB0DMTCB; /* to acct prior bal.*/
+  NB4REC.NB4AFBAL = NB0DW01.NB0DWNTB; /* to bal after trans.*/
+  ;
+  NB4REC.NB4TRAMT = NB0DM001.NB0DMAMT; /* transfer amt.*/
+  ;
+  if (CLYREC.YCPCD > 0)
+    NB4REC.YCPCD = CLYREC.YCPCD; /* co-op analyst code*/
+  else
+    NB4REC.YCPCD = 0; /* co-op analyst code*/
+  end
+  ;
+  NB4REC.ZZZSDT = NB0DW01.NB0DWHDT; /* set up date*/
+  NB0DW01.NB0DWT1 = VGVar.currentFormattedTime;
+  NB0DW01.NB0DWTHH = NB0DW01.NB0DWTHR; /* hours*/
+  NB0DW01.NB0DWTMN = NB0DW01.NB0DWTMI; /* minutes*/
+  NB4REC.ZZZSTM = NB0DW01.NB0DWT2; /* set up time*/
+  ;
+  ;
+  call "IO2260" ("A ", SQLCA, NB4REC) {isNoRefresh = yes, isExternal = yes}; /* obtain acct mstr*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* good return....*/
+    /* o.k.*/
+    ;
+  else
+    ;
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(16);
+      NB0DM001.XXXERRID = "NB0D350"; /* error process*/
+    else
+      ;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "NB0D";
+      TA1REC.TA1LOCAT[1] = "A ";
+      TA1REC.TA1LOCAT[2] = "NB0D350";
+      TA1REC.TA1LOCAT[3] = "IO2260 ";
+      TA1REC.TA1LOCAT[4] = "NB0DM001";
+      TA1REC.TA1DBASE = "DNBANK.";
+      TA1REC.TA1TBLVU = "VNBDLY01";
+      NB0DW01.NB0DWCKX = " "; /* clear key display*/
+      NB0DW01.NB0DWCCX = NB0DM001.NB0DMTCO; /* convert co. to display*/
+      NB0DW01.NB0DWCSX = NB0DM001.NB0DMTST; /* convert str.to display*/
+      NB0DW01.NB0DWCDX = NB0DM001.NB0DMTDP; /* convert dpt.to display*/
+      NB0DW01.NB0DWCGX = NB0DM001.NB0DMTGP; /* convert grp.to display*/
+      NB0DW01.NB0DWCXX = NB0DM001.NB0DMTBC; /* convert brand  display*/
+      TA1REC.TA1TBLKE = NB0DW01.NB0DWCKX;
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+      ;
+    end
+  end
+  ;
+  ;
+  ;
+end // end NB0D350
+
+// converse screen
+Function NB0D400()
+  ;
+  if (COMMAREA.CAUSERID in NB0DT01.CAUSERID)
+   /* next sentence*/
+  else
+    set NB0DM001.NB0DMTGC invisible, protect;
+  end
+  ;
+  converse NB0DM001 ;
+  ;
+end // end NB0D400
+
+// validate attention keys...
+Function NB0D500()
+  ;
+  ;
+   /* ------------------------------------------------------------*/
+   /* stop the "push the button see what happens" syndrome*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is enter
+   || converseVar.eventKey is pf1
+   || converseVar.eventKey is pf3
+   || converseVar.eventKey is pf4
+   || converseVar.eventKey is pa2
+   || converseVar.eventKey is pf13
+   || converseVar.eventKey is pf14
+   || converseVar.eventKey is pf15
+   || converseVar.eventKey is pf16
+   || converseVar.eventKey is pf19
+   || converseVar.eventKey is pf20
+   || converseVar.eventKey is pf21)
+    ;
+     /* screen operator awake!*/
+  else
+    converseLib.validationFailed(03); /* invalid pk key..*/
+  end
+  ;
+  ;
+  ;
+  if (NB0DM001.CATOAP > " ") /* requesting fast pathing*/
+    COMMAREA.CATOAP = NB0DM001.CATOAP;
+    COMMAREA.CAITEM = NB0DM001.CAITEM;
+    COMMAREA.CAFROMAP = "NB0D";
+    XSEXIT(); /* transfer out*/
+    ;
+     /* --- and if you are still in here !*/
+    NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    converseLib.validationFailed(); /* Force alarm to sound*/
+    exit stack; /* Exit to redisplay map*/
+  end
+  ;
+   /* x*/
+  if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+    XSPF1(); /* Exit to HELP*/
+    ;
+    NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    converseLib.validationFailed(); /* Force error*/
+    exit stack; /* Exit to redisplay map*/
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf3) /* PF4 was pressed*/
+    COMMAREA.CATOAP = "NB0M"; /* return to menu*/
+    COMMAREA.CAFROMAP = "NB0D"; /* from here to there*/
+    XSEXIT();
+    ;
+     /* --- and if you are still in here !*/
+    NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    converseLib.validationFailed(); /* Force alarm to sound*/
+    exit stack; /* Exit to redisplay map*/
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf4) /* PF4 was pressed*/
+    XSPF4(); /* Exit main menu*/
+    ;
+    NB0DM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Returned error message*/
+    converseLib.validationFailed(); /* Force alarm to sound*/
+    exit stack; /* Exit to redisplay map*/
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf13) /* trans to acct.summary*/
+    COMMAREA.CATOAP = "NB0G";
+    NB0D510(); /* set up transfer fields*/
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf14) /* trans to balance inq.*/
+    COMMAREA.CATOAP = "NB0A";
+    NB0D510(); /* set up transfer fields*/
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf15) /* trans to history*/
+    COMMAREA.CATOAP = "NB0C";
+    NB0D510(); /* set up transfer fields*/
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf16) /* trans to customer*/
+    COMMAREA.CATOAP = "NB0B";
+    NB0D510(); /* set up transfer fields*/
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf19) /* trans to multiple trans.*/
+    COMMAREA.CATOAP = "NB0H";
+    NB0D510();
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf20) /* trans to group desc*/
+    COMMAREA.CATOAP = "NB0E";
+    NB0D510();
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf21) /* trans to group members*/
+    COMMAREA.CATOAP = "NB0F";
+    NB0D510();
+  end
+  ;
+  ;
+     /* -----------------------------------------*/
+     /* pa2: keep 'from' & 'to' accts from screen,*/
+         /* force new db calls for current balances*/
+         /* and clear the transfer amount field.*/
+     /* -----------------------------------------*/
+  ;
+  if (converseVar.eventKey is pa2) /* trans to balance inq.*/
+    NB0DW01.NB0DWFCO = 0; /* company*/
+    NB0DW01.NB0DWFST = 0; /* store*/
+    NB0DW01.NB0DWFDP = 0; /* dept*/
+    NB0DW01.NB0DWFGP = " "; /* group*/
+    NB0DW01.NB0DWFBC = " "; /* brand*/
+    ;
+    NB0DW01.NB0DWTCO = 0; /* company*/
+    NB0DW01.NB0DWTST = 0; /* store*/
+    NB0DW01.NB0DWTDP = 0; /* dept*/
+    NB0DW01.NB0DWTGP = " "; /* group*/
+    NB0DW01.NB0DWTBC = " "; /* brand*/
+    ;
+    NB0DM001.NB0DMAMT = 0; /* trans.amt on map*/
+    ;
+  end
+  ;
+  ;
+  ;
+end // end NB0D500
+
+// transfer with a pass key
+Function NB0D510()
+  ;
+  ;
+  ;
+  NB0DW01.NB0DWCCO = NB0DM001.NB0DMFCO; /* save company*/
+  NB0DW01.NB0DWCST = NB0DM001.NB0DMFST; /* save store*/
+  NB0DW01.NB0DWCDP = NB0DM001.NB0DMFDP; /* save dpt*/
+  NB0DW01.NB0DWCGP = NB0DM001.NB0DMFGP; /* save group*/
+  NB0DW01.NB0DWBCD = NB0DM001.NB0DMFBC; /* save brand*/
+  ;
+  COMMAREA.CAITEM = NB0DW01.NB0DWCAI; /* move key to comm*/
+  ;
+  COMMAREA.CAFROMAP = "NB0D";
+  XSEXIT(); /* transfer out*/
+  ;
+  ;
+  ;
+end // end NB0D510
+
+// reset mdt's
+Function NB0D600()
+  ;
+  ;
+  ;
+  NB0DM001.XXXERRID = "NB0D400"; /* reset the error process id*/
+  NB0DM001.NB0DMMSG = " "; /* clear secondary msg.*/
+  NB0DM001.NB0DMAT2 = 0; /* clear message amt*/
+  NB0DM001.NB0DMS2 = " "; /* clear message field 2*/
+  ;
+  set NB0DM001.NB0DMFCO initialAttributes;
+  set NB0DM001.NB0DMFST initialAttributes;
+  set NB0DM001.NB0DMFDP initialAttributes;
+  set NB0DM001.NB0DMFGP initialAttributes;
+  set NB0DM001.NB0DMFBC initialAttributes; /* brand*/
+  set NB0DM001.NB0DMFGC initialAttributes;
+  ;
+  set NB0DM001.NB0DMTCO initialAttributes;
+  set NB0DM001.NB0DMTST initialAttributes;
+  set NB0DM001.NB0DMTDP initialAttributes;
+  set NB0DM001.NB0DMTGP initialAttributes;
+  set NB0DM001.NB0DMTBC initialAttributes; /* brand*/
+  set NB0DM001.NB0DMTGC initialAttributes;
+  ;
+  set NB0DM001.NB0DMFAP initialAttributes;
+  set NB0DM001.NB0DMTAP initialAttributes;
+  set NB0DM001.NB0DMTSP initialAttributes;
+  set NB0DM001.NB0DMTSP initialAttributes;
+  ;
+  set NB0DM001.NB0DMAMT initialAttributes;
+  ;
+  ;
+  ;
+end // end NB0D600
+
+//*** RECORD=NB0DW01 ****
+// ;********************** nb0aw01 ****************************
+// ;
+// ;         work record for nb0a: bank balance inquiry
+// ;
+// : 11/16/93  lgross changed record length of NB0DWCCO
+// ;                  to 7 and NB0DWCDD to 2
+// ;***********************************************************
+// ***********************
+Record NB0DW01 type basicRecord
+  5 NB0DW1GP NB0DW1GP ; 
+    10 NB0DWUPF NB0DWUPF ; 
+    10 NB0DWVWF NB0DWVWF ; 
+    10 NB0DWNAF NB0DWNAF ; 
+    10 NB0DWNFB NB0DWNFB ; 
+    10 NB0DWNTB NB0DWNTB ; 
+    10 NB0DWFCO NB0DWFCO ; 
+    10 NB0DWFST NB0DWFST ; 
+    10 NB0DWFDP NB0DWFDP ; 
+    10 NB0DWFGP NB0DWFGP ; 
+    10 NB0DWFGC NB0DWFGC ; 
+    10 NB0DWFBC NB0DWFBC ; 
+    10 NB0DWFAP NB0DWFAP ; 
+    10 NB0DWFSP NB0DWFSP ; 
+    10 NB0DWFDT NB0DWFDT ; 
+    10 NB0DWTCO NB0DWTCO ; 
+    10 NB0DWTST NB0DWTST ; 
+    10 NB0DWTDP NB0DWTDP ; 
+    10 NB0DWTGP NB0DWTGP ; 
+    10 NB0DWTGC NB0DWTGC ; 
+    10 NB0DWTBC NB0DWTBC ; 
+    10 NB0DWTAP NB0DWTAP ; 
+    10 NB0DWTSP NB0DWTSP ; 
+    10 NB0DW-COPER-YAD-FL NB0DW-COPER-YAD-FL ; 
+    10 NB0DWTDT NB0DWTDT ; 
+    10 NB0DWTOK NB0DWTOK ; 
+    10 NB0DWMSG NB0DWMSG ; 
+    10 NB0DWDT1 NB0DWDT1 ; 
+      15 NB0DWD1Y NB0DWD1Y ; 
+      15 NB0DWD1M NB0DWD1M ; 
+      15 NB0DWD1D NB0DWD1D ; 
+    10 NB0DWHDT NB0DWHDT ; 
+      15 NB0DWHCC NB0DWHCC ; 
+      15 NB0DWHYY NB0DWHYY ; 
+      15 NB0DWHMM NB0DWHMM ; 
+      15 NB0DWHDD NB0DWHDD ; 
+    10 NB0DWT1 NB0DWT1 ; 
+      15 NB0DWTHR NB0DWTHR ; 
+      15 NB0DWTC1 NB0DWTC1 ; 
+      15 NB0DWTMI NB0DWTMI ; 
+      15 NB0DWTC2 NB0DWTC2 ; 
+      15 NB0DWTSC NB0DWTSC ; 
+    10 NB0DWT2 NB0DWT2 ; 
+      15 NB0DWTHH NB0DWTHH ; 
+      15 NB0DWTMN NB0DWTMN ; 
+    10 NB0DWT3 NB0DWT3 ; 
+      15 NB0DWT3H NB0DWT3H ; 
+      15 NB0DWT3M NB0DWT3M ; 
+      15 NB0DWT3S NB0DWT3S ; 
+    10 NB0DWKEY NB0DWKEY ; 
+      15 KUCCOID KUCCOID ; 
+      15 KUMSTRID KUMSTRID ; 
+      15 XNXCD XNXCD ; 
+      15 NB1GRPCD NB1GRPCD ; 
+    10 * char(2) ; 
+    10 NB0DWCAI NB0DWCAI ; 
+      15 NB0DWCCO NB0DWCCO ; 
+      15 NB0DWCST NB0DWCST ; 
+      15 NB0DWCDP NB0DWCDP ; 
+      15 NB0DWCGP NB0DWCGP ; 
+      15 NB0DWBCD NB0DWBCD ; 
+    10 * char(1) ; 
+    10 NB0DWCKX NB0DWCKX ; 
+      15 NB0DWCCX NB0DWCCX ; 
+      15 NB0DWCSX NB0DWCSX ; 
+      15 NB0DWCDX NB0DWCDX ; 
+      15 NB0DWCGX NB0DWCGX ; 
+      15 NB0DWCXX NB0DWCXX ; 
+end // end NB0DW01
+
+//*** RECORD=NB4REC ****
+// *************** nike bank daily activity    ****************
+// 
+// DB2 TABLE:           dnbank.vnbdly01
+// 
+// COPYLIB MEMBER:      DCL00397
+// 
+// I/O MOD:             IO2260
+// 
+// KEY TO DB2 TABLE:    nb4xref  (transfer reference number)
+//                      nb4xseq  (transfer sequence number)
+// 
+// DATE CREATED:        01/20/88
+// 
+// MAINTENANCE LOG:
+// 
+//   DATE    INIT.      COMMENT
+// --------  -----      ---------------------------------------
+// 01-20-88   ssj       INITIAL RECORD CREATION
+// 03-28-89   ssj       add division codes
+// 06-11-90   ssj       add brand
+// 01/03/91  CHYDE      Chg data item descriptions to db2 name.
+// 04-17-92   OAR       ADD NB-ADV-PERIOD-CD, SP1ID
+// 
+// ------------------------------------------------------------
+// **********************
+Record NB4REC type basicRecord
+  5 NB4GROUP NB4GROUP ; 
+    10 NB4XREF NB4XREF ; 
+    10 NB4XSEQ NB4XSEQ ; 
+    10 NB4XFCST NB4XFCST ; 
+    10 NB4XFSTR NB4XFSTR ; 
+    10 NB4XFDPT NB4XFDPT ; 
+    10 NB4XFDIV NB4XFDIV ; 
+    10 NB4XFBC NB4XFBC ; 
+    10 NB4XFGRP NB4XFGRP ; 
+    10 XGPCD XGPCD ; 
+    10 NB-ADV-PERIOD-CD NB-ADV-PERIOD-CD ; 
+    10 YADCD YADCD ; 
+    10 SP1ID SP1ID ; 
+    10 NB4XFPB NB4XFPB ; 
+    10 NB4XFAB NB4XFAB ; 
+    10 NB1CUST NB1CUST ; 
+    10 KUMSTRID KUMSTRID ; 
+    10 XNXCD XNXCD ; 
+    10 XDVCD XDVCD ; 
+    10 XBCCD XBCCD ; 
+    10 NB1GRPCD NB1GRPCD ; 
+    10 NB4PRBAL NB4PRBAL ; 
+    10 NB4AFBAL NB4AFBAL ; 
+    10 NB4TRAMT NB4TRAMT ; 
+    10 YCPCD YCPCD ; 
+    10 ZZZSDT ZZZSDT ; 
+    10 ZZZSTM ZZZSTM ; 
+end // end NB4REC
+
+//*** RECORD=NB9REC ****
+// *************** nike bank control record  ******************
+// 
+// DB2 TABLE:           dnbank.vnbctl01
+// 
+// COPYLIB MEMBER:      DCL00400
+// 
+// I/O MOD:             IO2290
+// 
+// KEY TO DB2 TABLE:    none
+// 
+// DATE CREATED:        01/20/88
+// 
+// MAINTENANCE LOG:
+// 
+//   DATE    INIT.      COMMENT
+// --------  -----      ---------------------------------------
+// 01-20-88   ssj       INITIAL RECORD CREATION
+// 01/03/91  CHYDE      Chg data item description to db2 name.
+// 
+// 
+// 
+// ------------------------------------------------------------
+// **********************
+Record NB9REC type basicRecord
+  5 NB9GROUP NB9GROUP ; 
+    10 NB9NXFER NB9NXFER ; 
+    10 ZZZCHGDT ZZZCHGDT ; 
+    10 ZZZCHGTM ZZZCHGTM ; 
+end // end NB9REC
+
+//*** RECORD=VSPGMP01 ****
+// NIKE BANK SALES PROGRAM TABLE
+// ;
+// THIS TABLE IS USED TO STORE COOP SALES PROGRAMS.
+// THESE SALES PROGRAMS FALL UNDER SPECIAL PROCESSING RULES
+// WITHIN NIKE BANK.
+// ;
+// DCL01041 -  CSP RECORD: VSPGMP01
+// ************************
+Record VSPGMP01 type basicRecord
+  10 SP1ID SP1ID ; 
+  10 NB-ADV-PERIOD-CD NB-ADV-PERIOD-CD ; 
+  10 ZZZSDT ZZZSDT ; 
+  10 ZZZCHGDT ZZZCHGDT ; 
+  10 ZZZCHGTM ZZZCHGTM ; 
+  10 ZZZCHGCT ZZZCHGCT ; 
+end // end VSPGMP01
+
+// coper yad found flag
+DataItem NB0DW-COPER-YAD-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// group level
+DataItem NB0DW1GP char(174)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// caitem brand code
+DataItem NB0DWBCD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// key on entry or change
+DataItem NB0DWCAI char(17)  {
+  align = right, fillCharacter = "0", inputRequired = no
+}
+end
+
+// caitem company id
+DataItem NB0DWCCO num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// error  company id
+DataItem NB0DWCCX num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// caitem dept code
+DataItem NB0DWCDP num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error  dept code
+DataItem NB0DWCDX num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// caitem group code
+DataItem NB0DWCGP char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error  group code
+DataItem NB0DWCGX char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// new key-error display only
+DataItem NB0DWCKX char(21)  {
+  align = right, fillCharacter = "0", inputRequired = no
+}
+end
+
+// caitem store id
+DataItem NB0DWCST num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error  store id
+DataItem NB0DWCSX num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error  brand    code
+DataItem NB0DWCXX char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   - day
+DataItem NB0DWD1D char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   - month
+DataItem NB0DWD1M char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   - year
+DataItem NB0DWD1Y char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ezedte
+DataItem NB0DWDT1 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from acct-ad program
+DataItem NB0DWFAP char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from acct-brand
+DataItem NB0DWFBC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from acct-co
+DataItem NB0DWFCO int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// from acct-nike dept code
+DataItem NB0DWFDP smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from acct-change count
+DataItem NB0DWFDT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// from acct-gpc code
+DataItem NB0DWFGC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from acct-bank group
+DataItem NB0DWFGP char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from SALES PROGRAM
+DataItem NB0DWFSP char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from acct-store id
+DataItem NB0DWFST smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//    - century
+DataItem NB0DWHCC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - day
+DataItem NB0DWHDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// reformatted date
+DataItem NB0DWHDT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - month
+DataItem NB0DWHMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - year
+DataItem NB0DWHYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// previous valid key...
+DataItem NB0DWKEY char(10)  {
+  align = right, fillCharacter = "0", inputRequired = no
+}
+end
+
+// user message
+DataItem NB0DWMSG char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// new 'to' acct can be added.
+DataItem NB0DWNAF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// new bal.for from acct
+DataItem NB0DWNFB decimal(11,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// new bal.for to acct
+DataItem NB0DWNTB decimal(11,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hh:mm:ss
+DataItem NB0DWT1 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hhmm
+DataItem NB0DWT2 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// hhmmss
+DataItem NB0DWT3 num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//     hours
+DataItem NB0DWT3H num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//     minutes
+DataItem NB0DWT3M num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//     seconds
+DataItem NB0DWT3S num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// to acct-ad program
+DataItem NB0DWTAP char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// to acct-brand
+DataItem NB0DWTBC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//     :
+DataItem NB0DWTC1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//     :
+DataItem NB0DWTC2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// to acct-co
+DataItem NB0DWTCO int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = "0", inputRequired = no
+}
+end
+
+// to acct-nike dept code
+DataItem NB0DWTDP smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// to acct-change count
+DataItem NB0DWTDT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// to acct-gpc code
+DataItem NB0DWTGC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// to acct-bank group
+DataItem NB0DWTGP char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//     hours
+DataItem NB0DWTHH num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//     hours
+DataItem NB0DWTHR num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//     minutes
+DataItem NB0DWTMI num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//     minutes
+DataItem NB0DWTMN num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// to acct is o.k.
+DataItem NB0DWTOK char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//     seconds
+DataItem NB0DWTSC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// TO SALES PROGRAM
+DataItem NB0DWTSP char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// to acct-store id
+DataItem NB0DWTST smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// update nb1rec-flag
+DataItem NB0DWUPF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// view only on this pass
+DataItem NB0DWVWF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// NB_ACCT_AFT_BAL
+DataItem NB4AFBAL decimal(11,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// record group level.
+DataItem NB4GROUP char(81)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// NB_XFER_FR_AFT_BAL
+DataItem NB4XFAB decimal(11,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// NB_XFER_FR_XBC
+DataItem NB4XFBC char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// NB_XFER_FR_CUST
+DataItem NB4XFCST int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// nb_xfer_fr_xdv
+DataItem NB4XFDIV char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// NB_XFER_FR_DEPT
+DataItem NB4XFDPT smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// NB_XFER_FR_GRP
+DataItem NB4XFGRP char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// NB_XFER_FR_PRV_BAL
+DataItem NB4XFPB decimal(11,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// NB_XFER_FR_STOR
+DataItem NB4XFSTR smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// record group level.
+DataItem NB9GROUP char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// NB_NXT_XFER_NBR
+DataItem NB9NXFER int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+
