@@ -1,0 +1,5340 @@
+package ks0c;
+
+import corpcom2.XX0XW01;
+import corpcom2.XX0XW02;
+import corpcom3.XPKS-00001;
+import corpcom3.XPXGP01;
+import corpcom3.XPXSE01;
+import corpcom3.XPXX001;
+import corpcom4.XSKS-S0001;
+import corpcom4.XX0XS01;
+import corpcom5.COMMAREA;
+import corpcom6.SQLCA;
+import corpcom7.XXXTSLEN;
+import corpcom7.XXXTSPAG;
+import corpx1.XGPTBL;
+import corpx1.XSETBL;
+import ks.common.KSWREC;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+import ta.common.TA5REC;
+import ta.common.TA5TSQIX;
+import ta.common.TAEREC;
+import vv.common.VBDRUL01;
+//*** PROGRAM=KS0C ****
+// This application will display the US Customs Binding
+// rulings based on user entered selection criteria. The user
+// must enter GPC code on the list screen and may also narrow
+// the list by season, year and status.  The list will always
+// default to 'A' ctive status.  The user may page forward
+// (PF8) and page backward (PF7) through the selected list.
+// 
+// By pressing PF13 without selecting any lines, the user will
+// be transferred to the Binding Ruling Add map.  PF13 will
+// only be visible and useable by those who have that authori-
+// zation.
+// 
+// By pressing PF14 and selecting any number of lines from the
+// current page, the user will be tranferred to the Binding
+// Ruling Maintenance map.  PF14 will only be visible and
+// useable to those who have that authorization.
+// 
+// The user may exit to any allowed application, via FAST PATH
+// or PF key, at any time.
+// 
+// -------  --------  ------  ---------------------------------
+// CONTROL    DATE     NAME   DESCRIPTION OF CHANGE
+// -------  --------  ------  ---------------------------------
+// NEW      12/03/91  SMACMI  New application.
+// 000      06/08/92  DHUFFM  Table changes - add
+//                            KS-RULE-XREF-NBR to VBDRUL01.
+// 000      06/29/92  CEPPLE  Add KS-RULE-XREF-NBR to maps
+//                            for ftwr pre-class changes.
+// c044     12/02/92  SMARIE  Table change - add multiple
+//                            XSE-SESN-CD(1-3)/YR-RNG(1-3)
+// 0000     09/14/93  JRICHA  Fixed it so multi rulings do not
+//                            trigger an update to occure.
+//                            modified ks0c-36000 process.
+// KS9999   09/21/93  KKYLE   MOD FOR 4.1 CONVERSION
+//          07/11/97  RCORLE  Mod for equipment
+//          08/05/97  RTANGI  Message table changes for 'BU'
+//          08/26/97  RTANGI  New messages for 'BU'
+// *********************
+Program KS0C type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "KS00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  KS0CW00 KS0CW00; // record
+  KS0CW01 KS0CW01; // record
+  KS0CW02 KS0CW02; // record
+  KSWREC KSWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  VBDRUL01 VBDRUL01; // record
+  XX0XW01 XX0XW01; // record
+  XX0XW02 XX0XW02; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XGPTBL {deleteAfterUse = yes}; // table
+  use XSETBL {deleteAfterUse = yes}; // table
+  use KS0CM.KS0CM001,  // forms
+      KS0CM.KS0CM002,
+      KS0CM.XX0XM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    XPKS-00001: XPKS-00001();
+    /* ------------------------------------------------------------*/
+    /* Initialize working storage and display storage areas.*/
+    /* ------------------------------------------------------------*/
+    ;
+    set KS0CM001 initial; /* M001 input/output*/
+    set KS0CM002 initial; /* M002 input/output*/
+    set KS0CW00 empty; /* Working storage*/
+    set KS0CW01 empty; /* M001 display storage*/
+    set SQLCA empty; /* SQL communication area*/
+    set TAEREC empty; /* Error diagnosis information*/
+    set TA1REC empty; /* Error diagnosis parameters*/
+    set TA5REC empty; /* Temporary storage parameters*/
+    set XX0XW01 empty; /* Date/time subroutine parameters*/
+    ;
+    KS0CW00.KS0CW-SWD = "1"; /* Map to be displayed switch*/
+    KS0CW00.KS0CW-SWF = "Y"; /* Format the map switch*/
+    KS0CW00.KS0CW-SWR = "N"; /* Request for data switch*/
+    KS0CM001.KS0CM-STAT = "A"; /* active status to start*/
+    KS0CM001.KS0CM-STAT-DESC = "ACTIVE"; /* 'ACTIVE' status*/
+    ;
+    /* ------------------------------------------------------------*/
+    /* If data was passed in the COMMAREA, use as the initial key.*/
+    /* ------------------------------------------------------------*/
+    ;
+    if (COMMAREA.CAITEM > " ") /* Data was passed*/
+      ;
+      COMMAREA.CAITEM = " "; /* Clear passed data*/
+      ;
+      KS0CW00.KS0CW-SWR = "Y"; /* Request for data switch*/
+      ;
+    end
+    ;
+    /* ------------------------------------------------------------*/
+    /* If coming back from KS0L, set flags and switches.*/
+    /* ------------------------------------------------------------*/
+    ;
+    if (COMMAREA.CAFROMAP == "KS0L") /* If coming from KS0L*/
+      ;
+      KS0CW00.KS0CW-SWR = "Y"; /* Request for data switch*/
+      KS0CW00.KS0CW-CTL-FLD = KSWREC.KSW-CTL-FLD;
+      KS0CM001.KS0CM-SESN-CD = KSWREC.XSECD;
+      KS0CW00.KS0CW-YEAR-DESC = KSWREC.XSNYR;
+      if (KS0CW00.KS0CW-YEAR-DESC > 0000
+       && KSWREC.XSECD > " ")
+        KS0CM001.KS0CM-SESN-YR = KS0CW00.KS0CW-YEAR-DESC-YY;
+      else
+        KS0CM001.KS0CM-SESN-YR = "  ";
+      end
+      KS0CM001.KS0CM-GPC-CD = KSWREC.XGPCD;
+      KS0CM001.KS0CM-STAT = KS0CW00.KS0CW-FNC;
+      KS0CW00.XXXTSPAG = KS0CW00.KS0CW-SAV-PAGE;
+      set KSWREC empty;
+      ;
+    end
+    ;
+    /* ------------------------------------------------------------*/
+    /* Flow to converse the main process used to display a map.*/
+    /* ------------------------------------------------------------*/
+    ;
+    goto KS0C-00000; /* Converse the main process*/
+    ;
+    ;
+    KS0C-00000: KS0C-00000();
+    /* ------------------------------------------------------------*/
+    /* Flow to converse the main process used to display a map.*/
+    /* ------------------------------------------------------------*/
+    ;
+    goto KS0C-00000; /* Converse the main process*/
+    ;
+    ;
+  end // end main
+end // end KS0C
+
+// Main process to display a map
+Function KS0C-00000()
+  /* ------------------------------------------------------------*/
+  /* This is the main process used to display a map.  Processing*/
+  /* always returns to the top of this process and falls through*/
+  /* subordinate processes until an error is found or a valid*/
+  /* request is processed.  Processing sequence is as follows:*/
+  /*  */
+  /* 1) If specified, display the first map.*/
+  /* 2) Otherwise, if specified, display the second map, depending*/
+  /* on function = add or change*/
+  /* 3) Otherwise, indicate error and exit to Application Menu.*/
+  /*  */
+  /* In all subordinate processes, "EZEFLO" is used to exit to*/
+  /* redisplay the map when an error is found.  This is done to*/
+  /* minimize the coding effort required to skip subsequent*/
+  /* processing under error conditions.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.KS0CW-SWD == "1") /* Map 1 was requested*/
+    ;
+    KS0C-10000(); /* Display map 1*/
+    ;
+  else
+    ;
+    if (KS0CW00.KS0CW-SWD == "2" /* Map 2 was requested*/
+     && KS0CW00.KS0CW-SFN == "A") /* and function = ADD*/
+      ;
+      KS0C-20000(); /* Display map 2*/
+      ;
+    else
+      ;
+      if (KS0CW00.KS0CW-SWD == "2" /* Map 2 was requested*/
+       && KS0CW00.KS0CW-SFN == "C" /* and function = CHANGE*/
+      )                           
+        KS0C-30000(); /* Display map 2*/
+        ;
+      else
+        ;
+      /* ------------------------------------------------------------*/
+      /* Write the error to the Error Diagnosis Reporting Facility.*/
+      /* ------------------------------------------------------------*/
+        ;
+        KSWREC.XXXPRCNM = "00000"; /* Module identification*/
+        KSWREC.XXXMSGNO = 10; /* Unexpected error occurred*/
+        ;
+        TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+        TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+        TA1REC.TA1LOC = "INVALID MAP NUMBER WAS REQUESTED";
+        TA1REC.TA1MAPNO = KS0CW00.KS0CW-SWD; /* Map number*/
+        TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+        TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+        ;
+        call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+        ;
+      /* ------------------------------------------------------------*/
+      /* Exit to display the application system menu.*/
+      /* ------------------------------------------------------------*/
+        ;
+        COMMAREA.CATOAP = "KS0A"; /* TO application*/
+        ;
+        XSKS-S0001(); /* Exit to another application*/
+        ;
+      /* ------------------------------------------------------------*/
+      /* Abnormally terminate the transaction if the exit failed.*/
+      /* ------------------------------------------------------------*/
+        ;
+        TA1REC.TA1FUNC = "ABND"; /* Termination function*/
+        ;
+        call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+        ;
+      end
+      ;
+    end
+    ;
+  end
+  ;
+  ;
+end // end KS0C-00000
+
+// List the rows in the table
+Function KS0C-10000()
+  /* ------------------------------------------------------------*/
+  /* This is the main process used to display a map.  Processing*/
+  /* always returns to the top of this process and falls through*/
+  /* subordinate processes until an error is found or a valid*/
+  /* request is processed.  Processing sequence is as follows:*/
+  /*  */
+  /* 1) Obtain the data to display.*/
+  /* 2) Format the map output area and display the map.*/
+  /* 3) Check the attention identifier used to respond.*/
+  /* 4) Reset highlighted fields to normal intensity.*/
+  /* 5) Verify the data that was entered.*/
+  /* 6) Process a valid input request.*/
+  /*  */
+  /* In all subordinate processes, "EZEFLO" is used to exit to*/
+  /* redisplay the map when an error is found.  This is done to*/
+  /* minimize the coding effort required to skip subsequent*/
+  /* processing under error conditions.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0C-11000(); /* Obtain the data to display*/
+  ;
+  KS0C-12000(); /* Format and display the map*/
+  ;
+  KS0C-13000(); /* Check attention identifier*/
+  ;
+  KS0C-14000(); /* Reset fields to normal intensity*/
+  ;
+  KS0C-15000(); /* Verify the entered data*/
+  ;
+  KS0C-16000(); /* Process valid input request*/
+  ;
+  ;
+end // end KS0C-10000
+
+// Obtain the data to display
+Function KS0C-11000()
+  /* ------------------------------------------------------------*/
+  /* If data was not requested or an error was found, return to*/
+  /* the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.KS0CW-SWR != "Y" /* Data was not requested*/
+   || converseVar.validationMsgNum != 0) /* or an error was found*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Establish the temporary storage queue page length.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.XXXTSLEN = 1236; /* temp storage page length*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If no message to display, reset the page number to display.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.XXXTSPAG == 0) /* no pages established*/
+    KS0CW00.XXXTSPAG = 1; /* Page number to display*/
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Purge any pages from temporary storage and save key fields.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0C-11100(); /* Purge any temporary storage*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* Select and open the cursor for the set to be formatted.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0C-11300(); /* Select set and open cursor*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* Fetch and format the data into pages until end of cursor.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.KS0CW-IXM = 1; /* Display line index*/
+  KS0CW00.KS0CW-SWC = "N"; /* End of cursor switch*/
+  ;
+  while (KS0CW00.KS0CW-SWC == "N") /* Until end of cursor*/
+    ;
+    KS0C-11400(); /* Fetch next row in the cursor*/
+    ;
+    /* ------------------------------------------------------------*/
+    /* If not end of cursor, save the data in display storage.*/
+    /* ------------------------------------------------------------*/
+    ;
+    if (KS0CW00.KS0CW-SWC == "N") /* Not end of cursor*/
+      KS0C-11500(); /* Save data in display storage*/
+    end
+    ;
+    /* ------------------------------------------------------------*/
+    /* If the page is full, add the page to the storage queue.*/
+    /* ------------------------------------------------------------*/
+    ;
+    if (KS0CW00.KS0CW-IXM > 12) /* Page is full*/
+      ;
+      KS0C-11600(); /* Add page to temporary storage*/
+      ;
+      KS0CW00.KS0CW-IXM = 1; /* Display line index*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Add any partially formatted last page to the queue.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.KS0CW-IXM > 1) /* Page was formatted*/
+    KS0C-11600(); /* Add page to temporary storage*/
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Close the cursor for the selected set.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0C-11700(); /* Close the selected set cursor*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If no pages were formatted, indicate no data to display.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.TA5TSQIX == 0) /* No pages formatted*/
+    ;
+    KSWREC.XXXPRCNM = "11000"; /* Module identification*/
+    KSWREC.XXXMSGNO = 18; /* No data was found to display*/
+    set KS0CM001.KS0CM-GPC-CD cursor; /* cursor*/
+    KS0CM001.KS0CMSEL[1] = " "; /* reset select field*/
+    set KS0CM001.KS0CMSEL[1] skip;
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Indicate that the request for data is complete.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.KS0CW-SWR = "N"; /* Request for data switch*/
+  ;
+  ;
+end // end KS0C-11000
+
+// Purge any temporary storage
+Function KS0C-11100()
+  /* ------------------------------------------------------------*/
+  /* Initialize the storage areas and indicators to be used.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set KS0CW01 empty; /* M001 display storage*/
+  ;
+  KS0CW00.KS0CW-SWU = "N"; /* Storage update switch*/
+  ;
+  TA5REC.TA5TSQIX = 0; /* Current page number*/
+  KS0CW00.TA5TSQIX = 0; /* Highest page number*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* Purge any temporary storage for this application.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+  TA5REC.TA5FNCCD = "P"; /* Function code*/
+  ;
+  try
+    call "TA0050" (KS0CW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, return to previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+  ;
+  KSWREC.XXXPRCNM = "11100"; /* Module identification*/
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  ;
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "PURGE ANY TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-11100
+
+// Select set and open cursor
+Function KS0C-11300()
+  /* ------------------------------------------------------------*/
+  /* Select the requested set of rows from the table.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set VBDRUL01 empty; /* Clear row storage area*/
+  ;
+  /* Use values entered on map to select the data*/
+  ;
+  VBDRUL01.XGPCD = KS0CM001.KS0CM-GPC-CD;
+  ;
+  if (KS0CM001.KS0CM-SESN-CD == " ") /* season code is spaces*/
+    VBDRUL01.XSE-SESN-CD[1] = "*"; /* move asterisk*/
+  else
+    VBDRUL01.XSE-SESN-CD[1] = KS0CM001.KS0CM-SESN-CD;
+  end
+  ;
+  if (KS0CM001.KS0CM-SESN-YR == " ") /* season year is spaces*/
+    VBDRUL01.XSN-SESN-YR-RNG[1] = -1; /* move -1*/
+  else
+  /* CONVERT YEAR TO YEAR WITH CENTURY /**/
+    if (KS0CM001.KS0CM-SESN-YR > "50") /* BDRUL01.XSNYR;*/
+      KS0CW00.KS0CW-BIN-YEAR-CC = +19;
+    else
+      KS0CW00.KS0CW-BIN-YEAR-CC = +20;
+    end
+    ;
+    KS0CW00.KS0CW-BIN-YEAR-YY = KS0CM001.KS0CM-SESN-YR;
+    VBDRUL01.XSN-SESN-YR-RNG[1] = KS0CW00.KS0CW-BIN-YEAR;
+    ;
+  end
+  ;
+  if (KS0CM001.KS0CM-STAT == " ") /* status is spaces*/
+    VBDRUL01.XXXSTAT = "*"; /* move asterisk*/
+  else
+    VBDRUL01.XXXSTAT = KS0CM001.KS0CM-STAT;
+  end
+  ;
+  try
+    call "IO6070" ("S1", SQLCA, VBDRUL01) {isNoRefresh = yes, isExternal = yes};
+  end /* Select table set*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, initialize the line index and cursor switch.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If data not available, return an error message to the user.*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  KSWREC.XXXPRCNM = "11300"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    ;
+  else
+    ;
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    ;
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+    ;
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT SET OF TABLE ROWS";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1DBASE = "DCUSTM  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VBDRUL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VBDRUL01.VBDRUL01-KEY; /* Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-11300
+
+// Fetch next row in the cursor
+Function KS0C-11400()
+  /* ------------------------------------------------------------*/
+  /* Fetch the next row to display from the table.*/
+  /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO6070" ("N1", SQLCA, VBDRUL01) {isNoRefresh = yes, isExternal = yes};
+  end /* Fetch next row*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If the call was successful, return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+    ;
+    /* ------------------------------------------------------------*/
+    /* If end of the selected set, indicate end of cursor.*/
+    /* ------------------------------------------------------------*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 100) /* End of selected set*/
+      ;
+      KS0CW00.KS0CW-SWC = "Y"; /* Indicate end of cursor*/
+      ;
+      return; /* Return to previous process*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If data not available, return an error message to the user.*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  KSWREC.XXXPRCNM = "11400"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    ;
+  else
+    ;
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    ;
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+    ;
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH NEXT TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1DBASE = "DCUSTM  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VBDRUL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VBDRUL01.VBDRUL01-KEY; /* Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-11400
+
+// Save data in display storage
+Function KS0C-11500()
+  /* ------------------------------------------------------------*/
+  /* If multiple SESN/YRs, check for room on the page*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM001.KS0CM-SESN-CD == " " /* If displaying multiple SESN/YRs*/
+   || KS0CM001.KS0CM-SESN-YR == " ")
+    if (VBDRUL01.XSE-SESN-CD[3] > " " /* If there are 3 SESN cds*/
+     && KS0CW00.KS0CW-IXM > 10)       /* and index GT 10*/
+      KS0C-11600(); /* Save Page*/
+      KS0CW00.KS0CW-IXM = 1; /* reset index*/
+    else
+      if (VBDRUL01.XSE-SESN-CD[2] > " " /* If there are 2 SESN cds*/
+       && KS0CW00.KS0CW-IXM > 11)       /* and index GT 11*/
+        KS0C-11600(); /* Save Page*/
+        KS0CW00.KS0CW-IXM = 1; /* reset index*/
+      end
+    end
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Save the data from the table row in display storage.*/
+  /* Also, if returning from the add screen and a new ruling was*/
+  /* added, find the temp storage page that ruling on and save it.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW01.KS0CW-GROUP[KS0CW-IXM] = VBDRUL01.VBDRUL01-GROUP;
+  KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1; /* Increment line index*/
+  ;
+  if (KS0CM001.KS0CM-SESN-CD == " " /* If displaying multiple SESN/YRs*/
+   && KS0CM001.KS0CM-SESN-YR == " ")
+    KS0C-11510(); /* Display all possible rows*/
+  else
+    if (KS0CM001.KS0CM-SESN-CD != " " /* If displaying multiple YRs*/
+     && KS0CM001.KS0CM-SESN-YR == " ")
+      KS0C-11520(); /* Display all matching SESNs*/
+    else
+      if (KS0CM001.KS0CM-SESN-CD == " " /* If displaying multiple YRs*/
+       && KS0CM001.KS0CM-SESN-YR != " ")
+        KS0C-11530(); /* Display all matching YRs*/
+      end
+    end
+  end
+  ;
+  if (KS0CW00.KS0CW-LAST-RULE-NBR != " ") /* and a rule was added/chgd*/
+    ;
+    if (KS0CW00.KS0CW-LAST-RULE-NBR == VBDRUL01.KS-RULE-NBR) /* save page*/
+      KS0CW00.KS0CW-SAVE-PAGE = KS0CW00.TA5TSQIX + 1; /* for that*/
+    end /* ruling*/
+  end
+  ;
+end // end KS0C-11500
+
+// Save all sesn/yr combinations
+Function KS0C-11510()
+  /* ------------------------------------------------------------*/
+  /* Save the data from the table row in display storage - one*/
+  /* line for each sesn/yr combination.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (VBDRUL01.XSE-SESN-CD[2] > " ") /* If there are 2 SESN cds*/
+    KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM] = VBDRUL01.XSE-SESN-CD[2];
+    KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] = VBDRUL01.XSN-SESN-YR-RNG[2];
+    KS0CW01.KS0CW-DTL-GPC-CD[KS0CW-IXM] = VBDRUL01.XGPCD;
+    KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1; /* Increment index*/
+  end
+  if (VBDRUL01.XSE-SESN-CD[3] > " ") /* If there are 3 SESN cds*/
+    KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM] = VBDRUL01.XSE-SESN-CD[3];
+    KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] = VBDRUL01.XSN-SESN-YR-RNG[3];
+    KS0CW01.KS0CW-DTL-GPC-CD[KS0CW-IXM] = VBDRUL01.XGPCD;
+    KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1; /* Increment index*/
+  end
+  ;
+end // end KS0C-11510
+
+// Match SESN only save data
+Function KS0C-11520()
+  /* ------------------------------------------------------------*/
+  /* Save the data from the table row in display storage - where*/
+  /* the SESNs match irreguardless of the YR.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (VBDRUL01.XSE-SESN-CD[1] == KS0CM001.KS0CM-SESN-CD)
+    KS0CW00.KS0CW-SESN-YR-MATCH = 1;
+  else
+    KS0CW00.KS0CW-SESN-YR-MATCH = 0;
+  end
+  ;
+  if (VBDRUL01.XSE-SESN-CD[2] == KS0CM001.KS0CM-SESN-CD)
+    KS0CW00.KS0CW-SESN-YR-MATCH = KS0CW00.KS0CW-SESN-YR-MATCH + 1;
+    if (KS0CW00.KS0CW-SESN-YR-MATCH > 1)
+      KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM] = VBDRUL01.XSE-SESN-CD[2];
+      KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] = VBDRUL01.XSN-SESN-YR-RNG[2];
+      KS0CW01.KS0CW-DTL-GPC-CD[KS0CW-IXM] = VBDRUL01.XGPCD;
+      KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1; /* Increment index*/
+    end
+  end
+  ;
+  if (VBDRUL01.XSE-SESN-CD[3] == KS0CM001.KS0CM-SESN-CD)
+    KS0CW00.KS0CW-SESN-YR-MATCH = KS0CW00.KS0CW-SESN-YR-MATCH + 1;
+    if (KS0CW00.KS0CW-SESN-YR-MATCH > 1)
+      KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM] = VBDRUL01.XSE-SESN-CD[3];
+      KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] = VBDRUL01.XSN-SESN-YR-RNG[3];
+      KS0CW01.KS0CW-DTL-GPC-CD[KS0CW-IXM] = VBDRUL01.XGPCD;
+      KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1; /* Increment index*/
+    end
+  end
+  ;
+  ;
+end // end KS0C-11520
+
+// Match SESN only save data
+Function KS0C-11530()
+  /* ------------------------------------------------------------*/
+  /* Save the data from the table row in display storage - where*/
+  /* the YRs match irreguardless of the SESN.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.KS0CW-BIN-YEAR = VBDRUL01.XSN-SESN-YR-RNG[1];
+  if (VBDRUL01.XSN-SESN-YR-RNG[1] != 0000
+   && KS0CW00.KS0CW-BIN-YEAR-YY == KS0CM001.KS0CM-SESN-YR)
+    KS0CW00.KS0CW-SESN-YR-MATCH = 1;
+  else
+    KS0CW00.KS0CW-SESN-YR-MATCH = 0;
+  end
+  ;
+  KS0CW00.KS0CW-BIN-YEAR = VBDRUL01.XSN-SESN-YR-RNG[2];
+  if (VBDRUL01.XSN-SESN-YR-RNG[2] != 0000
+   && KS0CW00.KS0CW-BIN-YEAR-YY == KS0CM001.KS0CM-SESN-YR)
+    KS0CW00.KS0CW-SESN-YR-MATCH = KS0CW00.KS0CW-SESN-YR-MATCH + 1;
+    if (KS0CW00.KS0CW-SESN-YR-MATCH > 1)
+      KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM] = VBDRUL01.XSE-SESN-CD[2];
+      KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] = VBDRUL01.XSN-SESN-YR-RNG[2];
+      KS0CW01.KS0CW-DTL-GPC-CD[KS0CW-IXM] = VBDRUL01.XGPCD;
+      KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1; /* Increment index*/
+    end
+  end
+  ;
+  KS0CW00.KS0CW-BIN-YEAR = VBDRUL01.XSN-SESN-YR-RNG[3];
+  if (VBDRUL01.XSN-SESN-YR-RNG[3] != 0000
+   && KS0CW00.KS0CW-BIN-YEAR-YY == KS0CM001.KS0CM-SESN-YR)
+    KS0CW00.KS0CW-SESN-YR-MATCH = KS0CW00.KS0CW-SESN-YR-MATCH + 1;
+    if (KS0CW00.KS0CW-SESN-YR-MATCH > 1)
+      KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM] = VBDRUL01.XSE-SESN-CD[3];
+      KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] = VBDRUL01.XSN-SESN-YR-RNG[3];
+      KS0CW01.KS0CW-DTL-GPC-CD[KS0CW-IXM] = VBDRUL01.XGPCD;
+      KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1; /* Increment index*/
+    end
+  end
+  ;
+  ;
+end // end KS0C-11530
+
+// Add page to temporary storage
+Function KS0C-11600()
+  /* ------------------------------------------------------------*/
+  /* Add the next page to temporary storage.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW01.XXXTSLEN = KS0CW00.XXXTSLEN; /* Temporary storage length*/
+  ;
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+  TA5REC.TA5FNCCD = "A"; /* Function code*/
+  ;
+  try
+    call "TA0050" (KS0CW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, initialize the storage area and indicators*/
+  /* to be used.  Return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+    ;
+    set KS0CW01 empty; /* M001 display storage*/
+    ;
+    KS0CW00.TA5TSQIX = TA5REC.TA5TSQIX; /* Highest page number*/
+    TA5REC.TA5TSQIX = 0; /* Current page number*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+  ;
+  KSWREC.XXXPRCNM = "11600"; /* Module identification*/
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  ;
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "ADD PAGE TO TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-11600
+
+// Close selected set cursor
+Function KS0C-11700()
+  /* ------------------------------------------------------------*/
+  /* Close the selected set of table rows.*/
+  /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO6070" ("C1", SQLCA, VBDRUL01) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  KSWREC.XXXPRCNM = "11700"; /* Module identification*/
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  ;
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE SELECTED SET OF TABLE ROWS";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1DBASE = "DCUSTM  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VBDRUL01"; /* Table view name*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-11700
+
+// Format and converse the map
+Function KS0C-12000()
+  /* ------------------------------------------------------------*/
+  /* If an error was found, save the error message number.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    KSWREC.XXXMSGNO = converseVar.validationMsgNum; /* Message number*/
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If obtain data failed or no error, format data to display.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.KS0CW-SWR == "Y" /* Obtain data failed*/
+   || converseVar.validationMsgNum == 0) /* or no error found*/
+    ;
+    if (KS0CW00.KS0CW-SWF == "Y") /* Map must be formatted*/
+  /* Save header info in working storage*/
+      KS0CW00.KS0CW-GPC-CD = KS0CM001.KS0CM-GPC-CD; /* save gpc*/
+      KS0CW00.KS0CW-SESN-YR = KS0CM001.KS0CM-SESN-YR; /* save yr*/
+      KS0CW00.KS0CW-SESN-CD = KS0CM001.KS0CM-SESN-CD; /* season*/
+      KS0CW00.KS0CW-STAT = KS0CM001.KS0CM-STAT; /* save status*/
+      KS0C-12100(); /* Format the data on the map*/
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Format the current date and any FAST PATH information.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CM001.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+  ;
+  KS0CM001.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  KS0CM001.CAITEM = COMMAREA.CAITEM; /* Application data*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* Set attributes for add and change depending on authority*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (COMMAREA.CAADDFL == "Y") /* adds allowed*/
+    set KS0CM001.KS0CM-PF13 skip; /* display option on map*/
+  end
+  ;
+  if (COMMAREA.CACHGFL == "Y") /* changes allowed*/
+    set KS0CM001.KS0CM-PF14 skip; /* display option on map*/
+    set KS0CM001.KS0CM-PF19 skip; /* display option on map*/
+  end
+  ;
+  if (COMMAREA.CAINQFL == "Y") /* changes allowed*/
+    set KS0CM001.KS0CM-PF16 skip; /* display option on map*/
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If a message to display, indicate sound audible alarm.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KSWREC.XXXMSGNO != 0 /* Message to display*/
+   || COMMAREA.CAMSG != " ") /* or message text*/
+    ;
+    if (KSWREC.XXXMSGNO != 0) /* Message to display*/
+      ;
+      if (KSWREC.XXXMSGNO == 9999)
+        converseLib.validationFailed();
+      else
+        converseLib.validationFailed(KSWREC.XXXMSGNO);
+      end /* Message number*/
+    else
+      KS0CM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* Message text*/
+      ;
+    end
+    ;
+    KS0CM001.XXXPRCNM = KSWREC.XXXPRCNM; /* Module identification*/
+    ;
+    set KS0CM001 alarm; /* Indicate sound alarm*/
+    ;
+  end
+  ;
+  converse KS0CM001 ;
+  ;
+  /* ------------------------------------------------------------*/
+  /* Clear the message fields and save FAST PATH information.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KSWREC.XXXPRCNM = " "; /* Module identification*/
+  KSWREC.XXXMSGNO = 0; /* Message number*/
+  COMMAREA.CAMSG = " "; /* Message text*/
+  KS0CW00.KS0CW-SFN = " "; /* reset function switch*/
+   /* reset saved page*/
+  KS0CW00.KS0CW-SAVE-PAGE = 0;
+  COMMAREA.CATOAP = KS0CM001.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = KS0CM001.CAITEM; /* Application data*/
+end // end KS0C-12000
+
+// Format the display data
+Function KS0C-12100()
+  /* ------------------------------------------------------------*/
+  /* Clear the fields in the map storage area to be formatted.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set KS0CM001 initial; /* M001 input/output area*/
+  ;
+  KS0CW00.KS0CW-SWF = "N"; /* Format the map switch*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If a ruling was added, get the page from temp storage that the*/
+  /* ruling's on and display it.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.KS0CW-SAVE-PAGE != 0) /* if page saved off*/
+    ;
+    KS0CW00.XXXTSPAG = KS0CW-SAVE-PAGE; /* use saved page*/
+    ;
+    KS0C-12110(); /* Obtain temporary storage page*/
+    ;
+    /* ------------------------------------------------------------*/
+    /* Display the page information on the screen.*/
+    /* ------------------------------------------------------------*/
+    ;
+    set KS0CM001.XXXLITPG skip; /* "PAGE" literal*/
+    KS0CM001.XXXTSPAG = KS0CW00.XXXTSPAG; /* Current page*/
+    set KS0CM001.XXXLITOF skip; /* "OF" literal*/
+    KS0CM001.TA5TSQIX = KS0CW00.TA5TSQIX; /* Highest page*/
+    ;
+  /* ------------------------------------------------------------*/
+  /* If the page in storage is not the page to be displayed,*/
+  /* obtain the desired page from temporary storage.*/
+  /* ------------------------------------------------------------*/
+    ;
+  else
+    if (KS0CW00.TA5TSQIX > 0) /* Pages were formatted*/
+      ;
+      if (KS0CW00.XXXTSPAG != TA5REC.TA5TSQIX) /* Desired page not current*/
+        ;
+        /* ------------------------------------------------------------*/
+        /* If the current page has been changed, update the page in*/
+        /* storage before obtaining the next one to display.*/
+        /* ------------------------------------------------------------*/
+        ;
+        if (KS0CW00.KS0CW-SWU == "Y") /* Current page was changed*/
+          ;
+          KS0C-12120(); /* Update temporary storage page*/
+          ;
+          KS0CW00.KS0CW-SWU = "N"; /* Storage update switch*/
+          ;
+        end
+        ;
+        /* ------------------------------------------------------------*/
+        /* If the desired page number is greater than the highest page*/
+        /* in storage, default to the highest page number.*/
+        /* ------------------------------------------------------------*/
+        ;
+        if (KS0CW00.XXXTSPAG > KS0CW00.TA5TSQIX) /* Desired greater highest*/
+          KS0CW00.XXXTSPAG = KS0CW00.TA5TSQIX; /* Default to highest*/
+        end
+        ;
+        KS0C-12110(); /* Obtain temporary storage page*/
+        ;
+      end
+      ;
+      /* ------------------------------------------------------------*/
+      /* Display the page information on the screen.*/
+      /* ------------------------------------------------------------*/
+      ;
+      set KS0CM001.XXXLITPG skip; /* "PAGE" literal*/
+      KS0CM001.XXXTSPAG = KS0CW00.XXXTSPAG; /* Current page*/
+      set KS0CM001.XXXLITOF skip; /* "OF" literal*/
+      KS0CM001.TA5TSQIX = KS0CW00.TA5TSQIX; /* Highest page*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Format the data in the map from the display storage.*/
+  /* ------------------------------------------------------------*/
+                /* GPC and GPC description in the header*/
+  KS0CM001.KS0CM-GPC-CD = KS0CW00.KS0CW-GPC-CD;
+  if (KS0CW00.KS0CW-GPC-CD == "EQ")
+    KS0CM001.KS0CM-GPC-DESC = "EQUIPMENT";
+  else
+   /* get description*/
+    if (KS0CW00.KS0CW-GPC-CD in XGPTBL.XGPCD)
+      KS0CM001.KS0CM-GPC-DESC = XGPTBL.XGPDESC[sysVar.arrayIndex];
+    end
+  end
+  ;
+                /* Season code and description in the header*/
+  KS0CM001.KS0CM-SESN-CD = KS0CW00.KS0CW-SESN-CD; /* header gpc*/
+   /**/
+  if (KS0CW00.KS0CW-SESN-CD in XSETBL.XSECD)
+    KS0CM001.KS0CM-SESN-DESC = XSETBL.XSEDESC[sysVar.arrayIndex];
+  end
+  ;
+                /* Season year and description in the header*/
+  if (KS0CW00.KS0CW-SESN-YR == " ") /* year is spaces -*/
+    set KS0CM001.KS0CM-SESN-YR normal; /* skip it*/
+  else
+    KS0CM001.KS0CM-SESN-YR = KS0CW00.KS0CW-SESN-YR; /**/
+    KS0CW00.KS0CW-YEAR-DESC-YY = KS0CW00.KS0CW-SESN-YR;
+    ;
+    if (KS0CW00.KS0CW-SESN-YR > "50") /* move 19 to century*/
+      KS0CW00.KS0CW-YEAR-DESC-CC = 19; /* if > 50*/
+    else /* otherwise*/
+      KS0CW00.KS0CW-YEAR-DESC-CC = 20; /* move 20*/
+    end
+    ;
+    KS0CM001.KS0CM-SESN-YR-DESC = KS0CW00.KS0CW-YEAR-DESC;
+    ;
+  end
+  ;
+  KS0CM001.KS0CM-STAT = KS0CW00.KS0CW-STAT; /* move status*/
+  ;
+  if (KS0CW00.KS0CW-STAT == "A") /* status is ACTIVE*/
+    KS0CM001.KS0CM-STAT-DESC = "ACTIVE"; /* show ACTIVE*/
+  else
+    if (KS0CW00.KS0CW-STAT == "I") /* status is INACTIVE*/
+      KS0CM001.KS0CM-STAT-DESC = "INACTIVE"; /* show INACTIVE*/
+    else
+      KS0CM001.KS0CM-STAT-DESC = "ALL"; /* show ALL*/
+    end
+  end
+  ;
+  if (KS0CW00.KS0CW-SAV > 0) /* If save index gt zero*/
+    KS0CW00.KS0CW-IX1 = KS0CW00.KS0CW-SAV;
+    KS0CW00.KS0CW-SAV = 0;
+    if (KS0CW01.KS0CW-DTL-RULE-NBR > " ")
+      set KS0CM001.KS0CMSEL[KS0CW-IX1] cursor;
+    else
+      if (KS0CW00.KS0CW-LAST-RULE-NBR == " " /* no rule selected*/
+       && KS0CW01.KS0CW-DTL-GPC-CD[1] > " ") /* data to display*/
+        set KS0CM001.KS0CMSEL[1] cursor, normal; /* Position cursor top*/
+      end
+    end
+  else
+    if (KS0CW00.KS0CW-LAST-RULE-NBR == " " /* no rule selected*/
+     && KS0CW01.KS0CW-DTL-GPC-CD[1] > " ") /* data to display*/
+      set KS0CM001.KS0CMSEL[1] cursor, normal; /* Position cursor top*/
+    end
+  end
+  ;
+  KS0CW00.KS0CW-IXM = 1; /* Initialize map index*/
+  while (KS0CW00.KS0CW-IXM <= 12 /* Until screen is full or*/
+   && KS0CW01.KS0CW-DTL-GPC-CD[KS0CW-IXM] > " ") /* or end of data*/
+    ;
+    if (KS0CW00.KS0CW-LAST-RULE-NBR == " " /* no rule selected*/
+     && KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM] > " ") /* and rule exists*/
+      set KS0CM001.KS0CMSEL[KS0CW-IXM] normal; /**/
+      ;
+    else
+      ;
+      if (KS0CW00.KS0CW-LAST-RULE-NBR ==    /* if last rule updated is on*/
+      KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM] /* the screen*/
+       && KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM] > " ") /* and rule exists*/
+        set KS0CM001.KS0CMSEL[KS0CW-IXM] cursor, normal; /* put cursor there*/
+        KS0CW00.KS0CW-LAST-RULE-NBR = " "; /* clear working store*/
+        KS0CW00.KS0CW-LAST-RULE-DT = 0;
+      else
+        if (KS0CW00.KS0CW-LAST-RULE-DT <     /* if last rule updated is*/
+        KS0CW01.KS0CW-DTL-RULE-DT[KS0CW-IXM] /* < current rule dt*/
+         && KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM] > " ")
+                                   /* and rule exists*/
+          set KS0CM001.KS0CMSEL[KS0CW-IXM] cursor, normal; /* put cursor*/
+        else /* there*/
+          if (KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM] > " ")
+                                   /* if  rule exists*/
+            set KS0CM001.KS0CMSEL[KS0CW-IXM] normal;
+          end
+        end
+      end
+    end
+    ;
+    if (KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM] > " ")
+   /* /* gpc code*/
+      KS0CM001.KS0CM-DTL-GPC-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-GPC-CD[KS0CW-IXM];
+    end
+    ;
+    if (KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM] > " ")
+   /* ruling date*/
+      KS0CW00.KS0CW-FULLDATE = KS0CW01.KS0CW-DTL-RULE-DT[KS0CW-IXM];
+      KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY;
+      KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM;
+      KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD;
+   /**/
+      KS0CM001.KS0CM-DTL-RULE-DT[KS0CW-IXM] = KS0CW00.KS0CW-FORMDATE;
+    end
+    ;
+   /* ruling number*/
+    KS0CM001.KS0CM-DTL-RULE-NBR[KS0CW-IXM] = KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM];
+    ;
+   /* ruling xref cd*/
+    KS0CM001.KS0CM-DTL-RULE-XREF-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-RULE-XREF-CD[KS0CW-IXM];
+    ;
+    if (KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM] > " ")
+   /* receipt date*/
+      KS0CW00.KS0CW-FULLDATE = KS0CW01.KS0CW-DTL-RULE-RCPT-DT[KS0CW-IXM];
+      KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY;
+      KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM;
+      KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD;
+   /**/
+      KS0CM001.KS0CM-DTL-RULE-RCPT-DT[KS0CW-IXM] = KS0CW00.KS0CW-FORMDATE;
+    end
+    ;
+    if (KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM] > " ")
+      if (KS0CM001.KS0CM-SESN-CD == " "
+       && KS0CM001.KS0CM-SESN-YR == " ")
+   /* season code*/
+        KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM];
+        ;
+        if (KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] > 0000) /* If exists*/
+   /* season year*/
+          KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM];
+   /**/
+          KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+        end
+      else
+        if (KS0CM001.KS0CM-SESN-CD != " " /* Match on SESN and YR*/
+         && KS0CM001.KS0CM-SESN-YR != " ")
+          KS0C-12130();
+        else
+          if (KS0CM001.KS0CM-SESN-CD != " " /* Match on SESN only*/
+           && KS0CM001.KS0CM-SESN-YR == " ")
+            KS0C-12140();
+          else
+            if (KS0CM001.KS0CM-SESN-CD == " " /* Match on YR only*/
+             && KS0CM001.KS0CM-SESN-YR != " ")
+              KS0C-12150();
+            end
+          end
+        end
+      end
+    else
+   /* season code*/
+      KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM];
+      ;
+      if (KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] > 0000) /* If exists*/
+   /* season year*/
+        KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM];
+   /**/
+        KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+      end
+    end
+    ;
+   /* comments*/
+    KS0CM001.KS0CM-DTL-RULE-COMNT[KS0CW-IXM] = KS0CW01.KS0CW-DTL-RULE-COMNT[KS0CW-IXM];
+    ;
+    KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1;
+                                   /* Increment map index*/
+    ;
+  end
+  ;
+  KS0CW00.KS0CW-LAST-RULE-NBR = " "; /* clear working storage*/
+  KS0CW00.KS0CW-LAST-RULE-DT = 0;
+  ;
+  ;
+end // end KS0C-12100
+
+// Read temporary storage page
+Function KS0C-12110()
+  /* ------------------------------------------------------------*/
+  /* Obtain the next page of data to display.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW01.XXXTSLEN = KS0CW00.XXXTSLEN; /* Temporary storage length*/
+  ;
+  TA5REC.TA5APPID = COMMAREA.CACURRAP; /* Application identification*/
+  TA5REC.TA5TSQIX = KS0CW00.XXXTSPAG; /* Page number*/
+  TA5REC.TA5FNCCD = "R"; /* Function code*/
+  ;
+  try
+    call "TA0050" (KS0CW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+  ;
+  KSWREC.XXXPRCNM = "12100"; /* Module identification*/
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  ;
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "READ PAGE FROM TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-12110
+
+// Update temporary storage page
+Function KS0C-12120()
+  /* ------------------------------------------------------------*/
+  /* Update the page in temporary storage.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TA5REC.TA5FNCCD = "U"; /* Function code*/
+  ;
+  try
+    call "TA0050" (KS0CW01, TA5REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Temporary storage*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && TA5REC.TA5RTNCD == 0)          /* and normal return code*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TAEREC.TAEDESC1 = sysVar.errorCode; /* CSP return code*/
+  TAEREC.TAEDESC2 = TA5REC.TA5DATA; /* Subroutine parameters*/
+  ;
+  KSWREC.XXXPRCNM = "12120"; /* Module identification*/
+  converseLib.validationFailed(10); /* Unexpected error occurred*/
+  ;
+  TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+  TA1REC.TA1TYPE = "APPL"; /* Type of error*/
+  TA1REC.TA1LOC = "UPDATE PAGE IN TEMPORARY STORAGE";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1MAPAP = COMMAREA.CACURRAP; /* Map application*/
+  TA1REC.TA1MAPNO = "M001"; /* Map number*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-12120
+
+// Format for single SESN/YR
+Function KS0C-12130()
+  /* -------------------------------------------------------------------*/
+  /* Format SESN/YR Detail display for specific SESN/YR match.*/
+  /* -------------------------------------------------------------------*/
+  ;
+   /* season year*/
+  KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXM];
+  ;
+  if (KS0CW01.KS0CW-DTL-SESN-CD3[KS0CW-IXM] == KS0CM001.KS0CM-SESN-CD
+   && KS0CW00.KS0CW-BIN-YEAR-YY == KS0CM001.KS0CM-SESN-YR)
+    ;
+   /* season code*/
+    KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD3[KS0CW-IXM];
+    ;
+    if (KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXM] > 0000) /* If exists*/
+      ;
+   /* season year*/
+      KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXM];
+   /**/
+      KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+    end
+  else
+    ;
+   /* season year*/
+    KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXM];
+    ;
+    if (KS0CW01.KS0CW-DTL-SESN-CD2[KS0CW-IXM] == KS0CM001.KS0CM-SESN-CD
+     && KS0CW00.KS0CW-BIN-YEAR-YY == KS0CM001.KS0CM-SESN-YR)
+      ;
+   /* season code*/
+      KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD2[KS0CW-IXM];
+      ;
+      if (KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXM] > 0000) /* If exists*/
+        ;
+   /* season year*/
+        KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXM];
+   /**/
+        KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+      end
+    else
+      ;
+   /* season code*/
+      KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM];
+      ;
+      if (KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] > 0000) /* If exists*/
+        ;
+   /* season year*/
+        KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM];
+   /**/
+        KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+      end
+    end
+  end
+  ;
+  ;
+end // end KS0C-12130
+
+// Format for SESN match only
+Function KS0C-12140()
+  /* -------------------------------------------------------------------*/
+  /* Format SESN/YR Detail display for specific SESN match.*/
+  /* -------------------------------------------------------------------*/
+  ;
+  if (KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM] == KS0CM001.KS0CM-SESN-CD)
+    ;
+   /* season code*/
+    KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM];
+    ;
+    if (KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] > 0000) /* If exists*/
+      ;
+   /* season year*/
+      KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM];
+   /**/
+      KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+    end
+  else
+    ;
+    if (KS0CW01.KS0CW-DTL-SESN-CD2[KS0CW-IXM] == KS0CM001.KS0CM-SESN-CD)
+      ;
+   /* season code*/
+      KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD2[KS0CW-IXM];
+      ;
+      if (KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXM] > 0000) /* If exists*/
+        ;
+   /* season year*/
+        KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXM];
+   /**/
+        KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+      end
+    else
+      ;
+   /* season code*/
+      KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD3[KS0CW-IXM];
+      ;
+      if (KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXM] > 0000) /* If exists*/
+        ;
+   /* season year*/
+        KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXM];
+   /**/
+        KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+      end
+    end
+  end
+  ;
+  ;
+end // end KS0C-12140
+
+// Format for YR match only
+Function KS0C-12150()
+  /* -------------------------------------------------------------------*/
+  /* Format SESN/YR Detail display for specific YR match.*/
+  /* -------------------------------------------------------------------*/
+  ;
+   /* season year*/
+  KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM];
+  ;
+  if (KS0CW00.KS0CW-BIN-YEAR-YY == KS0CM001.KS0CM-SESN-YR)
+    ;
+   /* season code*/
+    KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM];
+    ;
+    if (KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] > 0000) /* If exists*/
+      ;
+   /* season year*/
+      KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM];
+   /**/
+      KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+    end
+  else
+    ;
+   /* season year*/
+    KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXM];
+    ;
+    if (KS0CW00.KS0CW-BIN-YEAR-YY == KS0CM001.KS0CM-SESN-YR)
+      ;
+   /* season code*/
+      KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD2[KS0CW-IXM];
+      ;
+      if (KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXM] > 0000) /* If exists*/
+        ;
+   /* season year*/
+        KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXM];
+   /**/
+        KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+      end
+    else
+      ;
+   /* season code*/
+      KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = KS0CW01.KS0CW-DTL-SESN-CD3[KS0CW-IXM];
+      ;
+      if (KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXM] > 0000) /* If exists*/
+        ;
+   /* season year*/
+        KS0CW00.KS0CW-BIN-YEAR = KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXM];
+   /**/
+        KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = KS0CW00.KS0CW-BIN-YEAR;
+      end
+    end
+  end
+  ;
+  ;
+end // end KS0C-12150
+
+// Check attention identifier
+Function KS0C-13000()
+  /* -------------------------------------------------------------*/
+  /* If CANCEL was requested, clear the map fields and exit.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+    ;
+    if (KS0CW00.KS0CW-SWR == "Y") /* Request for data*/
+      set KS0CW01 empty; /* M001 display storage*/
+    end
+    ;
+    KS0CW00.KS0CW-SWF = "Y"; /* Format the map switch*/
+    KS0CW00.KS0CW-SWR = "N"; /* Request for data switch*/
+    ;
+    COMMAREA.CATOAP = " "; /* TO application*/
+    COMMAREA.CAITEM = " "; /* Application data*/
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If FAST PATH was requested, transfer to the application.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM001.CATOAP > " ") /* FAST PATH was requested*/
+    ;
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+      ;
+      KS0C-11100(); /* Purge temporary storage*/
+      ;
+      XSKS-S0001(); /* Exit to another application*/
+      ;
+      set KS0CM001.CATOAP cursor, bold; /* Highlight*/
+      ;
+    else
+      ;
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(5); /* PA/PF key may not be used*/
+      ;
+    end
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* If HELP, exit to the previous level or exit to the Master*/
+   /* Menu was requested, exit to another application.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pf1 /* PF1 was pressed*/
+   || converseVar.eventKey is pf3 /* or PF3 was pressed*/
+   || converseVar.eventKey is pf4) /* or PF4 was pressed*/
+    ;
+    if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+      COMMAREA.CAITEM = "KS0CM001"; /* Application find code*/
+    end
+    ;
+    if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+      COMMAREA.CATOAP = "KS0A"; /* TO application*/
+    end
+    ;
+    KS0C-11100(); /* Purge temporary storage*/
+    ;
+    XSKS-S0001(); /* Exit to another application*/
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* Determine whether a valid attention identifier was used to*/
+   /* invoke the transaction.  Display an error message to the*/
+   /* user if the PF key used is not supported.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey not enter /* ENTER was not pressed*/
+   && converseVar.eventKey not pf7   /* and PF7 was not pressed*/
+   && converseVar.eventKey not pf8   /* and PF8 was not pressed*/
+   && converseVar.eventKey not pf13  /* and PF13 was not pressed*/
+   && converseVar.eventKey not pf14  /* and PF14 was not pressed*/
+   && converseVar.eventKey not pf16  /* and PF16 was not pressed*/
+   && converseVar.eventKey not pf19) /* and PF19 was not pressed*/
+    ;
+    KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+    converseLib.validationFailed(4); /* PA/PF key pressed is not valid*/
+    ;
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  /* ----------------------------------------------------------------*/
+  /* Check security on PF19*/
+  /* ----------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pf19) /* pf19 pressed*/
+    ;
+    if (COMMAREA.CACHGFL == "N") /* no change authority*/
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(4); /* PA/PF key pressed is not valid*/
+      exit stack; /* Exit to display map*/
+    end
+    ;
+    if (KS0CW00.KS0CW-GPC-CD == "02" /* gpc = 02*/
+     && COMMAREA.CACLVL[2] == "N")   /* but no change authority*/
+      ;
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(42); /* not authorized*/
+      exit stack; /* Exit to display map*/
+    end
+    ;
+    if (KS0CW00.KS0CW-GPC-CD == "03" /* gpc = 03*/
+     && COMMAREA.CACLVL[3] == "N")   /* but no change authority*/
+      ;
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(42); /* not authorized*/
+      exit stack; /* Exit to display map*/
+    end
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If search key changed, get new data*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.KS0CW-STAT != KS0CM001.KS0CM-STAT
+   || KS0CW00.KS0CW-GPC-CD != KS0CM001.KS0CM-GPC-CD
+   || KS0CW00.KS0CW-SESN-CD != KS0CM001.KS0CM-SESN-CD
+   || KS0CW00.KS0CW-SESN-YR != KS0CM001.KS0CM-SESN-YR)
+    KS0CW00.KS0CW-SWR = "Y"; /* Request for data switch*/
+    return; /* return to previous process*/
+  end
+  ;
+  ;
+   /* ------------------------------------------------------------*/
+   /* Flag edit if pf13 or pf14 pressed without add/change authority*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pf13) /* pf13 pressed*/
+    ;
+    if (COMMAREA.CAADDFL == "N") /* and no add authority*/
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(4); /* PA/PF key pressed is not valid*/
+      exit stack; /* Exit to display map*/
+    end
+    ;
+    if (KS0CW00.KS0CW-GPC-CD == "02" /* gpc = 02*/
+     && COMMAREA.CAALVL[2] == "N")   /* but no authority to add*/
+      ;
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(41); /* not authorized*/
+      exit stack; /* Exit to display map*/
+    end
+    ;
+    if (KS0CW00.KS0CW-GPC-CD == "03" /* gpc = 03*/
+     && COMMAREA.CAALVL[3] == "N")   /* but no authority to add*/
+      ;
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(41); /* not authorized*/
+      exit stack; /* Exit to display map*/
+    end
+    ;
+  end
+  ;
+  if (converseVar.eventKey is pf14) /* pf14 pressed*/
+    ;
+    if (COMMAREA.CACHGFL == "N") /* no change authority*/
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(4); /* PA/PF key pressed is not valid*/
+      exit stack; /* Exit to display map*/
+    end
+    ;
+    if (KS0CW00.KS0CW-GPC-CD == "02" /* gpc = 02*/
+     && COMMAREA.CACLVL[2] == "N")   /* but no change authority*/
+      ;
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(42); /* not authorized*/
+      exit stack; /* Exit to display map*/
+    end
+    ;
+    if (KS0CW00.KS0CW-GPC-CD == "03" /* gpc = 03*/
+     && COMMAREA.CACLVL[3] == "N")   /* but no change authority*/
+      ;
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(42); /* not authorized*/
+      exit stack; /* Exit to display map*/
+    end
+    ;
+    if (KS0CM001.KS0CM-DTL-GPC-CD == " ") /* no data displayed*/
+      KS0CW00.KS0CW-GPC-CD = KS0CM001.KS0CM-GPC-CD; /* save gpc*/
+      KS0CW00.KS0CW-SESN-CD = KS0CM001.KS0CM-SESN-CD; /* save sesn*/
+      KS0CW00.KS0CW-SESN-YR = KS0CM001.KS0CM-SESN-YR; /* save year*/
+      KS0CW00.KS0CW-STAT = KS0CM001.KS0CM-STAT; /* save status*/
+      KS0CW00.KS0CW-GPC-DESC = KS0CM001.KS0CM-GPC-DESC;
+      KS0CW00.KS0CW-SESN-DESC = KS0CM001.KS0CM-SESN-DESC;
+      KS0CW00.KS0CW-YEAR-DESC-CHAR = KS0CM001.KS0CM-SESN-YR-DESC;
+      KS0CW00.KS0CW-STAT-DESC = KS0CM001.KS0CM-STAT-DESC;
+      set KS0CM001 initial; /* clear screen*/
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(89); /* pf14 invalid w/o data*/
+      KS0CM001.KS0CM-GPC-CD = KS0CW00.KS0CW-GPC-CD; /* gpc to map*/
+      KS0CM001.KS0CM-SESN-CD = KS0CW00.KS0CW-SESN-CD; /* sesn to map*/
+      KS0CM001.KS0CM-SESN-YR = KS0CW00.KS0CW-SESN-YR; /* year to map*/
+      KS0CM001.KS0CM-STAT = KS0CW00.KS0CW-STAT; /* stat to map*/
+      KS0CM001.KS0CM-GPC-DESC = KS0CW00.KS0CW-GPC-DESC;
+      KS0CM001.KS0CM-SESN-DESC = KS0CW00.KS0CW-SESN-DESC;
+      KS0CM001.KS0CM-SESN-YR-DESC = KS0CW00.KS0CW-YEAR-DESC-CHAR;
+      KS0CM001.KS0CM-STAT-DESC = KS0CW00.KS0CW-STAT-DESC;
+      exit stack; /* Exit to display map*/
+    end
+    ;
+    if ("S" in KS0CM001.KS0CMSEL) /* line was selected*/
+  /* next sentence*/
+    else /* no line selected*/
+      KSWREC.XXXPRCNM = "13000"; /* Module identification*/
+      converseLib.validationFailed(43); /* pf14 pressed but nothing*/
+                                   /* was selected*/
+      exit stack; /* Exit to display map*/
+    end
+    ;
+  end
+  ;
+end // end KS0C-13000
+
+// Reset highlighted fields
+Function KS0C-14000()
+  /* ------------------------------------------------------------*/
+  /* Reset all modifiable field attributes to normal intensity.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set KS0CM001.KS0CM-STAT normal; /* Reset status*/
+  set KS0CM001.KS0CM-GPC-CD normal; /* Reset gpc*/
+  set KS0CM001.KS0CM-SESN-CD normal; /* Reset season*/
+  set KS0CM001.KS0CM-SESN-YR normal; /* Reset year*/
+  ;
+  KS0CW00.KS0CW-IXM = 1; /* Initialize line index*/
+  ;
+  while (KS0CW00.KS0CW-IXM <= 12 /* * Until end of lines*/
+   && KS0CM001.KS0CM-DTL-GPC-CD[KS0CW-IXM] > " ") /* or end of display*/
+    ;
+    set KS0CM001.KS0CMSEL[KS0CW-IXM] normal; /* Reset select flag*/
+    ;
+    KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1; /* Increment line index*/
+    ;
+  end
+  ;
+  set KS0CM001.CATOAP initialAttributes; /* TO application*/
+  set KS0CM001.CAITEM initialAttributes; /* Application data*/
+  ;
+   /* ------------------------------------------------------------*/
+  ;
+              /* CHECK FOR USER ? CODE INQUIRY*/
+  ;
+     /* 1) If the user has enter a '?' in any of the appropiate*/
+        /* fields, display the pop up window for that CSP table*/
+        /* and allow for inquiry.*/
+  ;
+     /* 2) Set map page after all windows displayed*/
+  ;
+   /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM001.KS0CM-GPC-CD == "?" /* if any ? entered*/
+   || KS0CM001.KS0CM-SESN-CD == "?")
+    ;
+    if (KS0CM001.KS0CM-GPC-CD == "?") /* if ? entered in gpc*/
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "                   GPC       "; /* heading*/
+      ;
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPXGP01(); /* perform gpc window*/
+      end
+      ;
+       /* **********************************************************/
+       /* *  If the pass index is greater than zero, use the      **/
+       /* *  passed table index 'XX0XWPIX' to move the gpc        **/
+       /* *  code and description to the map.                     **/
+       /* **********************************************************/
+      ;
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        KS0CM001.KS0CM-GPC-CD = XGPTBL.XGPCD[XX0XWPIX];
+        KS0CM001.KS0CM-GPC-DESC = XGPTBL.XGPDESC[XX0XWPIX];
+        set KS0CM001.KS0CM-SESN-CD cursor; /* put cursor on sesn cd*/
+      else
+        KS0CM001.KS0CM-GPC-CD = " "; /* clear fields*/
+        set KS0CM001.KS0CM-GPC-CD cursor; /* put cursor on gpc cd*/
+        KS0CM001.KS0CM-GPC-DESC = " "; /* clear description*/
+      end
+      ;
+    end
+    ;
+    if (KS0CM001.KS0CM-SESN-CD == "?") /* if ? in season field*/
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "                 SEASON      "; /* heading*/
+      ;
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPXSE01(); /* perform season window*/
+      end
+      ;
+       /* **********************************************************/
+       /* *  If the pass index is greater than zero, use the      **/
+       /* *  passed table index 'XX0XWPIX' to move the season     **/
+       /* *  code and description to the map                      **/
+       /* **********************************************************/
+      ;
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        KS0CM001.KS0CM-SESN-CD = XSETBL.XSECD[XX0XWPIX];
+        KS0CM001.KS0CM-SESN-DESC = XSETBL.XSEDESC[XX0XWPIX];
+        set KS0CM001.KS0CM-SESN-YR cursor; /* put cursor on sesn yr*/
+      else
+        KS0CM001.KS0CM-SESN-CD = " "; /* clear fields*/
+        set KS0CM001.KS0CM-SESN-CD cursor; /* put cursor on sesn cd*/
+        KS0CM001.KS0CM-SESN-DESC = " "; /* clear description*/
+      end
+    end
+    ;
+    converseLib.clearScreen();
+     /* restore the original map*/
+    ;
+    KS0CW00.KS0CW-SWR = "N"; /* no to request for data*/
+    KS0CW00.KS0CW-SWF = "N"; /* no to format map*/
+    ;
+    exit stack; /* go display map*/
+    ;
+  end
+  ;
+  ;
+end // end KS0C-14000
+
+// Verify data that was entered
+Function KS0C-15000()
+  /* ------------------------------------------------------------*/
+  /* Highlight any application data that was entered.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM001.CAITEM > " ") /* Application data was entered*/
+    ;
+    KSWREC.XXXPRCNM = "15000"; /* Module identification*/
+    set KS0CM001.CAITEM cursor, bold; /* Highlight*/
+    converseLib.validationFailed(7); /* Enter only with FAST PATH*/
+    ;
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* If no header data entered, ask for it.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM001.KS0CM-GPC-CD == " " /* gpc is blank*/
+   && converseVar.eventKey not pf13) /* and add not requested*/
+    KS0CW00.KS0CW-SESN-CD = KS0CM001.KS0CM-SESN-CD; /* save sesn*/
+    KS0CW00.KS0CW-SESN-YR = KS0CM001.KS0CM-SESN-YR; /* save year*/
+    KS0CW00.KS0CW-STAT = KS0CM001.KS0CM-STAT; /* save status*/
+    KS0CW00.KS0CW-SESN-DESC = KS0CM001.KS0CM-SESN-DESC;
+    KS0CW00.KS0CW-YEAR-DESC-CHAR = KS0CM001.KS0CM-SESN-YR-DESC;
+    KS0CW00.KS0CW-STAT-DESC = KS0CM001.KS0CM-STAT-DESC;
+    set KS0CM001 initial; /* clear screen*/
+    KSWREC.XXXPRCNM = "15000"; /* Module identification*/
+    set KS0CM001.KS0CM-GPC-CD cursor, bold; /* cursor & hi-lite*/
+    converseLib.validationFailed(147); /* gpc missing or invalid*/
+    KS0CM001.KS0CM-SESN-CD = KS0CW00.KS0CW-SESN-CD; /* sesn to map*/
+    KS0CM001.KS0CM-SESN-YR = KS0CW00.KS0CW-SESN-YR; /* year to map*/
+    KS0CM001.KS0CM-STAT = KS0CW00.KS0CW-STAT; /* stat to map*/
+    KS0CM001.KS0CM-SESN-DESC = KS0CW00.KS0CW-SESN-DESC;
+    KS0CM001.KS0CM-SESN-YR-DESC = KS0CW00.KS0CW-YEAR-DESC-CHAR;
+    KS0CM001.KS0CM-STAT-DESC = KS0CW00.KS0CW-STAT-DESC;
+    exit stack; /* return to previous process*/
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Determine whether a valid request to scroll was entered.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   || converseVar.eventKey is pf8) /* or scroll forward request*/
+    ;
+    KS0C-15100(); /* Verify scroll request*/
+    ;
+  else
+    ;
+    /* ------------------------------------------------------------*/
+    /* Otherwise, verify data in the line.*/
+    /* ------------------------------------------------------------*/
+    ;
+    if (converseVar.eventKey is enter /* Enter was pressed*/
+     || converseVar.eventKey is pf16  /* PF16 was pressed*/
+     || converseVar.eventKey is pf19) /* PF19 was pressed*/
+      ;
+      KS0C-15200(); /* Verify data in the line*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If any errors were found, exit to display the map.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.validationMsgNum != 0) /* Errors were found*/
+    exit stack; /* Exit to display map*/
+  end
+  ;
+  ;
+end // end KS0C-15000
+
+// Verify scroll request
+Function KS0C-15100()
+  /* ------------------------------------------------------------*/
+  /* If scroll back was requested, ensure that pages exist.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pf7 /* Scroll back request*/
+   && KS0CW00.XXXTSPAG < 2)       /* and no previous pages*/
+    ;
+    KSWREC.XXXPRCNM = "15100"; /* Module identification*/
+    converseLib.validationFailed(2); /* No previous page to display*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If scroll forward was requested, ensure that pages exist.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pf8 /* Scroll forward request*/
+   && KS0CW00.XXXTSPAG >= KS0CW00.TA5TSQIX) /* and no more pages*/
+    ;
+    KSWREC.XXXPRCNM = "15100"; /* Module identification*/
+    converseLib.validationFailed(3); /* No more pages to display*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Indicate an error for any data that was modified.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.KS0CW-IXM = 12; /* Initialize line index*/
+  ;
+  while (KS0CW00.KS0CW-IXM > 0) /* Until end of lines*/
+    ;
+    if (KS0CM001.KS0CMSEL[KS0CW-IXM] != KS0CW01.KS0CW-SEL[KS0CW-IXM])
+      ;
+      KSWREC.XXXPRCNM = "15100"; /* Module identification*/
+      set KS0CM001.KS0CMSEL[KS0CW-IXM] cursor, bold; /* Highlight*/
+      converseLib.validationFailed(14); /* Field may not change*/
+      ;
+    end
+    ;
+    KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM - 1; /* Decrement line number*/
+    ;
+  end
+  ;
+  ;
+end // end KS0C-15100
+
+// Verify data in the line
+Function KS0C-15200()
+  /* ------------------------------------------------------------*/
+  /* If selection was entered and is not an "S", indicate that*/
+  /* only "S" may be entered to select a line.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.KS0CW-IXM = 12; /* initialize index*/
+  ;
+  while (KS0CW00.KS0CW-IXM > 0) /* until end of lines*/
+    ;
+    if (KS0CM001.KS0CMSEL[KS0CW-IXM] != KS0CW01.KS0CW-SEL[KS0CW-IXM]
+     && KS0CM001.KS0CMSEL[KS0CW-IXM] != "S") /* and is not a "S"*/
+      ;
+      KSWREC.XXXPRCNM = "15200"; /* Module identification*/
+      set KS0CM001.KS0CMSEL[KS0CW-IXM] cursor, bold; /* Highlight*/
+      converseLib.validationFailed(13); /* Only "S" may be entered*/
+      ;
+    else
+      ;
+      if (KS0CM001.KS0CMSEL[KS0CW-IXM] == "S" /* if 'S' but*/
+       && converseVar.eventKey not pf14       /* no pf14*/
+       && converseVar.eventKey not pf16       /* no pf16*/
+       && converseVar.eventKey not pf19)      /* no pf19*/
+        KSWREC.XXXPRCNM = "15200"; /* Module identification*/
+        set KS0CM001.KS0CMSEL[KS0CW-IXM] cursor, bold; /* Highlight*/
+        converseLib.validationFailed(122); /* "S" invalid w/o pf14*/
+      end
+      ;
+    end
+    ;
+    KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM - 1; /* decrement line number*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Status must be A, I or blank*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM001.KS0CM-STAT != "A" /* active status*/
+   && KS0CM001.KS0CM-STAT != "I" /* inactive status*/
+   && KS0CM001.KS0CM-STAT != " ") /* blank status*/
+    ;
+    KS0CW00.KS0CW-EDIT-FLAG = "Y"; /* yes to edit flag*/
+    KSWREC.XXXPRCNM = "15200"; /* Module identification*/
+    set KS0CM001.KS0CM-STAT-DESC skip, invisible; /* darken desc*/
+    set KS0CM001.KS0CM-STAT cursor, bold; /* Highlight*/
+    converseLib.validationFailed(19); /* status invalid*/
+  else
+    ;
+    if (KS0CM001.KS0CM-STAT == "A") /* status is ACTIVE*/
+      KS0CM001.KS0CM-STAT-DESC = "ACTIVE"; /* show ACTIVE*/
+    else
+      ;
+      if (KS0CM001.KS0CM-STAT == "I") /* status is INACTIVE*/
+        KS0CM001.KS0CM-STAT-DESC = "INACTIVE"; /* show INACTIVE*/
+      else
+        KS0CM001.KS0CM-STAT-DESC = "ALL"; /* show ALL*/
+      end
+    end
+    ;
+    set KS0CM001.KS0CM-STAT-DESC skip;
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Year must be numeric or blank*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM001.KS0CM-SESN-YR >= "0" /* year is 0 thru 99*/
+   && KS0CM001.KS0CM-SESN-YR <= "99")
+    ;
+    KS0CW00.KS0CW-YEAR-DESC-YY = KS0CM001.KS0CM-SESN-YR;
+    ;
+    if (KS0CW00.KS0CW-YEAR-DESC-YY > 50) /* move 19 to century*/
+      KS0CW00.KS0CW-YEAR-DESC-CC = 19; /* if > 50*/
+    else /* otherwise*/
+      KS0CW00.KS0CW-YEAR-DESC-CC = 20; /* move 20*/
+    end
+    ;
+    KS0CM001.KS0CM-SESN-YR-DESC = KS0CW00.KS0CW-YEAR-DESC;
+    set KS0CM001.KS0CM-SESN-YR-DESC skip;
+    ;
+  else
+    ;
+    if (KS0CM001.KS0CM-SESN-YR == " ") /* year is blank*/
+      KS0CW00.KS0CW-YEAR-DESC = 0;
+      ;
+    else
+      KS0CW00.KS0CW-EDIT-FLAG = "Y"; /* yes to edit flag*/
+      KSWREC.XXXPRCNM = "15200"; /* Module identification*/
+      set KS0CM001.KS0CM-SESN-YR cursor, bold; /* Highlight*/
+      set KS0CM001.KS0CM-SESN-YR-DESC skip, invisible; /* darken desc*/
+      converseLib.validationFailed(26); /* year invalid*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Season code must be in season code table*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM001.KS0CM-SESN-CD == " ") /* code is blank*/
+  /* next sentence*/
+  else
+    if (KS0CM001.KS0CM-SESN-CD in XSETBL.XSECD) /* code in table*/
+      ;
+   /* get description*/
+      if (KS0CM001.KS0CM-SESN-CD in XSETBL.XSECD)
+        KS0CM001.KS0CM-SESN-DESC = XSETBL.XSEDESC[sysVar.arrayIndex];
+      end
+      set KS0CM001.KS0CM-SESN-DESC skip;
+      ;
+    else
+      KS0CW00.KS0CW-EDIT-FLAG = "Y"; /* yes to edit flag*/
+      KSWREC.XXXPRCNM = "15200"; /* Module identification*/
+      set KS0CM001.KS0CM-SESN-CD cursor, bold; /* Highlight*/
+      set KS0CM001.KS0CM-SESN-DESC skip, invisible; /* darken desc*/
+      converseLib.validationFailed(27); /* season code invalid*/
+      ;
+    end
+  end
+  /* ------------------------------------------------------------*/
+  /* GPC code must be in GPC code table*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM001.KS0CM-GPC-CD == " ") /* code is blank - flag edit*/
+    KS0CW00.KS0CW-EDIT-FLAG = "Y"; /* yes to edit flag*/
+    KSWREC.XXXPRCNM = "15200"; /* Module identification*/
+    set KS0CM001.KS0CM-GPC-CD cursor, bold; /* Highlight*/
+    set KS0CM001.KS0CM-GPC-DESC skip, invisible; /* darken desc*/
+    converseLib.validationFailed(147); /* GPC code invalid*/
+    ;
+  else
+    if (KS0CM001.KS0CM-GPC-CD in XGPTBL.XGPCD) /* code in table*/
+      ;
+      if (KS0CM001.KS0CM-GPC-CD != "02" && KS0CM001.KS0CM-GPC-CD != "03")
+        KSWREC.XXXPRCNM = "15200"; /* Module identification*/
+        set KS0CM001.KS0CM-GPC-CD cursor, bold; /* Highlight*/
+        set KS0CM001.KS0CM-GPC-DESC skip, invisible; /* darken desc*/
+        converseLib.validationFailed(154); /* GPC code invalid*/
+      end
+      if (KS0CM001.KS0CM-GPC-CD == "02" /* code is 02*/
+       && COMMAREA.CAILVL[2] == "N")    /* and no inquiry authority*/
+        KSWREC.XXXPRCNM = "15200"; /* Module identification*/
+        set KS0CM001.KS0CM-GPC-CD cursor, bold; /* Highlight*/
+        converseLib.validationFailed(148); /* GPC code invalid*/
+      else
+        ;
+        if (KS0CM001.KS0CM-GPC-CD == "03" /* code is 03*/
+         && COMMAREA.CAILVL[3] == "N")    /* and no inquiry authority*/
+          KSWREC.XXXPRCNM = "15200"; /* Module identification*/
+          set KS0CM001.KS0CM-GPC-CD cursor, bold; /* Highlight*/
+          converseLib.validationFailed(148); /* GPC code invalid*/
+        end
+        ;
+      end
+      ;
+   /* get description*/
+      if (KS0CM001.KS0CM-GPC-CD in XGPTBL.XGPCD)
+        KS0CM001.KS0CM-GPC-DESC = XGPTBL.XGPDESC[sysVar.arrayIndex];
+      end
+      set KS0CM001.KS0CM-GPC-DESC skip;
+      ;
+    else
+      if (KS0CM001.KS0CM-GPC-CD != "02" && KS0CM001.KS0CM-GPC-CD != "03")
+        KSWREC.XXXPRCNM = "15200"; /* Module identification*/
+        set KS0CM001.KS0CM-GPC-CD cursor, bold; /* Highlight*/
+        set KS0CM001.KS0CM-GPC-DESC skip, invisible; /* darken desc*/
+        converseLib.validationFailed(154); /* GPC code invalid*/
+      end
+    /* IF KS0CM001.KS0CM-GPC-CD NE 'EQ';/**/
+    /* MOVE 'Y' TO KS0CW00.KS0CW-EDIT-FLAG;/* yes to edit flag*/
+    /* MOVE '15200' TO KSWREC.XXXPRCNM;/* Module identification*/
+    /* SET KS0CM001.KS0CM-GPC-CD CURSOR,BRIGHT;/* Highlight*/
+    /* SET KS0CM001.KS0CM-GPC-DESC AUTOSKIP,DARK;/* darken desc*/
+    /* MOVE 147 TO EZEMNO;           /* GPC code invalid*/
+    /* ;*/
+    /* END;*/
+      ;
+    end
+    ;
+  end
+  ;
+  if (KS0CW00.KS0CW-EDIT-FLAG == "Y") /* edit flag is on - clear dtls*/
+    ;
+    KS0CW00.KS0CW-IXM = 12; /* initialize index*/
+    ;
+    while (KS0CW00.KS0CW-IXM > 0) /* until end of lines*/
+      ;
+      KS0CM001.KS0CMSEL[KS0CW-IXM] = " ";
+      set KS0CM001.KS0CMSEL[KS0CW-IXM] skip, invisible;
+      KS0CM001.KS0CM-DTL-GPC-CD[KS0CW-IXM] = " ";
+      KS0CM001.KS0CM-DTL-RULE-DT[KS0CW-IXM] = " ";
+      KS0CM001.KS0CM-DTL-RULE-NBR[KS0CW-IXM] = " ";
+      KS0CM001.KS0CM-DTL-RULE-XREF-CD[KS0CW-IXM] = " ";
+      KS0CM001.KS0CM-DTL-RULE-RCPT-DT[KS0CW-IXM] = " ";
+      KS0CM001.KS0CM-DTL-SESN-CD[KS0CW-IXM] = " ";
+      KS0CM001.KS0CM-DTL-SESN-YR[KS0CW-IXM] = " ";
+      KS0CM001.KS0CM-DTL-RULE-COMNT[KS0CW-IXM] = " ";
+      ;
+      KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM - 1; /* decrement line number*/
+      ;
+    end
+    ;
+    KS0CW00.KS0CW-EDIT-FLAG = "N"; /* reset flag*/
+    ;
+  end
+  ;
+end // end KS0C-15200
+
+// Process valid input request
+Function KS0C-16000()
+  /* ------------------------------------------------------------*/
+  /* Indicate that the map must be formatted before display*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.KS0CW-SWF = "Y"; /* format the map switch*/
+  ;
+  if (converseVar.eventKey is pf16) /* PF16 pressed*/
+    if ("S" in KS0CM001.KS0CMSEL) /* If line was selected*/
+      KS0CW00.KS0CW-IX1 = sysVar.arrayIndex;
+      if (converseVar.validationMsgNum == 0) /* If no errors*/
+        KS0CW00.KS0CW-FNC = KS0CW00.KS0CW-STAT;
+        KS0CW00.KS0CW-SAV = KS0CW00.KS0CW-IX1;
+        KS0CW00.KS0CW-SAV-PAGE = KS0CW00.XXXTSPAG;
+        KSWREC.KSW-CTL-FLD = KS0CW00.KS0CW-CTL-FLD;
+                                   /* Pass control fld*/
+        COMMAREA.CATOAP = "KS0L"; /* Set destination application*/
+        KSWREC.XSNYR = KS0CW00.KS0CW-YEAR-DESC;
+        KSWREC.XSECD = KS0CW00.KS0CW-SESN-CD;
+        KSWREC.XGPCD = KS0CW00.KS0CW-GPC-CD;
+        KSWREC.KS-RULE-NBR = KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IX1];
+        XSKS-S0001(); /* Exit to another application*/
+      else
+        KS0CW00.KS0CW-SWF = "N";
+        exit stack; /* Exit to display map*/
+      end
+    else
+      if (KS0CM001.KS0CM-DTL-GPC-CD[1] > " " /* If there is data*/
+       && converseVar.validationMsgNum == 0) /* No errors found*/
+        converseLib.validationFailed(43); /* set error msg nbr*/
+        if (KS0CW00.KS0CW-GPC-CD != KS0CM001.KS0CM-GPC-CD)
+          KS0CM001.KS0CM-GPC-CD = KS0CW00.KS0CW-GPC-CD;
+          KS0CM001.KS0CM-GPC-DESC = " ";
+        end
+        if (KS0CW00.KS0CW-SESN-CD != KS0CM001.KS0CM-SESN-CD)
+          KS0CM001.KS0CM-SESN-CD = KS0CW00.KS0CW-SESN-CD;
+          KS0CM001.KS0CM-SESN-DESC = " ";
+        end
+        if (KS0CW00.KS0CW-SESN-YR != KS0CM001.KS0CM-SESN-YR)
+          KS0CM001.KS0CM-SESN-YR = KS0CW00.KS0CW-SESN-YR;
+          KS0CM001.KS0CM-SESN-YR-DESC = " ";
+        end
+        if (KS0CW00.KS0CW-STAT != KS0CM001.KS0CM-STAT)
+          KS0CM001.KS0CM-STAT = KS0CW00.KS0CW-STAT;
+          KS0CM001.KS0CM-STAT-DESC = " ";
+        end
+        KS0CW00.KS0CW-SWR = "N"; /* do not request data*/
+        KS0CW00.KS0CW-SWF = "N"; /* do not format map*/
+        KS0CW00.KS0CW-SWD = "1"; /* Map to be displayed switch*/
+        set KS0CM001.KS0CMSEL[1] cursor; /* Position cursor*/
+        return; /* return*/
+      end
+    end
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If search key changed, get new data*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey not pf13) /* ADD not requested*/
+    ;
+    if (KS0CW00.KS0CW-STAT != KS0CM001.KS0CM-STAT
+     || KS0CW00.KS0CW-GPC-CD != KS0CM001.KS0CM-GPC-CD
+     || KS0CW00.KS0CW-SESN-CD != KS0CM001.KS0CM-SESN-CD
+     || KS0CW00.KS0CW-SESN-YR != KS0CM001.KS0CM-SESN-YR)
+      KS0CW00.KS0CW-SWR = "Y"; /* request for data switch*/
+      KS0CW00.XXXTSPAG = 0; /* zero out temp storage*/
+  /* move map input to working storage*/
+      KS0CW00.KS0CW-STAT = KS0CM001.KS0CM-STAT;
+      KS0CW00.KS0CW-GPC-CD = KS0CM001.KS0CM-GPC-CD;
+      KS0CW00.KS0CW-SESN-CD = KS0CM001.KS0CM-SESN-CD;
+      KS0CW00.KS0CW-SESN-YR = KS0CM001.KS0CM-SESN-YR;
+      if (converseVar.eventKey not pf19)
+        return;
+      end
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If a scroll backward was requested, decrement the page*/
+  /* number and return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pf7) /* Scroll back requested*/
+    ;
+    KS0CW00.XXXTSPAG = KS0CW00.XXXTSPAG - 1; /* Decrement page number*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If a scroll forward was requested, increment the page*/
+  /* number and return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pf8) /* Scroll forward requested*/
+    ;
+    KS0CW00.XXXTSPAG = KS0CW00.XXXTSPAG + 1; /* Increment page number*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Indicate that the map must be formatted before display.*/
+  /* ------------------------------------------------------------*/
+  if (converseVar.eventKey is enter) /* enter pressed*/
+    ;
+    KS0CW00.KS0CW-SWF = "Y"; /* Format the map switch*/
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Save the select fields and clear the map input/output area.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.KS0CW-UPDATE-SW = "N"; /* turn off updated switch*/
+  ;
+  if (converseVar.eventKey is pf13) /* pf13*/
+    KS0CW00.KS0CW-SFN = "A"; /* 'add' function*/
+    KS0CW00.KS0CW-SWD = "2"; /* Map to be displayed switch*/
+    KS0CW00.KS0CW-SWF = "Y"; /* yes format map*/
+    KS0CW02.KS0CW-GPC-CD = KS0CM001.KS0CM-GPC-CD; /* gpc to w/s*/
+    KS0CW02.KS0CW-GPC-DESC = KS0CM001.KS0CM-GPC-DESC; /* desc to w/s*/
+    KS0CW02.KS0CW-STAT = KS0CM001.KS0CM-STAT; /* status to w/s*/
+    ;
+  else
+    ;
+    if (converseVar.eventKey is pf14) /* pf14*/
+      ;
+      KS0CW00.KS0CW-IXM = 1; /* Initialize line index*/
+      KS0CW00.KS0CW-SWU = "N"; /* reset switch*/
+      ;
+      while (KS0CW00.KS0CW-IXM <= 12 /* Until end of lines*/
+       && KS0CW00.KS0CW-SWU != "Y") /* or 'S' is found*/
+        ;
+        if (KS0CM001.KS0CMSEL[KS0CW-IXM] != KS0CW01.KS0CW-SEL[KS0CW-IXM])
+          ;
+          KS0CW00.KS0CW-SWU = "Y"; /* indicate 's' was found*/
+          KS0CW00.KS0CW-SFN = "C"; /* 'change' function*/
+          KS0CW00.KS0CW-SWF = "Y"; /* yes format map*/
+          KS0CW00.KS0CW-SWD = "2"; /* Map to be displayed switch*/
+          KS0CW00.KS0CW-IXX = KS0CW00.KS0CW-IXM + 0; /* save index*/
+   /* selected data to w/s*/
+          KS0CW02.KS0CW02-GROUP-DATA = KS0CW01.KS0CW-GROUP[KS0CW-IXM];
+          ;
+        end
+        ;
+        KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1; /* Increment line index*/
+        ;
+      end
+    end
+  end
+  ;
+  if (converseVar.eventKey is pf19) /* PF19 pressed*/
+    if ("S" in KS0CM001.KS0CMSEL /* If line was selected*/
+     && KS0CW00.KS0CW-SWR != "Y") /* data not requested*/
+      KS0CW00.KS0CW-IX1 = sysVar.arrayIndex;
+    end
+    if (converseVar.validationMsgNum == 0) /* If no errors*/
+      KS0CW00.KS0CW-FNC = KS0CW00.KS0CW-STAT;
+      KS0CW00.KS0CW-SAV = KS0CW00.KS0CW-IX1;
+      KS0CW00.KS0CW-SAV-PAGE = KS0CW00.XXXTSPAG;
+      KSWREC.KSW-CTL-FLD = KS0CW00.KS0CW-CTL-FLD;
+                                   /* Pass control fld*/
+      COMMAREA.CATOAP = "KS0L"; /* Set destination application*/
+      KSWREC.XSNYR = KS0CW00.KS0CW-YEAR-DESC;
+      KSWREC.XSECD = KS0CW00.KS0CW-SESN-CD;
+      KSWREC.XGPCD = KS0CW00.KS0CW-GPC-CD;
+      /* MOVE KS0CW00.KS0CW-SESN-YR TO KS0CW00.KS0CW-YEAR-DESC-YY;*/
+      /* MOVE KS0CW00.KS0CW-YEAR-DESC TO KSWREC.XSNYR;*/
+      XSKS-S0001(); /* Exit to another application*/
+    else
+      KS0CW00.KS0CW-SWF = "N";
+      exit stack; /* Exit to display map*/
+    end
+  end
+  ;
+end // end KS0C-16000
+
+// Process to add a new row
+Function KS0C-20000()
+  /* ------------------------------------------------------------*/
+  /* This is the main process used to display a map.  Processing*/
+  /* always returns to the top of this process and falls through*/
+  /* subordinate processes until an error is found or a valid*/
+  /* request is processed.  Processing sequence is as follows:*/
+  /*  */
+  /* 1) Format the map output area and display the map.*/
+  /* 2) Check the attention identifier used to respond.*/
+  /* 3) Reset highlighted fields to normal intensity.*/
+  /* 4) Verify the data that was entered.*/
+  /* 5) Process a valid input request.*/
+  /*  */
+  /* In all subordinate processes, "EZEFLO" is used to exit to*/
+  /* redisplay the map when an error is found.  This is done to*/
+  /* minimize the coding effort required to skip subsequent*/
+  /* processing under error conditions.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0C-22000(); /* Format and display the map*/
+  ;
+  KS0C-23000(); /* Check attention identifier*/
+  ;
+  KS0C-24000(); /* Reset fields to normal intensity*/
+  ;
+  KS0C-25000(); /* Verify the entered data*/
+  ;
+  KS0C-26000(); /* Process valid input request*/
+  ;
+  ;
+end // end KS0C-20000
+
+// Format and converse the map
+Function KS0C-22000()
+  /* ------------------------------------------------------------*/
+  /* If an error was found, save the error message number.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    KSWREC.XXXMSGNO = converseVar.validationMsgNum; /* Message number*/
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If obtain data failed or no error, format data to display.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.KS0CW-SWR == "Y" /* Obtain data failed*/
+   || converseVar.validationMsgNum == 0) /* or no error found*/
+    ;
+    if (KS0CW00.KS0CW-SWF == "Y") /* Map must be formatted*/
+      KS0C-22100(); /* Format the data on the map*/
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Format the current date and any FAST PATH information.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CM002.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+  ;
+  KS0CM002.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  KS0CM002.CAITEM = COMMAREA.CAITEM; /* Application data*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If a message to display, indicate sound audible alarm.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KSWREC.XXXMSGNO != 0 /* Message to display*/
+   || COMMAREA.CAMSG != " ") /* or message text*/
+    ;
+    if (KSWREC.XXXMSGNO != 0) /* Message to display*/
+      ;
+      if (KSWREC.XXXMSGNO == 9999)
+        converseLib.validationFailed();
+      else
+        converseLib.validationFailed(KSWREC.XXXMSGNO);
+      end /* Message number*/
+    else
+      KS0CM002.VAGen_EZEMSG = COMMAREA.CAMSG; /* Message text*/
+      ;
+    end
+    ;
+    KS0CM002.XXXPRCNM = KSWREC.XXXPRCNM; /* Module identification*/
+    ;
+    set KS0CM002 alarm; /* Indicate sound alarm*/
+    ;
+  end
+  ;
+  converse KS0CM002 ;
+  ;
+  /* ------------------------------------------------------------*/
+  /* Clear the message fields and save FAST PATH information.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KSWREC.XXXPRCNM = " "; /* Module identification*/
+  KSWREC.XXXMSGNO = 0; /* Message number*/
+  COMMAREA.CAMSG = " "; /* Message text*/
+  KS0CW00.KS0CW-UPDATE-SW = "N"; /* reset update-sw*/
+  ;
+  COMMAREA.CATOAP = KS0CM002.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = KS0CM002.CAITEM; /* Application data*/
+  ;
+end // end KS0C-22000
+
+// Format the display data
+Function KS0C-22100()
+  /* ------------------------------------------------------------*/
+  /* Clear the fields in the map storage area to be formatted.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set KS0CM002 initial; /* M002 input/output area*/
+  ;
+  KS0CW00.KS0CW-SWF = "N"; /* Format the map switch*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* Obtain the current date and time*/
+  /* ------------------------------------------------------------*/
+  ;
+  XX0XS01(); /* get date and time*/
+  KS0CW00.KS0CW-FULLDATE = XX0XW01.XX0XWDAT; /* move to ws*/
+  KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY; /* move year*/
+  KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM; /* move month*/
+  KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD; /* move days*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* Format the data in the map from the display storage.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CM002.KS0CM-MAP-DESC = "- ADD"; /* title*/
+  if (KS0CW02.KS0CW-STAT == "I") /* inactive status*/
+    KS0CM002.KS0CM-STAT = "I"; /* team status*/
+    KS0CM002.KS0CM-STATUS-DESC = "INACTIVE"; /* team status desc*/
+  else
+    KS0CM002.KS0CM-STAT = "A"; /* team status*/
+    KS0CM002.KS0CM-STATUS-DESC = "ACTIVE"; /* team status descrip*/
+  end
+  KS0CM002.KS0CM-GPC-CD = KS0CW02.KS0CW-GPC-CD; /* gpc from map 1*/
+  KS0CM002.XGPDESC = KS0CW02.KS0CW-GPC-DESC;
+                                                      /* desc from map 1*/
+  KS0CM002.KS0CM-USER = COMMAREA.CAUSERID; /* user-id*/
+  KS0CM002.KS0CM-CREATE-DT = KS0CW00.KS0CW-FORMDATE; /* create date*/
+  KS0CM002.KS0CM-MOD-DT = KS0CW00.KS0CW-FORMDATE; /* modified date*/
+  ;
+  if (KS0CW00.KS0CW-UPDATE-SW == "N") /* first time*/
+    converseLib.validationFailed(29); /* msg 'enter new binding ruling'*/
+  end
+  ;
+end // end KS0C-22100
+
+// Check attention identifier
+Function KS0C-23000()
+  /* ------------------------------------------------------------*/
+  /* If CANCEL was requested, clear the map fields and exit.*/
+  /* If a request for data is pending, reset that request.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+    ;
+    if (KS0CW00.KS0CW-SWR == "Y") /* Request for data*/
+      set KS0CW02 empty; /* M002 display storage*/
+    end
+    ;
+    KS0CW00.KS0CW-SWF = "Y"; /* Format the map switch*/
+    KS0CW00.KS0CW-SWR = "N"; /* Request for data switch*/
+    ;
+    COMMAREA.CATOAP = " "; /* TO application*/
+    COMMAREA.CAITEM = " "; /* Application data*/
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If FAST PATH was requested, transfer to the application.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (COMMAREA.CATOAP > " ") /* FAST PATH was requested*/
+    ;
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+      ;
+      KS0C-11100(); /* Purge any temporary storage*/
+      ;
+      XSKS-S0001(); /* Exit to another application*/
+      ;
+      set KS0CM001.CATOAP cursor, bold; /* Highlight*/
+      ;
+      KS0CW00.KS0CW-SWD = "1"; /* Map to be displayed switch*/
+      ;
+    else
+      ;
+      KSWREC.XXXPRCNM = "23000"; /* Module identification*/
+      converseLib.validationFailed(5); /* PA/PF key may not be used*/
+      ;
+    end
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If HELP, exit to the previous level or exit to the Master*/
+  /* Menu was requested, exit to another application.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pf1 /* PF1 was pressed*/
+   || converseVar.eventKey is pf3 /* or PF3 was pressed*/
+   || converseVar.eventKey is pf4 /* or PF4 was pressed*/
+   || converseVar.eventKey is pf21) /* or PF21 was pressed*/
+    ;
+    if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+      COMMAREA.CAITEM = "KS0CM002"; /* Application find code*/
+    end
+    ;
+    if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+      ;
+      KS0CW00.KS0CW-SWD = "1"; /* Map to be displayed switch*/
+      KS0CW00.KS0CW-SWF = "Y"; /* Format the map switch*/
+      ;
+      if (KS0CM002.KS0CM-GPC-CD !=  /* gpc changed from map1*/
+      KS0CW02.KS0CW-GPC-CD          /* and gpc not spaces*/
+       && KS0CM002.KS0CM-GPC-CD != " ")
+        set KS0CM001 initial; /* clear map1 and*/
+   /* move new gpc to it*/
+        KS0CM001.KS0CM-GPC-CD = KS0CM002.KS0CM-GPC-CD;
+      end
+      ;
+      exit stack; /* Exit to display map*/
+      ;
+    end
+    ;
+    if (converseVar.eventKey is pf21) /* PF21 was pressed*/
+      ;
+      COMMAREA.CATOAP = "KS0A"; /* tran for ks menu screen*/
+      KS0C-11100(); /* Purge any temporary storage*/
+      XSKS-S0001(); /* Exit to another application*/
+      ;
+      exit stack; /* Exit to display map*/
+      ;
+    end
+    ;
+    KS0C-11100(); /* Purge any temporary storage*/
+    ;
+    XSKS-S0001(); /* Exit to another application*/
+    ;
+    KS0CW00.KS0CW-SWD = "1"; /* Map to be displayed switch*/
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Determine whether a valid attention identifier was used to*/
+  /* invoke the transaction.  Display an error message to the*/
+  /* user if the PF key used is not supported.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+    ;
+    KSWREC.XXXPRCNM = "23000"; /* Module identification*/
+    converseLib.validationFailed(4); /* PA/PF key pressed is not valid*/
+    ;
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+  ;
+end // end KS0C-23000
+
+// Reset highlighted fields
+Function KS0C-24000()
+  /* ------------------------------------------------------------*/
+  /* Reset all modifiable field attributes to normal intensity.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set KS0CM002.KS0CM-GPC-CD initialAttributes; /* gpc code*/
+  set KS0CM002.XGPDESC initialAttributes; /* gpc description*/
+  set KS0CM002.KS0CM-RULE-NBR initialAttributes; /* binding ruling number*/
+  set KS0CM002.KS0CM-RULE-XREF-CD initialAttributes; /* binding ruling xref cd*/
+  set KS0CM002.KS0CM-RULE-DT initialAttributes; /* binding ruling date*/
+  set KS0CM002.KS0CM-RULE-RCPT-DT initialAttributes; /* binding ruling receipt dt*/
+  set KS0CM002.KS0CM-SESN-CD[1] initialAttributes; /* season code*/
+  set KS0CM002.KS0CM-SESN-CD[2] initialAttributes; /* season code*/
+  set KS0CM002.KS0CM-SESN-CD[3] initialAttributes; /* season code*/
+  set KS0CM002.KS0CM-SESN-YR[1] initialAttributes; /* season year*/
+  set KS0CM002.KS0CM-SESN-YR[2] initialAttributes; /* season year*/
+  set KS0CM002.KS0CM-SESN-YR[3] initialAttributes; /* season year*/
+  set KS0CM002.KS0CM-RULE-COMNT initialAttributes; /* binding ruling comment*/
+  set KS0CM002.KS0CM-STAT initialAttributes; /* binding ruling status*/
+  ;
+   /* ------------------------------------------------------------*/
+  ;
+              /* CHECK FOR USER ? CODE INQUIRY*/
+  ;
+     /* 1) If the user has enter a '?' in any of the appropiate*/
+        /* fields, display the pop up window for that CSP table*/
+        /* and allow for inquiry.*/
+  ;
+     /* 2) Set map page after all windows displayed*/
+  ;
+   /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-GPC-CD == "?" /* if any ? entered*/
+   || KS0CM002.KS0CM-SESN-CD == "?")
+    ;
+    if (KS0CM002.KS0CM-GPC-CD == "?") /* if ? entered in gpc*/
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "                   GPC       "; /* heading*/
+      ;
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPXGP01(); /* perform gpc window*/
+      end
+      ;
+       /* **********************************************************/
+       /* *  If the pass index is greater than zero, use the      **/
+       /* *  passed table index 'XX0XWPIX' to move the gpc        **/
+       /* *  code and description to the map.                     **/
+       /* **********************************************************/
+      ;
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        KS0CM002.KS0CM-GPC-CD = XGPTBL.XGPCD[XX0XWPIX];
+        KS0CM002.XGPDESC = XGPTBL.XGPDESC[XX0XWPIX];
+        set KS0CM002.KS0CM-RULE-NBR cursor; /* put cursor on rule #*/
+      else
+        KS0CM002.KS0CM-GPC-CD = " "; /* clear fields*/
+        KS0CM002.XGPDESC = " "; /* clear description*/
+        set KS0CM002.KS0CM-GPC-CD cursor; /* put cursor on gpc cd*/
+      end
+    end
+    ;
+    if (KS0CM002.KS0CM-SESN-CD[1] == "?") /* if ? in season field*/
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "                 SEASON      "; /* heading*/
+      ;
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPXSE01(); /* perform season window*/
+      end
+      ;
+       /* **********************************************************/
+       /* *  If the pass index is greater than zero, use the      **/
+       /* *  passed table index 'XX0XWPIX' to move the season     **/
+       /* *  code and description to the map.                     **/
+       /* **********************************************************/
+      ;
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        KS0CM002.KS0CM-SESN-CD[1] = XSETBL.XSECD[XX0XWPIX];
+        set KS0CM002.KS0CM-SESN-YR[1] cursor; /* put cursor on sesn yr*/
+      else
+        KS0CM002.KS0CM-SESN-CD[1] = " "; /* clear fields*/
+        set KS0CM002.KS0CM-SESN-CD[1] cursor; /* put cursor on sesn cd*/
+      end
+    end
+    ;
+    if (KS0CM002.KS0CM-SESN-CD[2] == "?") /* if ? in season field*/
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "                 SEASON      "; /* heading*/
+      ;
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPXSE01(); /* perform season window*/
+      end
+      ;
+       /* **********************************************************/
+       /* *  If the pass index is greater than zero, use the      **/
+       /* *  passed table index 'XX0XWPIX' to move the season     **/
+       /* *  code and description to the map.                     **/
+       /* **********************************************************/
+      ;
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        KS0CM002.KS0CM-SESN-CD[2] = XSETBL.XSECD[XX0XWPIX];
+        set KS0CM002.KS0CM-SESN-YR[2] cursor; /* put cursor on sesn yr*/
+      else
+        KS0CM002.KS0CM-SESN-CD[2] = " "; /* clear fields*/
+        set KS0CM002.KS0CM-SESN-CD[2] cursor; /* put cursor on sesn cd*/
+      end
+    end
+    ;
+    if (KS0CM002.KS0CM-SESN-CD[3] == "?") /* if ? in season field*/
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "                 SEASON      "; /* heading*/
+      ;
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPXSE01(); /* perform season window*/
+      end
+      ;
+       /* **********************************************************/
+       /* *  If the pass index is greater than zero, use the      **/
+       /* *  passed table index 'XX0XWPIX' to move the season     **/
+       /* *  code and description to the map.                     **/
+       /* **********************************************************/
+      ;
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        KS0CM002.KS0CM-SESN-CD[3] = XSETBL.XSECD[XX0XWPIX];
+        set KS0CM002.KS0CM-SESN-YR[3] cursor; /* put cursor on sesn yr*/
+      else
+        KS0CM002.KS0CM-SESN-CD[3] = " "; /* clear fields*/
+        set KS0CM002.KS0CM-SESN-CD[3] cursor; /* put cursor on sesn cd*/
+      end
+    end
+    ;
+    converseLib.clearScreen();
+     /* restore the original map*/
+    ;
+    KS0CW00.KS0CW-SWR = "N"; /* no to request for data*/
+    KS0CW00.KS0CW-SWF = "N"; /* no to format map*/
+    ;
+    exit stack; /* go display map*/
+    ;
+  end
+  ;
+  ;
+end // end KS0C-24000
+
+// Verify data that was entered
+Function KS0C-25000()
+  /* ------------------------------------------------------------*/
+  /* Highlight any application data that was entered.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (COMMAREA.CAITEM > " ") /* Application data was entered*/
+    ;
+    KSWREC.XXXPRCNM = "25000"; /* Module identification*/
+    set KS0CM002.CAITEM cursor, bold; /* Highlight*/
+    converseLib.validationFailed(7); /* Enter only with FAST PATH*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If any errors were found, exit to display the map.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.validationMsgNum != 0) /* Errors were found*/
+    exit stack; /* Exit to display map*/
+  else /**/
+    KS0C-25200(); /* verify entered data*/
+  end
+  ;
+end // end KS0C-25000
+
+// Verify any changed data
+Function KS0C-25200()
+    /* ------------------------------------------------------------*/
+    /* verify status*/
+    /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-STAT == " ") /* status not entered*/
+    ;
+    KS0CM002.KS0CM-STAT = "A"; /* use 'active' status*/
+    ;
+  else
+    ;
+    if (KS0CM002.KS0CM-STAT != "I" /* status not 'inactive'*/
+     && KS0CM002.KS0CM-STAT != "A") /* or 'active'*/
+      ;
+      KSWREC.XXXPRCNM = "25200"; /* module id*/
+      set KS0CM002.KS0CM-STAT cursor, bold; /* highlight*/
+      converseLib.validationFailed(23); /* field missing or invalid*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* remove blank SESN and YR fields*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.KS0CW-IX1 = 1;
+  KS0CW00.KS0CW-IX2 = 2;
+  ;
+  while (KS0CW-IX1 <= 2
+   && KS0CW-IX2 <= 3)
+    ;
+    if (KS0CM002.KS0CM-SESN-CD[KS0CW-IX1] == " "
+     && KS0CM002.KS0CM-SESN-YR[KS0CW-IX1] == " ")
+      ;
+      KS0CM002.KS0CM-SESN-CD[KS0CW-IX1] = KS0CM002.KS0CM-SESN-CD[KS0CW-IX2];
+      KS0CM002.KS0CM-SESN-CD[KS0CW-IX2] = " ";
+      ;
+      KS0CM002.KS0CM-SESN-YR[KS0CW-IX1] = KS0CM002.KS0CM-SESN-YR[KS0CW-IX2];
+      KS0CM002.KS0CM-SESN-YR[KS0CW-IX2] = " ";
+      KS0CW00.KS0CW-IX2 = KS0CW00.KS0CW-IX2 + 1;
+      ;
+      if (KS0CM002.KS0CM-SESN-CD[KS0CW-IX1] != " "
+       || KS0CM002.KS0CM-SESN-YR[KS0CW-IX1] != " ")
+        KS0CW00.KS0CW-IX1 = KS0CW00.KS0CW-IX1 + 1;
+      end
+    else
+      ;
+      KS0CW00.KS0CW-IX1 = KS0CW00.KS0CW-IX1 + 1;
+      KS0CW00.KS0CW-IX2 = KS0CW00.KS0CW-IX2 + 1;
+    end
+  end
+  ;
+    /* ------------------------------------------------------------*/
+    /* verify season year*/
+    /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-SESN-YR[1] >= "0" /* season year between 0 & 99*/
+   && KS0CM002.KS0CM-SESN-YR[1] <= "99")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-GPC-CD == "02" /* if footwear and not entered*/
+     && KS0CM002.KS0CM-SESN-YR[1] == "  "
+     && KS0CM002.KS0CM-SESN-CD[1] == "  ")
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "25200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-YR[1] cursor, bold; /* highlight*/
+      converseLib.validationFailed(26); /* year invalid*/
+    end
+    ;
+  end
+  ;
+  if (KS0CM002.KS0CM-SESN-YR[2] >= "0" /* season year between 0 & 99*/
+   && KS0CM002.KS0CM-SESN-YR[2] <= "99")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-SESN-YR[2] == "  "
+     && KS0CM002.KS0CM-SESN-CD[2] == "  ")
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "25200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-YR[2] cursor, bold; /* highlight*/
+      converseLib.validationFailed(26); /* year invalid*/
+    end
+    ;
+  end
+  ;
+  if (KS0CM002.KS0CM-SESN-YR[3] >= "0" /* season year between 0 & 99*/
+   && KS0CM002.KS0CM-SESN-YR[3] <= "99")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-SESN-YR[3] == "  "
+     && KS0CM002.KS0CM-SESN-CD[3] == "  ")
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "25200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-YR[3] cursor, bold; /* highlight*/
+      converseLib.validationFailed(26); /* year invalid*/
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* verify season code*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-GPC-CD == "02" /* if footwear and not entered*/
+   && KS0CM002.KS0CM-SESN-YR[1] == "  "
+   && KS0CM002.KS0CM-SESN-CD[1] == "  ")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-SESN-CD[1] in XSETBL.XSECD) /* season code in table*/
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "25200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-CD[1] cursor, bold; /* highlight*/
+      converseLib.validationFailed(27); /* season code not in table*/
+    end
+  end
+  ;
+  if (KS0CM002.KS0CM-SESN-YR[2] == "  "
+   && KS0CM002.KS0CM-SESN-CD[2] == "  ")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-SESN-CD[2] in XSETBL.XSECD) /* season code in table*/
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "25200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-CD[2] cursor, bold; /* highlight*/
+      converseLib.validationFailed(27); /* season code not in table*/
+    end
+  end
+  ;
+  if (KS0CM002.KS0CM-SESN-YR[3] == "  "
+   && KS0CM002.KS0CM-SESN-CD[3] == "  ")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-SESN-CD[3] in XSETBL.XSECD) /* season code in table*/
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "25200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-CD[3] cursor, bold; /* highlight*/
+      converseLib.validationFailed(27); /* season code not in table*/
+    end
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* verify receipt date*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-RULE-RCPT-DT == " ") /* receipt date not entered*/
+    ;
+    KSWREC.XXXPRCNM = "25200"; /* module id*/
+    set KS0CM002.KS0CM-RULE-RCPT-DT cursor, bold; /* highlight*/
+    converseLib.validationFailed(30); /* field missing or invalid*/
+    ;
+  else
+    ;
+    set TA2REC empty; /* clear work record*/
+    TA2REC.TA2DTOPT = "GREGGREG"; /* date option*/
+    TA2REC.TA2GRTYP = "A"; /* date type*/
+    TA2REC.TA2GRGA = KS0CM002.KS0CM-RULE-RCPT-DT; /* move date*/
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date val pgm*/
+    if (TA2REC.TA2RTNCD == 0) /* good return code*/
+       /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "25200"; /* module id*/
+      set KS0CM002.KS0CM-RULE-RCPT-DT cursor, bold; /* highlight*/
+      converseLib.validationFailed(30); /* invalid date entered*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* verify ruling date*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-RULE-DT == " ") /* ruling date not entered*/
+    ;
+    KSWREC.XXXPRCNM = "25200"; /* module id*/
+    set KS0CM002.KS0CM-RULE-DT cursor, bold; /* highlight*/
+    converseLib.validationFailed(31); /* field missing or invalid*/
+    ;
+  else
+    ;
+    set TA2REC empty; /* clear work record*/
+    TA2REC.TA2DTOPT = "GREGGREG"; /* date option*/
+    TA2REC.TA2GRTYP = "A"; /* date type*/
+    TA2REC.TA2GRGA = KS0CM002.KS0CM-RULE-DT; /* move date*/
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date val pgm*/
+    if (TA2REC.TA2RTNCD == 0) /* good return code*/
+       /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "25200"; /* module id*/
+      set KS0CM002.KS0CM-RULE-DT cursor, bold; /* highlight*/
+      converseLib.validationFailed(31); /* invalid date entered*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* verify binding ruling xref cd*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-RULE-XREF-CD == " ") /* ruling xref not entered*/
+    /* continue on*/
+  else
+    ;
+    if (KS0CM002.KS0CM-GPC-CD > "  ")
+      KS0C-25210(); /* Check to see if rule gpc/xref exists*/
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* verify binding ruling number*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-RULE-NBR == " ") /* ruling number not entered*/
+    ;
+    KSWREC.XXXPRCNM = "25200"; /* module id*/
+    set KS0CM002.KS0CM-RULE-NBR cursor, bold; /* highlight*/
+    converseLib.validationFailed(32); /* field missing or invalid*/
+    ;
+  end
+  ;
+    /* ------------------------------------------------------------*/
+    /* verify gpc code*/
+    /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-GPC-CD in XGPTBL.XGPCD) /* gpc in the table*/
+   /* get gpc description*/
+    if (KS0CM002.KS0CM-GPC-CD in XGPTBL.XGPCD)
+      KS0CM002.XGPDESC = XGPTBL.XGPDESC[sysVar.arrayIndex];
+    end /* for map*/
+  else
+    ;
+    KSWREC.XXXPRCNM = "25200"; /* module id*/
+    set KS0CM002.KS0CM-GPC-CD cursor, bold; /* highlight*/
+    converseLib.validationFailed(28); /* field missing or invalid*/
+    ;
+  end
+  ;
+  if (COMMAREA.CAALVL[2] == "N" /* if not authorized*/
+   && KS0CM002.KS0CM-GPC-CD == "02") /* gpc is 02*/
+    KSWREC.XXXPRCNM = "25200"; /* module id*/
+    set KS0CM002.KS0CM-GPC-CD cursor, bold; /* highlight*/
+    converseLib.validationFailed(41); /* not authorized*/
+  end
+  ;
+  if (COMMAREA.CAALVL[3] == "N" /* if not authorized*/
+   && KS0CM002.KS0CM-GPC-CD == "03") /* gpc is 03*/
+    KSWREC.XXXPRCNM = "25200"; /* module id*/
+    set KS0CM002.KS0CM-GPC-CD cursor, bold; /* highlight*/
+    converseLib.validationFailed(41); /* not authorized*/
+  end
+  ;
+  ;
+  /* ------------------------------------------------------------*/
+  /* If any errors were found, exit to display the map.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.validationMsgNum != 0) /* Errors were found*/
+    exit stack; /* Exit to display map*/
+  end
+  ;
+  ;
+end // end KS0C-25200
+
+// Select Alt Binding Ruling
+Function KS0C-25210()
+  /* ------------------------------------------------------------*/
+  /* Select the requested row from the table.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set VBDRUL01 empty; /* Clear row storage area*/
+  ;
+  VBDRUL01.XGPCD = KS0CM002.KS0CM-GPC-CD; /* gpc code*/
+  VBDRUL01.KS-RULE-XREF-CD = KS0CM002.KS0CM-RULE-XREF-CD;
+  ;
+  try
+    call "IO6070" ("SA", SQLCA, VBDRUL01) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 100) /* Normal return code - not found*/
+      return; /* Return to previous process*/
+      ;
+    else
+      ;
+      if (SQLCA.VAGen_SQLCODE == 0) /* row already exists*/
+        if (VBDRUL01.KS-RULE-NBR != KS0CM002.KS0CM-RULE-NBR)
+          KSWREC.XXXPRCNM = "25210"; /* module id*/
+          set KS0CM002.KS0CM-RULE-XREF-CD cursor, bold; /* highlight*/
+          converseLib.validationFailed(116); /* duplicate gpc/rule*/
+        end
+        return; /* Return to previous process*/
+      end
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If data not available, return an error message to the user.*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  KSWREC.XXXPRCNM = "25210"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    ;
+  else
+    ;
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    ;
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+    ;
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT ALT ROW FOR EXISTS    ";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1DBASE = "DCUSTM  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VBDRUL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VBDRUL01.VBDRUL01-KEY; /* Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-25210
+
+// Process valid input request
+Function KS0C-26000()
+  /* ------------------------------------------------------------*/
+  /* if enter was pressed, continue*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey not enter) /* enter not pressed*/
+    ;
+    KSWREC.XXXPRCNM = "26000"; /* module id*/
+    converseLib.validationFailed(4); /* pa/pf key pressed is not valid*/
+    exit stack; /* exit to display map*/
+    ;
+  else
+    ;
+    /* ------------------------------------------------------------*/
+    /* Check to see if row exists by gpc/rule nbr. before adding.*/
+    /* ------------------------------------------------------------*/
+    ;
+    KS0C-26100(); /* select row*/
+    ;
+    /* ------------------------------------------------------------*/
+    /* Add the new data in the table row.*/
+    /* ------------------------------------------------------------*/
+    ;
+    KS0C-26200(); /* add table row*/
+    ;
+    /* ------------------------------------------------------------*/
+    /* Clear the screen before next add.*/
+    /* ------------------------------------------------------------*/
+    ;
+    KS0CW00.KS0CW-LAST-RULE-NBR = VBDRUL01.KS-RULE-NBR;
+    KS0CW00.KS0CW-LAST-RULE-DT = VBDRUL01.KS-RULE-DT;
+    KS0CM002.KS0CM-RULE-NBR = " "; /* Clear rule number*/
+    KS0CM002.KS0CM-RULE-XREF-CD = " "; /* Clear rule xref cd*/
+    KS0CM002.KS0CM-RULE-DT = " "; /* Clear rule date*/
+    KS0CM002.KS0CM-RULE-RCPT-DT = " "; /* Clear rule rcpt date*/
+    KS0CM002.KS0CM-SESN-CD[1] = " "; /* Clear sesn code*/
+    KS0CM002.KS0CM-SESN-CD[2] = " "; /* Clear sesn code*/
+    KS0CM002.KS0CM-SESN-CD[3] = " "; /* Clear sesn code*/
+    KS0CM002.KS0CM-SESN-YR[1] = " "; /* Clear sesn year*/
+    KS0CM002.KS0CM-SESN-YR[2] = " "; /* Clear sesn year*/
+    KS0CM002.KS0CM-SESN-YR[3] = " "; /* Clear sesn year*/
+    KS0CM002.KS0CM-RULE-COMNT = " "; /* clear comments*/
+    KS0CM002.KS0CM-STAT = "A"; /* clear status*/
+    KS0CM002.KS0CM-STATUS-DESC = "ACTIVE"; /* and description*/
+    ;
+    /* ------------------------------------------------------------*/
+    /* Indicate that the table add was successfully completed.*/
+    /* ------------------------------------------------------------*/
+    ;
+    KS0CW00.KS0CW-SWR = "Y"; /* Request for data switch*/
+    ;
+    KSWREC.XXXPRCNM = "26000"; /* Module identification*/
+    set KS0CM002.KS0CM-RULE-NBR cursor; /* cursor to rule nbr*/
+    KSWREC.XXXMSGNO = 1; /* Table update was completed*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Commit all changes made to protected resources.*/
+  /* ------------------------------------------------------------*/
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.commit(); /* Commit all changes*/
+  ;
+  ;
+end // end KS0C-26000
+
+// Select the row before add
+Function KS0C-26100()
+  /* ------------------------------------------------------------*/
+  /* Select the requested row from the table.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set VBDRUL01 empty; /* Clear row storage area*/
+  ;
+  VBDRUL01.XGPCD = KS0CM002.KS0CM-GPC-CD; /* gpc code*/
+  VBDRUL01.KS-RULE-NBR = KS0CM002.KS0CM-RULE-NBR; /* ruling nbr*/
+  ;
+  try
+    call "IO6070" ("S ", SQLCA, VBDRUL01) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 100) /* Normal return code - not found*/
+      return; /* Return to previous process*/
+      ;
+    else
+      ;
+      if (SQLCA.VAGen_SQLCODE == 0) /* row already exists*/
+        KSWREC.XXXPRCNM = "26100"; /* module id*/
+        set KS0CM002.KS0CM-RULE-NBR cursor, bold; /* highlight rule nbr*/
+        converseLib.validationFailed(33); /* duplicate gpc/rule nbr*/
+        exit stack; /* Exit to display map*/
+      end
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If data not available, return an error message to the user.*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  KSWREC.XXXPRCNM = "26100"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    ;
+  else
+    ;
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    ;
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+    ;
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT ROW BEFORE ADD        ";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1DBASE = "DCUSTM  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VBDRUL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VBDRUL01.VBDRUL01-KEY; /* Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-26100
+
+// Add the new table row
+Function KS0C-26200()
+  /* ------------------------------------------------------------*/
+  /* Format the data from the map in the table row.*/
+  /* ------------------------------------------------------------*/
+  ;
+   /* gpc code*/
+  VBDRUL01.XGPCD = KS0CM002.KS0CM-GPC-CD;
+   /* binding ruling number*/
+  VBDRUL01.KS-RULE-NBR = KS0CM002.KS0CM-RULE-NBR;
+   /* binding ruling xref code*/
+  VBDRUL01.KS-RULE-XREF-CD = KS0CM002.KS0CM-RULE-XREF-CD;
+   /* binding ruling date*/
+  KS0CW00.KS0CW-FORMDATE = KS0CM002.KS0CM-RULE-DT;
+  KS0CW00.KS0CW-FULLMM = KS0CW00.KS0CW-FORMMM;
+  KS0CW00.KS0CW-FULLDD = KS0CW00.KS0CW-FORMDD;
+  KS0CW00.KS0CW-FULLYY = KS0CW00.KS0CW-FORMYY;
+  ;
+  if (KS0CW00.KS0CW-FULLYY > 50)
+    KS0CW00.KS0CW-FULLCC = 19;
+  else /* if year > 50 , move*/
+    KS0CW00.KS0CW-FULLCC = 20; /* 19 to century; otherwise*/
+  end
+  ;
+   /**/
+  VBDRUL01.KS-RULE-DT = KS0CW00.KS0CW-FULLDATE;
+  ;
+   /* binding ruling receipt dt*/
+  KS0CW00.KS0CW-FORMDATE = KS0CM002.KS0CM-RULE-RCPT-DT;
+  ;
+  KS0CW00.KS0CW-FULLMM = KS0CW00.KS0CW-FORMMM;
+  KS0CW00.KS0CW-FULLDD = KS0CW00.KS0CW-FORMDD;
+  KS0CW00.KS0CW-FULLYY = KS0CW00.KS0CW-FORMYY;
+                                  /* move 20*/
+  if (KS0CW00.KS0CW-FULLYY > 50)
+    KS0CW00.KS0CW-FULLCC = 19;
+  else /* if year > 50 , move*/
+    KS0CW00.KS0CW-FULLCC = 20; /* 19 to century; otherwise*/
+  end
+                                  /* move 20*/
+   /**/
+  VBDRUL01.KS-RULE-RCPT-DT = KS0CW00.KS0CW-FULLDATE;
+  ;
+   /* season code*/
+  VBDRUL01.XSE-SESN-CD[1] = KS0CM002.KS0CM-SESN-CD[1];
+   /* season code*/
+  VBDRUL01.XSE-SESN-CD[2] = KS0CM002.KS0CM-SESN-CD[2];
+   /* season code*/
+  VBDRUL01.XSE-SESN-CD[3] = KS0CM002.KS0CM-SESN-CD[3];
+  KS0CW00.KS0CW-BIN-YEAR = 0000;
+  if (KS0CM002.KS0CM-SESN-YR[1] != "  ") /* if season yr entere*/
+   /* season year*/
+    KS0CW00.KS0CW-BIN-YEAR-YY = KS0CM002.KS0CM-SESN-YR[1];
+    if (KS0CW00.KS0CW-BIN-YEAR-YY > 50)
+      KS0CW00.KS0CW-BIN-YEAR-CC = 19;
+    else /* if year > 50 , move*/
+      KS0CW00.KS0CW-BIN-YEAR-CC = 20; /* 19 to century; otherwise*/
+    end /* move 20*/
+  end
+   /**/
+  VBDRUL01.XSN-SESN-YR-RNG[1] = KS0CW00.KS0CW-BIN-YEAR;
+  ;
+  KS0CW00.KS0CW-BIN-YEAR = 0000;
+  if (KS0CM002.KS0CM-SESN-YR[2] != "  ") /* if season yr entere*/
+   /* season year*/
+    KS0CW00.KS0CW-BIN-YEAR-YY = KS0CM002.KS0CM-SESN-YR[2];
+    if (KS0CW00.KS0CW-BIN-YEAR-YY > 50)
+      KS0CW00.KS0CW-BIN-YEAR-CC = 19;
+    else /* if year > 50 , move*/
+      KS0CW00.KS0CW-BIN-YEAR-CC = 20; /* 19 to century; otherwise*/
+    end /* move 20*/
+  end
+   /**/
+  VBDRUL01.XSN-SESN-YR-RNG[2] = KS0CW00.KS0CW-BIN-YEAR;
+  ;
+  KS0CW00.KS0CW-BIN-YEAR = 0000;
+  if (KS0CM002.KS0CM-SESN-YR[3] != "  ") /* if season yr entere*/
+   /* season year*/
+    KS0CW00.KS0CW-BIN-YEAR-YY = KS0CM002.KS0CM-SESN-YR[3];
+    if (KS0CW00.KS0CW-BIN-YEAR-YY > 50)
+      KS0CW00.KS0CW-BIN-YEAR-CC = 19;
+    else /* if year > 50 , move*/
+      KS0CW00.KS0CW-BIN-YEAR-CC = 20; /* 19 to century; otherwise*/
+    end /* move 20*/
+  end
+   /**/
+  VBDRUL01.XSN-SESN-YR-RNG[3] = KS0CW00.KS0CW-BIN-YEAR;
+  ;
+   /* comments*/
+  VBDRUL01.KS-RULE-COMNT = KS0CM002.KS0CM-RULE-COMNT;
+   /* record status*/
+  VBDRUL01.XXXSTAT = KS0CM002.KS0CM-STAT;
+  VBDRUL01.XXXUSRID = COMMAREA.CAUSERID; /* user id*/
+  VBDRUL01.ZZZSDT = XX0XW01.XX0XWDAT; /* create date*/
+  VBDRUL01.ZZZCHGDT = XX0XW01.XX0XWDAT; /* modified date*/
+  VBDRUL01.ZZZCHGTM = XX0XW01.XX0XWTIM; /* modified time*/
+  ;
+  ;
+  /* ------------------------------------------------------------*/
+  /* Add the new row in the table.*/
+  /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO6070" ("A ", SQLCA, VBDRUL01) {isNoRefresh = yes, isExternal = yes};
+  end /* add row*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+    ;
+    /* ------------------------------------------------------------*/
+    /* If row not found, indicate the data was updated by another.*/
+    /* ------------------------------------------------------------*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 100) /* Row not found*/
+      ;
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback(); /* Roll back all changes*/
+      ;
+      KS0CW00.KS0CW-SWR = "Y"; /* Request for data switch*/
+      ;
+      KSWREC.XXXPRCNM = "26200"; /* Module identification*/
+      KSWREC.XXXMSGNO = 12; /* Data was updated by another*/
+      ;
+      exit stack; /* Exit to display map*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If data not available, return an error message to the user.*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  KSWREC.XXXPRCNM = "26200"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    ;
+  else
+    ;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+    ;
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    ;
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+    ;
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "ADD THE TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1DBASE = "DCUSTM  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VBDRUL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VBDRUL01.VBDRUL01-KEY; /* Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+end // end KS0C-26200
+
+// Process to update a row
+Function KS0C-30000()
+  /* ------------------------------------------------------------*/
+  /* This is the main process used to display a map.  Processing*/
+  /* always returns to the top of this process and falls through*/
+  /* subordinate processes until an error is found or a valid*/
+  /* request is processed.  Processing sequence is as follows:*/
+  /*  */
+  /* 1) Format the map output area and display the map.*/
+  /* 2) Check the attention identifier used to respond.*/
+  /* 3) Reset highlighted fields to normal intensity.*/
+  /* 4) Verify the data that was entered.*/
+  /* 5) Process a valid input request.*/
+  /*  */
+  /* In all subordinate processes, "EZEFLO" is used to exit to*/
+  /* redisplay the map when an error is found.  This is done to*/
+  /* minimize the coding effort required to skip subsequent*/
+  /* processing under error conditions.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0C-32000(); /* Format and display the map*/
+  ;
+  KS0C-33000(); /* Check attention identifier*/
+  ;
+  KS0C-34000(); /* Reset fields to normal intensity*/
+  ;
+  KS0C-35000(); /* Verify the entered data*/
+  ;
+  KS0C-36000(); /* Process valid input request*/
+  ;
+  ;
+end // end KS0C-30000
+
+// Format and converse the map
+Function KS0C-32000()
+  /* ------------------------------------------------------------*/
+  /* If an error was found, save the error message number.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.validationMsgNum != 0) /* Error was found*/
+    KSWREC.XXXMSGNO = converseVar.validationMsgNum; /* Message number*/
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If obtain data failed or no error, format data to display.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.KS0CW-SWR == "Y" /* Obtain data failed*/
+   || converseVar.validationMsgNum == 0) /* or no error found*/
+    ;
+    if (KS0CW00.KS0CW-SWF == "Y") /* Map must be formatted*/
+      KS0C-32100(); /* Format the data on the map*/
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Format the current date and any FAST PATH information.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CM002.XXXCURDT = VGVar.currentShortGregorianDate; /* Current date*/
+  ;
+  KS0CM002.CATOAP = COMMAREA.CATOAP; /* TO application*/
+  KS0CM002.CAITEM = COMMAREA.CAITEM; /* Application data*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If a message to display, indicate sound audible alarm.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KSWREC.XXXMSGNO != 0 /* Message to display*/
+   || COMMAREA.CAMSG != " ") /* or message text*/
+    ;
+    if (KSWREC.XXXMSGNO != 0) /* Message to display*/
+      ;
+      if (KSWREC.XXXMSGNO == 9999)
+        converseLib.validationFailed();
+      else
+        converseLib.validationFailed(KSWREC.XXXMSGNO);
+      end /* Message number*/
+    else
+      KS0CM002.VAGen_EZEMSG = COMMAREA.CAMSG; /* Message text*/
+      ;
+    end
+    ;
+    KS0CM002.XXXPRCNM = KSWREC.XXXPRCNM; /* Module identification*/
+    ;
+    set KS0CM002 alarm; /* Indicate sound alarm*/
+    ;
+  end
+  ;
+  converse KS0CM002 ;
+  ;
+  /* ------------------------------------------------------------*/
+  /* Clear the message fields and save FAST PATH information.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KSWREC.XXXPRCNM = " "; /* Module identification*/
+  KSWREC.XXXMSGNO = 0; /* Message number*/
+  COMMAREA.CAMSG = " "; /* Message text*/
+  ;
+  COMMAREA.CATOAP = KS0CM002.CATOAP; /* TO application*/
+  COMMAREA.CAITEM = KS0CM002.CAITEM; /* Application data*/
+  ;
+end // end KS0C-32000
+
+// Format the display data
+Function KS0C-32100()
+  /* ------------------------------------------------------------*/
+  /* Clear the fields in the map storage area to be formatted.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set KS0CM002 initial; /* M002 input/output area*/
+  ;
+  KS0CW00.KS0CW-SWF = "N"; /* Format the map switch*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* Obtain the current date and time*/
+  /* ------------------------------------------------------------*/
+  ;
+  XX0XS01(); /* get date and time*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* Format the data in the map from the display storage.*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CM002.KS0CM-MAP-DESC = "- CHANGE"; /* title*/
+  ;
+  KS0CM002.KS0CM-STAT = KS0CW02.KS0CW-STAT; /* team status*/
+  ;
+  if (KS0CW02.KS0CW-STAT == "A") /* active*/
+    KS0CM002.KS0CM-STATUS-DESC = "ACTIVE"; /* 'active' to map*/
+  else /* otherwise*/
+    KS0CM002.KS0CM-STATUS-DESC = "INACTIVE"; /* 'inactive' to map*/
+  end
+  ;
+  KS0CW00.KS0CW-FULLDATE = KS0CW02.KS0CW-ZZZSDT; /* create date to ws*/
+  KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY; /* year*/
+  KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM; /* month*/
+  KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD; /* days*/
+  KS0CM002.KS0CM-CREATE-DT = KS0CW00.KS0CW-FORMDATE; /* create date*/
+  ;
+  KS0CM002.KS0CM-USER = COMMAREA.CAUSERID; /* user-id*/
+  ;
+  KS0CW00.KS0CW-FULLDATE = KS0CW02.KS0CW-ZZZCHGDT; /* modified date*/
+  KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY; /* year*/
+  KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM; /* month*/
+  KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD; /* days*/
+  KS0CM002.KS0CM-MOD-DT = KS0CW00.KS0CW-FORMDATE; /* modified date*/
+  ;
+  ;
+  KS0CW00.KS0CW-LAST-RULE-NBR = KS0CW02.KS0CW-RULE-NBR;
+  KS0CW00.KS0CW-LAST-RULE-DT = KS0CW02.KS0CW-RULE-DT;
+                                   /* save ruling*/
+                                  /* number*/
+   /**/
+  KS0CM002.KS0CM-GPC-CD = KS0CW02.KS0CW-GPC-CD; /* gpc code*/
+  if (KS0CW02.KS0CW-GPC-CD in XGPTBL.XGPCD)
+    KS0CM002.XGPDESC = XGPTBL.XGPDESC[sysVar.arrayIndex];
+  end /* gpc description*/
+   /**/
+  KS0CM002.KS0CM-RULE-NBR = KS0CW02.KS0CW-RULE-NBR; /* binding ruling number*/
+   /**/
+  KS0CM002.KS0CM-RULE-XREF-CD = KS0CW02.KS0CW-RULE-XREF-CD; /* binding ruling xref-cd*/
+  ;
+   /* binding ruling date*/
+  KS0CW00.KS0CW-FULLDATE = KS0CW02.KS0CW-RULE-DT;
+  KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY; /* year*/
+  KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM; /* month*/
+  KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD; /* days*/
+  KS0CM002.KS0CM-RULE-DT = KS0CW00.KS0CW-FORMDATE; /**/
+  ;
+   /* binding ruling receipt date*/
+  KS0CW00.KS0CW-FULLDATE = KS0CW02.KS0CW-RULE-RCPT-DT;
+  KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY; /* year*/
+  KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM; /* month*/
+  KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD; /* days*/
+  KS0CM002.KS0CM-RULE-RCPT-DT = KS0CW00.KS0CW-FORMDATE; /**/
+  ;
+   /* season code*/
+  KS0CM002.KS0CM-SESN-CD[1] = KS0CW02.KS0CW-SESN-CD[1]; /**/
+  if (KS0CW02.KS0CW-SESN-YEAR[1] > 0000)
+   /* season year*/
+    KS0CW00.KS0CW-FULLYY = KS0CW02.KS0CW-SESN-YEAR[1]; /**/
+   /**/
+    KS0CM002.KS0CM-SESN-YR[1] = KS0CW00.KS0CW-FULLYY; /**/
+  end
+  ;
+   /* season code*/
+  KS0CM002.KS0CM-SESN-CD[2] = KS0CW02.KS0CW-SESN-CD[2]; /**/
+  if (KS0CW02.KS0CW-SESN-YEAR[2] > 0000)
+   /* season year*/
+    KS0CW00.KS0CW-FULLYY = KS0CW02.KS0CW-SESN-YEAR[2]; /**/
+   /**/
+    KS0CM002.KS0CM-SESN-YR[2] = KS0CW00.KS0CW-FULLYY; /**/
+  end
+  ;
+   /* season code*/
+  KS0CM002.KS0CM-SESN-CD[3] = KS0CW02.KS0CW-SESN-CD[3]; /**/
+  if (KS0CW02.KS0CW-SESN-YEAR[3] > 0000)
+   /* season year*/
+    KS0CW00.KS0CW-FULLYY = KS0CW02.KS0CW-SESN-YEAR[3]; /**/
+   /**/
+    KS0CM002.KS0CM-SESN-YR[3] = KS0CW00.KS0CW-FULLYY; /**/
+  end
+  ;
+   /* comments*/
+  KS0CM002.KS0CM-RULE-COMNT = KS0CW02.KS0CW-RULE-COMNT; /**/
+   /* record status*/
+  KS0CM002.KS0CM-STAT = KS0CW02.KS0CW-STAT; /**/
+  ;
+  /* ------------------------------------------------------------*/
+  /* proctect the team number field*/
+  /* ------------------------------------------------------------*/
+  ;
+  set KS0CM002.KS0CM-GPC-CD skip; /* skip/protect gpc code*/
+  set KS0CM002.KS0CM-RULE-NBR skip; /* skip/protect ruling nbr*/
+  set KS0CM002.KS0CM-RULE-DT cursor; /* set cursor at team descrip*/
+  ;
+end // end KS0C-32100
+
+// Check attention identifier
+Function KS0C-33000()
+  /* ------------------------------------------------------------*/
+  /* If CANCEL was requested, clear the map fields and exit.*/
+  /* If a request for data is pending, reset that request.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pa2) /* PA2 was pressed*/
+    ;
+    if (KS0CW00.KS0CW-SWR == "Y") /* Request for data*/
+      set KS0CW02 empty; /* M002 display storage*/
+    end
+    ;
+    KS0CW00.KS0CW-SWF = "Y"; /* Format the map switch*/
+    KS0CW00.KS0CW-SWR = "N"; /* Request for data switch*/
+    ;
+    COMMAREA.CATOAP = " "; /* TO application*/
+    COMMAREA.CAITEM = " "; /* Application data*/
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If FAST PATH was requested, transfer to the application.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (COMMAREA.CATOAP > " ") /* FAST PATH was requested*/
+    ;
+    if (converseVar.eventKey is enter) /* ENTER was pressed*/
+      ;
+      KS0C-11100(); /* Purge any temporary storage*/
+      ;
+      XSKS-S0001(); /* Exit to another application*/
+      ;
+      set KS0CM001.CATOAP cursor, bold; /* Highlight*/
+      ;
+      KS0CW00.KS0CW-SWD = "1"; /* Map to be displayed switch*/
+      ;
+    else
+      ;
+      KSWREC.XXXPRCNM = "33000"; /* Module identification*/
+      converseLib.validationFailed(5); /* PA/PF key may not be used*/
+      ;
+    end
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If HELP, exit to the previous level or exit to the Master*/
+  /* Menu was requested, exit to another application.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey is pf1 /* PF1 was pressed*/
+   || converseVar.eventKey is pf3 /* or PF3 was pressed*/
+   || converseVar.eventKey is pf4 /* or PF4 was pressed*/
+   || converseVar.eventKey is pf21) /* or PF21 was pressed*/
+    ;
+    if (converseVar.eventKey is pf1) /* PF1 was pressed*/
+      COMMAREA.CAITEM = "KS0CM002"; /* Application find code*/
+    end
+    ;
+    if (converseVar.eventKey is pf3) /* PF3 was pressed*/
+      ;
+      KS0CW00.KS0CW-SWD = "1"; /* Map to be displayed switch*/
+      KS0CW00.KS0CW-SWF = "Y"; /* Format the map switch*/
+      ;
+      if (KS0CW00.KS0CW-UPDATE-SW == "Y") /* anything updated*/
+        KS0CW00.KS0CW-SWR = "Y"; /* request new data on map1*/
+      end
+      ;
+      exit stack; /* Exit to display map*/
+      ;
+    end
+    ;
+    if (converseVar.eventKey is pf21) /* PF21 was pressed*/
+      ;
+      COMMAREA.CATOAP = "KS0A"; /* tran for ks main menu*/
+      KS0C-11100(); /* Purge any temporary storage*/
+      XSKS-S0001(); /* Exit to another application*/
+      ;
+    end
+    ;
+    KS0C-11100(); /* Purge any temporary storage*/
+    ;
+    XSKS-S0001(); /* Exit to another application*/
+    ;
+    KS0CW00.KS0CW-SWD = "1"; /* Map to be displayed switch*/
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Determine whether a valid attention identifier was used to*/
+  /* invoke the transaction.  Display an error message to the*/
+  /* user if the PF key used is not supported.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey not enter) /* ENTER was not pressed*/
+    ;
+    KSWREC.XXXPRCNM = "33000"; /* Module identification*/
+    converseLib.validationFailed(4); /* PA/PF key pressed is not valid*/
+    ;
+    if (converseVar.eventKey is pakey) /* PA key was pressed*/
+      converseLib.clearScreen();
+       /* Clear screen before display*/
+    end
+    ;
+    exit stack; /* Exit to display map*/
+    ;
+  end
+  ;
+  ;
+end // end KS0C-33000
+
+// Reset highlighted fields
+Function KS0C-34000()
+  /* ------------------------------------------------------------*/
+  /* Reset all modifiable field attributes to normal intensity.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set KS0CM002.KS0CM-GPC-CD skip; /* gpc code*/
+  set KS0CM002.KS0CM-RULE-NBR skip; /* rule number*/
+  set KS0CM002.KS0CM-RULE-XREF-CD initialAttributes; /* rule xref cd*/
+  set KS0CM002.KS0CM-RULE-DT initialAttributes; /* ruling date*/
+  set KS0CM002.KS0CM-RULE-RCPT-DT initialAttributes; /* receipt date*/
+  set KS0CM002.KS0CM-SESN-CD[1] initialAttributes; /* season code*/
+  set KS0CM002.KS0CM-SESN-CD[2] initialAttributes; /* season code*/
+  set KS0CM002.KS0CM-SESN-CD[3] initialAttributes; /* season code*/
+  set KS0CM002.KS0CM-SESN-YR[1] initialAttributes; /* season year*/
+  set KS0CM002.KS0CM-SESN-YR[2] initialAttributes; /* season year*/
+  set KS0CM002.KS0CM-SESN-YR[3] initialAttributes; /* season year*/
+  set KS0CM002.KS0CM-RULE-COMNT initialAttributes; /* ruling comments*/
+  set KS0CM002.KS0CM-STAT initialAttributes; /* recd status*/
+  ;
+   /* ------------------------------------------------------------*/
+  ;
+              /* CHECK FOR USER ? CODE INQUIRY*/
+  ;
+     /* 1) If the user has enter a '?' in any of the appropiate*/
+        /* fields, display the pop up window for that CSP table*/
+        /* and allow for inquiry.*/
+  ;
+     /* 2) Set map page after all windows displayed*/
+  ;
+   /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-SESN-CD[1] == "?" /* if any ? entered*/
+   || KS0CM002.KS0CM-SESN-CD[2] == "?" /* if any ? entered*/
+   || KS0CM002.KS0CM-SESN-CD[3] == "?") /* if any ? entered*/
+    ;
+    if (KS0CM002.KS0CM-SESN-CD[1] == "?") /* if any ? entered*/
+      ;
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "                 SEASON      "; /* heading*/
+      ;
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPXSE01(); /* perform season window*/
+      end
+      ;
+      /* **********************************************************/
+      /* *  If the pass index is greater than zero, use the      **/
+      /* *  passed table index 'XX0XWPIX' to move the season     **/
+      /* *  code and description to the map.                     **/
+      /* **********************************************************/
+      ;
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        KS0CM002.KS0CM-SESN-CD[1] = XSETBL.XSECD[XX0XWPIX];
+        set KS0CM002.KS0CM-SESN-YR[1] cursor; /* put cursor on sesn yr*/
+      else
+        KS0CM002.KS0CM-SESN-CD[1] = " "; /* clear fields*/
+        set KS0CM002.KS0CM-SESN-CD[1] cursor; /* put cursor on sesn cd*/
+      end
+    end
+    ;
+    if (KS0CM002.KS0CM-SESN-CD[2] == "?") /* if any ? entered*/
+      ;
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "                 SEASON      "; /* heading*/
+      ;
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPXSE01(); /* perform season window*/
+      end
+      ;
+      /* **********************************************************/
+      /* *  If the pass index is greater than zero, use the      **/
+      /* *  passed table index 'XX0XWPIX' to move the season     **/
+      /* *  code and description to the map.                     **/
+      /* **********************************************************/
+      ;
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        KS0CM002.KS0CM-SESN-CD[2] = XSETBL.XSECD[XX0XWPIX];
+        set KS0CM002.KS0CM-SESN-YR[2] cursor; /* put cursor on sesn yr*/
+      else
+        KS0CM002.KS0CM-SESN-CD[2] = " "; /* clear fields*/
+        set KS0CM002.KS0CM-SESN-CD[2] cursor; /* put cursor on sesn cd*/
+      end
+    end
+    ;
+    if (KS0CM002.KS0CM-SESN-CD[3] == "?") /* if any ? entered*/
+      ;
+      XPXX001(); /* perform pop-up window initialize*/
+      XX0XW02.XX0XWHDR = "                 SEASON      "; /* heading*/
+      ;
+      while (XX0XW02.XX0XWEND == "N") /* until user hits enter*/
+        XPXSE01(); /* perform season window*/
+      end
+      ;
+      /* **********************************************************/
+      /* *  If the pass index is greater than zero, use the      **/
+      /* *  passed table index 'XX0XWPIX' to move the season     **/
+      /* *  code and description to the map.                     **/
+      /* **********************************************************/
+      ;
+      if (XX0XW02.XX0XWPIX > 0) /* if user selected a code*/
+        KS0CM002.KS0CM-SESN-CD[3] = XSETBL.XSECD[XX0XWPIX];
+        set KS0CM002.KS0CM-SESN-YR[3] cursor; /* put cursor on sesn yr*/
+      else
+        KS0CM002.KS0CM-SESN-CD[3] = " "; /* clear fields*/
+        set KS0CM002.KS0CM-SESN-CD[3] cursor; /* put cursor on sesn cd*/
+      end
+    end
+    ;
+    converseLib.clearScreen();
+     /* restore the original map*/
+    ;
+    KS0CW00.KS0CW-SWR = "N"; /* no to request for data*/
+    KS0CW00.KS0CW-SWF = "N"; /* no to format map*/
+    ;
+    exit stack; /* go display map*/
+    ;
+  end
+  ;
+  ;
+end // end KS0C-34000
+
+// Verify data that was entered
+Function KS0C-35000()
+  /* ------------------------------------------------------------*/
+  /* Highlight any application data that was entered.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (COMMAREA.CAITEM > " ") /* Application data was entered*/
+    ;
+    KSWREC.XXXPRCNM = "35000"; /* Module identification*/
+    set KS0CM002.CAITEM cursor, bold; /* Highlight*/
+    converseLib.validationFailed(7); /* Enter only with FAST PATH*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If any errors were found, exit to display the map.*/
+  /* Otherwise, verify the data.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.validationMsgNum != 0) /* Errors were found*/
+    exit stack; /* Exit to display map*/
+  else /**/
+    KS0C-35200(); /* verify entered data*/
+  end
+  ;
+end // end KS0C-35000
+
+// Verify any changed data
+Function KS0C-35200()
+    /* ------------------------------------------------------------*/
+    /* verify status*/
+    /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-STAT == " ") /* status not entered*/
+    ;
+    KS0CM002.KS0CM-STAT = "A"; /* use 'active' status*/
+    ;
+  else
+    ;
+    if (KS0CM002.KS0CM-STAT != "I" /* status not 'inactive'*/
+     && KS0CM002.KS0CM-STAT != "A") /* or 'active'*/
+      ;
+      KSWREC.XXXPRCNM = "35200"; /* module id*/
+      set KS0CM002.KS0CM-STAT cursor, bold; /* highlight*/
+      converseLib.validationFailed(23); /* field missing or invalid*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* remove blank SESN and YR fields*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.KS0CW-IX1 = 1;
+  KS0CW00.KS0CW-IX2 = 2;
+  ;
+  while (KS0CW-IX1 <= 2
+   && KS0CW-IX2 <= 3)
+    ;
+    if (KS0CM002.KS0CM-SESN-CD[KS0CW-IX1] == " "
+     && KS0CM002.KS0CM-SESN-YR[KS0CW-IX1] == " ")
+      ;
+      KS0CM002.KS0CM-SESN-CD[KS0CW-IX1] = KS0CM002.KS0CM-SESN-CD[KS0CW-IX2];
+      KS0CM002.KS0CM-SESN-CD[KS0CW-IX2] = " ";
+      ;
+      KS0CM002.KS0CM-SESN-YR[KS0CW-IX1] = KS0CM002.KS0CM-SESN-YR[KS0CW-IX2];
+      KS0CM002.KS0CM-SESN-YR[KS0CW-IX2] = " ";
+      KS0CW00.KS0CW-IX2 = KS0CW00.KS0CW-IX2 + 1;
+      ;
+      if (KS0CM002.KS0CM-SESN-CD[KS0CW-IX1] != " "
+       || KS0CM002.KS0CM-SESN-YR[KS0CW-IX1] != " ")
+        KS0CW00.KS0CW-IX1 = KS0CW00.KS0CW-IX1 + 1;
+      end
+    else
+      ;
+      KS0CW00.KS0CW-IX1 = KS0CW00.KS0CW-IX1 + 1;
+      KS0CW00.KS0CW-IX2 = KS0CW00.KS0CW-IX2 + 1;
+    end
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* verify season year*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-SESN-YR[1] >= "0" /* season year between 0 & 99*/
+   && KS0CM002.KS0CM-SESN-YR[1] <= "99")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-GPC-CD == "02" /* if footwear and not entered*/
+     && KS0CM002.KS0CM-SESN-YR[1] == "  "
+     && KS0CM002.KS0CM-SESN-CD[1] == "  ")
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "35200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-YR[1] cursor, bold; /* highlight*/
+      converseLib.validationFailed(26); /* year invalid*/
+    end
+  end
+  ;
+  if (KS0CM002.KS0CM-SESN-YR[2] >= "0" /* season year between 0 & 99*/
+   && KS0CM002.KS0CM-SESN-YR[2] <= "99")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-SESN-YR[2] == "  "
+     && KS0CM002.KS0CM-SESN-CD[2] == "  ")
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "35200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-YR[2] cursor, bold; /* highlight*/
+      converseLib.validationFailed(26); /* year invalid*/
+    end
+  end
+  ;
+  if (KS0CM002.KS0CM-SESN-YR[3] >= "0" /* season year between 0 & 99*/
+   && KS0CM002.KS0CM-SESN-YR[3] <= "99")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-SESN-YR[3] == "  "
+     && KS0CM002.KS0CM-SESN-CD[3] == "  ")
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "35200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-YR[3] cursor, bold; /* highlight*/
+      converseLib.validationFailed(26); /* year invalid*/
+    end
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* verify season code*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-GPC-CD == "02" /* if footwear and not entered*/
+   && KS0CM002.KS0CM-SESN-YR[1] == "  "
+   && KS0CM002.KS0CM-SESN-CD[1] == "  ")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-SESN-CD[1] in XSETBL.XSECD) /* season code in table*/
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "35200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-CD[1] cursor, bold; /* highlight*/
+      converseLib.validationFailed(27); /* season code not in table*/
+    end
+  end
+  ;
+  if (KS0CM002.KS0CM-SESN-YR[2] == "  "
+   && KS0CM002.KS0CM-SESN-CD[2] == "  ")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-SESN-CD[2] in XSETBL.XSECD) /* season code in table*/
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "35200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-CD[2] cursor, bold; /* highlight*/
+      converseLib.validationFailed(27); /* season code not in table*/
+    end
+  end
+  ;
+  if (KS0CM002.KS0CM-SESN-YR[3] == "  "
+   && KS0CM002.KS0CM-SESN-CD[3] == "  ")
+    /* next sentence*/
+  else
+    if (KS0CM002.KS0CM-SESN-CD[3] in XSETBL.XSECD) /* season code in table*/
+      /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "35200"; /* module id*/
+      set KS0CM002.KS0CM-SESN-CD[3] cursor, bold; /* highlight*/
+      converseLib.validationFailed(27); /* season code not in table*/
+    end
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* verify receipt date*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-RULE-RCPT-DT == " ") /* receipt date not entered*/
+    ;
+    KSWREC.XXXPRCNM = "35200"; /* module id*/
+    set KS0CM002.KS0CM-RULE-RCPT-DT cursor, bold; /* highlight*/
+    converseLib.validationFailed(30); /* field missing or invalid*/
+    ;
+  else
+    ;
+    set TA2REC empty; /* clear work record*/
+    TA2REC.TA2DTOPT = "GREGGREG"; /* date option*/
+    TA2REC.TA2GRTYP = "A"; /* date type*/
+    TA2REC.TA2GRGA = KS0CM002.KS0CM-RULE-RCPT-DT; /* move date*/
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date val pgm*/
+    if (TA2REC.TA2RTNCD == 0) /* good return code*/
+       /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "35200"; /* module id*/
+      set KS0CM002.KS0CM-RULE-RCPT-DT cursor, bold; /* highlight*/
+      converseLib.validationFailed(30); /* invalid date entered*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* verify ruling date*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-RULE-DT == " ") /* ruling date not entered*/
+    ;
+    KSWREC.XXXPRCNM = "35200"; /* module id*/
+    set KS0CM002.KS0CM-RULE-DT cursor, bold; /* highlight*/
+    converseLib.validationFailed(31); /* field missing or invalid*/
+    ;
+  else
+    ;
+    set TA2REC empty; /* clear work record*/
+    TA2REC.TA2DTOPT = "GREGGREG"; /* date option*/
+    TA2REC.TA2GRTYP = "A"; /* date type*/
+    TA2REC.TA2GRGA = KS0CM002.KS0CM-RULE-DT; /* move date*/
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date val pgm*/
+    if (TA2REC.TA2RTNCD == 0) /* good return code*/
+       /* next sentence*/
+    else
+      KSWREC.XXXPRCNM = "35200"; /* module id*/
+      set KS0CM002.KS0CM-RULE-DT cursor, bold; /* highlight*/
+      converseLib.validationFailed(31); /* invalid date entered*/
+      ;
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* verify binding ruling xref cd*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CM002.KS0CM-RULE-XREF-CD == " ") /* ruling xref not entered*/
+    /* continue on*/
+  else
+    ;
+    if (KS0CM002.KS0CM-GPC-CD > "  ")
+      KS0C-25210(); /* Check to see if rule gpc/xref exists*/
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If any errors were found, exit to display the map.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.validationMsgNum != 0) /* Errors were found*/
+    exit stack; /* Exit to display map*/
+  end
+  ;
+  ;
+end // end KS0C-35200
+
+// Process valid input request
+Function KS0C-36000()
+  /* ------------------------------------------------------------*/
+  /* if enter was pressed, continue*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (converseVar.eventKey not enter) /* enter not pressed*/
+    ;
+    KSWREC.XXXPRCNM = "36000"; /* module id*/
+    converseLib.validationFailed(4); /* pa/pf key pressed is not valid*/
+    exit stack; /* exit to display map*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If nothing changed, don't update the row*/
+  /* ------------------------------------------------------------*/
+  ;
+   /* move dates to*/
+  KS0CW00.KS0CW-FULLDATE = KS0CW01.KS0CW-DTL-RULE-DT[KS0CW-IXX]; /* numeric fields*/
+  KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY; /* for comparison*/
+  KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM;
+  KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD;
+  KS0CW00.KS0CW-HOLD-DATE1 = KS0CW00.KS0CW-FORMDATE;
+   /* move dates to*/
+  KS0CW00.KS0CW-FULLDATE = KS0CW01.KS0CW-DTL-RULE-RCPT-DT[KS0CW-IXX]; /* numeric fields*/
+  KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY; /* for comparison*/
+  KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM;
+  KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD;
+  KS0CW00.KS0CW-HOLD-DATE2 = KS0CW00.KS0CW-FORMDATE;
+  if (KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXX] == 0000)
+    KS0CW00.KS0CW-HOLD-YEAR-CHAR = "  ";
+  else
+    KS0CW00.KS0CW-HOLD-YEAR = KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXX];
+    KS0CW00.KS0CW-HOLD-YEAR-CHAR = KS0CW00.KS0CW-HOLD-YEAR;
+  end
+  ;
+  if (KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXX] == 0000)
+    KS0CW00.KS0CW-HOLD-YEAR-CHAR2 = "  ";
+  else
+    KS0CW00.KS0CW-HOLD-YEAR = KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXX];
+    KS0CW00.KS0CW-HOLD-YEAR-CHAR2 = KS0CW00.KS0CW-HOLD-YEAR;
+  end
+  ;
+  if (KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXX] == 0000)
+    KS0CW00.KS0CW-HOLD-YEAR-CHAR3 = "  ";
+  else
+    KS0CW00.KS0CW-HOLD-YEAR = KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXX];
+    KS0CW00.KS0CW-HOLD-YEAR-CHAR3 = KS0CW00.KS0CW-HOLD-YEAR;
+  end
+  ;
+  if (KS0CM002.KS0CM-STAT == KS0CW01.KS0CW-DTL-XXXSTAT[KS0CW-IXX]
+   && KS0CM002.KS0CM-RULE-XREF-CD == 
+  KS0CW01.KS0CW-DTL-RULE-XREF-CD[KS0CW-IXX]
+   && KS0CM002.KS0CM-RULE-DT == 
+  KS0CW00.KS0CW-HOLD-DATE1
+   && KS0CM002.KS0CM-RULE-RCPT-DT == 
+  KS0CW00.KS0CW-HOLD-DATE2
+   && KS0CM002.KS0CM-SESN-CD[1] == 
+  KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXX]
+   && KS0CM002.KS0CM-SESN-CD[2] == 
+  KS0CW01.KS0CW-DTL-SESN-CD2[KS0CW-IXX]
+   && KS0CM002.KS0CM-SESN-CD[3] == 
+  KS0CW01.KS0CW-DTL-SESN-CD3[KS0CW-IXX]
+   && KS0CM002.KS0CM-SESN-YR[1] == 
+  KS0CW00.KS0CW-HOLD-YEAR-CHAR
+   && KS0CM002.KS0CM-SESN-YR[2] == 
+  KS0CW00.KS0CW-HOLD-YEAR-CHAR2
+   && KS0CM002.KS0CM-SESN-YR[3] == 
+  KS0CW00.KS0CW-HOLD-YEAR-CHAR3
+   && KS0CM002.KS0CM-RULE-COMNT == 
+  KS0CW01.KS0CW-DTL-RULE-COMNT[KS0CW-IXX])
+  /* next sentence*/
+  else
+    ;
+    /* ------------------------------------------------------------*/
+    /* Select the row for update*/
+    /* ------------------------------------------------------------*/
+    ;
+    KS0C-36100(); /* select row*/
+    ;
+    /* ------------------------------------------------------------*/
+    /* If record was changed since initial display, flag error*/
+    /* ------------------------------------------------------------*/
+    ;
+    if (KS0CW01.KS0CW-DTL-ZZZCHGCT[KS0CW-IXX] != VBDRUL01.ZZZCHGCT) /* count*/
+                                   /* changed*/
+      ;
+      KSWREC.XXXPRCNM = "36000"; /* module id*/
+      converseLib.validationFailed(12); /* row was updated by another*/
+                                   /* application*/
+      KS0CW00.KS0CW-SWR = "Y"; /* request for data*/
+      KS0CW00.KS0CW-SWF = "Y"; /* format a new map*/
+   /* move new row to working*/
+      KS0CW02.KS0CW02-GROUP-DATA = VBDRUL01.VBDRUL01-GROUP; /* storage and display it*/
+   /* move change count to working*/
+      KS0CW01.KS0CW-DTL-ZZZCHGCT[KS0CW-IXX] = VBDRUL01.ZZZCHGCT; /* storage for compare*/
+      exit stack; /* exit to display map*/
+      ;
+    end
+    ;
+    /* ------------------------------------------------------------*/
+    /* Update the row in the table*/
+    /* ------------------------------------------------------------*/
+    ;
+    KS0C-36200(); /* update table row*/
+    ;
+    /* ------------------------------------------------------------*/
+    /* Indicate that the table update was successfully completed.*/
+    /* ------------------------------------------------------------*/
+    ;
+    KSWREC.XXXPRCNM = "36000"; /* show message*/
+    KSWREC.XXXMSGNO = 1; /* Table update was completed*/
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* Search for next selection*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0C-36300(); /* search for next selection*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* Commit all changes made to protected resources.*/
+  /* ------------------------------------------------------------*/
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.commit(); /* Commit all changes*/
+  ;
+  ;
+end // end KS0C-36000
+
+// Select row before update
+Function KS0C-36100()
+  /* ------------------------------------------------------------*/
+  /* Select the requested row from the table.*/
+  /* ------------------------------------------------------------*/
+  ;
+  set VBDRUL01 empty; /* Clear row storage area*/
+  ;
+  VBDRUL01.XGPCD = KS0CM002.KS0CM-GPC-CD; /* gpc & ruling nbr*/
+  VBDRUL01.KS-RULE-NBR = KS0CM002.KS0CM-RULE-NBR;
+  ;
+  try
+    call "IO6070" ("S ", SQLCA, VBDRUL01) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If data not available, return an error message to the user.*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  KSWREC.XXXPRCNM = "36100"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    ;
+  else
+    ;
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    ;
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+    ;
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "SELECT ROW BEFORE UPDATE     ";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1DBASE = "DCUSTM  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VBDRUL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VBDRUL01.VBDRUL01-KEY; /* Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-36100
+
+// Update the changed table row
+Function KS0C-36200()
+  /* ------------------------------------------------------------*/
+  /* Format the data from the map in the table row.*/
+  /* ------------------------------------------------------------*/
+  ;
+   /* gpc code*/
+  VBDRUL01.XGPCD = KS0CM002.KS0CM-GPC-CD;
+   /* binding ruling number*/
+  VBDRUL01.KS-RULE-NBR = KS0CM002.KS0CM-RULE-NBR;
+   /* binding ruling xref cd*/
+  VBDRUL01.KS-RULE-XREF-CD = KS0CM002.KS0CM-RULE-XREF-CD;
+   /* binding ruling date*/
+  KS0CW00.KS0CW-FORMDATE = KS0CM002.KS0CM-RULE-DT;
+  KS0CW00.KS0CW-FULLMM = KS0CW00.KS0CW-FORMMM;
+  KS0CW00.KS0CW-FULLDD = KS0CW00.KS0CW-FORMDD;
+  KS0CW00.KS0CW-FULLYY = KS0CW00.KS0CW-FORMYY;
+  if (KS0CW00.KS0CW-FULLYY > 50)
+    KS0CW00.KS0CW-FULLCC = 19;
+  else /* if year > 50 , move*/
+    KS0CW00.KS0CW-FULLCC = 20; /* 19 to century; otherwise*/
+                                        /* move 20*/
+  end
+  VBDRUL01.KS-RULE-DT = KS0CW00.KS0CW-FULLDATE;
+  ;
+   /* binding ruling receipt dt*/
+  KS0CW00.KS0CW-FORMDATE = KS0CM002.KS0CM-RULE-RCPT-DT;
+  KS0CW00.KS0CW-FULLMM = KS0CW00.KS0CW-FORMMM;
+  KS0CW00.KS0CW-FULLDD = KS0CW00.KS0CW-FORMDD;
+  KS0CW00.KS0CW-FULLYY = KS0CW00.KS0CW-FORMYY;
+  if (KS0CW00.KS0CW-FULLYY > 50)
+    KS0CW00.KS0CW-FULLCC = 19;
+  else /* if year > 50 , move*/
+    KS0CW00.KS0CW-FULLCC = 20; /* 19 to century; otherwise*/
+                                     /* move 20*/
+  end
+  VBDRUL01.KS-RULE-RCPT-DT = KS0CW00.KS0CW-FULLDATE;
+  ;
+   /* season code*/
+  VBDRUL01.XSE-SESN-CD[1] = KS0CM002.KS0CM-SESN-CD[1];
+  ;
+   /* season code*/
+  VBDRUL01.XSE-SESN-CD[2] = KS0CM002.KS0CM-SESN-CD[2];
+  ;
+   /* season code*/
+  VBDRUL01.XSE-SESN-CD[3] = KS0CM002.KS0CM-SESN-CD[3];
+  ;
+  KS0CW00.KS0CW-BIN-YEAR = 0000; /**/
+  if (KS0CM002.KS0CM-SESN-YR[1] > "  ") /* if entered*/
+   /* season year*/
+    KS0CW00.KS0CW-BIN-YEAR-YY = KS0CM002.KS0CM-SESN-YR[1];
+    if (KS0CW00.KS0CW-BIN-YEAR-YY > 50)
+      KS0CW00.KS0CW-BIN-YEAR-CC = 19;
+    else /* if year > 50 , move*/
+      KS0CW00.KS0CW-BIN-YEAR-CC = 20; /* 19 to century; otherwise*/
+    end
+  end
+  ;
+   /**/
+  VBDRUL01.XSN-SESN-YR-RNG[1] = KS0CW00.KS0CW-BIN-YEAR;
+  ;
+  KS0CW00.KS0CW-BIN-YEAR = 0000; /**/
+  if (KS0CM002.KS0CM-SESN-YR[2] > "  ") /* if entered*/
+   /* season year*/
+    KS0CW00.KS0CW-BIN-YEAR-YY = KS0CM002.KS0CM-SESN-YR[2];
+    if (KS0CW00.KS0CW-BIN-YEAR-YY > 50)
+      KS0CW00.KS0CW-BIN-YEAR-CC = 19;
+    else /* if year > 50 , move*/
+      KS0CW00.KS0CW-BIN-YEAR-CC = 20; /* 19 to century; otherwise*/
+    end
+  end
+  ;
+   /**/
+  VBDRUL01.XSN-SESN-YR-RNG[2] = KS0CW00.KS0CW-BIN-YEAR;
+  ;
+  KS0CW00.KS0CW-BIN-YEAR = 0000; /**/
+  if (KS0CM002.KS0CM-SESN-YR[3] > "  ") /* if entered*/
+   /* season year*/
+    KS0CW00.KS0CW-BIN-YEAR-YY = KS0CM002.KS0CM-SESN-YR[3];
+    if (KS0CW00.KS0CW-BIN-YEAR-YY > 50)
+      KS0CW00.KS0CW-BIN-YEAR-CC = 19;
+    else /* if year > 50 , move*/
+      KS0CW00.KS0CW-BIN-YEAR-CC = 20; /* 19 to century; otherwise*/
+    end
+  end
+  ;
+   /**/
+  VBDRUL01.XSN-SESN-YR-RNG[3] = KS0CW00.KS0CW-BIN-YEAR;
+  ;
+   /* comments*/
+  VBDRUL01.KS-RULE-COMNT = KS0CM002.KS0CM-RULE-COMNT;
+   /* record status*/
+  VBDRUL01.XXXSTAT = KS0CM002.KS0CM-STAT;
+  VBDRUL01.ZZZCHGDT = XX0XW01.XX0XWDAT; /* modified date*/
+  VBDRUL01.ZZZCHGTM = XX0XW01.XX0XWTIM; /* modified time*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* Update the new row in the table.*/
+  /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO6070" ("U ", SQLCA, VBDRUL01) {isNoRefresh = yes, isExternal = yes};
+  end /* add row*/
+  ;
+  /* ------------------------------------------------------------*/
+  /* If successful, return to the previous process.*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      KS0CW00.KS0CW-UPDATE-SW = "Y"; /* update switch*/
+      return; /* Return to previous process*/
+    end
+    ;
+  end
+  ;
+  /* ------------------------------------------------------------*/
+  /* If data not available, return an error message to the user.*/
+  /* Otherwise, indicate that an unexpected error has occurred.*/
+  /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  KSWREC.XXXPRCNM = "36200"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    converseLib.validationFailed(11); /* Data in use by another*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    ;
+  else
+    ;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+    ;
+    converseLib.validationFailed(10); /* Unexpected error occurred*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    ;
+    converseLib.clearScreen();
+     /* Clear screen before display*/
+    ;
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UPDATE TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = KSWREC.XXXPRCNM; /* Program number*/
+  TA1REC.TA1DBASE = "DCUSTM  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VBDRUL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = VBDRUL01.VBDRUL01-KEY; /* Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* Exit to display map*/
+  ;
+  ;
+end // end KS0C-36200
+
+// Find next row for update
+Function KS0C-36300()
+  /* ------------------------------------------------------------*/
+  /* Determine if another line was selected for viewing*/
+  /* ------------------------------------------------------------*/
+  ;
+  KS0CW00.KS0CW-SWU = "N";
+  KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXX + 1; /* start 1 row past last*/
+                                           /* row found*/
+  ;
+  while (KS0CW00.KS0CW-IXM <= 12 /* until end of lines*/
+   && KS0CW00.KS0CW-SWU == "N") /* or 's' found*/
+    ;
+    if (KS0CM001.KS0CMSEL[KS0CW-IXM] == "S") /* line selected*/
+      ;
+  /* ------------------------------------------------------------*/
+  /* move working storage to the map*/
+  /* ------------------------------------------------------------*/
+      ;
+      KS0CM002.KS0CM-STAT = KS0CW01.KS0CW-DTL-XXXSTAT[KS0CW-IXM]; /* team status*/
+      ;
+      if (KS0CW01.KS0CW-DTL-XXXSTAT[KS0CW-IXM] == "A") /* active*/
+        KS0CM002.KS0CM-STATUS-DESC = "ACTIVE"; /* 'active' to map*/
+      else /* otherwise*/
+        KS0CM002.KS0CM-STATUS-DESC = "INACTIVE"; /* 'inactive' to map*/
+      end
+      ;
+      KS0CW00.KS0CW-FULLDATE = KS0CW01.KS0CW-DTL-ZZZSDT[KS0CW-IXM]; /**/
+      KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY; /* year*/
+      KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM; /* month*/
+      KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD; /* days*/
+      KS0CM002.KS0CM-CREATE-DT = KS0CW00.KS0CW-FORMDATE;
+                                                   /* create date*/
+      ;
+      KS0CM002.KS0CM-USER = COMMAREA.CAUSERID; /* user-id*/
+      ;
+      KS0CW00.KS0CW-FULLDATE = KS0CW01.KS0CW-DTL-ZZZCHGDT[KS0CW-IXM];
+  /* modified date to ws*/
+      KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY; /* year*/
+      KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM; /* month*/
+      KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD; /* days*/
+      KS0CM002.KS0CM-MOD-DT = KS0CW00.KS0CW-FORMDATE; /* modified date*/
+      ;
+      KS0CM002.KS0CM-GPC-CD = KS0CW01.KS0CW-DTL-GPC-CD[KS0CW-IXM]; /* gpc code*/
+      KS0CM002.KS0CM-RULE-NBR = KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXM]; /* binding ruling number*/
+      KS0CM002.KS0CM-RULE-XREF-CD = KS0CW01.KS0CW-DTL-RULE-XREF-CD[KS0CW-IXM]; /* binding ruling xref*/
+      ;
+   /* binding ruling date*/
+      KS0CW00.KS0CW-FULLDATE = KS0CW01.KS0CW-DTL-RULE-DT[KS0CW-IXM];
+      KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY;
+      KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM;
+      KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD;
+      KS0CM002.KS0CM-RULE-DT = KS0CW00.KS0CW-FORMDATE;
+      ;
+   /* ruling receipt date*/
+      KS0CW00.KS0CW-FULLDATE = KS0CW01.KS0CW-DTL-RULE-RCPT-DT[KS0CW-IXM];
+      KS0CW00.KS0CW-FORMYY = KS0CW00.KS0CW-FULLYY;
+      KS0CW00.KS0CW-FORMMM = KS0CW00.KS0CW-FULLMM;
+      KS0CW00.KS0CW-FORMDD = KS0CW00.KS0CW-FULLDD;
+      KS0CM002.KS0CM-RULE-RCPT-DT = KS0CW00.KS0CW-FORMDATE;
+      ;
+   /* season code*/
+      KS0CM002.KS0CM-SESN-CD[1] = KS0CW01.KS0CW-DTL-SESN-CD1[KS0CW-IXM];
+      if (KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM] > 0000)
+   /* season year*/
+        KS0CW00.KS0CW-FULLYY = KS0CW01.KS0CW-DTL-SESN-YR1[KS0CW-IXM];
+        KS0CM002.KS0CM-SESN-YR[1] = KS0CW00.KS0CW-FULLYY;
+      else
+        KS0CM002.KS0CM-SESN-YR[1] = "  ";
+      end
+      ;
+   /* season code*/
+      KS0CM002.KS0CM-SESN-CD[2] = KS0CW01.KS0CW-DTL-SESN-CD2[KS0CW-IXM];
+      if (KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXM] > 0000)
+   /* season year*/
+        KS0CW00.KS0CW-FULLYY = KS0CW01.KS0CW-DTL-SESN-YR2[KS0CW-IXM];
+        KS0CM002.KS0CM-SESN-YR[2] = KS0CW00.KS0CW-FULLYY;
+      else
+        KS0CM002.KS0CM-SESN-YR[2] = "  ";
+      end
+      ;
+   /* season code*/
+      KS0CM002.KS0CM-SESN-CD[3] = KS0CW01.KS0CW-DTL-SESN-CD3[KS0CW-IXM];
+      if (KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXM] > 0000)
+   /* season year*/
+        KS0CW00.KS0CW-FULLYY = KS0CW01.KS0CW-DTL-SESN-YR3[KS0CW-IXM];
+        KS0CM002.KS0CM-SESN-YR[3] = KS0CW00.KS0CW-FULLYY;
+      else
+        KS0CM002.KS0CM-SESN-YR[3] = "  ";
+      end
+      ;
+   /* comments*/
+      KS0CM002.KS0CM-RULE-COMNT = KS0CW01.KS0CW-DTL-RULE-COMNT[KS0CW-IXM];
+   /* record status*/
+      KS0CM002.KS0CM-STAT = KS0CW01.KS0CW-DTL-XXXSTAT[KS0CW-IXM];
+      ;
+      KS0CW00.KS0CW-SWU = "Y"; /* 's' was found*/
+      ;
+      KS0CW00.KS0CW-IXX = KS0CW00.KS0CW-IXM; /* save index*/
+      ;
+    end
+    ;
+    KS0CW00.KS0CW-IXM = KS0CW00.KS0CW-IXM + 1; /* increment index*/
+    ;
+  end
+  ;
+   /**/
+  KS0CW00.KS0CW-LAST-RULE-NBR = KS0CW01.KS0CW-DTL-RULE-NBR[KS0CW-IXX]; /* save ruling*/
+   /**/
+  KS0CW00.KS0CW-LAST-RULE-DT = KS0CW01.KS0CW-DTL-RULE-DT[KS0CW-IXX];
+  ;
+  /* ------------------------------------------------------------*/
+  /* If no more lines selected, go back to inquiry screen. If*/
+  /* anything was updated, display that new data on inquiry*/
+  /* ------------------------------------------------------------*/
+  ;
+  if (KS0CW00.KS0CW-SWU == "N") /* if no more selected*/
+                                     /* go back to inquiry screen*/
+    ;
+    KS0CW00.KS0CW-SWD = "1"; /* map to be displayed switch*/
+    KS0CW00.KS0CW-SWF = "Y"; /* format the map*/
+    ;
+    if (KS0CW00.KS0CW-UPDATE-SW == "Y" /* anything updated*/
+    )                                 
+      KS0CW00.KS0CW-SWR = "Y"; /* request new data on map1*/
+      ;
+    end
+    ;
+  end
+  ;
+end // end KS0C-36300
+
+//*** RECORD=KS0CW00 ****
+// ----------------------------
+// Application working storage.
+// ----------------------------
+// ***********************
+Record KS0CW00 type basicRecord
+  10 KS0CW-IXM KS0CW-IXM ; 
+  10 KS0CW-IX1 KS0CW-IX1 ; 
+  10 KS0CW-IX2 KS0CW-IX2 ; 
+  10 KS0CW-IXX KS0CW-IXX ; 
+  10 KS0CW-SWC KS0CW-SWC ; 
+  10 KS0CW-SWD KS0CW-SWD ; 
+  10 KS0CW-SWF KS0CW-SWF ; 
+  10 KS0CW-SWR KS0CW-SWR ; 
+  10 KS0CW-SWU KS0CW-SWU ; 
+  10 KS0CW-SFN KS0CW-SFN ; 
+  10 KS0CW-EDIT-FLAG KS0CW-EDIT-FLAG ; 
+  10 KS0CW-GPC-CD KS0CW-GPC-CD ; 
+  10 KS0CW-GPC-DESC KS0CW-GPC-DESC ; 
+  10 KS0CW-SESN-YR KS0CW-SESN-YR ; 
+  10 KS0CW-YEAR-DESC-CHAR KS0CW-YEAR-DESC-CHAR ; 
+  10 KS0CW-YEAR-DESC KS0CW-YEAR-DESC ; 
+    15 KS0CW-YEAR-DESC-CC KS0CW-YEAR-DESC-CC ; 
+    15 KS0CW-YEAR-DESC-YY KS0CW-YEAR-DESC-YY ; 
+  10 KS0CW-SESN-CD KS0CW-SESN-CD ; 
+  10 KS0CW-SESN-DESC KS0CW-SESN-DESC ; 
+  10 KS0CW-STAT KS0CW-STAT ; 
+  10 KS0CW-STAT-DESC KS0CW-STAT-DESC ; 
+  10 KS0CW-UPDATE-SW KS0CW-UPDATE-SW ; 
+  10 KS0CW-LAST-RULE-KEY KS0CW-LAST-RULE-KEY ; 
+    15 KS0CW-LAST-RULE-DT KS0CW-LAST-RULE-DT ; 
+    15 KS0CW-LAST-RULE-NBR KS0CW-LAST-RULE-NBR ; 
+  10 KS0CW-SAVE-PAGE KS0CW-SAVE-PAGE ; 
+  10 XXXTSLEN XXXTSLEN ; 
+  10 XXXTSPAG XXXTSPAG ; 
+  10 TA5TSQIX TA5TSQIX ; 
+  10 KS0CW-BIN-YEAR KS0CW-BIN-YEAR ; 
+    15 KS0CW-BIN-YEAR-CC KS0CW-BIN-YEAR-CC ; 
+    15 KS0CW-BIN-YEAR-YY KS0CW-BIN-YEAR-YY ; 
+  10 KS0CW-FULLDATE KS0CW-FULLDATE ; 
+    15 KS0CW-FULLCC KS0CW-FULLCC ; 
+    15 KS0CW-FULLYY KS0CW-FULLYY ; 
+    15 KS0CW-FULLMM KS0CW-FULLMM ; 
+    15 KS0CW-FULLDD KS0CW-FULLDD ; 
+  10 KS0CW-FORMDATE KS0CW-FORMDATE ; 
+    15 KS0CW-FORMMM KS0CW-FORMMM ; 
+    15 KS0CW-FORMDD KS0CW-FORMDD ; 
+    15 KS0CW-FORMYY KS0CW-FORMYY ; 
+  10 KS0CW-HOLD-DATE1 KS0CW-HOLD-DATE1 ; 
+  10 KS0CW-HOLD-DATE2 KS0CW-HOLD-DATE2 ; 
+  10 KS0CW-HOLD-YEAR KS0CW-HOLD-YEAR ; 
+  10 KS0CW-HOLD-YEAR-CHAR KS0CW-HOLD-YEAR-CHAR ; 
+  10 KS0CW-HOLD-YEAR-CHAR2 KS0CW-HOLD-YEAR-CHAR2 ; 
+  10 KS0CW-HOLD-YEAR-CHAR3 KS0CW-HOLD-YEAR-CHAR3 ; 
+  10 KS0CW-CTL-FLD KS0CW-CTL-FLD ; 
+    15 KS0CW-FNC KS0CW-FNC ; 
+    15 KS0CW-SAV KS0CW-SAV ; 
+    15 KS0CW-SAV-PAGE KS0CW-SAV-PAGE ; 
+  10 KS0CW-SESN-YR-MATCH KS0CW-SESN-YR-MATCH ; 
+end // end KS0CW00
+
+//*** RECORD=KS0CW01 ****
+// /*
+// /*      application working storage for map1
+// /*
+// ***********************
+Record KS0CW01 type basicRecord
+  5 XXXTSLEN XXXTSLEN ; 
+  5 * char(1236) ; // Temporary storage page length
+    10 KS0CW-SEL KS0CW-SEL [12] ; 
+    10 KS0CW-GROUP KS0CW-GROUP [12] ; 
+      15 KS0CW-DTL-GPC-CD KS0CW-DTL-GPC-CD ; 
+      15 KS0CW-DTL-RULE-NBR KS0CW-DTL-RULE-NBR ; 
+      15 KS0CW-DTL-RULE-XREF-CD KS0CW-DTL-RULE-XREF-CD ; 
+      15 KS0CW-DTL-RULE-DT KS0CW-DTL-RULE-DT ; 
+      15 KS0CW-DTL-RULE-RCPT-DT KS0CW-DTL-RULE-RCPT-DT ; 
+      15 KS0CW-DTL-SESN-CD1 KS0CW-DTL-SESN-CD1 ; 
+      15 KS0CW-DTL-SESN-CD2 KS0CW-DTL-SESN-CD2 ; 
+      15 KS0CW-DTL-SESN-CD3 KS0CW-DTL-SESN-CD3 ; 
+      15 KS0CW-DTL-SESN-YR1 KS0CW-DTL-SESN-YR1 ; 
+      15 KS0CW-DTL-SESN-YR2 KS0CW-DTL-SESN-YR2 ; 
+      15 KS0CW-DTL-SESN-YR3 KS0CW-DTL-SESN-YR3 ; 
+      15 KS0CW-DTL-RULE-COMNT KS0CW-DTL-RULE-COMNT ; 
+      15 KS0CW-DTL-XXXSTAT KS0CW-DTL-XXXSTAT ; 
+      15 KS0CW-DTL-XXXUSRID KS0CW-DTL-XXXUSRID ; 
+      15 KS0CW-DTL-ZZZSDT KS0CW-DTL-ZZZSDT ; 
+      15 KS0CW-DTL-ZZZCHGDT KS0CW-DTL-ZZZCHGDT ; 
+      15 KS0CW-DTL-ZZZCHGTM KS0CW-DTL-ZZZCHGTM ; 
+      15 KS0CW-DTL-ZZZCHGCT KS0CW-DTL-ZZZCHGCT ; 
+end // end KS0CW01
+
+//*** RECORD=KS0CW02 ****
+// /*
+// /*      application working storage for map 2
+// /*
+// ***********************
+Record KS0CW02 type basicRecord
+  10 KS0CW02-GROUP-DATA KS0CW02-GROUP-DATA ; 
+    15 KS0CW-GPC-CD KS0CW-GPC-CD ; 
+    15 KS0CW-RULE-NBR KS0CW-RULE-NBR ; 
+    15 KS0CW-RULE-XREF-CD KS0CW-RULE-XREF-CD ; 
+    15 KS0CW-RULE-DT KS0CW-RULE-DT ; 
+    15 KS0CW-RULE-RCPT-DT KS0CW-RULE-RCPT-DT ; 
+    15 KS0CW-SESN-CD KS0CW-SESN-CD [3] ; 
+    15 KS0CW-SESN-YEAR KS0CW-SESN-YEAR [3] ; 
+    15 KS0CW-RULE-COMNT KS0CW-RULE-COMNT ; 
+    15 KS0CW-STAT KS0CW-STAT ; 
+    15 KS0CW-XXXUSRID KS0CW-XXXUSRID ; 
+    15 KS0CW-ZZZSDT KS0CW-ZZZSDT ; 
+    15 KS0CW-ZZZCHGDT KS0CW-ZZZCHGDT ; 
+    15 KS0CW-ZZZCHGTM KS0CW-ZZZCHGTM ; 
+    15 KS0CW-ZZZCHGCT KS0CW-ZZZCHGCT ; 
+  10 KS0CW-GPC-DESC KS0CW-GPC-DESC ; 
+end // end KS0CW02
+
+// Binary work year
+DataItem KS0CW-BIN-YEAR num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Binary work year cc
+DataItem KS0CW-BIN-YEAR-CC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Binary work year yy
+DataItem KS0CW-BIN-YEAR-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Pass record control field
+DataItem KS0CW-CTL-FLD char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// GPC CODE - DETAIL
+DataItem KS0CW-DTL-GPC-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-DTL-RULE-COMNT char(45)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// RULING DATE - DETAIL
+DataItem KS0CW-DTL-RULE-DT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// RULING NUMBER - DETAIL
+DataItem KS0CW-DTL-RULE-NBR char(10)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// RECEIPT DATE - DETAIL
+DataItem KS0CW-DTL-RULE-RCPT-DT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// RULING CROSS REFERENCE CODE
+DataItem KS0CW-DTL-RULE-XREF-CD char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON CODE - DETAIL
+DataItem KS0CW-DTL-SESN-CD1 char(2)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON CODE - DETAIL
+DataItem KS0CW-DTL-SESN-CD2 char(2)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON CODE - DETAIL
+DataItem KS0CW-DTL-SESN-CD3 char(2)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON YEAR - DETAIL
+DataItem KS0CW-DTL-SESN-YR1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON YEAR - DETAIL
+DataItem KS0CW-DTL-SESN-YR2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON YEAR - DETAIL
+DataItem KS0CW-DTL-SESN-YR3 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-DTL-XXXSTAT char(1)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-DTL-XXXUSRID char(8)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-DTL-ZZZCHGCT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-DTL-ZZZCHGDT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-DTL-ZZZCHGTM smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-DTL-ZZZSDT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Edit Flag
+DataItem KS0CW-EDIT-FLAG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Map function switch
+DataItem KS0CW-FNC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Format Date
+DataItem KS0CW-FORMDATE char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Format Date dd
+DataItem KS0CW-FORMDD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Format Date mm
+DataItem KS0CW-FORMMM char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Format Date yy
+DataItem KS0CW-FORMYY char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Work Full Date cc
+DataItem KS0CW-FULLCC num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Work Full Date
+DataItem KS0CW-FULLDATE num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Work Full Date dd
+DataItem KS0CW-FULLDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Work Full Date mm
+DataItem KS0CW-FULLMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Work Full Date yy
+DataItem KS0CW-FULLYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// GPC CODE
+DataItem KS0CW-GPC-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// GPC CODE DESCRIPTION - HEADER
+DataItem KS0CW-GPC-DESC char(25)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//  Group Level
+DataItem KS0CW-GROUP char(102)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Holding Date 1
+DataItem KS0CW-HOLD-DATE1 num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Holding Date 2
+DataItem KS0CW-HOLD-DATE2 num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Holding Year numeric
+DataItem KS0CW-HOLD-YEAR num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Holding Year character
+DataItem KS0CW-HOLD-YEAR-CHAR char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Holding Year character
+DataItem KS0CW-HOLD-YEAR-CHAR2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Holding Year character
+DataItem KS0CW-HOLD-YEAR-CHAR3 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem KS0CW-IX1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem KS0CW-IX2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem KS0CW-IXM smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Index for map fields
+DataItem KS0CW-IXX smallint {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Update switch
+DataItem KS0CW-LAST-RULE-DT num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Update switch
+DataItem KS0CW-LAST-RULE-KEY char(19)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Last ruling nbr processed
+DataItem KS0CW-LAST-RULE-NBR char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT
+DataItem KS0CW-RULE-COMNT char(45)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING DATE
+DataItem KS0CW-RULE-DT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// BINDING RULING NUMBER
+DataItem KS0CW-RULE-NBR char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING RECEIPT DATE
+DataItem KS0CW-RULE-RCPT-DT int {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING CROSS REFERENCE
+DataItem KS0CW-RULE-XREF-CD char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Save index for WS
+DataItem KS0CW-SAV num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Save page for cursor placement
+DataItem KS0CW-SAV-PAGE num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Page save field
+DataItem KS0CW-SAVE-PAGE num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// LINE SELECTION INDICATOR
+DataItem KS0CW-SEL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON CODE
+DataItem KS0CW-SESN-CD char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON CODE DESCRIPTION - HDR
+DataItem KS0CW-SESN-DESC char(15)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON YEAR
+DataItem KS0CW-SESN-YEAR smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON YEAR
+DataItem KS0CW-SESN-YR char(2)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Count matches
+DataItem KS0CW-SESN-YR-MATCH smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// function switch
+DataItem KS0CW-SFN char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// STATUS CODE
+DataItem KS0CW-STAT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// STATUS CODE DESCRIPTION - HDR
+DataItem KS0CW-STAT-DESC char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Cursor end of file switch
+DataItem KS0CW-SWC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Map to be displayed switch
+DataItem KS0CW-SWD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Format the map switch
+DataItem KS0CW-SWF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Request for data switch
+DataItem KS0CW-SWR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Storage page update switch
+DataItem KS0CW-SWU char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Update switch
+DataItem KS0CW-UPDATE-SW char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-XXXUSRID char(8)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON YEARdescription
+DataItem KS0CW-YEAR-DESC num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON YEAR description cc
+DataItem KS0CW-YEAR-DESC-CC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON YEAR description char
+DataItem KS0CW-YEAR-DESC-CHAR char(4)  {
+  align = right, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// SEASON YEAR description yy
+DataItem KS0CW-YEAR-DESC-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-ZZZCHGCT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-ZZZCHGDT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-ZZZCHGTM smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// BINDING RULING COMMENT -DETAIL
+DataItem KS0CW-ZZZSDT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//  Group Level
+DataItem KS0CW02-GROUP-DATA char(102)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+
