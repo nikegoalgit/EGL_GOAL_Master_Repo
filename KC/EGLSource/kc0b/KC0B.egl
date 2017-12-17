@@ -1,0 +1,2459 @@
+package kc0b;
+
+import corpcom2.XSRREC;
+import corpcom2.XX0XW01;
+import corpcom2.XX0XW02;
+import corpcom2.XZZREC;
+import corpcom3.XPXCU01;
+import corpcom3.XPXGP01;
+import corpcom3.XPXX001;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSOPS02;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import corpx1.XCSTBL;
+import corpx1.XCUCD;
+import corpx1.XCUNM;
+import corpx1.XCUTBL;
+import corpx1.XGPCD;
+import corpx1.XGPDESC;
+import corpx1.XGPTBL;
+import corpx2.XSRSQNBR;
+import sy.common.SY1REC;
+import sy.common.SY2REC;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+//*** PROGRAM=KC0B ****
+// ************************************************************
+// 
+//         KC0B - Credit Early Release Screen
+//         ----------------------------------
+// 
+// General program explanation and notes:
+// 
+// This program is the request submitter program for the
+// Credit Early Release system.  It validates the
+// values given as well as the combination of values
+// given.  Records are written to the Scrathpad database
+// which will then be used as input to a batch program
+// 'CC1400', 'Credit Early Release' program.
+// ------------------------------------------------------------
+// Maintenance History:
+// --------------------
+//   Date   Who    Remarks
+// -------- ------ --------------------------------------------
+// 09-18-91 wjohns create
+// ------- -------- ------ ----------------------------------
+// Y2KFIX  02/25/98 CSAWKI MODIFICATIONS MADE TO: KC0BW01,
+//                         KC0B120, KC0B160.
+// 
+// *********************
+Program KC0B type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "CC00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  KC0BW01 KC0BW01; // record
+  KC0BW02 KC0BW02; // record
+  KC0BW02R KC0BW02R { redefines = KC0BW02 } ; // record
+  KC0BW03 KC0BW03; // record
+  SQLCA SQLCA; // record
+  SY1REC SY1REC; // record
+  SY2REC SY2REC; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  XSRREC XSRREC; // record
+  XX0XW01 XX0XW01; // record
+  XX0XW02 XX0XW02; // record
+  XZZREC XZZREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XCUTBL {deleteAfterUse = yes}; // table
+  use XCSTBL {deleteAfterUse = yes}; // table
+  use XGPTBL {deleteAfterUse = yes}; // table
+  use KC0BM.KC0BM001,  // forms
+      KC0BM.XX0XM001
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    KC0B000: KC0B000();
+    exit program;
+  end // end main
+end // end KC0B
+
+// Main flow
+Function KC0B000()
+   /* ************************************************************/
+   /* *   this is the "main logic" for the application.         **/
+   /* *                                                         **/
+   /* *   perform initialization, set application revision nbrs,**/
+   /* *   then do main perform until done with application      **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  converseVar.commitOnConverse = 1; /* force db2 to commit on converse*/
+  ;
+  VGVar.handleHardIOErrors = 1; /* return control to appl if db2 err*/
+  ;
+  KC0BS00(); /* set security*/
+  ;
+  XSENTRY(); /* appl entry security*/
+  ;
+  XSSEGTR(); /* set segmented transaction id*/
+  ;
+   /* *************************************/
+   /* * Initialize all potential records.*/
+   /* *************************************/
+  ;
+  set SQLCA empty;
+  set XZZREC empty;
+  set XSRREC empty;
+  set SY1REC empty;
+  set SY2REC empty;
+  set KC0BW01 empty; /* clear common working storage*/
+  set KC0BW02 empty; /* clear common working storage*/
+  set KC0BW03 empty; /* clear common working storage*/
+  ;
+   /* ***********************************************/
+   /* * Was this application entered via 'fastpath'?*/
+   /* ***********************************************/
+  ;
+  if (COMMAREA.CATOAP != " ") /* 'toap' will be non-blank if fastpath*/
+    COMMAREA.CATOAP = " "; /* Clear commarea*/
+    COMMAREA.CAITEM = " ";
+  end
+  ;
+  KC0BW01.KC0BWEOA = "N"; /* set end-of-application flag to 'no'*/
+  ;
+  while (KC0BW01.KC0BWEOA == "N") /* while not end-of-aplication*/
+    sysVar.arrayIndex = 0;
+    set TA1REC empty;
+    TA1REC.TA1MAP = "KC0BM001"; /* prepare for abend*/
+    KC0B100();
+  end
+  ;
+  COMMAREA.CACURRAP = "KC0M";
+  ;
+  XSEXIT();
+  ;
+   /* if xsexit failed*/
+  ;
+  KC0BW01.KC0BWERR = "Y";
+  converseLib.validationFailed(34); /* security error*/
+  ;
+  exit program;
+end // end KC0B000
+
+// Converse map m001
+Function KC0B100()
+   /* ************************************************************/
+   /* *    process screen KC0BM001                              **/
+   /* *                                                         **/
+   /* *  major processing is directed from here.                **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  KC0BM001.KC0BMDAT = VGVar.currentShortGregorianDate;
+   /* MOVE 'KC0B100' TO KC0BW01.KC0BWCPR;*/
+  ;
+   /* ***********************************************************/
+  converse KC0BM001 ;
+   /* ***********************************************************/
+  ;
+  move KC0BM001 to KC0BW02 byName; /* works like a move corresponding*/
+  ;
+  ;
+  VAGen_EZEMSG = " ";
+  KC0BM001.KC0BMMSG = " ";
+  KC0BW01.KC0BWERR = "N"; /* Clear any previous error*/
+  ;
+  KC0B110(); /* validate pfkeys*/
+   /* ***********************************************************/
+   /* * If no pf key errors, edit.*/
+   /* ***********************************************************/
+  if (KC0BW01.KC0BWERR == "N") /* No PF key error detected*/
+    KC0B120(); /* Edit screen entries*/
+  end
+  ;
+   /* *****************************************************/
+   /* * Edits complete, format and add scratchpad record*/
+   /* *****************************************************/
+  if (KC0BW01.KC0BWERR == "N" /* No errors detected*/
+   && converseVar.eventKey is pf12)
+    if (KC0BM001 is modified) /* user entered more data*/
+      KC0B120(); /* Edit screen entries*/
+    end
+    if (KC0BW01.KC0BWERR == "N") /* No errors detected*/
+      KC0B160(); /* format xsrrec*/
+      set KC0BW02 empty;
+      move KC0BW02 to KC0BM001 byName;
+      KC0BW01.KC0BWENT = "N";
+      converseLib.validationFailed(49);
+      set KC0BM001.XCUCD cursor;
+    end
+  end
+  ;
+end // end KC0B100
+
+// Edit pfkeys
+Function KC0B110()
+   /* *************************************************/
+   /* *Check for fastpath data, program function keys*/
+   /* *************************************************/
+  ;
+   /* *************************/
+   /* Check for fastpath data*/
+   /* *************************/
+  if (KC0BM001.CATOAP != " " /* if any fastpath data entered*/
+   && converseVar.eventKey is enter)
+    COMMAREA.CATOAP = KC0BM001.CATOAP;
+    COMMAREA.CAITEM = KC0BM001.CAITEM;
+    XSEXIT();
+    KC0BW01.KC0BWERR = "Y"; /* xsexit failed*/
+    converseLib.validationFailed(34); /* security error*/
+    return;
+  end
+   /* ****************************************/
+   /* * Check for valid program function keys*/
+   /* ****************************************/
+  ;
+  if (converseVar.eventKey is enter)
+    /* next sentence*/
+  else
+    if (converseVar.eventKey is pa2)
+      set KC0BW02 empty;
+      move KC0BW02 to KC0BM001 withV60Compat;
+      KC0BW01.KC0BWERR = "Y";
+      KC0BW01.KC0BWENT = "N";
+      set KC0BM001.XCUCD cursor;
+    else
+      if (converseVar.eventKey is pf1)
+        COMMAREA.CATOAP = "GD01";
+        COMMAREA.CAITEM = "KC0BM001";
+        XSEXIT();
+        ;
+      else
+        if (converseVar.eventKey is pf4)
+          if (KC0BW01.KC0BWERR != "Y")
+            COMMAREA.CAUSERA = " ";
+            XSPF4();
+          end
+        else
+          if (converseVar.eventKey is pf3)
+            if (KC0BW01.KC0BWERR != "Y")
+              COMMAREA.CATOAP = "KC0M";
+              COMMAREA.CAUSERA = " ";
+              XSEXIT();
+              KC0BW01.KC0BWERR = "Y";
+              converseLib.validationFailed(34); /* security error*/
+              return;
+            end
+          else
+            if (converseVar.eventKey is pf12)
+              if (KC0BW01.KC0BWENT == "Y")
+                  /* next sentence*/
+              else
+                KC0BW01.KC0BWERR = "Y";
+                converseLib.validationFailed(40);
+              end
+            else
+              COMMAREA.CATOAP = " ";
+              converseLib.validationFailed(2); /* INVALID FUNCTION KEY*/
+              KC0BW01.KC0BWERR = "Y";
+            end
+          end
+        end
+      end
+    end
+  end
+end // end KC0B110
+
+// Edit KC0BM001 fields
+Function KC0B120()
+   /* **************************************/
+   /* Edit KC0BM001 entries*/
+   /* **************************************/
+  ;
+  set KC0BM001.XCUCD normal;
+  set KC0BM001.XGPCD normal;
+  set KC0BM001.KC0BM-XCSCD1 normal;
+  set KC0BM001.KC0BM-XCSCD2 normal;
+  set KC0BM001.KC0BM-XCSCD3 normal;
+  set KC0BM001.KC0BM-FMDT normal;
+  set KC0BM001.KC0BM-TODT normal;
+  set KC0BM001.KC0BMS01 normal;
+  set KC0BM001.KC0BMS02 normal;
+  set KC0BM001.KC0BMS03 normal;
+  set KC0BM001.KC0BMS04 normal;
+  set KC0BM001.KC0BMS05 normal;
+  set KC0BM001.KC0BMS06 normal;
+  set KC0BM001.KC0BMS07 normal;
+  set KC0BM001.KC0BMS08 normal;
+  set KC0BM001.KC0BMS09 normal;
+  set KC0BM001.KC0BMS10 normal;
+  set KC0BM001.KC0BMS11 normal;
+  set KC0BM001.KC0BMC01 normal;
+  set KC0BM001.KC0BMC02 normal;
+  set KC0BM001.KC0BMC03 normal;
+  set KC0BM001.KC0BMC04 normal;
+  set KC0BM001.KC0BMC05 normal;
+  set KC0BM001.KC0BMC06 normal;
+  set KC0BM001.KC0BMC07 normal;
+  set KC0BM001.KC0BMC08 normal;
+  set KC0BM001.KC0BMC09 normal;
+  set KC0BM001.KC0BMC10 normal;
+  set KC0BM001.KC0BMC11 normal;
+  set KC0BM001.KC0BMC12 normal;
+  set KC0BM001.KC0BMC13 normal;
+  set KC0BM001.KC0BMC14 normal;
+  set KC0BM001.KC0BMC15 normal;
+  set KC0BM001.KC0BMC16 normal;
+  set KC0BM001.KC0BMC17 normal;
+  set KC0BM001.KC0BMC18 normal;
+  set KC0BM001.KC0BMC19 normal;
+  set KC0BM001.KC0BMC20 normal;
+  set KC0BM001.KC0BMC21 normal;
+  set KC0BM001.KC0BMC22 normal;
+  set KC0BM001.KC0BMC23 normal;
+  set KC0BM001.KC0BMC24 normal;
+  set KC0BM001.KC0BMC25 normal;
+  set KC0BM001.KC0BMC26 normal;
+  set KC0BM001.KC0BMC27 normal;
+  set KC0BM001.KC0BMC28 normal;
+  set KC0BM001.KC0BMC29 normal;
+  set KC0BM001.KC0BMC30 normal;
+  set KC0BM001.KC0BMC31 normal;
+  set KC0BM001.KC0BMC32 normal;
+  set KC0BM001.KC0BMC33 normal;
+  set KC0BM001.KC0BMC34 normal;
+  set KC0BM001.KC0BMC35 normal;
+  set KC0BM001.KC0BMC36 normal;
+  set KC0BM001.KC0BMC37 normal;
+  set KC0BM001.KC0BMC38 normal;
+  set KC0BM001.KC0BMC39 normal;
+  set KC0BM001.KC0BMC40 normal;
+  set KC0BM001.KC0BMC41 normal;
+  set KC0BM001.KC0BMC42 normal;
+  set KC0BM001.KC0BMC43 normal;
+  set KC0BM001.KC0BMC44 normal;
+  set KC0BM001.KC0BMC45 normal;
+  set KC0BM001.KC0BMC46 normal;
+  set KC0BM001.KC0BMC47 normal;
+  set KC0BM001.KC0BMC48 normal;
+  set KC0BM001.KC0BMC49 normal;
+  set KC0BM001.KC0BMC50 normal;
+  set KC0BM001.KC0BMC51 normal;
+  set KC0BM001.KC0BMC52 normal;
+  set KC0BM001.KC0BMC53 normal;
+  set KC0BM001.KC0BMC54 normal;
+  set KC0BM001.KC0BMC55 normal;
+  ;
+   /* *****************************************/
+   /* * If the key fields are empty, don't edit*/
+   /* *****************************************/
+  if (KC0BM001.XCUCD == " "
+   && KC0BM001.XGPCD == " "
+   && KC0BM001.KC0BM-XCSCD1 == " "
+   && KC0BM001.KC0BM-XCSCD2 == " "
+   && KC0BM001.KC0BM-XCSCD3 == " "
+   && KC0BM001.KC0BM-FMDT == 0
+   && KC0BM001.KC0BMS01 == " "
+   && KC0BM001.KC0BMS02 == " "
+   && KC0BM001.KC0BMS03 == " "
+   && KC0BM001.KC0BMS04 == " "
+   && KC0BM001.KC0BMS05 == " "
+   && KC0BM001.KC0BMS06 == " "
+   && KC0BM001.KC0BMS07 == " "
+   && KC0BM001.KC0BMS08 == " "
+   && KC0BM001.KC0BMS09 == " "
+   && KC0BM001.KC0BMS10 == " "
+   && KC0BM001.KC0BMS11 == " ")
+    set KC0BM001.XCUCD cursor, normal;
+    KC0BW01.KC0BWERR = "Y";
+    return;
+  end
+  ;
+   /* ************************************************************/
+   /* Has the user requested a pop-up window for credit resp ?*/
+   /* ************************************************************/
+  if (KC0BM001.XCUCD == "?")
+    XPXX001();
+    while (XX0XW02.XX0XWEND != "Y")
+      XPXCU01();
+    end
+    if (XX0XW02.XX0XWPIX != 0)
+      KC0BM001.XCUCD = XCUTBL.XCUCD[XX0XWPIX];
+    end
+    converseLib.clearScreen();
+    
+    if (KC0BM001.XCUCD == "?")
+      KC0BM001.XCUCD = " ";
+    else
+      set KC0BM001.XGPCD cursor;
+    end
+    return;
+  end
+  ;
+   /* ************************************************************/
+   /* * Has the user requested a pop-up window for GPC CODES ?*/
+   /* ************************************************************/
+  if (KC0BM001.XGPCD == "?")
+    XPXX001();
+    while (XX0XW02.XX0XWEND != "Y")
+      XPXGP01();
+    end
+    if (XX0XW02.XX0XWPIX != 0)
+      KC0BM001.XGPCD = XGPTBL.XGPCD[XX0XWPIX];
+    end
+    converseLib.clearScreen();
+    
+    if (KC0BM001.XGPCD == "?")
+      KC0BM001.XGPCD = " ";
+    else
+      set KC0BM001.KC0BM-XCSCD1 cursor;
+    end
+    return;
+  end
+  ;
+   /* ******************************************************************/
+   /* Has the user requested a pop-up window for CREDIT STAT CODES ?*/
+   /* ******************************************************************/
+  if (KC0BM001.KC0BM-XCSCD1 == "?")
+    XPXX001();
+    while (XX0XW02.XX0XWEND != "Y")
+      XPXCS02();
+    end
+    if (XX0XW02.XX0XWPIX != 0)
+      KC0BM001.KC0BM-XCSCD1 = XCSTBL.XCSCD[XX0XWPIX];
+    end
+    converseLib.clearScreen();
+    
+    if (KC0BM001.KC0BM-XCSCD1 == "?")
+      KC0BM001.KC0BM-XCSCD1 = " ";
+    else
+      set KC0BM001.KC0BM-XCSCD2 cursor;
+    end
+    return;
+  end
+  ;
+   /* ******************************************************************/
+   /* Has the user requested a pop-up window for CREDIT STAT CODES ?*/
+   /* ******************************************************************/
+  if (KC0BM001.KC0BM-XCSCD2 == "?")
+    XPXX001();
+    while (XX0XW02.XX0XWEND != "Y")
+      XPXCS02();
+    end
+    if (XX0XW02.XX0XWPIX != 0)
+      KC0BM001.KC0BM-XCSCD2 = XCSTBL.XCSCD[XX0XWPIX];
+    end
+    converseLib.clearScreen();
+    
+    if (KC0BM001.KC0BM-XCSCD2 == "?")
+      KC0BM001.KC0BM-XCSCD2 = " ";
+    else
+      set KC0BM001.KC0BM-XCSCD3 cursor;
+    end
+    return;
+  end
+  ;
+   /* ******************************************************************/
+   /* Has the user requested a pop-up window for CREDIT STAT CODES ?*/
+   /* ******************************************************************/
+  if (KC0BM001.KC0BM-XCSCD3 == "?")
+    XPXX001();
+    while (XX0XW02.XX0XWEND != "Y")
+      XPXCS02();
+    end
+    if (XX0XW02.XX0XWPIX != 0)
+      KC0BM001.KC0BM-XCSCD3 = XCSTBL.XCSCD[XX0XWPIX];
+    end
+    converseLib.clearScreen();
+    
+    if (KC0BM001.KC0BM-XCSCD3 == "?")
+      KC0BM001.KC0BM-XCSCD3 = " ";
+    else
+      set KC0BM001.KC0BM-FMDT cursor;
+    end
+    return;
+  end
+  ;
+   /* *************************************/
+   /* * Valid credit rep must be present*/
+   /* *************************************/
+  if (KC0BM001.XCUCD != "?") /* pop-up NOT requested*/
+    ;
+    if (KC0BM001.XCUCD in XCUTBL.XCUCD) /* Valid selection made?*/
+      set KC0BM001.XCUCD normal; /* Yes, clear previous error*/
+      KC0BM001.XCUNM = XCUTBL.XCUNM[sysVar.arrayIndex];
+    else
+      set KC0BM001.XCUCD cursor, modified, bold; /* Indicate error*/
+      converseLib.validationFailed(41); /* Invalid credit rep given*/
+      KC0BW01.KC0BWERR = "Y";
+      return;
+    end
+  end
+  ;
+   /* ************************************/
+   /* * Valid gpc code must be present*/
+   /* ************************************/
+  if (KC0BM001.XGPCD != "?") /* pop-up NOT requested*/
+    ;
+    if (KC0BM001.XGPCD in XGPTBL.XGPCD) /* Valid selection made?*/
+      set KC0BM001.XGPCD normal; /* Yes, clear previous error*/
+      KC0BM001.XGPDESC = XGPTBL.XGPDESC[sysVar.arrayIndex];
+    else
+      set KC0BM001.XGPCD cursor, modified, bold; /* Indicate error*/
+      KC0BM001.KC0BMMSG = "INVALID GPC CODE";
+      KC0BW01.KC0BWERR = "Y";
+      return;
+    end
+  end
+  ;
+   /* ************************************/
+   /* * Valid xcs code must be present*/
+   /* ************************************/
+  if (KC0BM001.KC0BM-XCSCD1 != "?") /* pop-up NOT requested*/
+    ;
+    if (KC0BM001.KC0BM-XCSCD1 in XCSTBL.XCSCD) /* Valid selection made?*/
+      set KC0BM001.KC0BM-XCSCD1 normal; /* Yes, clear previous error*/
+    else
+      set KC0BM001.KC0BM-XCSCD1 cursor, modified, bold; /* Indicate error*/
+      converseLib.validationFailed(20); /* Invalid credit status*/
+      KC0BW01.KC0BWERR = "Y";
+      return;
+    end
+  end
+  ;
+   /* ************************************/
+   /* * Valid xcs code must be present*/
+   /* ************************************/
+  if (KC0BM001.KC0BM-XCSCD2 != "?" /* pop-up NOT requested*/
+   && KC0BM001.KC0BM-XCSCD2 != " " 
+  )                               
+    if (KC0BM001.KC0BM-XCSCD2 in XCSTBL.XCSCD) /* Valid selection made?*/
+      set KC0BM001.KC0BM-XCSCD2 normal; /* Yes, clear previous error*/
+    else
+      set KC0BM001.KC0BM-XCSCD2 cursor, modified, bold; /* Indicate error*/
+      converseLib.validationFailed(20); /* Invalid credit status*/
+      KC0BW01.KC0BWERR = "Y";
+      return;
+    end
+  end
+  ;
+   /* ************************************/
+   /* * Valid xcs code must be present*/
+   /* ************************************/
+  if (KC0BM001.KC0BM-XCSCD3 != "?" /* pop-up NOT requested*/
+   && KC0BM001.KC0BM-XCSCD3 != " " 
+  )                               
+    if (KC0BM001.KC0BM-XCSCD3 in XCSTBL.XCSCD) /* Valid selection made?*/
+      set KC0BM001.KC0BM-XCSCD3 normal; /* Yes, clear previous error*/
+    else
+      set KC0BM001.KC0BM-XCSCD3 cursor, modified, bold; /* Indicate error*/
+      converseLib.validationFailed(20); /* Invalid credit status*/
+      KC0BW01.KC0BWERR = "Y";
+      return;
+    end
+  end
+  ;
+   /* ****************************************/
+   /* * Valid from need date must be present*/
+   /* ****************************************/
+   /*  */
+   /* ************************  Y2K IN BEGIN  **************************/
+  set TA2REC empty;
+   /* ************************  Y2K IN END    **************************/
+  if (KC0BM001.KC0BM-FMDT > 0)
+    TA2REC.TA2GRGA = KC0BM001.KC0BM-FMDT;
+    TA2REC.TA2DTOPT = "GREGGREG";
+    TA2REC.TA2GRTYP = "A";
+    call "TA0040" (TA2REC) {isExternal = yes};
+    if (TA2REC.TA2RTNCD != 0)
+      set KC0BM001.KC0BM-FMDT cursor, modified, bold; /* Indicate error*/
+      KC0BW01.KC0BWERR = "Y";
+      converseLib.validationFailed(7); /* Invalid date*/
+      return;
+    end
+  else
+    set KC0BM001.KC0BM-FMDT cursor, modified, bold; /* Indicate error*/
+    converseLib.validationFailed(7); /* Invalid date*/
+    KC0BW01.KC0BWERR = "Y";
+    return;
+  end
+  ;
+   /* **************************************/
+   /* * Valid to need date must be present*/
+   /* **************************************/
+   /*  */
+   /* ************************  Y2K IN BEGIN  **************************/
+  set TA2REC empty;
+   /* ************************  Y2K IN END    **************************/
+  if (KC0BM001.KC0BM-TODT > 0)
+    TA2REC.TA2GRGA = KC0BM001.KC0BM-TODT;
+    TA2REC.TA2DTOPT = "GREGGREG";
+    TA2REC.TA2GRTYP = "A";
+    call "TA0040" (TA2REC) {isExternal = yes};
+    if (TA2REC.TA2RTNCD != 0)
+      set KC0BM001.KC0BM-TODT cursor, modified, bold; /* Indicate error*/
+      KC0BW01.KC0BWERR = "Y";
+      converseLib.validationFailed(7); /* Invalid date*/
+      return;
+    end
+  else
+    set KC0BM001.KC0BM-TODT cursor, modified, bold; /* Indicate error*/
+    converseLib.validationFailed(7); /* Invalid date*/
+    KC0BW01.KC0BWERR = "Y";
+    return;
+  end
+  ;
+   /* ****************************************************************/
+   /* * to need date must be equal to or greater than from need date*/
+   /* ****************************************************************/
+  KC0BW01.KC0BW-FMDT = KC0BM001.KC0BM-FMDT;
+  KC0BW01.KC0BW-REYY = KC0BW01.KC0BW-FMYY;
+  KC0BW01.KC0BW-REMM = KC0BW01.KC0BW-FMMM;
+  KC0BW01.KC0BW-REDD = KC0BW01.KC0BW-FMDD;
+   /*  */
+   /* ************************  Y2K IN BEGIN  **************************/
+  if (KC0BW01.KC0BW-REYY > 60)
+    KC0BW01.KC0BW-RECC = 19;
+  else
+    KC0BW01.KC0BW-RECC = 20;
+  end
+   /* *************************  Y2K IN END  ***************************/
+   /*  */
+  ;
+  KC0BW01.KC0BW-TODT = KC0BM001.KC0BM-TODT;
+  KC0BW01.KC0BW-CEYY = KC0BW01.KC0BW-TOYY;
+  KC0BW01.KC0BW-CEMM = KC0BW01.KC0BW-TOMM;
+  KC0BW01.KC0BW-CEDD = KC0BW01.KC0BW-TODD;
+  ;
+   /* ************************  Y2K IN BEGIN  **************************/
+  if (KC0BW01.KC0BW-CEYY > 60)
+    KC0BW01.KC0BW-CECC = 19;
+  else
+    KC0BW01.KC0BW-CECC = 20;
+  end
+   /* *************************  Y2K IN END  ***************************/
+   /*  */
+  if (KC0BW01.KC0BW-CEDT < KC0BW01.KC0BW-REDT)
+    set KC0BM001.KC0BM-TODT cursor, modified, bold; /* Indicate error*/
+    KC0BM001.KC0BMMSG = "TO NEED DATE CANNOT BE LESS THAN FROM NEED DATE";
+    KC0BW01.KC0BWERR = "Y";
+    return;
+  end
+   /* ***********************************************************/
+   /* At least one style must be entered*/
+   /* and no color can be present without a style selected*/
+   /* ***********************************************************/
+  KC0BW01.KC0BWCNT = 1;
+  KC0BW01.KC0BWSFN = "N";
+  while (KC0BW01.KC0BWCNT < 12)
+    if (KC0BW02R.KC0BWGRP[KC0BWCNT] > " ")
+      KC0BW01.KC0BWSFN = "Y";
+    end
+    KC0BW01.KC0BWCNT = KC0BW01.KC0BWCNT + 1;
+  end
+  ;
+  if (KC0BW01.KC0BWSFN == "N") /* no colors or styles entered*/
+    set KC0BM001.KC0BMS01 cursor, modified, bold; /* Indicate error*/
+    KC0BW01.KC0BWERR = "Y";
+    KC0BM001.KC0BMMSG = "NO STYLES OR COLORS HAVE BEEN ENTERED";
+    return;
+  end
+  KC0BW01.KC0BWCNT = 1;
+  while (KC0BW01.KC0BWCNT < 12)
+    if (KC0BW02R.KC0BWSTY[KC0BWCNT] == " ")
+      if (KC0BW02R.KC0BWCL1[KC0BWCNT] > " "
+       || KC0BW02R.KC0BWCL2[KC0BWCNT] > " "
+       || KC0BW02R.KC0BWCL3[KC0BWCNT] > " "
+       || KC0BW02R.KC0BWCL4[KC0BWCNT] > " "
+       || KC0BW02R.KC0BWCL5[KC0BWCNT] > " ")
+        KC0B150(); /* highlight correct mapline*/
+        KC0BW01.KC0BWERR = "Y";
+        KC0BM001.KC0BMMSG = "NO STYLE ENTERED FOR SELECTED COLORS";
+        return;
+      end
+    end
+    KC0BW01.KC0BWCNT = KC0BW01.KC0BWCNT + 1;
+  end
+  ;
+   /* ***********************************************************/
+   /* Styles and colors must be valid*/
+   /* ***********************************************************/
+  ;
+  KC0BW01.KC0BWCNT = 1;
+  while (KC0BW01.KC0BWCNT < 12)
+    if (KC0BW02R.KC0BWSTY[KC0BWCNT] > " ")
+      KC0B130(); /* read db for style;*/
+      if (SQLCA.VAGen_SQLCODE == 100)
+        KC0BM001.KC0BMMSG = "INVALID STYLE FOR THE GPC SELECTED";
+        KC0BW01.KC0BWERR = "Y";
+        KC0B150(); /* highlight correct mapline*/
+        return;
+      end
+    end
+    if (KC0BW02R.KC0BWCL1[KC0BWCNT] > " ")
+      KC0BW01.KC0BWCLR = 1;
+      KC0B140(); /* read db for color;*/
+      if (SQLCA.VAGen_SQLCODE == 100)
+        KC0BM001.KC0BMMSG = "INVALID COLOR FOR THE STYLE SELECTED";
+        KC0BW01.KC0BWERR = "Y";
+        KC0B155(); /* highlight correct mapline*/
+        return;
+      end
+    end
+    if (KC0BW02R.KC0BWCL2[KC0BWCNT] > " ")
+      KC0BW01.KC0BWCLR = 2;
+      KC0B140(); /* read db for color;*/
+      if (SQLCA.VAGen_SQLCODE == 100)
+        KC0BM001.KC0BMMSG = "INVALID COLOR FOR THE STYLE SELECTED";
+        KC0BW01.KC0BWERR = "Y";
+        KC0B155(); /* highlight correct mapline*/
+        return;
+      end
+    end
+    if (KC0BW02R.KC0BWCL3[KC0BWCNT] > " ")
+      KC0BW01.KC0BWCLR = 3;
+      KC0B140(); /* read db for color;*/
+      if (SQLCA.VAGen_SQLCODE == 100)
+        KC0BM001.KC0BMMSG = "INVALID COLOR FOR THE STYLE SELECTED";
+        KC0BW01.KC0BWERR = "Y";
+        KC0B155(); /* highlight correct mapline*/
+        return;
+      end
+    end
+    if (KC0BW02R.KC0BWCL4[KC0BWCNT] > " ")
+      KC0BW01.KC0BWCLR = 4;
+      KC0B140(); /* read db for color;*/
+      if (SQLCA.VAGen_SQLCODE == 100)
+        KC0BM001.KC0BMMSG = "INVALID COLOR FOR THE STYLE SELECTED";
+        KC0BW01.KC0BWERR = "Y";
+        KC0B155(); /* highlight correct mapline*/
+        return;
+      end
+    end
+    if (KC0BW02R.KC0BWCL5[KC0BWCNT] > " ")
+      KC0BW01.KC0BWCLR = 5;
+      KC0B140(); /* read db for color;*/
+      if (SQLCA.VAGen_SQLCODE == 100)
+        KC0BM001.KC0BMMSG = "INVALID COLOR FOR THE STYLE SELECTED";
+        KC0BW01.KC0BWERR = "Y";
+        KC0B155(); /* highlight correct mapline*/
+        return;
+      end
+    end
+    KC0BW01.KC0BWCNT = KC0BW01.KC0BWCNT + 1;
+  end
+  ;
+   /* ***************************************/
+   /* * All edits performed, how did we do?*/
+   /* ***************************************/
+  if (KC0BW01.KC0BWERR == "Y")
+    KC0BW01.KC0BWENT = "N";
+    return; /* if edit errors do not update*/
+  else
+    if (converseVar.eventKey is enter)
+      KC0BW01.KC0BWENT = "Y";
+      KC0BM001.KC0BMMSG = "PRESS PF12 TO ENTER REQUEST";
+    end
+  end
+end // end KC0B120
+
+// FETCH VSTYLE01
+Function KC0B130()
+   /* **************************************/
+   /* FETCH VSTYLE01*/
+   /* **************************************/
+  ;
+  set SY1REC empty;
+  SY1REC.XGPCD = KC0BW02.XGPCD;
+  SY1REC.SY1STNBR = KC0BW02R.KC0BWSTY[KC0BWCNT];
+  ;
+  call "IO0120" ("S ", SQLCA, SY1REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* NEXT SENTENCE*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100 /* check for good rc*/
+    )                              /* NEXT SENTENCE*/
+    else
+      TA1REC.TA1DBASE = "DPROD   "; /* data base name*/
+      TA1REC.TA1TBLVU = "VSTYLE01"; /* table view*/
+      TA1REC.TA1TBLKE = SY1REC.SY1KEY; /* key value*/
+      TA1REC.TA1LOCAT[2] = "KC0B130"; /* error diag group name*/
+      TA1REC.TA1LOCAT[3] = "IO0120  "; /* i/o mod name*/
+      XSOPS02(); /* common abend*/
+    end
+  end
+end // end KC0B130
+
+// FETCH VCOLOR01
+Function KC0B140()
+   /* **************************************/
+   /* FETCH VCOLOR01*/
+   /* **************************************/
+  ;
+  set SY2REC empty;
+  SY2REC.XGPCD = KC0BW02.XGPCD;
+  SY2REC.SY1STNBR = KC0BW02R.KC0BWSTY[KC0BWCNT];
+  ;
+  if (KC0BW01.KC0BWCLR == 1)
+    SY2REC.SY2CLRID = KC0BW02R.KC0BWCL1[KC0BWCNT];
+  else
+    if (KC0BW01.KC0BWCLR == 2)
+      SY2REC.SY2CLRID = KC0BW02R.KC0BWCL2[KC0BWCNT];
+    else
+      if (KC0BW01.KC0BWCLR == 3)
+        SY2REC.SY2CLRID = KC0BW02R.KC0BWCL3[KC0BWCNT];
+      else
+        if (KC0BW01.KC0BWCLR == 4)
+          SY2REC.SY2CLRID = KC0BW02R.KC0BWCL4[KC0BWCNT];
+        else
+          if (KC0BW01.KC0BWCLR == 5)
+            SY2REC.SY2CLRID = KC0BW02R.KC0BWCL5[KC0BWCNT];
+          end
+        end
+      end
+    end
+  end
+  ;
+  SY2REC.XDMCD = "00";
+  call "IO0130" ("S ", SQLCA, SY2REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* NEXT SENTENCE*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100 /* check for good rc*/
+    )                              /* NEXT SENTENCE*/
+    else
+      TA1REC.TA1DBASE = "DPROD   "; /* data base name*/
+      TA1REC.TA1TBLVU = "VCOLOR01"; /* table view*/
+      TA1REC.TA1TBLKE = SY2REC.SY2KEY; /* key value*/
+      TA1REC.TA1LOCAT[2] = "KC0B140"; /* error diag group name*/
+      TA1REC.TA1LOCAT[3] = "IO0130  "; /* i/o mod name*/
+      XSOPS02(); /* common abend*/
+    end
+  end
+end // end KC0B140
+
+// higlight error
+Function KC0B150()
+   /* ***********************************************************/
+   /* Issue error message and highlight correct field*/
+   /* ***********************************************************/
+  ;
+  if (KC0BW01.KC0BWCNT == 1)
+    set KC0BM001.KC0BMS01 cursor, modified, bold;
+  else
+    if (KC0BW01.KC0BWCNT == 2)
+      set KC0BM001.KC0BMS02 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCNT == 3)
+        set KC0BM001.KC0BMS03 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCNT == 4)
+          set KC0BM001.KC0BMS04 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCNT == 5)
+            set KC0BM001.KC0BMS05 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCNT == 6)
+              set KC0BM001.KC0BMS06 cursor, modified, bold;
+            else
+              if (KC0BW01.KC0BWCNT == 7)
+                set KC0BM001.KC0BMS07 cursor, modified, bold;
+              else
+                if (KC0BW01.KC0BWCNT == 8)
+                  set KC0BM001.KC0BMS08 cursor, modified, bold;
+                else
+                  if (KC0BW01.KC0BWCNT == 9)
+                    set KC0BM001.KC0BMS09 cursor, modified, bold;
+                  else
+                    if (KC0BW01.KC0BWCNT == 10)
+                      set KC0BM001.KC0BMS10 cursor, modified, bold;
+                    else
+                      if (KC0BW01.KC0BWCNT == 11)
+                        set KC0BM001.KC0BMS11 cursor, modified, bold;
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end // end KC0B150
+
+// higlight error
+Function KC0B155()
+   /* ***********************************************************/
+   /* Issue error message and set highlight correct field*/
+   /* ***********************************************************/
+  ;
+  if (KC0BW01.KC0BWCNT == 1)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC01 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC02 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC03 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC04 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC05 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (KC0BW01.KC0BWCNT == 2)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC06 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC07 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC08 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC09 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC10 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (KC0BW01.KC0BWCNT == 3)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC11 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC12 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC13 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC14 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC15 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (KC0BW01.KC0BWCNT == 4)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC16 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC17 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC18 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC19 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC20 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (KC0BW01.KC0BWCNT == 5)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC21 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC22 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC23 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC24 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC25 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (KC0BW01.KC0BWCNT == 6)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC26 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC27 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC28 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC29 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC30 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (KC0BW01.KC0BWCNT == 7)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC31 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC32 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC33 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC34 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC35 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (KC0BW01.KC0BWCNT == 8)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC36 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC37 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC38 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC39 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC40 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (KC0BW01.KC0BWCNT == 9)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC41 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC42 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC43 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC44 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC45 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (KC0BW01.KC0BWCNT == 10)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC46 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC47 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC48 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC49 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC50 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (KC0BW01.KC0BWCNT == 11)
+    if (KC0BW01.KC0BWCLR == 1)
+      set KC0BM001.KC0BMC51 cursor, modified, bold;
+    else
+      if (KC0BW01.KC0BWCLR == 2)
+        set KC0BM001.KC0BMC52 cursor, modified, bold;
+      else
+        if (KC0BW01.KC0BWCLR == 3)
+          set KC0BM001.KC0BMC53 cursor, modified, bold;
+        else
+          if (KC0BW01.KC0BWCLR == 4)
+            set KC0BM001.KC0BMC54 cursor, modified, bold;
+          else
+            if (KC0BW01.KC0BWCLR == 5)
+              set KC0BM001.KC0BMC55 cursor, modified, bold;
+              return;
+            end
+          end
+        end
+      end
+    end
+  end
+end // end KC0B155
+
+// FORMAT XSRREC
+Function KC0B160()
+   /* **************************************/
+   /* Format XSRREC*/
+   /* **************************************/
+  ;
+  KC0B170(); /* open cursor on vcspad01*/
+  ;
+  KC0BW01.KC0BWNFN = "N"; /* vcspad01 found flag*/
+  ;
+  while (KC0BW01.KC0BWNFN == "N")
+    KC0B180(); /* fetch next vcspad01*/
+  end
+  KC0BW01.XSRSQNBR = KC0BW01.XSRSQNBR + 1;
+  set XSRREC empty;
+  set KC0BW03 empty;
+  ;
+  KC0BW03.XCUCD = KC0BM001.XCUCD;
+  KC0BW03.XGPCD = KC0BM001.XGPCD;
+  KC0BW03.KC0BW-W03-XCSCD1 = KC0BM001.KC0BM-XCSCD1;
+  KC0BW03.KC0BW-W03-XCSCD2 = KC0BM001.KC0BM-XCSCD2;
+  KC0BW03.KC0BW-W03-XCSCD3 = KC0BM001.KC0BM-XCSCD3;
+  ;
+   /* format from need date*/
+  KC0BW01.KC0BW-FMDT = KC0BM001.KC0BM-FMDT;
+  KC0BW01.KC0BW-REMM = KC0BW01.KC0BW-FMMM;
+  KC0BW01.KC0BW-REDD = KC0BW01.KC0BW-FMDD;
+  KC0BW01.KC0BW-REYY = KC0BW01.KC0BW-FMYY;
+  KC0BW01.KC0BWFSD = KC0BW01.KC0BW-REDT;
+  ;
+   /*  */
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 019 TO KC0BW01.KC0BWFCN;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /*  */
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+  if (KC0BW01.KC0BW-REYY > 60)
+    KC0BW01.KC0BWFCN = 19;
+  else
+    KC0BW01.KC0BWFCN = 20;
+  end
+   /* ------------------------  Y2K IN END  --------------------------*/
+   /*  */
+  ;
+  KC0BW03.KC0BW-W03-FMDT = KC0BW01.KC0BWFDT;
+  ;
+   /* format to need date*/
+  KC0BW01.KC0BW-TODT = KC0BM001.KC0BM-TODT;
+  KC0BW01.KC0BW-REMM = KC0BW01.KC0BW-TOMM;
+  KC0BW01.KC0BW-REDD = KC0BW01.KC0BW-TODD;
+  KC0BW01.KC0BW-REYY = KC0BW01.KC0BW-TOYY;
+  KC0BW01.KC0BWFSD = KC0BW01.KC0BW-REDT;
+   /*  */
+   /*  */
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 019 TO KC0BW01.KC0BWFCN;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /*  */
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+  if (KC0BW01.KC0BW-REYY > 60)
+    KC0BW01.KC0BWFCN = 19;
+  else
+    KC0BW01.KC0BWFCN = 20;
+  end
+   /* ------------------------  Y2K IN END  --------------------------*/
+   /*  */
+  KC0BW03.KC0BW-W03-TODT = KC0BW01.KC0BWFDT;
+  ;
+  KC0BW01.KC0BWFSD = VGVar.currentShortGregorianDate;
+   /*  */
+   /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+   /*  */
+   /* MOVE 019 TO KC0BW01.KC0BWFCN;*/
+   /*  */
+   /* ------------------------  Y2K OUT END  -------------------------*/
+   /*  */
+   /* -----------------------  Y2K IN BEGIN  -------------------------*/
+  if (KC0BW01.KC0BW-FSDYY > 60)
+    KC0BW01.KC0BWFCN = 19;
+  else
+    KC0BW01.KC0BWFCN = 20;
+  end
+   /* ------------------------  Y2K IN END  --------------------------*/
+   /*  */
+  KC0BW01.KC0BWBDT = KC0BW01.KC0BWFDT;
+  XSRREC.ZZZCHGDT = KC0BW01.KC0BWBDT;
+  ;
+  KC0BW01.KC0BWTIM = VGVar.currentFormattedTime;
+  KC0BW01.KC0BWFHR = KC0BW01.KC0BWHR;
+  KC0BW01.KC0BWFMI = KC0BW01.KC0BWMI;
+  KC0BW01.KC0BWBTM = KC0BW01.KC0BWFTM;
+  XSRREC.ZZZCHGTM = KC0BW01.KC0BWBTM;
+  ;
+  XSRREC.XSRSYSID = "KC0B";
+  XSRREC.XSRSUBID = "CC1400";
+  XSRREC.XSRSQNBR = KC0BW01.XSRSQNBR;
+  XSRREC.XSRLNGTH = 100;
+  XSRREC.ZZZCHGCT = 0;
+  ;
+  KC0BW01.KC0BWCNT = 1;
+  ;
+  while (KC0BW01.KC0BWCNT < 12)
+    if (KC0BW02R.KC0BWGRP[KC0BWCNT] > " ")
+      KC0BW03.KC0BW-W03-STYLE-COLOR = KC0BW02R.KC0BWGRP[KC0BWCNT];
+      XSRREC.XSRDATA = KC0BW03.KC0BW-W03-DATA;
+      KC0B200(); /* add vcspad01 row*/
+    end
+    KC0BW01.KC0BWCNT = KC0BW01.KC0BWCNT + 1;
+  end
+end // end KC0B160
+
+// OPEN CURSOR ON VCSPAD01
+Function KC0B170()
+   /* **************************************/
+   /* OPEN CURSOR ON VCSPAD01*/
+   /* **************************************/
+  ;
+  set XSRREC empty;
+  XSRREC.XSRSYSID = "KC0B";
+  XSRREC.XSRSUBID = "CC1400";
+  ;
+  call "IO3400" ("SS", SQLCA, XSRREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* NEXT SENTENCE*/
+  else
+    TA1REC.TA1DBASE = "DCORP   "; /* data base name*/
+    TA1REC.TA1TBLVU = "VCSPAD01"; /* table view*/
+    TA1REC.TA1TBLKE = XSRREC.XSRGROUP; /* key value*/
+    TA1REC.TA1LOCAT[2] = "KC0B140"; /* error diag group name*/
+    TA1REC.TA1LOCAT[3] = "IO3400  "; /* i/o mod name*/
+    XSOPS02(); /* common abend*/
+  end
+end // end KC0B170
+
+// FETCH NEXT VCSPAD01
+Function KC0B180()
+   /* **************************************/
+   /* FETCH NEXT VCSPAD01*/
+   /* **************************************/
+  ;
+  call "IO3400" ("SN", SQLCA, XSRREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* good rc*/
+    KC0BW01.XSRSQNBR = XSRREC.XSRSQNBR;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* end of rows*/
+      KC0BW01.KC0BWNFN = "Y"; /* vcspad01 not found*/
+      KC0B190(); /* close cursor*/
+    else
+      TA1REC.TA1DBASE = "DCORP   "; /* data base name*/
+      TA1REC.TA1TBLVU = "VCSPAD01"; /* table view*/
+      TA1REC.TA1TBLKE = XSRREC.XSRGROUP; /* key value*/
+      TA1REC.TA1LOCAT[2] = "KC0B150"; /* error diag group name*/
+      TA1REC.TA1LOCAT[3] = "IO3400  "; /* i/o mod name*/
+      XSOPS02(); /* common abend*/
+    end
+  end
+end // end KC0B180
+
+// CLOSE VCSPAD01 CURSOR
+Function KC0B190()
+   /* **************************************/
+   /* CLOSE VCSPAD01 CURSOR*/
+   /* **************************************/
+  ;
+  call "IO3400" ("CS", SQLCA, XSRREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* good rc*/
+     /* NEXT SENTENCE*/
+  else
+    TA1REC.TA1DBASE = "DCORP   "; /* data base name*/
+    TA1REC.TA1TBLVU = "VCSPAD01"; /* table view*/
+    TA1REC.TA1TBLKE = XSRREC.XSRGROUP; /* key value*/
+    TA1REC.TA1LOCAT[2] = "KC0B160"; /* error diag group name*/
+    TA1REC.TA1LOCAT[3] = "IO3400  "; /* i/o mod name*/
+    XSOPS02(); /* common abend*/
+  end
+end // end KC0B190
+
+// ADD VCSPAD01 ROW
+Function KC0B200()
+   /* **************************************/
+   /* ADD VCSPAD01 ROW*/
+   /* **************************************/
+  ;
+  call "IO3400" ("A ", SQLCA, XSRREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+     /* NEXT SENTENCE*/
+  else
+    TA1REC.TA1DBASE = "DCORP   "; /* data base name*/
+    TA1REC.TA1TBLVU = "VCSPAD01"; /* table view*/
+    TA1REC.TA1TBLKE = XSRREC.XSRGROUP; /* key value*/
+    TA1REC.TA1LOCAT[2] = "KC0B170"; /* error diag group name*/
+    TA1REC.TA1LOCAT[3] = "IO3400  "; /* i/o mod name*/
+    XSOPS02(); /* common abend*/
+  end
+end // end KC0B200
+
+// Load commarea
+Function KC0BS00()
+  ;
+  if (COMMAREA.CASYSINT != "CSP")
+    set COMMAREA empty;
+    COMMAREA.CASYSINT = "CSP";
+    COMMAREA.CAUSERID = "DEMO";
+    COMMAREA.CAFROMAP = "KC0M";
+    COMMAREA.CACURRAP = "KC0B";
+    COMMAREA.CAADD = "YNNNNNNNNNN";
+    COMMAREA.CACHG = "YNNNNNNNNNN";
+    COMMAREA.CADEL = "YNNNNNNNNNN";
+    COMMAREA.CAINQ = "YNNNNNNNNNN";
+  end
+  ;
+end // end KC0BS00
+
+// converse pop up window
+Function XPXCS02()
+   /* ------------------------------------------------------------*/
+  ;
+              /* CONVERSE POP UP WINDOW*/
+  ;
+      /* 1) If no errors, clear the map and set up for*/
+         /* scrolling.  If PF7, PF8, or first time through,*/
+         /* scroll the table.*/
+      /* 2) Converse the map.*/
+      /* 3) Reset selection fields to normal after converse.*/
+      /* 4) Check for PFkey and scroll errors.*/
+      /* 5) If ENTER pressed, check for any user selections.*/
+  ;
+   /* ------------------------------------------------------------*/
+  ;
+   /* **********************************************************/
+   /* ***  If no errors clear page and set up for scrolling ****/
+   /* **********************************************************/
+  ;
+  if (XX0XW02.XX0XWERR == "N") /* If error flag not yes*/
+    ;
+     /* **********************************************************/
+     /* *** Make sure table count is set for next page.       ****/
+     /* *** Clear map and set up header for new scroll screen.****/
+     /* **********************************************************/
+    ;
+    if (XX0XW02.XX0XWFFL == "N") /* if not the first time through*/
+      XX0XW02.XX0XWCT1 = XX0XW02.XX0XWINX[10] + 1; /* set up scroll pf8*/
+    end
+    ;
+    set XX0XM001 initial; /* Clear map output area*/
+    XX0XM001.XX0XMHDR = XX0XW02.XX0XWHDR; /* Place heading on map*/
+    XX0XM001.XX0XMTR1 = "              SELECT & ENTER          ";
+    XX0XM001.XX0XMTR2 = "   PF7:BACK                   PF8:FRWD";
+    ;
+     /* *********************************************************/
+     /* ***      If PF8 was pressed then scroll forward      ****/
+     /* *********************************************************/
+    ;
+    if (converseVar.eventKey is pf8 /* If PF8 pressed*/
+     || XX0XW02.XX0XWFFL == "Y")    /* Or it is the first time thru*/
+      XX0XW02.XX0XWCT2 = 1; /* Set up screen index*/
+      while (XX0XW02.XX0XWCT2 <= 10 /* Until end of screen lines*/
+       && XCSTBL.XCSCD[XX0XWCT1] != "99") /* Or end of data*/
+        if (XCSTBL.XXXSTAT[XX0XWCT1] == "A") /* If active status on code*/
+          XX0XM001.XX0XMCD[XX0XWCT2] = XCSTBL.XCSCD[XX0XWCT1];
+          XX0XM001.XX0XMDES[XX0XWCT2] = XCSTBL.XCSDESC[XX0XWCT1];
+          XX0XW02.XX0XWINX[XX0XWCT2] = XX0XW02.XX0XWCT1;
+                                   /* Save array*/
+          if (XX0XW02.XX0XWFFL == "Y") /* If first time thru*/
+            XX0XW02.XX0XWSIX = XX0XW02.XX0XWCT1; /* Save last index*/
+          end
+          set XX0XM001.XX0XMSEL[XX0XWCT2] normal; /* Set selects to normal*/
+          XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 + 1;
+                                   /* Increment screen index*/
+        end
+        XX0XW02.XX0XWCT1 = XX0XW02.XX0XWCT1 + 1; /* Increment table index*/
+      end
+      XX0XW02.XX0XWFFL = "N"; /* Set first time flag to no*/
+    end
+    ;
+     /* ******************************************************/
+     /* ***    If PF7 was pressed then scroll backward    ****/
+     /* ******************************************************/
+    ;
+    if (converseVar.eventKey is pf7) /* If PF7 pressed*/
+      XX0XW02.XX0XWCT1 = XX0XW02.XX0XWINX[1] - 1; /* Set up table index*/
+      XX0XW02.XX0XWCT2 = 10; /* Set up screen index*/
+      while (XX0XW02.XX0XWCT2 >= 1) /* Load from the bottom up*/
+        if (XCSTBL.XXXSTAT[XX0XWCT1] == "A") /* If the status is active*/
+          XX0XM001.XX0XMCD[XX0XWCT2] = XCSTBL.XCSCD[XX0XWCT1];
+          XX0XM001.XX0XMDES[XX0XWCT2] = XCSTBL.XCSDESC[XX0XWCT1];
+          XX0XW02.XX0XWINX[XX0XWCT2] = XX0XW02.XX0XWCT1;
+                                   /* Save array*/
+          set XX0XM001.XX0XMSEL[XX0XWCT2] normal; /* Set select visible*/
+          XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 - 1;
+                                   /* Decrement screen index*/
+        end
+        XX0XW02.XX0XWCT1 = XX0XW02.XX0XWCT1 - 1; /* Decrement table index*/
+      end
+      if (XX0XW02.XX0XWCT1 < 1) /* If the table index was decremented*/
+        XX0XW02.XX0XWCT1 = 1;
+                                   /* to zero, set it up to 1 (valid value)*/
+      end
+    end
+  end
+  ;
+  ;
+  converse XX0XM001 ;
+  ;
+  XX0XW02.XX0XWERR = "N"; /* Reset error flag*/
+  ;
+     /* *********************************************************/
+     /* ******  Reset selection fields after converse     *******/
+     /* *********************************************************/
+  ;
+  XX0XW02.XX0XWCT2 = 1; /* Screen index*/
+  while (XX0XW02.XX0XWCT2 <= 10 /* Set all fields with data to normal*/
+   && XX0XM001.XX0XMCD[XX0XWCT2] != " ")
+    set XX0XM001.XX0XMSEL[XX0XWCT2] normal;
+    XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 + 1;
+  end
+  ;
+    /* *********************************************************/
+    /* ******  Check for PFkey errors and scroll errors  *******/
+    /* *********************************************************/
+  ;
+  if (converseVar.eventKey is pf8 /* If PF8 pressed*/
+   && XCSTBL.XCSCD[XX0XWCT1] == "99") /* And end of table*/
+    XX0XW02.XX0XWERR = "Y"; /* Set error flag*/
+  else
+    if (converseVar.eventKey is pf7 /* If PF7 pressed*/
+     && XX0XW02.XX0XWINX[1] <= XX0XW02.XX0XWSIX)
+      XX0XW02.XX0XWERR = "Y"; /* Set error flag*/
+    else
+      if (converseVar.eventKey is enter) /* If enter pressed*/
+        XX0XW02.XX0XWEND = "Y"; /* Set end flag*/
+        ;
+         /* *********************************************************/
+         /* ******          Check for user selection          *******/
+         /* *********************************************************/
+        ;
+        XX0XW02.XX0XWCT2 = 1; /* Screen index*/
+        while (XX0XW02.XX0XWCT2 <= 10) /* Until end of screen data*/
+          if (XX0XM001.XX0XMSEL[XX0XWCT2] == "S") /* Check for selection*/
+            XX0XW02.XX0XWPIX = XX0XW02.XX0XWINX[XX0XWCT2];
+            XX0XW02.XX0XWCT2 = 11; /* End loop*/
+          end
+          XX0XW02.XX0XWCT2 = XX0XW02.XX0XWCT2 + 1;
+        end
+      else
+        if (converseVar.eventKey not pf7 /* invalid pf key*/
+         && converseVar.eventKey not pf8 
+         && converseVar.eventKey not enter)
+          XX0XW02.XX0XWERR = "Y"; /* set error flag*/
+        end
+      end
+    end
+  end
+  ;
+  ;
+end // end XPXCS02
+
+//*** RECORD=KC0BW01 ****
+// Working storage variables for 'KC0B'
+// ***********************
+Record KC0BW01 type basicRecord
+  10 KC0BWERR KC0BWERR ; 
+  10 KC0BWESF KC0BWESF ; 
+  10 KC0BWCLR KC0BWCLR ; 
+  10 KC0BWSFN KC0BWSFN ; 
+  10 KC0BWEOA KC0BWEOA ; 
+  10 KC0BWNFN KC0BWNFN ; 
+  10 KC0BWENT KC0BWENT ; 
+  10 KC0BWXCU KC0BWXCU ; 
+  10 KC0BWCNT KC0BWCNT ; 
+  10 KC0BWFDT KC0BWFDT ; 
+    15 KC0BWFCN KC0BWFCN ; 
+    15 KC0BWFSD KC0BWFSD ; 
+      20 KC0BW-FSDYY KC0BW-FSDYY ; 
+      20 KC0BW-FSDMM KC0BW-FSDMM ; 
+      20 KC0BW-FSDDD KC0BW-FSDDD ; 
+  10 KC0BW-FMDT KC0BW-FMDT ; 
+    15 KC0BW-FMMM KC0BW-FMMM ; 
+    15 KC0BW-FMDD KC0BW-FMDD ; 
+    15 KC0BW-FMYY KC0BW-FMYY ; 
+  10 KC0BW-TODT KC0BW-TODT ; 
+    15 KC0BW-TOMM KC0BW-TOMM ; 
+    15 KC0BW-TODD KC0BW-TODD ; 
+    15 KC0BW-TOYY KC0BW-TOYY ; 
+  10 KC0BW-REDT KC0BW-REDT ; 
+    15 KC0BW-RECC KC0BW-RECC ; 
+    15 KC0BW-REYY KC0BW-REYY ; 
+    15 KC0BW-REMM KC0BW-REMM ; 
+    15 KC0BW-REDD KC0BW-REDD ; 
+  10 KC0BW-CEDT KC0BW-CEDT ; 
+    15 KC0BW-CECC KC0BW-CECC ; 
+    15 KC0BW-CEYY KC0BW-CEYY ; 
+    15 KC0BW-CEMM KC0BW-CEMM ; 
+    15 KC0BW-CEDD KC0BW-CEDD ; 
+  10 KC0BWBDT KC0BWBDT ; 
+  10 KC0BWTIM KC0BWTIM ; 
+    15 KC0BWHR KC0BWHR ; 
+    15 * char(1) ; 
+    15 KC0BWMI KC0BWMI ; 
+    15 * char(1) ; 
+    15 KC0BWSE KC0BWSE ; 
+  10 KC0BWFTM KC0BWFTM ; 
+    15 KC0BWFHR KC0BWFHR ; 
+    15 KC0BWFMI KC0BWFMI ; 
+  10 KC0BWBTM KC0BWBTM ; 
+  10 XSRSQNBR XSRSQNBR ; 
+end // end KC0BW01
+
+//*** RECORD=KC0BW02 ****
+// Working storage for map field moves from KC0BM001 map
+// ***********************
+Record KC0BW02 type basicRecord
+  10 XCUCD XCUCD ; 
+  10 XCUNM XCUNM ; 
+  10 XGPCD XGPCD ; 
+  10 XGPDESC XGPDESC ; 
+  10 KC0BM-XCSCD1 KC0BM-XCSCD1 ; 
+  10 KC0BM-XCSCD2 KC0BM-XCSCD2 ; 
+  10 KC0BM-XCSCD3 KC0BM-XCSCD3 ; 
+  10 KC0BM-FMDT KC0BM-FMDT ; 
+  10 KC0BM-TODT KC0BM-TODT ; 
+  10 KC0BMS01 KC0BMS01 ; 
+  10 KC0BMC01 KC0BMC01 ; 
+  10 KC0BMC02 KC0BMC02 ; 
+  10 KC0BMC03 KC0BMC03 ; 
+  10 KC0BMC04 KC0BMC04 ; 
+  10 KC0BMC05 KC0BMC05 ; 
+  10 KC0BMS02 KC0BMS02 ; 
+  10 KC0BMC06 KC0BMC06 ; 
+  10 KC0BMC07 KC0BMC07 ; 
+  10 KC0BMC08 KC0BMC08 ; 
+  10 KC0BMC09 KC0BMC09 ; 
+  10 KC0BMC10 KC0BMC10 ; 
+  10 KC0BMS03 KC0BMS03 ; 
+  10 KC0BMC11 KC0BMC11 ; 
+  10 KC0BMC12 KC0BMC12 ; 
+  10 KC0BMC13 KC0BMC13 ; 
+  10 KC0BMC14 KC0BMC14 ; 
+  10 KC0BMC15 KC0BMC15 ; 
+  10 KC0BMS04 KC0BMS04 ; 
+  10 KC0BMC16 KC0BMC16 ; 
+  10 KC0BMC17 KC0BMC17 ; 
+  10 KC0BMC18 KC0BMC18 ; 
+  10 KC0BMC19 KC0BMC19 ; 
+  10 KC0BMC20 KC0BMC20 ; 
+  10 KC0BMS05 KC0BMS05 ; 
+  10 KC0BMC21 KC0BMC21 ; 
+  10 KC0BMC22 KC0BMC22 ; 
+  10 KC0BMC23 KC0BMC23 ; 
+  10 KC0BMC24 KC0BMC24 ; 
+  10 KC0BMC25 KC0BMC25 ; 
+  10 KC0BMS06 KC0BMS06 ; 
+  10 KC0BMC26 KC0BMC26 ; 
+  10 KC0BMC27 KC0BMC27 ; 
+  10 KC0BMC28 KC0BMC28 ; 
+  10 KC0BMC29 KC0BMC29 ; 
+  10 KC0BMC30 KC0BMC30 ; 
+  10 KC0BMS07 KC0BMS07 ; 
+  10 KC0BMC31 KC0BMC31 ; 
+  10 KC0BMC32 KC0BMC32 ; 
+  10 KC0BMC33 KC0BMC33 ; 
+  10 KC0BMC34 KC0BMC34 ; 
+  10 KC0BMC35 KC0BMC35 ; 
+  10 KC0BMS08 KC0BMS08 ; 
+  10 KC0BMC36 KC0BMC36 ; 
+  10 KC0BMC37 KC0BMC37 ; 
+  10 KC0BMC38 KC0BMC38 ; 
+  10 KC0BMC39 KC0BMC39 ; 
+  10 KC0BMC40 KC0BMC40 ; 
+  10 KC0BMS09 KC0BMS09 ; 
+  10 KC0BMC41 KC0BMC41 ; 
+  10 KC0BMC42 KC0BMC42 ; 
+  10 KC0BMC43 KC0BMC43 ; 
+  10 KC0BMC44 KC0BMC44 ; 
+  10 KC0BMC45 KC0BMC45 ; 
+  10 KC0BMS10 KC0BMS10 ; 
+  10 KC0BMC46 KC0BMC46 ; 
+  10 KC0BMC47 KC0BMC47 ; 
+  10 KC0BMC48 KC0BMC48 ; 
+  10 KC0BMC49 KC0BMC49 ; 
+  10 KC0BMC50 KC0BMC50 ; 
+  10 KC0BMS11 KC0BMS11 ; 
+  10 KC0BMC51 KC0BMC51 ; 
+  10 KC0BMC52 KC0BMC52 ; 
+  10 KC0BMC53 KC0BMC53 ; 
+  10 KC0BMC54 KC0BMC54 ; 
+  10 KC0BMC55 KC0BMC55 ; 
+end // end KC0BW02
+
+//*** RECORD=KC0BW02R ****
+// Redefine of KC0BW01
+// ************************
+Record KC0BW02R type basicRecord // VAGen Info - redefined KC0BW02
+  10 XCUCD XCUCD ; 
+  10 XCUNM XCUNM ; 
+  10 XGPCD XGPCD ; 
+  10 XGPDESC XGPDESC ; 
+  10 KC0BW-XCSCD1 KC0BW-XCSCD1 ; 
+  10 KC0BW-XCSCD2 KC0BW-XCSCD2 ; 
+  10 KC0BW-XCSCD3 KC0BW-XCSCD3 ; 
+  10 KC0BM-FMDT KC0BM-FMDT ; 
+  10 KC0BM-TODT KC0BM-TODT ; 
+  10 KC0BWGRP KC0BWGRP [11] ; 
+    15 KC0BWSTY KC0BWSTY ; 
+    15 KC0BWCL1 KC0BWCL1 ; 
+    15 KC0BWCL2 KC0BWCL2 ; 
+    15 KC0BWCL3 KC0BWCL3 ; 
+    15 KC0BWCL4 KC0BWCL4 ; 
+    15 KC0BWCL5 KC0BWCL5 ; 
+end // end KC0BW02R
+
+//*** RECORD=KC0BW03 ****
+// KC0B work area to format data to be written to the
+//   scratchpad table
+// ***********************
+Record KC0BW03 type basicRecord
+  15 KC0BW-W03-DATA KC0BW-W03-DATA ; 
+    20 XCUCD XCUCD ; 
+    20 XGPCD XGPCD ; 
+    20 KC0BW-W03-XCSCD1 KC0BW-W03-XCSCD1 ; 
+    20 KC0BW-W03-XCSCD2 KC0BW-W03-XCSCD2 ; 
+    20 KC0BW-W03-XCSCD3 KC0BW-W03-XCSCD3 ; 
+    20 KC0BW-W03-FMDT KC0BW-W03-FMDT ; 
+    20 KC0BW-W03-TODT KC0BW-W03-TODT ; 
+    20 KC0BW-W03-STYLE-COLOR KC0BW-W03-STYLE-COLOR ; 
+    20 KC0BW-W03-FILLER KC0BW-W03-FILLER ; 
+end // end KC0BW03
+
+// XCS_OCR_STAT_CD
+DataItem KC0BM-FMDT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BM-TODT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = left, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// XCS_OCR_STAT_CD
+DataItem KC0BM-XCSCD1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BM-XCSCD2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BM-XCSCD3 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// color one
+DataItem KC0BMC01 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// color one
+DataItem KC0BMC02 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// color one
+DataItem KC0BMC03 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// color one
+DataItem KC0BMC04 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// color one
+DataItem KC0BMC05 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC06 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC07 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC08 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC09 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC10 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC11 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC12 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC13 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC14 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC15 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC16 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC17 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC18 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC19 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC20 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC21 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC22 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC23 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC24 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC25 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC26 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC27 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC28 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC29 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC30 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC31 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC32 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC33 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC34 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC35 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC36 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC37 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC38 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC39 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC40 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC41 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC42 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC43 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC44 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC45 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC46 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC47 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC48 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC49 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC50 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC51 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC52 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC53 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC54 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMC55 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS01 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS02 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS03 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS04 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS05 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS06 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS07 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS08 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS09 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS10 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BMS11 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// century - y2k
+DataItem KC0BW-CECC num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// system date
+DataItem KC0BW-CEDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted date
+DataItem KC0BW-CEDT num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// system date
+DataItem KC0BW-CEMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted century
+DataItem KC0BW-CEYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// system date
+DataItem KC0BW-FMDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// from need date
+DataItem KC0BW-FMDT num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted century
+DataItem KC0BW-FMMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// system date
+DataItem KC0BW-FMYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// DD - break out for y2k
+DataItem KC0BW-FSDDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// MM - break out for y2k
+DataItem KC0BW-FSDMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// YY - break out for y2k
+DataItem KC0BW-FSDYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// century - y2k
+DataItem KC0BW-RECC num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// system date
+DataItem KC0BW-REDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted date
+DataItem KC0BW-REDT num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// system date
+DataItem KC0BW-REMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted century
+DataItem KC0BW-REYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// system date
+DataItem KC0BW-TODD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// to need date
+DataItem KC0BW-TODT num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted century
+DataItem KC0BW-TOMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// system date
+DataItem KC0BW-TOYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// xsr-scrpd-data-text
+DataItem KC0BW-W03-DATA char(100)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BW-W03-FILLER char(46)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// from need date
+DataItem KC0BW-W03-FMDT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// style and color combinations
+DataItem KC0BW-W03-STYLE-COLOR char(26)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// to need date
+DataItem KC0BW-W03-TODT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// credit status code1
+DataItem KC0BW-W03-XCSCD1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// credit status code2
+DataItem KC0BW-W03-XCSCD2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// credit status code3
+DataItem KC0BW-W03-XCSCD3 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BW-XCSCD1 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BW-XCSCD2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BW-XCSCD3 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Binary version of date
+DataItem KC0BWBDT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Binary version of time
+DataItem KC0BWBTM smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// color one
+DataItem KC0BWCL1 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// color one
+DataItem KC0BWCL2 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// color one
+DataItem KC0BWCL3 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// color one
+DataItem KC0BWCL4 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// color one
+DataItem KC0BWCL5 char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// color selected
+DataItem KC0BWCLR num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// counter for looping thru style
+DataItem KC0BWCNT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Enter key pressed flag
+DataItem KC0BWENT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end-of-applic flag
+DataItem KC0BWEOA char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// edit error flag
+DataItem KC0BWERR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end screen send flag
+DataItem KC0BWESF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// formatted century
+DataItem KC0BWFCN num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted date
+DataItem KC0BWFDT num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted hour
+DataItem KC0BWFHR num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted minute
+DataItem KC0BWFMI num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// system date
+DataItem KC0BWFSD num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// formatted time
+DataItem KC0BWFTM num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem KC0BWGRP char(21)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// system hour
+DataItem KC0BWHR char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// system minute
+DataItem KC0BWMI char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Vcspad01 not found flag
+DataItem KC0BWNFN char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// system second
+DataItem KC0BWSE char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// no style entered for colors
+DataItem KC0BWSFN char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem KC0BWSTY char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// system time
+DataItem KC0BWTIM char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Hold area for sales rep
+DataItem KC0BWXCU char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+
