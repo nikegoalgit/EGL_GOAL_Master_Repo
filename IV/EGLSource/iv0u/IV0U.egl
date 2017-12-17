@@ -1,0 +1,920 @@
+package iv0u;
+
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSIVS02;
+import corpcom4.XSIVSFH;
+import corpcom4.XSIVSFP;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import corpx1.XSOTBL;
+import iv.common.IV0REC;
+import iv.common.IV7REC;
+import iv.common.IVAREC;
+import iv.common.IVCREC;
+import iv.common.IVFREC;
+import iv.common.IVGREC;
+import iv.common.IVXREC;
+import iv.common.IVYREC;
+import ku.common.KUCREC;
+import ta.common.TA1REC;
+import ta.common.TA5REC;
+import ta.common.TAEREC;
+//*** PROGRAM=IV0U ****
+//     Invoicing Inquiry     order change comments
+// 
+// overview: this application displays all invoice notepad
+//           comments associated with an invoice and allows
+//           for addition and update of comments
+// 
+// date created: 06/25/92
+//       author: Lynne Grossman
+// 
+// maintenance history:
+// 
+//     date     by whom     overview of changes made
+//   -------- ------------  -----------------------------------
+//   06/25/92    lgross     Program Creation.
+//   10/06/82    lgross     changed text on map to accept 60
+//                          characters
+//   08/25/93    lgross     added path thru pf24 to invoice
+//                          carton tracking
+//                          Changed: IV0U005, IV0US24
+//   03/20/95    gdecke     allow fastpath selection to iv0w
+//                          and send catitem too.
+// 
+// *********************
+Program IV0U type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "IV00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  IV0REC IV0REC; // record
+  IV0UW01 IV0UW01; // record
+  IV7REC IV7REC; // record
+  IVAREC IVAREC; // record
+  IVCREC IVCREC; // record
+  IVFREC IVFREC; // record
+  IVGREC IVGREC; // record
+  IVXREC IVXREC; // record
+  IVYREC IVYREC; // record
+  KUCREC KUCREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XSOTBL; // table
+  use IV0UM.IV0UM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    IV0U001: IV0U001();
+    IV0U005: IV0U005();
+    goto IV0U001;
+  end // end main
+end // end IV0U
+
+// Program Initialization
+Function IV0U001()
+  ;
+   /* ****************iv0u001*********************************/
+  ;
+     /* **********************************************************/
+     /* * this process performs the following functions:        **/
+     /* *     - checks entry security                           **/
+     /* *     - moves the working storage and order processing  **/
+     /* *       record from the incoming common area            **/
+     /* *     - initializes the map and working fields          **/
+     /* **********************************************************/
+  ;
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+  
+  ;
+  XSENTRY(); /* system security check*/
+  ;
+   /* ****************************************************/
+   /* *** set segmented trans id                      ****/
+   /* ****************************************************/
+  ;
+  CAEZSAP = sysVar.transactionID;
+  CAEZSG12 = "IV";
+  CAEZSG4 = "U";
+  sysVar.transactionID = CAEZSAP;
+  ;
+   /* *************************************************************/
+  ;
+  ;
+  IV0USPI(); /* initialize program*/
+  ;
+  IV0UM001.XXXRUNBR = 1; /* set map revision number*/
+  ;
+  IV0USDB(); /* call up order header for flag check*/
+  ;
+  if (IV0UW01.IV0UWCHG == "Y") /* if change screen not inquiry screen*/
+    if (IVYREC.IVYSUB < 15) /* if not end of page*/
+      set IV0UM001.IV-TXT[IVYSUB] cursor; /* set cursor to next empty line*/
+    end
+  end
+  ;
+end // end IV0U001
+
+// converse iv0um001
+Function IV0U005()
+  converse IV0UM001 ;
+  ;
+  ;
+     /* **********************************************************/
+     /* * this process performs the following functions:        **/
+     /* *     - presents the change comments screen for data    **/
+     /* *       entry or modification                           **/
+     /* *     - edits the data entered and identifies any       **/
+     /* *       data errors                                     **/
+     /* * 08/24/93 lgross  added pf24 to invoice tracking screen**/
+     /* **********************************************************/
+  ;
+  ;
+   /* *************************************************************/
+   /* *************************************************************/
+  ;
+   /* *****************iv0u005******************/
+  ;
+  if (IV0UW01.IV0UWCHG == "Y") /* changes allowed within application?*/
+    IV0USSM(); /* save modified flags for re-converse*/
+  end
+  ;
+  ;
+  if (converseVar.eventKey is enter) /* process screen*/
+    IV0USEN();
+  else
+    if (converseVar.eventKey is pf3) /* iv menu*/
+      IV0US03();
+    else
+      if (converseVar.eventKey is pf4) /* main menu*/
+        IV0US04();
+      else
+        if (converseVar.eventKey is pf13) /* invoice header*/
+          IV0US13();
+        else
+          if (converseVar.eventKey is pf14) /* commissions&payments*/
+            IV0US14();
+          else
+            if (converseVar.eventKey is pf15) /* instructions*/
+              IV0US15();
+            else
+              if (converseVar.eventKey is pf16) /* addresses*/
+                IV0US16();
+              else
+                if (converseVar.eventKey is pf20) /* order change comments*/
+                  IV0US20();
+                else
+                  if (converseVar.eventKey is pf24) /* carton tracking screen*/
+                    IV0US24();
+                  else
+                    IVYREC.IVYERR = "Y";
+                    converseLib.validationFailed(3);
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  ;
+end // end IV0U005
+
+// pf3 pressed key
+Function IV0US03()
+   /* **** handle pf3 key*/
+  ;
+  COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+  COMMAREA.CATOAP = "IV0A";
+  XSEXIT(); /* transfer to main menu*/
+  converseLib.validationFailed(15); /* transfer failed*/
+  IVYREC.IVYERR = "Y"; /* mark as error*/
+  ;
+  ;
+end // end IV0US03
+
+// pf4 pressed key
+Function IV0US04()
+   /* ***********handle pf4 key*/
+  ;
+  COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+  COMMAREA.CATOAP = "MN0M";
+  XSEXIT(); /* transfer to system main menu*/
+  converseLib.validationFailed(15); /* transfer failed*/
+  IVYREC.IVYERR = "Y"; /* mark as error*/
+  ;
+  ;
+end // end IV0US04
+
+// PF13 Pressed Actions
+Function IV0US13()
+   /* ******handle pf13 key*/
+  ;
+  COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+  COMMAREA.CATOAP = "IV0G";
+  XSEXIT(); /* transfer to Header 1*/
+  converseLib.validationFailed(15); /* transfer failed*/
+  IVYREC.IVYERR = "Y"; /* mark as error*/
+  ;
+  ;
+end // end IV0US13
+
+// handle entry of pf key 14
+Function IV0US14()
+   /* ************handle pf14 key*/
+  ;
+  COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+  COMMAREA.CATOAP = "IV0H";
+  XSEXIT(); /* transfer to Addresses*/
+  converseLib.validationFailed(15); /* transfer failed*/
+  IVYREC.IVYERR = "Y"; /* mark as error*/
+  ;
+  ;
+  ;
+end // end IV0US14
+
+// PF15 Pressed Actions
+Function IV0US15()
+   /* ****************handle pf15 key*/
+  ;
+  COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+  COMMAREA.CATOAP = "IV0J";
+  XSEXIT(); /* transfer to instructions*/
+  converseLib.validationFailed(15); /* transfer failed*/
+  IVYREC.IVYERR = "Y"; /* mark as error*/
+  ;
+  ;
+end // end IV0US15
+
+// handle entry of pfkey 16
+Function IV0US16()
+   /* **************handle pf16 key*/
+  ;
+  COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+  COMMAREA.CATOAP = "IV0I";
+  XSEXIT(); /* transfer to Addresses*/
+  converseLib.validationFailed(15); /* transfer failed*/
+  IVYREC.IVYERR = "Y"; /* mark as error*/
+  ;
+  ;
+end // end IV0US16
+
+// handle entry of pfkey 20
+Function IV0US20()
+   /* *******************handle pf20 key*/
+  ;
+  COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+  COMMAREA.CATOAP = "IV0C";
+  XSEXIT(); /* transfer to order comments*/
+  converseLib.validationFailed(15); /* transfer failed*/
+  IVYREC.IVYERR = "Y"; /* mark as error*/
+  ;
+  ;
+end // end IV0US20
+
+// handle entry of pfkey 24
+Function IV0US24()
+   /* *******************handle pf24 key*/
+  ;
+  COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+  COMMAREA.CATOAP = "IV0V";
+  XSEXIT(); /* transfer to carton tracking*/
+  converseLib.validationFailed(15); /* transfer failed*/
+  IVYREC.IVYERR = "Y"; /* mark as error*/
+  ;
+  ;
+end // end IV0US24
+
+// Data Base Flag Check
+Function IV0USDB()
+  ;
+   /* ************** set up to read comments from database*/
+  ;
+     /* blank areas*/
+  ;
+  set IVAREC empty;
+  set SQLCA empty;
+  ;
+    /* set up key for read*/
+  ;
+  IVAREC.IV0IVCID = IVXREC.IV0IVCID;
+  IVYREC.IVYIVCN = IVXREC.IV0IVCID;
+  IVAREC.IV0PARTN = IVYREC.IV0PARTN;
+  ;
+  call "IO1040" ("S ", SQLCA, IVAREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "IV0U    ";
+    TA1REC.TA1MAP = "IV0UM001";
+    TA1REC.TA1DBASE = "DINVC   ";
+    TA1REC.TA1TBLVU = "VIVHDR01";
+    TA1REC.TA1LOCAT[1] = "IV0USDB";
+    TA1REC.TA1TBLKE = IVAREC.IV0KEY;
+    TA1REC.TA1LOCAT[3] = "IV0U";
+    TA1REC.TA1LOCAT[4] = "IO1040";
+    XSIVS02();
+  end
+  ;
+  ;
+   /* iF IVAREC.IVATXTI EQ 'Y'; /* there are comments already*/
+  IV0USSS(); /* select comment set*/
+  IV0USSN(); /* display comment set*/
+   /* enD;*/
+  ;
+  ;
+  ;
+  ;
+end // end IV0USDB
+
+// Disable Keys for Inquiry Mode
+Function IV0USDK()
+  ;
+  ;
+  IV0UW01.IV0UWSUB = 1;
+  ;
+  while (IV0UW01.IV0UWSUB <= 15) /* set all change comments*/
+    set IV0UM001.IV-TXT[IV0UWSUB] protect; /* to inquiry mode*/
+    IV0UW01.IV0UWSUB = IV0UW01.IV0UWSUB + 1;
+  end
+  ;
+  ;
+end // end IV0USDK
+
+// Delete Record From Data Base
+Function IV0USDR()
+  ;
+   /* *********** delete record from database*******************/
+  ;
+  set SQLCA empty;
+  ;
+  ;
+  call "IO1070" ("D ", SQLCA, IV7REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "IV0U    ";
+    TA1REC.TA1MAP = "IV0UM001";
+    TA1REC.TA1DBASE = "DINVC   ";
+    TA1REC.TA1TBLVU = "VIVTXT01";
+    TA1REC.TA1LOCAT[1] = "IV0USDR";
+    TA1REC.TA1TBLKE = IVAREC.IV0KEY;
+    TA1REC.TA1LOCAT[3] = "IV0U";
+    TA1REC.TA1LOCAT[4] = "IO1070";
+    XSIVS02();
+  end
+  ;
+  ;
+  ;
+  ;
+  ;
+end // end IV0USDR
+
+// Enter Key Pressed Actions
+Function IV0USEN()
+  ;
+   /* ********** process screen when enter is pressed*/
+  ;
+  IV0UW01.IV0UWMOD = "N"; /* set change flag off*/
+  IV0UW01.IV0UWSUB = 1;
+  while (IV0UW01.IV0UWSUB <= 15) /* check for updates to screen*/
+    if (IV0UM001.IV-TXT[IV0UWSUB] is modified)
+      IV0UW01.IV0UWMOD = "Y";
+    end
+    IV0UW01.IV0UWSUB = IV0UW01.IV0UWSUB + 1;
+  end
+  ;
+  if (IV0UW01.IV0UWMOD == "Y") /* if modifications were made*/
+    if (IV0UW01.IV0UWCHG == "Y") /* were changes authorized?*/
+      IV0USUP(); /* update data base*/
+      return;
+    else
+      IVYREC.IVYERR = "Y"; /* mark as error*/
+      converseLib.validationFailed(64); /* message inquiry only - no changes*/
+      return;
+    end
+  end
+  ;
+     /* pass ivxrec to commarea for use by next app*/
+  ;
+  COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+  ;
+     /* pass to previous screen*/
+  ;
+  if (IV0UM001.CATOAP == "IV0W")
+    COMMAREA.CATOAP = IV0UM001.CATOAP;
+    COMMAREA.CAITEM = IV0UM001.CAITEM;
+  else
+    COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+  end
+  XSEXIT(); /* transfer to Header 1*/
+  converseLib.validationFailed(15); /* transfer failed*/
+  IVYREC.IVYERR = "Y"; /* mark as error*/
+  ;
+end // end IV0USEN
+
+// Map Initialization
+Function IV0USMI()
+  ;
+  ;
+  converseLib.clearScreen();
+  set IV0UM001 initial; /* initializes map*/
+  ;
+  ;
+  IV0UM001.XXXCURDT = VGVar.currentShortGregorianDate;
+  IV0UM001.IV0IVCID = IVXREC.IV0IVCID; /* move in invoice number*/
+  IV0UM001.KUCCOID = IVXREC.KUCCOID; /* move in company*/
+  IV0UM001.KUMSTRID = IVXREC.KUMSTRID; /* move in store*/
+  IV0UM001.XNXCD = IVXREC.XNXCD; /* move in dept*/
+  IV0UM001.KUCCONM = IVXREC.KUCCONM; /* move in customer name*/
+  IV0UM001.IV0IVCDT = IVXREC.IV0IVCDT;
+  IV0UM001.OP1CUPO = IVXREC.OP1CUPO; /* move in po number*/
+  IV0UM001.XSOCD = IVXREC.XSOCD; /* move in sales office code*/
+  IV0UM001.XSOABRV = IVXREC.XSOABRV; /* move in sales office abrev*/
+  IV0UM001.OP1CUOID = IVXREC.OP1CUOID; /* move in order number*/
+  ;
+  ;
+  /* GET OM0CSMI*/
+  ;
+  ;
+  ;
+  if (IV0UW01.IV0UWCHG == "N")
+    IV0UM001.IV0UMTTL = "INQUIRY"; /* set title of screen*/
+    IV0USDK(); /* disable keys - no changes allowed*/
+    set IV0UM001.CATOAP cursor, protect;
+  else
+    IV0UM001.IV0UMTTL = " CHANGE"; /* set title of screen*/
+    set IV0UM001.IV-TXT[1] cursor, normal;
+  end
+  ;
+  ;
+  ;
+  ;
+end // end IV0USMI
+
+// Program Initialization
+Function IV0USPI()
+  ;
+     /* ***   This statement group handles initial clearing ****/
+     /* *** of working fields for IV0u, and fetch of header ****/
+     /* *** index and company records if came in fastpath   ****/
+  ;
+     /* initialize work record*/
+  ;
+  set IVYREC empty;
+  set IV0UW01 empty;
+  ;
+  if (COMMAREA.CACHGFL == "Y") /* check for security to update*/
+    IV0UW01.IV0UWCHG = "Y";
+  else
+    IV0UW01.IV0UWCHG = "N";
+  end
+     /* determine if came in fastpath*/
+  ;
+  if (COMMAREA.CAITEM != " " /* fastpath entry*/
+   || COMMAREA.CAFRMSYS != COMMAREA.CACURSYS) /* from other sys,10-28-87*/
+    IVYREC.IVYMTXT = "IV0USPI"; /* in case of error 1-26-88*/
+    XSIVSFP(); /* find header index and company*/
+    IVYREC.IVYMTXT = " "; /* 1-26-88*/
+    if (IVXREC.IVXMSSNB != 0) /* if had an error on invoice lookup*/
+      COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+      COMMAREA.CATOAP = "IV0A";
+      XSEXIT(); /* pass to menu screen*/
+    end
+    COMMAREA.CAITEM = " "; /* reset caitem to space*/
+  else /* not fastpath*/
+    IVXREC.IVXGROUP = COMMAREA.CAUSERA; /* setup up program storage*/
+    if (IVXREC.IVXINIT != "IV0") /* if not inited*/
+      set IVXREC empty;
+      IVXREC.IVXMSSNB = 18; /* must have come fastpath w/o item*/
+      IVXREC.IVXINIT = "IV0"; /* set so iv0a will look for message*/
+      COMMAREA.CAUSERA = IVXREC.IVXGROUP; /* return to iv0a*/
+      COMMAREA.CATOAP = "IV0U";
+      XSEXIT();
+    end
+  end
+  ;
+     /* if came here direct from menu, will still need to*/
+     /* retrieve header index and company.  Use kuccoid as check*/
+  ;
+  if (IVXREC.KUCCOID <= 0)
+    IVYREC.IVYMTXT = "IV0USPI"; /* in case of error 1-26-88*/
+    XSIVSFH(); /* routine to do lookups*/
+    IVYREC.IVYMTXT = " "; /* 1-26-88*/
+     /* below added 1-22-88*/
+    if (IVXREC.IVXMSSNB != 0) /* if error on invoice lookup*/
+      COMMAREA.CAUSERA = IVXREC.IVXGROUP;
+      COMMAREA.CATOAP = "IV0A";
+      XSEXIT(); /* pass to menu screen*/
+    end
+     /* above added 1-22-88*/
+  end
+  ;
+  IVYREC.IVYWDT = VGVar.currentShortGregorianDate;
+  if (IVYREC.IVYWYY > 56)
+    IVYREC.IVYWCC = 19;
+  else
+    IVYREC.IVYWCC = 20;
+  end
+  ;
+  IV0UW01.IV0UWFTM = VGVar.currentFormattedTime;
+  IV0UWCHH = IV0UW01.IV0UWFHH; /* set up time for adding db2 records*/
+  IV0UWCMM = IV0UW01.IV0UWFMM;
+  ;
+  IV0USMI(); /* initialize map*/
+  ;
+  ;
+end // end IV0USPI
+
+// Setup Comment Fields
+Function IV0USSC()
+  ;
+   /* ************ move comments to map ***************************/
+   /* /lgross 10/22/92 move user-id to map*/
+   /* *************************************************************/
+  ;
+  IV0UM001.IV-SDT[IVYSUB] = IV7REC.ZZZSDT;
+  IV0UM001.IV-TXT[IVYSUB] = IV7REC.IV7TXT;
+  IV0UM001.XXX-USER-ID[IVYSUB] = IV7REC.XXX-USER-ID;
+  IV0UW01.IV0UWCSQ = IV7REC.IV7TXTSQ;
+  IV0UW01.IV0UWSEQ[IVYSUB] = IV7REC.IV7TXTSQ;
+  IV0UW01.IV0UWCLL = IVYREC.IVYSUB;
+  IVYREC.IVYSUB = IVYREC.IVYSUB + 1;
+  ;
+   /* clear iv7rec before next read*/
+  ;
+  IV7REC.IV7TXT = " ";
+  IV7REC.IV-ORD-CHNG-DT = 0;
+  IV7REC.IV7TXTSQ = 0;
+  ;
+  ;
+end // end IV0USSC
+
+// Save Modified Flags
+Function IV0USSM()
+  ;
+   /* ************ Save modified flags ***************************/
+  ;
+  IV0UW01.IV0UWSUB = 1;
+  ;
+  while (IV0UW01.IV0UWSUB <= 15)
+    if (IV0UM001.IV-TXT[IV0UWSUB] is modified)
+      set IV0UM001.IV-TXT[IV0UWSUB] modified;
+    end
+    IV0UW01.IV0UWSUB = IV0UW01.IV0UWSUB + 1;
+  end
+  ;
+  ;
+end // end IV0USSM
+
+// Select Next Comment
+Function IV0USSN()
+  ;
+   /* ***     this statement group reads the selected comments,*/
+   /* ***     and selects those to appear on the screen*/
+  ;
+  set IV7REC empty;
+  IV7REC.IV7KEY = IVAREC.IV0KEY;
+  ;
+  set SQLCA empty;
+  ;
+  IVYREC.IVYSUB = 1; /* special instructions index*/
+  while (SQLCA.VAGen_SQLCODE == 0)
+    call "IO1070" ("SN", SQLCA, IV7REC) {isNoRefresh = yes};
+    if (SQLCA.VAGen_SQLCODE == 0)
+      IV0USSC(); /* setup special labels on map*/
+    else
+      if (SQLCA.VAGen_SQLCODE > 100)
+        TA1REC.TA1PGMNM = "IV0U    ";
+        TA1REC.TA1MAP = "IV0UM001";
+        TA1REC.TA1DBASE = "DINVC   ";
+        TA1REC.TA1TBLVU = "VIVTXT01";
+        TA1REC.TA1TBLKE = IV7REC.IV7KEY;
+        TA1REC.TA1LOCAT[3] = "IV0USSN"; /* 10-30-87*/
+        TA1REC.TA1LOCAT[4] = "IO1070";
+        XSIVS02();
+      end
+    end
+  end
+  ;
+  ;
+  call "IO1070" ("CS", SQLCA, IV7REC) {isNoRefresh = yes};
+  ;
+  ;
+end // end IV0USSN
+
+// Select Set of Comments
+Function IV0USSS()
+  ;
+   /* **** select set to read  invoice change comments (n) from database*/
+  ;
+  set IV7REC empty;
+  set SQLCA empty;
+  IV7REC.IV7KEY = IVAREC.IV0KEY;
+  IV7REC.IV7TXTYP = "N";
+  ;
+  call "IO1070" ("SS", SQLCA, IV7REC) {isNoRefresh = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "IV0U    ";
+    TA1REC.TA1MAP = "IV0UM001";
+    TA1REC.TA1DBASE = "DINVC   ";
+    TA1REC.TA1TBLVU = "VIVTXT01";
+    TA1REC.TA1TBLKE = IV7REC.IV7KEY;
+    TA1REC.TA1LOCAT[3] = "IV0USSS"; /* 10-30-87*/
+    TA1REC.TA1LOCAT[4] = "IO1070";
+    XSIVS02();
+  end
+  ;
+  ;
+  ;
+  ;
+end // end IV0USSS
+
+// Will this be an add or update
+Function IV0USUC()
+  ;
+   /* **********  Will this be an add or update  *********************/
+   /* /lgross  10/22/92  add user id to record*/
+   /* ***************************************************************/
+  ;
+  set IV7REC empty;
+  IV7REC.IV7KEY = IVAREC.IV0KEY;
+  IV7REC.IV7TXTYP = "N";
+  if (IV0UW01.IV0UWSUB <= IV0UW01.IV0UWCLL)
+    IV7REC.IV7TXTSQ = IV0UW01.IV0UWSEQ[IV0UWSUB];
+    IV0UW01.IV0UWCAL = "U";
+  else
+    IV0UW01.IV0UWCSQ = IV0UW01.IV0UWCSQ + 1;
+    IV7REC.IV7TXTSQ = IV0UW01.IV0UWCSQ;
+    IV0UW01.IV0UWCAL = "A";
+  end
+  ;
+  ;
+  if (IV0UM001.IV-TXT[IV0UWSUB] == " ")
+    if (IV0UW01.IV0UWCAL == "U")
+      IV0USDR(); /* delete text record*/
+    end
+  else
+    if (IV0UW01.IV0UWCAL == "U")
+      IV0USDR(); /* delete old record*/
+    end
+    IV7REC.IV7TXT = IV0UM001.IV-TXT[IV0UWSUB];
+    IV7REC.XXX-USER-ID = COMMAREA.CAUSERID; /* add user id to record*/
+    IV7REC.ZZZSDT = IVYREC.IVYWDT;
+    IV7REC.ZZZSTM = IV0UW01.IV0UWCTM;
+    IV0USUR(); /* add new one*/
+  end
+  ;
+  ;
+end // end IV0USUC
+
+// Determine changes were made
+Function IV0USUP()
+  ;
+   /* ******** check if there's been a modification and*/
+   /* *******  update header comment indicator if necessary*/
+  ;
+  IV0UW01.IV0UWSUB = 1;
+  ;
+  while (IV0UW01.IV0UWSUB <= 15)
+    if (IV0UM001.IV-TXT[IV0UWSUB] is modified)
+      IV0USUC(); /* update the database*/
+    end
+    if (IV0UM001.IV-TXT[IV0UWSUB] == " ")
+      IV0UW01.IV0UWBCT = IV0UW01.IV0UWBCT + 1;
+    end
+    IV0UW01.IV0UWSUB = IV0UW01.IV0UWSUB + 1;
+  end
+  ;
+  ;
+  ;
+  set IV7REC empty;
+  set SQLCA empty;
+  IV7REC.IV7KEY = IVAREC.IV0KEY;
+  IV7REC.IV7TXTYP = "N";
+  ;
+  call "IO1070" ("SS", SQLCA, IV7REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  sysVar.arrayIndex = 0;
+  while (SQLCA.VAGen_SQLCODE == 0)
+    call "IO1070" ("SN", SQLCA, IV7REC) {isNoRefresh = yes, isExternal = yes};
+    if (SQLCA.VAGen_SQLCODE == 0)
+      sysVar.arrayIndex = sysVar.arrayIndex + 1; /* count the comments*/
+    end
+  end
+  ;
+  call "IO1070" ("CS", SQLCA, IV7REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+   /* iV0USDB;                          /* read the order header*/
+  ;
+   /* IF EZETST EQ 0;                   /* there are comments*/
+    /* IF IVAREC.IVATXTI EQ 'Y';*/
+      /* ; /* next sentence  ; no need to update flag is already set*/
+    /* ELSE;*/
+      /* MOVE 'Y' TO IVAREC.IVATXTI;   /* better update*/
+      /* IV0USIH;                     /* update header*/
+    /* END;*/
+   /* END;*/
+  ;
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+  
+  ;
+  ;
+  ;
+end // end IV0USUP
+
+// Add/Update Record on Data Base
+Function IV0USUR()
+  ;
+   /* ********** Add record to database*/
+  ;
+  set SQLCA empty;
+  ;
+  call "IO1070" ("A ", SQLCA, IV7REC) {isNoRefresh = yes, isExternal = yes}; /* add record to database*/
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1PGMNM = "IV0U    ";
+    TA1REC.TA1MAP = "IV0UM001";
+    TA1REC.TA1DBASE = "DINVC   ";
+    TA1REC.TA1TBLVU = "VIVTXT01";
+    TA1REC.TA1LOCAT[1] = "IV0USUR";
+    TA1REC.TA1TBLKE = IVAREC.IV0KEY;
+    TA1REC.TA1LOCAT[3] = "IV0U";
+    TA1REC.TA1LOCAT[4] = "IO1070";
+    XSIVS02();
+  end
+  ;
+  ;
+  ;
+  ;
+  ;
+  ;
+  ;
+end // end IV0USUR
+
+//*** RECORD=IV0UW01 ****
+// ************  Invoice Notepad Working Storage  *************
+// 
+// Date Created:        09/09/92
+// 
+// Working storage rec for application IV0U
+// 
+// Maintenance Log:
+// 
+//   Date    Init.      Comment
+// --------  -----      ---------------------------------------
+// 09-09-92   lgross    Initial record creation
+// 
+// ***********************
+Record IV0UW01 type basicRecord
+  5 IV0UWGRP IV0UWGRP ; 
+    10 IV0UWEOA IV0UWEOA ; 
+    10 IV0UWSEQ IV0UWSEQ [15] ; 
+    10 IV0UWCCT IV0UWCCT [15] ; 
+    10 IV0UWCHG IV0UWCHG ; 
+    10 IV0UWMOD IV0UWMOD ; 
+    10 IV0UWBCT IV0UWBCT ; 
+    10 IV0UWSUB IV0UWSUB ; 
+    10 IV0UWCLL IV0UWCLL ; 
+    10 IV0UWCSQ IV0UWCSQ ; 
+    10 IV0UWCAL char(1) ; 
+    10 IV0UWFTM IV0UWFTM ; 
+      15 IV0UWFHH IV0UWFHH ; 
+      15 * char(1) ; 
+      15 IV0UWFMM IV0UWFMM ; 
+      15 * char(1) ; 
+      15 IV0UWFSS IV0UWFSS ; 
+    10 IV0UWCTM IV0UWCTM ; 
+      15 IV0UWCHH IV0UWCHH ; 
+      15 IV0UWCMM IV0UWCMM ; 
+end // end IV0UW01
+
+DataItem IV0UWBCT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem IV0UWCCT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// invoice inq init id ('iv0')
+DataItem IV0UWCHG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem IV0UWCHH num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem IV0UWCLL smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem IV0UWCMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem IV0UWCSQ smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem IV0UWCTM num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// invoice inq init id ('iv0')
+DataItem IV0UWEOA char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem IV0UWFHH char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem IV0UWFMM char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem IV0UWFSS char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem IV0UWFTM char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// invoice inquiry w/s group
+DataItem IV0UWGRP char(84)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem IV0UWMOD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem IV0UWSEQ smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem IV0UWSUB smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+
