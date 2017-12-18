@@ -1,0 +1,2148 @@
+package oc0a;
+import corpcom2.XS0AW02;
+import corpcom2.XX0XW01;
+import corpcom3.XS0AS00;
+import corpcom3.XS0AS02;
+import corpcom3.XS0AS03;
+import corpcom3.XS0AS06;
+import corpcom3.XS0AS13;
+import corpcom3.XS0AS22;
+import corpcom3.XS0ASDC;
+import corpcom3.XS0ASDP;
+import corpcom3.XS0ASNP;
+import corpcom3.XS0ASNR;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSPF4;
+import corpcom4.XX0XS01;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import corpx1.XS0AT02;
+import ku.common.KUIPRDID;
+import ku.common.KUMREC;
+import ob.common.OB2REC;
+import ob.common.OBKREC;
+import oc.common.OC1REC;
+import oc.common.OC4ACTUA;
+import oc.common.OC4DSCPN;
+import oc.common.OC4EXPEC;
+import oc.common.OC4REC;
+import oc.common.OCADUPFL;
+import oc.common.OCAEXPFL;
+import oc.common.OCAMSGNO;
+import oc.common.OCAREC;
+import oc.common.OCASTYFL;
+import oc.common.OCASUBFL;
+import oc.common.OCASUBOR;
+import oc.common.OCAWHFND;
+import oc.common.OCBREC;
+import oc.common.OCCREC;
+import oc.common.OCDREC;
+import oc.common.OCWREC;
+import op.common.OP1CUNDT;
+import op.common.OP2CPLNB;
+import op.common.OP2REC;
+import sy.common.SY2CLRID;
+import ta.common.TA1REC;
+import ta.common.TA5REC;
+import ta.common.TAEREC;
+import xx.common.*;
+import xx02.*;
+import xx02.XDMCD;
+import xx02.XDTCD;
+import xx02.XDTTBL;
+import xx02.XGPTBL;
+import xx03.*;
+import xx08.*;
+import xx08.SY1STNBR;
+//*** PROGRAM=OC0A ****
+// APPLICATION OVERVIEW:
+// 
+//    This application is used to manually add order
+// discrepancies. Discrepancies may be added for domestic,
+// active orders on the OP or OB databases.
+// 
+//    Screen allows entry of multiple discrepancies. A
+// sub-program is called to do the actual edits appropriate
+// for each discrepancy type.  After discrepancies pass all
+// edits they are added to to an existing unsent discrepancy
+// letter, or a new discrepancy letter header is created and
+// inserted by a sub-program. A blank screen is displayed
+// along with a confiramtion message indicating how many
+// discrepacies were added.
+// 
+//    This application can be accessed from the OC menu and
+// by pressing PF5 from any other Order Information
+// application.
+// -------------------------------------------
+// 
+// Sub program  Function
+// -----------  ---------------------------------------------
+//   OC5000     Discrepancy Edit Subroutine
+//   OC5050     Letter Header Insert/Update
+// **********************************************************
+//              M A I N T E N A N C E   L O G
+// **********************************************************
+//   DATE      NAME    DESCRIPTION OF CHANGE
+// --------   ------   ----------------------------------------
+// 05/14/91   rdavis   Created
+// 09/18/91   trober   fixed initial fetch problem for
+//                     dorder.vitem001 table in oc0as85.
+// 09/19/91   schase   Added check for ocwrtncd='05' for batch
+//                     edit is running when OC0F is called. S73
+// 11/06/91   dflesh   adjusted pf key locations on map.
+// 01/06/92   trober   added code to prevent a direct
+//                     fastpath to OC0D, (OC0ASPF).
+// 01/26/94   gcalki   #1002 - added code to limit discrepancy
+//                     type to XL for XL orders.  s64, ocwrec
+// 08/07/95   CRAINE   DATABASE CHANGES
+// *********************
+Program OC0A type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OC00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  KUMREC KUMREC; // record
+  OB2REC OB2REC; // record
+  OBKREC OBKREC; // record
+  OC0AW01 OC0AW01; // record
+  OC0AW02 OC0AW02; // record
+  OC0AW03 OC0AW03; // record
+  OC1REC OC1REC; // record
+  OC4REC OC4REC; // record
+  OCAREC OCAREC; // record
+  OCBREC OCBREC; // record
+  OCCREC OCCREC; // record
+  OCDREC OCDREC; // record
+  OCWREC OCWREC; // record
+  OP2REC OP2REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+  XS0AW02 XS0AW02; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XS0AT02 {deleteAfterUse = yes}; // table
+  use XDTTBL {deleteAfterUse = yes}; // table
+  use XGPTBL {deleteAfterUse = yes}; // table
+  use XLDTBL {deleteAfterUse = yes}; // table
+  use OC0AM.OC0AM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OC0A000: OC0A000();
+    goto OC0A010;
+    OC0A010: OC0A010();
+    goto OC0A010;
+  end // end main
+end // end OC0A
+
+// ADD DISCREPANCIES
+Function OC0A000()
+     /* Check csp and order information security*/
+  ;
+  XSENTRY();
+  ;
+   /* ****************************************************/
+   /* *** set segmented trans id                      ****/
+   /* ****************************************************/
+  ;
+  CAEZSAP = sysVar.transactionID;
+  CAEZSG12 = "OC";
+  CAEZSG4 = "A";
+  sysVar.transactionID = CAEZSAP;
+  ;
+  OC0AS99(); /* Application security*/
+  ;
+     /* Initialize application - init records*/
+                              /* save map name for XS sgrp's*/
+  OC0AS01();
+  ;
+  ;
+     /* 'Ready' message*/
+  ;
+  converseLib.validationFailed(080);
+  ;
+     /* Display commarea message,*/
+     /* Move commarea passed data*/
+  ;
+  OC0AM001.CAMSG = COMMAREA.CAMSG;
+  COMMAREA.CAMSG = " ";
+  ;
+  if (COMMAREA.CAFRMSYS != "OC") /* If coming from another system*/
+    set OCWREC empty; /* Initialize system work rec*/
+  end
+  ;
+  if (COMMAREA.CAITEM != " ") /* If item passed in commarea*/
+    XS0AS02(); /* Check for numeric CAITEM*/
+    OC0AM001.OCWCUOID = OCWREC.OCWCUOID;
+    OC0AS73(); /* Order number edit*/
+    if (OC0AW01.OC0AWERR != "Y") /* If valid order number*/
+      OC0AS02(); /* check if valid for add function*/
+    end
+    COMMAREA.CAITEM = " ";
+  else
+    OC0AM001.OCWCUOID = OCWREC.OCWCUOID;
+    OC0AS60(); /* edit passed order number*/
+  end
+  ;
+     /* Build map for display*/
+  ;
+  OC0AS03();
+  ;
+  ;
+end // end OC0A000
+
+// CONVERSE OC0AM001
+Function OC0A010()
+  ;
+  converseLib.clearScreen();
+   /* set map page*/
+  converseVar.segmentedMode = 1; /* force segmented converse mode*/
+  ;
+  converse OC0AM001 ;
+  ;
+     /* Init error stuff*/
+  ;
+  OC0AW01.OC0AWERR = "N"; /* Edit error flag*/
+  converseLib.validationFailed(0); /* clear last error msg*/
+  OC0AM001.VAGen_EZEMSG = " "; /* clear last error msg*/
+  OC0AM001.CAMSG = " "; /* clear last commarea msg*/
+  ;
+  ;
+     /* Process PF Keys*/
+  ;
+  OC0ASPF();
+  ;
+     /* Reset field attributes*/
+  ;
+  if (OC0AW01.OC0AWERR == "N") /* If no errors so far*/
+    OC0AS40();
+  end
+  ;
+     /* Edit map*/
+  ;
+  if (OC0AW01.OC0AWERR == "N") /* if no errors so far*/
+    if (converseVar.eventKey is enter
+     || converseVar.eventKey is pf12)
+      OC0AS07();
+    end
+  end
+  ;
+     /* Update or Edit Only*/
+  ;
+  if (OC0AW01.OC0AWERR == "N") /* if no errors*/
+    if (converseVar.eventKey is enter)
+      if (OC0AW01.OC0AWDUP != "Y") /* there is no duplicate style warning*/
+                                   /* msg*/
+        OC0AS80(); /* Update - insert discrepancies*/
+        if (OC0AW01.OC0AWERR == "N") /* If no update errors*/
+          OC0AS72(); /* purge temp storage*/
+          XS0AS00(); /* xfer to beginning of this appl*/
+        end
+      else /* there is a duplicate style, reconverse warning*/
+        OC0AW01.OC0AWDUP = "N"; /* reset flag*/
+      end
+    else
+      if (converseVar.eventKey is pf12)
+        converseLib.validationFailed(043); /* no errors press enter to proc adds*/
+      end
+    end
+  end
+  ;
+  ;
+end // end OC0A010
+
+// initialize application
+Function OC0AS01()
+      /* Initialize application*/
+  ;
+  ;
+  set OC0AM001 empty; /* map*/
+  ;
+  set OC1REC empty; /* letter header record*/
+  set OC4REC empty; /* discrepancy record*/
+  set OP2REC empty; /* OP item*/
+  set OB2REC empty; /* OB item*/
+  set OBKREC empty; /* OB IO mod pass rec*/
+  set KUMREC empty; /* store record*/
+  set OCAREC empty; /* OC5000 edit module pass rec*/
+  set OCBREC empty; /* OC5100 ltr hdr insert pass rec*/
+  set OCDREC empty; /* IO5850 dscrp IO mod pass rec*/
+  set SQLCA empty; /* return code from DB2*/
+  set ERRSQLCA empty; /* return code from non-db2*/
+  set TAEREC empty; /* diags for non db2*/
+  set TA1REC empty; /* diagnostic record*/
+  set TA5REC empty; /* temp storage io- record*/
+  set XX0XW01 empty; /* working storage for date rtn*/
+  set XS0AW02 empty; /* working storage for caitem edit*/
+  set OC0AW01 empty; /* working storage*/
+  set OC0AW02 empty; /* temp storage hold*/
+  ;
+   /* Initialize working storage record for saving discrepancy*/
+   /* lines. These working storage lines will be compared to the*/
+   /* map lines later during editing*/
+  ;
+  set OC0AW03 empty; /* working storage to compare with the map*/
+  ;
+  XX0XS01(); /* get current date, time for updates*/
+  ;
+  TA1REC.TA1MAP = "OC0AM001"; /* map name*/
+  COMMAREA.CACURRAP = "OC0A"; /* current appl*/
+  ;
+  ;
+end // end OC0AS01
+
+// edit if order nbr ok for add
+Function OC0AS02()
+  ;
+   /* Edit if it's okay to add discrepancies to an order.*/
+   /* The order must be on OP and/or OB, and not in*/
+   /* xl'd, shipped or delete status.*/
+  ;
+  ;
+  if (OCWREC.OCWSYSID == "OP" /* OP order*/
+   || OCWREC.OCWSYSID == "OB" /* OB order*/
+   || OCWREC.OCWSYSID == "PL") /* Partially loaded order*/
+     /* next sentence*/
+  else
+    OC0AW01.OC0AWERR = "Y"; /* error flag on*/
+    set OC0AM001.OCWCUOID cursor, bold;
+    converseLib.validationFailed(044); /* Cannot add dscrp, must be current order*/
+    return;
+  end
+  ;
+  ;
+end // end OC0AS02
+
+// build map
+Function OC0AS03()
+  ;
+   /* Build map*/
+   /* --------------------------------------------*/
+  ;
+  ;
+   /* Build headings*/
+  ;
+  OC0AS25();
+  ;
+   /* Build bottom of map*/
+  ;
+  if (COMMAREA.CAFROMAP == "OC0D") /* transfer'd from Display Dscrp Cds*/
+    OC0AS30();
+                                   /* build bottom of map from temp storage*/
+  end
+end // end OC0AS03
+
+// Edit map
+Function OC0AS07()
+   /* First edit the order number.*/
+  ;
+   /* Next, check to see if there is a '?' in any of the*/
+   /* discrepancy type fields. This forces a transfer to OC0D*/
+   /* (Discrepancy Type Display).*/
+  ;
+   /* Otherwise, edit each line on the map, bottom up.*/
+   /* -----------------------------------------------------------*/
+  ;
+  set SQLCA empty;
+  OC0AS60(); /* Edit order number*/
+  ;
+  if (OC0AW01.OC0AWERR == "N") /* If no errors so far*/
+    OC0AS61();
+                                   /* Check for request to transfer to OC0D*/
+  end /* Won't return here if "?" found*/
+  ;
+  if (OC0AW01.OC0AWERR == "N") /* If no errors so far*/
+    OC0AW01.OC0AWMIX = 13; /* Set line subscript to last on page*/
+    while (OC0AWMIX > 0
+     && SQLCA.VAGen_SQLCODE != -911)
+      OC0AS62(); /* Edit line*/
+      OC0AWMIX = OC0AWMIX - 1; /* Decrement line subscript*/
+    end
+  end
+  ;
+  if (SQLCA.VAGen_SQLCODE == -911
+   || OCWREC.OCWRTNCD == "03") /* DB busy from ord# lookup*/
+    OC0AW01.OC0AWERR = "Y"; /* error flag on*/
+    converseLib.validationFailed(006); /* db busy try again*/
+    if (OCWREC.OCWRTNCD == "03")
+      OC0AW01.OC0AWCHG = "Y";
+                                   /* flag to continue checking ord#*/
+    end
+    return;
+  end
+  ;
+  ;
+end // end OC0AS07
+
+// build map headings
+Function OC0AS25()
+  ;
+   /* Move heading information to map*/
+  ;
+  ;
+  OC0AM001.OCMPRC = "OC0A"; /* process name*/
+  OC0AM001.OCMMAP = "M1"; /* map name*/
+  OC0AM001.OCMDTE = VGVar.currentShortGregorianDate; /* current date*/
+  ;
+  OC0AS26(); /* Move order heading info*/
+  ;
+end // end OC0AS25
+
+// Move order heading info
+Function OC0AS26()
+   /* Order Headings*/
+  ;
+  OC0AM001.OCWCUOID = OCWREC.OCWCUOID; /* order number*/
+  ;
+  if (OCWREC.OCWSYSID != "NO" /* an order has been found*/
+   && OCWREC.OCWCUOID != 0)   /* and order number is not 0*/
+    OC0AM001.OP1CUPO = OCWREC.OP1CUPO; /* customer PO*/
+    OC0AM001.OCWCUST = OCWREC.OCWCUST; /* customer number*/
+    OC0AM001.KUMSTRNM = OCWREC.KUMSTRNM; /* store name*/
+    ;
+     /* GPC Abbrev lookup*/
+    ;
+    sysVar.arrayIndex = 1;
+    if (OCWREC.XGPCD in XGPTBL.XGPCD
+     && XGPTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      OC0AM001.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+    else
+      OC0AM001.XGPABRV = "UNKNWN";
+    end
+  end
+  ;
+end // end OC0AS26
+
+// build map from temp storage
+Function OC0AS30()
+   /* Build bottom of map from temp storage. Before the xfer*/
+   /* to OC0D, the map discrepancy lines are written to temp*/
+   /* storage. Now, returning from OC0D, rebuild the bottom of*/
+   /* the map from temp storage.*/
+   /* -----------------------------------------------------------*/
+  ;
+   /* Read temp storage record*/
+  ;
+  OC0AS31();
+  ;
+  ;
+  ;
+   /* move discrepancy line from temp storage record*/
+   /* to the map. A discrepancy abbreviation may have been*/
+   /* passed in OCWREC from OC0D. It will replace the first*/
+   /* discrepancy abbreviation that had a '?' before the xfer.*/
+  ;
+  OC0AW01.OC0AWQSF = "N"; /* Init question mark found flag*/
+  OC0AW01.OC0AWMIX = 1; /* Set map line subscript to 1*/
+  ;
+  while (OC0AWMIX < 14)
+    if (OC0AW01.OC0AWQSF == "N")
+      if (OC0AW02.XDTCD[OC0AWMIX] == "? " /* If there is a question*/
+       || OC0AW02.XDTCD[OC0AWMIX] == " ?" /* mark in any format in the*/
+       || OC0AW02.XDTCD[OC0AWMIX] == "??") /* dscrp type field*/
+        OC0AW01.OC0AWQSF = "Y"; /* Turn on '?' found flag*/
+        if (OCWREC.XDTCD > " ") /* the abrv. was passed from oc0d*/
+          OC0AM001.XDTCD[OC0AWMIX] = OCWREC.XDTCD;
+          set OC0AM001.SY1STNBR[OC0AWMIX] cursor;
+        else
+          OC0AM001.XDTCD[OC0AWMIX] = OC0AW02.XDTCD[OC0AWMIX];
+          set OC0AM001.XDTCD[OC0AWMIX] cursor;
+        end
+      else
+        OC0AM001.XDTCD[OC0AWMIX] = OC0AW02.XDTCD[OC0AWMIX];
+      end
+    else
+      OC0AM001.XDTCD[OC0AWMIX] = OC0AW02.XDTCD[OC0AWMIX];
+    end
+    OC0AM001.SY1STNBR[OC0AWMIX] = OC0AW02.SY1STNBR[OC0AWMIX];
+    OC0AM001.SY2CLRID[OC0AWMIX] = OC0AW02.SY2CLRID[OC0AWMIX];
+    OC0AM001.XDMCD[OC0AWMIX] = OC0AW02.XDMCD[OC0AWMIX];
+    OC0AM001.OCASUBOR[OC0AWMIX] = OC0AW02.OCASUBOR[OC0AWMIX];
+    OC0AM001.OC4EXPEC[OC0AWMIX] = OC0AW02.OC4EXPEC[OC0AWMIX];
+    OC0AM001.OC4ACTUA[OC0AWMIX] = OC0AW02.OC4ACTUA[OC0AWMIX];
+    OC0AW01.OC0AWMIX = OC0AW01.OC0AWMIX + 1; /* Increment subscript*/
+  end
+  ;
+  ;
+   /* Purge temp storage*/
+  ;
+  OC0AS72();
+  ;
+end // end OC0AS30
+
+// read temp storage
+Function OC0AS31()
+  ;
+  ;
+  ;
+   /* Read temporary storage*/
+  ;
+  set OC0AW02 empty;
+  ;
+  TA5REC.TA5APPID = "OC0A"; /* appl identification*/
+  TA5REC.TA5FNCCD = "R"; /* function code*/
+  TA5REC.TA5TSQIX = 1; /* only one page*/
+  OC0AW02.OC0AWTSL = 942; /* length of record*/
+  ;
+  call "TA0050" (OC0AW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage*/
+  ;
+  if (TA5REC.TA5RTNCD == 0)
+    /* next sentence*/
+  else
+    set TA1REC empty;
+    set TAEREC empty;
+    TA1REC.TA1LOCAT[1] = "OC0AS31";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    TA1REC.TA1TBLKE = OC0AW02.OC0AWTSR[1]; /* first row*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    TAEREC.TAEDESC2 = "TSQ READ FAILED";
+    XS0ASNR(); /* post, no rollback, non db2 diags*/
+  end
+end // end OC0AS31
+
+// Reset field attributes
+Function OC0AS40()
+  ;
+   /* Reset line field attributes*/
+  ;
+  set OC0AM001.OCWCUOID initialAttributes; /* Order number*/
+  ;
+  OC0AW01.OC0AWMIX = 1; /* Set line subscript to 1*/
+  while (OC0AW01.OC0AWMIX < 14)
+    set OC0AM001.XDTCD[OC0AWMIX] initialAttributes; /* Discrepancy type*/
+    set OC0AM001.SY1STNBR[OC0AWMIX] initialAttributes; /* Style nbr*/
+    set OC0AM001.SY2CLRID[OC0AWMIX] initialAttributes; /* Color id*/
+    set OC0AM001.XDMCD[OC0AWMIX] initialAttributes; /* Dimension cd*/
+    set OC0AM001.OCASUBOR[OC0AWMIX] initialAttributes; /* Sub order reference*/
+    set OC0AM001.OC4EXPEC[OC0AWMIX] initialAttributes; /* Expected value*/
+    set OC0AM001.OC4ACTUA[OC0AWMIX] initialAttributes; /* Actual value*/
+    OC0AW01.OC0AWMIX = OC0AW01.OC0AWMIX + 1;
+  end
+  ;
+  set OC0AM001.XDTCD[1] cursor; /* Default cursor to first code*/
+  ;
+end // end OC0AS40
+
+// TA0050 - Build and write TS
+Function OC0AS50()
+   /* Move current screen lines to TS record and write*/
+   /* temp storage page.*/
+   /* ------------------------------------------------------*/
+  ;
+  OC0AS72(); /* Clear out any existing temp storage*/
+  ;
+  set OC0AW02 empty; /* Initialize map save area*/
+  OC0AW01.OC0AWMIX = 1; /* Set line subscript to 1*/
+  ;
+   /* Save all the fields on the map line in a record to be*/
+   /* written to temporary storage.*/
+  ;
+  while (OC0AWMIX < 14)
+    OC0AW02.XDTCD[OC0AWMIX] = OC0AM001.XDTCD[OC0AWMIX];
+    OC0AW02.SY1STNBR[OC0AWMIX] = OC0AM001.SY1STNBR[OC0AWMIX];
+    OC0AW02.SY2CLRID[OC0AWMIX] = OC0AM001.SY2CLRID[OC0AWMIX];
+    OC0AW02.XDMCD[OC0AWMIX] = OC0AM001.XDMCD[OC0AWMIX];
+    OC0AW02.OCASUBOR[OC0AWMIX] = OC0AM001.OCASUBOR[OC0AWMIX];
+    OC0AW02.OC4EXPEC[OC0AWMIX] = OC0AM001.OC4EXPEC[OC0AWMIX];
+    OC0AW02.OC4ACTUA[OC0AWMIX] = OC0AM001.OC4ACTUA[OC0AWMIX];
+    ;
+    OC0AW01.OC0AWMIX = OC0AW01.OC0AWMIX + 1; /* Increment subscript*/
+  end
+  ;
+  OC0AS70(); /* Write saved map to temp storage*/
+  ;
+  XS0AS22(); /* Transfer to OC0D*/
+  ;
+end // end OC0AS50
+
+// IO0440 - Fetch OP item
+Function OC0AS51()
+   /* Fetch OP item*/
+   /* -----------------------------------------------------*/
+  ;
+  set SQLCA empty;
+  ;
+  call "IO0440" ("SN", SQLCA, OP2REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == 100) /* End of selected items*/
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0AS51"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO0440"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "SN"; /* function*/
+    OC0AW01.OC0AWKY2 = " "; /* Init error key*/
+    OC0AW01.OC0AWKPA = OCWREC.OP1PARTN; /* part char key*/
+    OC0AW01.OC0AWKPB = OCWREC.OCWCUOID; /* order nbr key*/
+    OC0AW01.OC0AWKPC = OC0AW01.OC0AWSID; /* suborder id key*/
+    TA1REC.TA1TBLKE = OC0AW01.OC0AWKY2; /* error key*/
+    TA1REC.TA1DBASE = "DORDER"; /* database name*/
+    TA1REC.TA1TBLVU = "VITEM001"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      XS0ASDP();
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback();
+      converseLib.validationFailed(006); /* DB busy*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    else /* all other codes - abort*/
+      COMMAREA.CAMSG = "DATA PROBLEM - TRY AGAIN LATER";
+      XS0ASDC();
+    end
+  end
+  ;
+end // end OC0AS51
+
+// IO0440 - Close OP cursor
+Function OC0AS52()
+   /* Close OP item cursor*/
+   /* -----------------------------------------------------*/
+  ;
+  set SQLCA empty;
+  ;
+  call "IO0440" ("CS", SQLCA, OP2REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0AS52"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO0440"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "CS"; /* function*/
+    OC0AW01.OC0AWKY2 = " "; /* Init error key*/
+    OC0AW01.OC0AWKPA = OCWREC.OP1PARTN; /* part char key*/
+    OC0AW01.OC0AWKPB = OCWREC.OCWCUOID; /* order nbr key*/
+    OC0AW01.OC0AWKPC = OC0AW01.OC0AWSID; /* suborder id key*/
+    TA1REC.TA1TBLKE = OC0AW01.OC0AWKY2; /* error key*/
+    TA1REC.TA1DBASE = "DORDER"; /* database name*/
+    TA1REC.TA1TBLVU = "VITEM001"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      XS0ASDP();
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback();
+      converseLib.validationFailed(006); /* DB busy*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    else /* all other codes - abort*/
+      COMMAREA.CAMSG = "DATA PROBLEM - TRY AGAIN LATER";
+      XS0ASDC();
+    end
+  end
+  ;
+end // end OC0AS52
+
+// IO5170 - Select OB items
+Function OC0AS53()
+   /* Select OB items for Order#, Suborder ID*/
+   /* -----------------------------------------------*/
+  ;
+  set OB2REC empty;
+  set OBKREC empty;
+  set SQLCA empty;
+  ;
+  OB2REC.OP1PARTN = OCWREC.OP1PARTN; /* part char*/
+  OB2REC.OP1CUOID = OCWREC.OP1CUOID; /* cust order id*/
+  OC0AW01.OC0AWSID = OC0AM001.OCASUBOR[OC0AWMIX]; /* num suborder id*/
+  OB2REC.OP1NORID = OC0AW01.OC0AWSID; /* nike order id*/
+  ;
+  OBKREC.OBKTASK = "S1"; /* select items*/
+  ;
+  call "IO5170" (OBKREC, SQLCA, OB2REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0AS53"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO5170"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "S1"; /* function*/
+    OC0AW01.OC0AWKY2 = " "; /* Init error key*/
+    OC0AW01.OC0AWKPA = OCWREC.OP1PARTN; /* part char key*/
+    OC0AW01.OC0AWKPB = OCWREC.OCWCUOID; /* order nbr key*/
+    OC0AW01.OC0AWKPC = OC0AW01.OC0AWSID; /* suborder id key*/
+    TA1REC.TA1TBLKE = OC0AW01.OC0AWKY2; /* error key*/
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VBITEM01"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      XS0ASDP();
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback();
+      converseLib.validationFailed(006); /* DB busy*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    else /* all other codes - abort*/
+      COMMAREA.CAMSG = "DATA PROBLEM - TRY AGAIN LATER";
+      XS0ASDC();
+    end
+  end
+  ;
+  ;
+end // end OC0AS53
+
+// IO5170 - Fetch OB item
+Function OC0AS54()
+   /* Fetch OB item*/
+   /* -----------------------------------------------*/
+  ;
+  set SQLCA empty;
+  OBKREC.OBKTASK = "N1"; /* select items*/
+  ;
+  call "IO5170" (OBKREC, SQLCA, OB2REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == 100) /* End selected OB items*/
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0AS54"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO5170"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "N1"; /* function*/
+    OC0AW01.OC0AWKY2 = " "; /* Init error key*/
+    OC0AW01.OC0AWKPA = OCWREC.OP1PARTN; /* part char key*/
+    OC0AW01.OC0AWKPB = OCWREC.OCWCUOID; /* order nbr key*/
+    OC0AW01.OC0AWKPC = OC0AW01.OC0AWSID; /* suborder id key*/
+    TA1REC.TA1TBLKE = OC0AW01.OC0AWKY2; /* error key*/
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VBITEM01"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      XS0ASDP();
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback();
+      converseLib.validationFailed(006); /* DB busy*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    else /* all other codes - abort*/
+      COMMAREA.CAMSG = "DATA PROBLEM - TRY AGAIN LATER";
+      XS0ASDC();
+    end
+  end
+  ;
+end // end OC0AS54
+
+// IO5170 - Close OB cursor
+Function OC0AS55()
+   /* Close OB item cursor*/
+   /* -----------------------------------------------*/
+  ;
+  set SQLCA empty;
+  OBKREC.OBKTASK = "C1"; /* select items*/
+  ;
+  call "IO5170" (OBKREC, SQLCA, OB2REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0AS55"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO5170"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "C1"; /* function*/
+    OC0AW01.OC0AWKY2 = " "; /* Init error key*/
+    OC0AW01.OC0AWKPA = OCWREC.OP1PARTN; /* part char key*/
+    OC0AW01.OC0AWKPB = OCWREC.OCWCUOID; /* order nbr key*/
+    OC0AW01.OC0AWKPC = OC0AW01.OC0AWSID; /* suborder id key*/
+    TA1REC.TA1TBLKE = OC0AW01.OC0AWKY2; /* error key*/
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VBITEM01"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      XS0ASDP();
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback();
+      converseLib.validationFailed(006); /* DB busy*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    else /* all other codes - abort*/
+      COMMAREA.CAMSG = "DATA PROBLEM - TRY AGAIN LATER";
+      XS0ASDC();
+    end
+  end
+  ;
+end // end OC0AS55
+
+// IO0440 - Select OP items
+Function OC0AS56()
+   /* Select OP items for Order#, Suborder ID*/
+   /* -----------------------------------------------------*/
+  ;
+  set OP2REC empty;
+  set SQLCA empty;
+  ;
+  OP2REC.OP1CUOID = OCWREC.OCWCUOID; /* op-cust-ord-id*/
+  OP2REC.OP1PARTN = OCWREC.OP1PARTN; /* op-ord-part-char*/
+  OC0AW01.OC0AWSID = OC0AM001.OCASUBOR[OC0AWMIX]; /* suborder to num*/
+  OP2REC.OP1NORID = OC0AW01.OC0AWSID; /* suborder id*/
+  ;
+  call "IO0440" ("SS", SQLCA, OP2REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0AS56"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO0440"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "SS"; /* function*/
+    OC0AW01.OC0AWKY2 = " "; /* Init error key*/
+    OC0AW01.OC0AWKPA = OCWREC.OP1PARTN; /* part char key*/
+    OC0AW01.OC0AWKPB = OCWREC.OCWCUOID; /* order nbr key*/
+    OC0AW01.OC0AWKPC = OC0AW01.OC0AWSID; /* suborder id key*/
+    TA1REC.TA1TBLKE = OC0AW01.OC0AWKY2; /* error key*/
+    TA1REC.TA1DBASE = "DORDER"; /* database name*/
+    TA1REC.TA1TBLVU = "VITEM001"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback();
+      XS0ASDP();
+      converseLib.validationFailed(006); /* DB busy*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    else /* all other codes - abort*/
+      COMMAREA.CAMSG = "DATA PROBLEM - TRY AGAIN LATER";
+      XS0ASDC();
+    end
+  end
+  ;
+end // end OC0AS56
+
+// Edit order number
+Function OC0AS60()
+   /* Check for blank order number.*/
+  ;
+   /* If new order number has been entered, call the*/
+   /* order number common edit routine.*/
+  ;
+   /* Check if order number is valid for add function*/
+   /* ----------------------------------------------------*/
+  ;
+  if (OC0AM001.OCWCUOID == 0) /* If order number is blank*/
+    converseLib.validationFailed(008); /* Order number required*/
+    OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    set OC0AM001.OCWCUOID cursor, bold;
+    OC0AM001.OP1CUPO = " "; /* customer PO*/
+    OC0AM001.OCWCUST = " "; /* customer number*/
+    OC0AM001.KUMSTRNM = " "; /* store name*/
+    OC0AM001.XGPABRV = " ";
+    return; /* Don't call order number routine*/
+  end
+  ;
+  if (OCWREC.OCWCUOID != OC0AM001.OCWCUOID) /* If new order# entered*/
+    OC0AM001.OP1CUPO = " "; /* customer PO*/
+    OC0AM001.OCWCUST = " "; /* customer number*/
+    OC0AM001.KUMSTRNM = " "; /* store name*/
+    OC0AM001.XGPABRV = " ";
+    OCWREC.OCWCUOID = OC0AM001.OCWCUOID;
+    OC0AS73(); /* do common order# edit routine*/
+    if (OC0AW01.OC0AWERR != "Y") /* If no errors so far*/
+      OC0AS02(); /* Validate order OK for add func*/
+      if (OC0AW01.OC0AWERR != "Y")
+        set OC0AW03 empty; /* Init save lines for ord# change*/
+      end
+    end
+  else
+    OC0AS02(); /* Verify order number OK for add function*/
+  end
+  ;
+end // end OC0AS60
+
+// Check for '?' for OC0D transfr
+Function OC0AS61()
+   /* Search all discrepancy type fields to see if a '?'*/
+   /* has been entered. If so, save an image of the current*/
+   /* screen in temporary storage, then transfer to OC0D*/
+   /* (Discrepancy Type Display). The OC0A map will be*/
+   /* rebuilt from this temporary storage record upon*/
+   /* return to this application.*/
+   /* -----------------------------------------------------*/
+  ;
+  OC0AW01.OC0AWQSF = "N"; /* Init question mark found flag*/
+  OC0AW01.OC0AWMIX = 1; /* Set map line subscript to 1*/
+  ;
+  while (OC0AWMIX < 14
+   && OC0AW01.OC0AWQSF == "N")
+    if (OC0AM001.XDTCD[OC0AWMIX] == "? " /* If there is a question*/
+     || OC0AM001.XDTCD[OC0AWMIX] == " ?" /* mark in any format in the*/
+     || OC0AM001.XDTCD[OC0AWMIX] == "??") /* dscrp type field*/
+      OC0AW01.OC0AWQSF = "Y"; /* Turn on '?' found flag*/
+    end
+    OC0AW01.OC0AWMIX = OC0AW01.OC0AWMIX + 1; /* Increment subscript*/
+  end
+  ;
+  if (OC0AW01.OC0AWQSF == "N") /* If no question mark was found*/
+    return; /* go back to calling statement*/
+  end
+  ;
+   /* If you get this far, there was a question mark found*/
+  ;
+  OC0AS50(); /* Build and write temp storage TA0050*/
+  ;
+end // end OC0AS61
+
+// Edit line
+Function OC0AS62()
+   /* Only edit lines which have been changed since the last*/
+   /* converse.*/
+   /* -------------------------------------------------------*/
+  ;
+   /* Check to see if any fields have changed since last map out*/
+  ;
+  if (OC0AM001.XDTCD[OC0AWMIX] == OC0AW03.XDTCD[OC0AWMIX]
+   && OC0AM001.SY1STNBR[OC0AWMIX] == OC0AW03.SY1STNBR[OC0AWMIX]
+   && OC0AM001.SY2CLRID[OC0AWMIX] == OC0AW03.SY2CLRID[OC0AWMIX]
+   && OC0AM001.XDMCD[OC0AWMIX] == OC0AW03.XDMCD[OC0AWMIX]
+   && OC0AM001.OCASUBOR[OC0AWMIX] == OC0AW03.OCASUBOR[OC0AWMIX]
+   && OC0AM001.OC4EXPEC[OC0AWMIX] == OC0AW03.OC4EXPEC[OC0AWMIX])
+    OC0AS63(); /* If no fields changed, check for prior errors*/
+    return; /* Done editing line - return to calling*/
+                                   /* statement*/
+  end
+  ;
+   /* If you get this far, the line has changed*/
+  ;
+  if (OC0AM001.SY1STNBR[OC0AWMIX] > " ") /* If style number is entered*/
+    if (OC0AM001.SY2CLRID[OC0AWMIX] == " ") /* If color id is blank*/
+      OC0AM001.SY2CLRID[OC0AWMIX] = "00 "; /* Init color id*/
+    end
+    if (OC0AM001.XDMCD[OC0AWMIX] == " ") /* If dimension is blank*/
+      OC0AM001.XDMCD[OC0AWMIX] = "00"; /* Init dimension*/
+    end
+  end
+  ;
+   /* Initialize WS fields associated with the line*/
+  ;
+  OC0AW03.OC0AWXER[OC0AWMIX] = "N"; /* XDT error flag (line)*/
+  OC0AW03.OCASTYFL[OC0AWMIX] = "N"; /* Style error flag (line)*/
+  OC0AW03.OCASUBFL[OC0AWMIX] = "N"; /* Subord error flag (line)*/
+  OC0AW03.OCAEXPFL[OC0AWMIX] = "N"; /* Expect val error flag (line)*/
+  OC0AW03.OCADUPFL[OC0AWMIX] = " "; /* Dup style error flag (line)*/
+  OC0AW03.KUIPRDID[OC0AWMIX] = " "; /* Line cust prod id*/
+  OC0AW03.OC4ACTUA[OC0AWMIX] = " "; /* Line actual value*/
+  OC0AW03.OP2CPLNB[OC0AWMIX] = 0; /* Line PO line nbr*/
+  OC0AW03.OP1CUNDT[OC0AWMIX] = 0; /* Line need date*/
+  OC0AW03.OCAMSGNO[OC0AWMIX] = 0; /* Line message nbr*/
+  ;
+  if (OC0AM001.XDTCD[OC0AWMIX] == " ") /* If dscrp type is blank*/
+    if (OC0AM001.SY1STNBR[OC0AWMIX] > " " /* and any other field on*/
+     || OC0AM001.SY2CLRID[OC0AWMIX] > " " /* the line is entered*/
+     || OC0AM001.XDMCD[OC0AWMIX] > " "    
+     || OC0AM001.OCASUBOR[OC0AWMIX] > " " 
+     || OC0AM001.OC4EXPEC[OC0AWMIX] > " ")
+      converseLib.validationFailed(040); /* 'Enter dscrp type to add...'*/
+      set OC0AM001.XDTCD[OC0AWMIX] cursor, bold;
+      OC0AW03.OCAMSGNO[OC0AWMIX] = 040; /* Save msg for line*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on edit error flag*/
+      OC0AW03.OC0AWXER[OC0AWMIX] = "Y";
+                                   /* Turn on XDT line error flag*/
+    else
+      OC0AM001.OC4ACTUA[OC0AWMIX] = " "; /* Blank out actual value*/
+    end
+  else /* Dscrp type is entered*/
+    OC0AS64(); /* Validate dscrp type*/
+  end
+  ;
+  if (OC0AW03.OCAMSGNO[OC0AWMIX] == 0 /* If no line error so far*/
+   && OC0AM001.XDTCD[OC0AWMIX] != " ") /* and there's a dscrp on line*/
+    OC0AS65(); /* Call edit module for line*/
+  end
+  ;
+  if (OCAREC.OCARTNCD != -911) /* If no DB busy condition*/
+    OC0AS66(); /* Save map line for comparison in next pass*/
+  end
+  ;
+end // end OC0AS62
+
+// Check for previous line error
+Function OC0AS63()
+   /* See if an error occured on a prior edit*/
+   /* pass. If there is, turn on the appl edit*/
+   /* error flag so the screen will be reconversed.*/
+   /* Set the field attributes on the line appropriate*/
+   /* to the line errors.*/
+   /* ------------------------------------------------*/
+  ;
+  if (OC0AW03.OCAMSGNO[OC0AWMIX] > 0) /* Line contains error*/
+    if (OC0AW03.OCAMSGNO[OC0AWMIX] == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OC0AW03.OCAMSGNO[OC0AWMIX]);
+    end /* Set up map message*/
+    OC0AW01.OC0AWERR = "Y"; /* Turn on edit error flag*/
+    if (OC0AW03.OCAEXPFL[OC0AWMIX] == "Y") /* If expect val error*/
+      set OC0AM001.OC4EXPEC[OC0AWMIX] cursor, bold;
+    end
+    if (OC0AW03.OCASUBFL[OC0AWMIX] == "Y") /* If subord ref error*/
+      set OC0AM001.OCASUBOR[OC0AWMIX] cursor, bold;
+    end
+    if (OC0AW03.OCASTYFL[OC0AWMIX] == "Y") /* If style ref error*/
+      set OC0AM001.SY1STNBR[OC0AWMIX] cursor, bold;
+      set OC0AM001.SY2CLRID[OC0AWMIX] bold;
+      set OC0AM001.XDMCD[OC0AWMIX] bold;
+    end
+    if (OC0AW03.OC0AWXER[OC0AWMIX] == "Y") /* If dscrp type error*/
+      set OC0AM001.XDTCD[OC0AWMIX] cursor, bold;
+    end
+  end
+  ;
+  if (OC0AW03.OCADUPFL[OC0AWMIX] == "Y") /* Duplicate style error*/
+    set OC0AM001.OC4ACTUA[OC0AWMIX] bold;
+    OC0AM001.CAMSG = OC0AW01.OC0AWMS2; /* Dup style error msg*/
+  end
+  ;
+end // end OC0AS63
+
+// Validate discrepancy type
+Function OC0AS64()
+   /* Make sure discrepancy type is active entry*/
+   /* in XDTTBL.*/
+   /* -------------------------------------------------*/
+  ;
+  sysVar.arrayIndex = 1; /* Init EZETST*/
+  ;
+  if (OC0AM001.XDTCD[OC0AWMIX] in XDTTBL.XDTCD) /* If abbrev in table*/
+    if (XDTTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* and active*/
+      if (OCWREC.XOSCD == "XL" /* order is cancelled*/
+       && OC0AM001.XDTCD[OC0AWMIX] != "XL") /* discrepancy type not xl*/
+        converseLib.validationFailed(101); /* only XL valid for..*/
+        OC0AW03.OCAMSGNO[OC0AWMIX] = 101; /* Save msg for line*/
+        OC0AW01.OC0AWERR = "Y"; /* Turn on edit error fl*/
+        OC0AW03.OC0AWXER[OC0AWMIX] = "Y"; /* turn on xdt error fl*/
+        set OC0AM001.XDTCD[OC0AWMIX] cursor, bold; /* Highlight dscrp type*/
+      end
+    else
+      converseLib.validationFailed(041); /* 'Dscrp type not active...'*/
+      OC0AW03.OCAMSGNO[OC0AWMIX] = 041; /* Save msg for line*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on edit error flag*/
+      OC0AW03.OC0AWXER[OC0AWMIX] = "Y";
+                                   /* Turn on line XDT error flag*/
+      set OC0AM001.XDTCD[OC0AWMIX] cursor, bold; /* Highlight dscrp type*/
+    end
+  else
+    converseLib.validationFailed(042); /* 'Invalid dscrp type..'*/
+    OC0AW03.OCAMSGNO[OC0AWMIX] = 042; /* Save msg for line*/
+    OC0AW01.OC0AWERR = "Y"; /* Turn on edit error flag*/
+    OC0AW03.OC0AWXER[OC0AWMIX] = "Y"; /* Turn on line XDT error flag*/
+    set OC0AM001.XDTCD[OC0AWMIX] cursor, bold; /* Highlight dscrp type*/
+  end
+  ;
+end // end OC0AS64
+
+// Call OC5000 edit module
+Function OC0AS65()
+   /* Call OC5000 discrepancy type edit routine and*/
+   /* process returned information.*/
+   /* -----------------------------------------------*/
+  ;
+   /* Set up pass record parameters*/
+  ;
+  set OCAREC empty; /* Init pass record*/
+  OCAREC.OP1PARTN = OCWREC.OP1PARTN; /* Part char*/
+  OCAREC.OP1CUOID = OCWREC.OP1CUOID; /* Cust order id*/
+  OCAREC.OCWSYSID = OCWREC.OCWSYSID; /* OP/OB system id*/
+  OCAREC.XDTCD = OC0AM001.XDTCD[OC0AWMIX]; /* Dscrp type code*/
+  OCAREC.SY1STNBR = OC0AM001.SY1STNBR[OC0AWMIX]; /* Style nbr*/
+  OCAREC.SY2CLRID = OC0AM001.SY2CLRID[OC0AWMIX]; /* Color id*/
+  OCAREC.XDMCD = OC0AM001.XDMCD[OC0AWMIX]; /* Dimension code*/
+  OCAREC.OC4EXPEC = OC0AM001.OC4EXPEC[OC0AWMIX]; /* Expected value*/
+  if (OC0AM001.OCASUBOR[OC0AWMIX] == " ") /* If sub-ord reference is blank*/
+    OCAREC.OCASUBOR = "0000"; /* Init sub-ord ref to zero*/
+  else
+    OCAREC.OCASUBOR = OC0AM001.OCASUBOR[OC0AWMIX]; /* Sub order ref*/
+  end
+  ;
+  try
+    call "OC5000" (OCAREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Call edit module*/
+  ;
+   /* Check return code*/
+  ;
+  if (OCAREC.OCARTNCD != 0) /* If a non-zero return code*/
+    SQLCA.VAGen_SQLCODE = OCAREC.OCARTNCD;
+    if (OCAREC.OCARTNCD == -911) /* DB busy - posted by OC5000*/
+      return; /* Handled above*/
+    else
+      set TA1REC empty;
+      set TAEREC empty;
+      TA1REC.TA1LOCAT[1] = "OC0AS65"; /* Stmt group*/
+      TA1REC.TA1LOCAT[2] = "OC5000"; /* Subroutine called*/
+      OC0AW01.OC0AWKPA = OC0AM001.XDTCD[OC0AWMIX]; /* Dscrp type*/
+      OC0AW01.OC0AWKPB = OC0AM001.OCWCUOID; /* Order#*/
+      OC0AW01.OC0AWKPC = OC0AM001.SY1STNBR[OC0AWMIX]; /* Style*/
+      OC0AW01.OC0AWKPD = OC0AM001.SY2CLRID[OC0AWMIX]; /* Color*/
+      TAEREC.TAEDESC1 = OC0AW01.OC0AWKY1; /* error key*/
+      TAEREC.TAEDESC2 = "BAD RETURN FROM OC5000 - SEE OC5000 POST";
+      XS0ASNR(); /* non DB2 post, no rollback, exit appl*/
+    end
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* If you get this far, you got a zero return code from OC5000*/
+   /* ------------------------------------------------------------*/
+  ;
+   /* Multiple edit errors can appear on a line, so each flag is*/
+   /* checked and the cursor is placed on the last field (right*/
+   /* to left) found to be in error.*/
+  ;
+  if (OCAREC.OCAMSGNO > 0) /* If line contains an edit error*/
+    if (OCAREC.OCAMSGNO == 9999)
+      converseLib.validationFailed();
+    else
+      converseLib.validationFailed(OCAREC.OCAMSGNO);
+    end /* Move msg returned to map msg*/
+    OC0AW01.OC0AWERR = "Y"; /* Turn on edit error flag*/
+    OC0AW03.OCAMSGNO[OC0AWMIX] = OCAREC.OCAMSGNO; /* Save line msg*/
+    if (OCAREC.OCAEXPFL == "Y") /* If expected value error detected*/
+      set OC0AM001.OC4EXPEC[OC0AWMIX] cursor, bold;
+      OC0AW03.OCAEXPFL[OC0AWMIX] = "Y"; /* Expect val line error*/
+    end
+    if (OCAREC.OCASUBFL == "Y") /* If sub order ref error detected*/
+      set OC0AM001.OCASUBOR[OC0AWMIX] cursor, bold;
+      OC0AW03.OCASUBFL[OC0AWMIX] = "Y"; /* Subord line error*/
+    end
+    if (OCAREC.OCASTYFL == "Y") /* If style error detected*/
+      OC0AW03.OCASTYFL[OC0AWMIX] = "Y"; /* Style line error*/
+      set OC0AM001.SY1STNBR[OC0AWMIX] cursor, bold;
+      set OC0AM001.SY2CLRID[OC0AWMIX] bold;
+      set OC0AM001.XDMCD[OC0AWMIX] bold;
+    end
+  end
+   /* ------------------------------------------------------*/
+   /* Check for style appears more than once on a single*/
+   /* sub-order*/
+   /* ------------------------------------------------------*/
+  if (OCAREC.OCADUPFL == "Y") /* Dup style on single suborder*/
+    OC0AW01.OC0AWDUP = "Y"; /* Turn on appl dup style error flag*/
+    OC0AWMP1 = "WARNING - PRODUCT ON SUBORD MO";
+    OC0AWMP2 = "RE THAN ONCE. CHECK HIGHLIGHTE";
+    OC0AWMP3 = "D ACTUAL VALUE.";
+    OC0AM001.CAMSG = OC0AW01.OC0AWMS2; /* Dup style error*/
+    set OC0AM001.OC4ACTUA[OC0AWMIX] bold;
+    OC0AW03.OCADUPFL[OC0AWMIX] = "Y"; /* Save error*/
+  end
+   /* ------------------------------------------------------*/
+   /* Move the fields returned from the edit module*/
+   /* to the map and the WS save area (OC0AW03), whether*/
+   /* there were errors found on the line or not.*/
+   /* ------------------------------------------------------*/
+  OC0AM001.OC4ACTUA[OC0AWMIX] = OCAREC.OC4ACTUA;
+                                   /* Actual value - map*/
+  OC0AW03.KUIPRDID[OC0AWMIX] = OCAREC.KUIPRDID; /* Cust prod id*/
+  OC0AW03.OP2CPLNB[OC0AWMIX] = OCAREC.OP2CPLNB; /* PO line nbr*/
+  OC0AW03.OP1CUNDT[OC0AWMIX] = OCAREC.OP1CUNDT; /* Need date*/
+  OC0AW03.OCAWHFND[OC0AWMIX] = OCAREC.OCAWHFND; /* Where found ind*/
+  ;
+end // end OC0AS65
+
+// Save line for comparison
+Function OC0AS66()
+   /* Save the fields on the current map line. These*/
+   /* saved fields are used to see if anything has*/
+   /* been changed on the line after the next converse.*/
+   /* ----------------------------------------------------*/
+  ;
+  OC0AW03.XDTCD[OC0AWMIX] = OC0AM001.XDTCD[OC0AWMIX];
+  OC0AW03.SY1STNBR[OC0AWMIX] = OC0AM001.SY1STNBR[OC0AWMIX];
+  OC0AW03.SY2CLRID[OC0AWMIX] = OC0AM001.SY2CLRID[OC0AWMIX];
+  OC0AW03.XDMCD[OC0AWMIX] = OC0AM001.XDMCD[OC0AWMIX];
+  OC0AW03.OCASUBOR[OC0AWMIX] = OC0AM001.OCASUBOR[OC0AWMIX];
+  OC0AW03.OC4EXPEC[OC0AWMIX] = OC0AM001.OC4EXPEC[OC0AWMIX];
+  ;
+end // end OC0AS66
+
+// TA0050 - Write temp storage
+Function OC0AS70()
+   /* Write current map lines to temp storage*/
+   /* -----------------------------------------------------------*/
+  ;
+  set TA5REC empty;
+  TA5REC.TA5APPID = "OC0A"; /* appl identification*/
+  TA5REC.TA5FNCCD = "A"; /* function code*/
+  OC0AW02.OC0AWTSL = 942; /* length of record*/
+  ;
+  call "TA0050" (OC0AW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+  ;
+  if (TA5REC.TA5RTNCD == 0)
+    set OC0AW02 empty; /* reinitialize record*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0AS70";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    TA1REC.TA1TBLKE = OC0AW02.OC0AWTSR[1]; /* first row, first rec*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    XS0ASNR(); /* post, no rollback, non db2, exit*/
+  end
+  ;
+end // end OC0AS70
+
+// TA0050 - Purge temp storage
+Function OC0AS72()
+   /* This statement group purges all temp storage*/
+   /* for this application (OC0A).*/
+   /* -------------------------------------------------------*/
+  ;
+  set TA5REC empty;
+  TA5REC.TA5APPID = "OC0A"; /* appl identification*/
+  TA5REC.TA5FNCCD = "P"; /* function code*/
+  call "TA0050" (OC0AW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+  ;
+  if (TA5REC.TA5RTNCD == 0)
+     /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0AS72";
+    TA1REC.TA1LOCAT[2] = "TA0050"; /* io mod called*/
+    TA1REC.TA1LOCAT[3] = TA5REC.TA5RTNCD; /* return code*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA; /* subroutine parms*/
+    XS0ASNP(); /* post,  no rollback, non db2*/
+  end
+end // end OC0AS72
+
+// Call OC0F - order nbr edit
+Function OC0AS73()
+   /* Call OC0F to load order fields in the global record*/
+   /* (OCWREC). This statement group performed when a new*/
+   /* order number is entered.*/
+  ;
+   /* Order is valid for discrepancy add only if currently*/
+   /* found on OP and/or OB database.*/
+   /* -------------------------------------------------------*/
+  ;
+  if (OC0AM001.OCWCUOID == 0) /* If order number is blank*/
+    converseLib.validationFailed(008); /* Order number required*/
+    OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    set OC0AM001.OCWCUOID cursor, bold;
+    OC0AM001.OP1CUPO = " "; /* customer PO*/
+    OC0AM001.OCWCUST = " "; /* customer number*/
+    OC0AM001.KUMSTRNM = " "; /* store name*/
+    OC0AM001.XGPABRV = " ";
+    return; /* Don't call order number routine*/
+  end
+  ;
+  OCWREC.OCWRTNCD = "00"; /* Init return code*/
+  ;
+  call "OC0F" (OCWREC) {isNoRefresh = yes}; /* Mapless appl to load ocwrec*/
+  ;
+  if (OCWREC.OCWRTNCD == "01") /* Order found on OP and/or OB - OK*/
+    OC0AS26(); /* Set up order headings on map*/
+  else
+    if (OCWREC.OCWRTNCD == "02") /* Order not found or XL, SH*/
+      converseLib.validationFailed(044); /* 'Order not valid for dscrp add...'*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on edit error flag*/
+      set OC0AM001.OCWCUOID cursor, bold;
+      OC0AS26(); /* Set up order headings on map*/
+    else
+      if (OCWREC.OCWRTNCD == "03")
+        converseLib.validationFailed(006); /* DB busy msg*/
+        set OC0AM001.OCWCUOID cursor;
+        OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+        OC0AW01.OC0AWCHG = "Y"; /* Turn on check ord# flag*/
+      else /* '04' = bad sqlcode*/
+        if (OCWREC.OCWRTNCD == "05")
+          COMMAREA.CAMSG = "AIRSPEED BATCH EDIT IS RUNNING, PLEASE TRY LATER"; /* Format the message field*/
+          XS0AS03(); /* dxfr to oc0m*/
+        else
+          set TAEREC empty;
+          set TA1REC empty;
+          TA1REC.TA1LOCAT[1] = "OC0AS73";
+          TA1REC.TA1LOCAT[2] = "OC0F"; /* mod called*/
+          TA1REC.TA1TBLKE = OCWREC.OCWCUOID; /* key*/
+          TAEREC.TAEDESC1 = "BAD ORDER NUMBER LOOKUP";
+          XS0ASNR(); /* non-DB2, post, return to OC0M*/
+        end
+      end
+    end
+  end
+  ;
+end // end OC0AS73
+
+// OC5100 - Get date-to-send
+Function OC0AS75()
+   /* Calls OC5100 to find next date to send and*/
+   /* check if initial mailing date has past.*/
+   /* ---------------------------------------------------*/
+  ;
+   /* Set up parameters for call*/
+  set OCCREC empty; /* Initialize pass record*/
+  OCCREC.OP1ENTDT = OCWREC.OP1ENTDT; /* Order entry date*/
+  OCCREC.XGPCD = OCWREC.XGPCD; /* Order GPC code*/
+  OCCREC.XOTCD = OCWREC.XOTCD; /* Order type code*/
+  OCCREC.OP1CUOID = OCWREC.OP1CUOID; /* customer order id*/
+  OCCREC.XSOCD = OCWREC.XSOCD; /* sales office id*/
+  ;
+  call "OC5100" (OCCREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (OCCREC.OCCRTNCD == 0) /* If good return code, move returned*/
+                                  /* fields to global work record*/
+    OCWREC.OCWINIFL = OCCREC.OCWINIFL; /* Initial mailing flag*/
+    OCWREC.OC1SNDDT = OCCREC.OC1SNDDT; /* Next sched send date*/
+  else /* Handle bad codes*/
+    if (OCCREC.OCCRTNCD == 1) /* DB busy - posted by OC5050*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+      converseLib.validationFailed(006); /* DB busy msg*/
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback();
+    else
+      TA1REC.TA1LOCAT[1] = "OC0AS75"; /* Stmt group*/
+      TA1REC.TA1LOCAT[2] = "OC5100"; /* Subroutine called*/
+      OC0AW01.OC0AWKY3 = " "; /* Init error key*/
+      OC0AW01.OC0AWRTN = OCCREC.OCCRTNCD; /* return code to key*/
+      OC0AW01.OC0AWORD = OCWREC.OCWCUOID; /* Cust order idto key*/
+      TAEREC.TAEDESC2 = OC0AW01.OC0AWKY3; /* Error key to desc*/
+      if (OCCREC.OCCRTNCD == 3)
+        TAEREC.TAEDESC1 = "BAD RETURN CODE FROM OC5100 - CUTOFF ROW NOT FOUND";
+        converseLib.validationFailed(093);
+        OC0AW01.OC0AWERR = "Y";
+      else /* return code of 2*/
+        TAEREC.TAEDESC1 = "BAD RETURN CODE FROM OC5100 - DATA PROBLEM";
+        converseLib.validationFailed(038); /* data problem - contact the help desk*/
+        OC0AW01.OC0AWERR = "Y";
+      end
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback(); /* Rollback updates*/
+      XS0ASNP(); /* non-DB2 post, return this stmt*/
+    end
+  end
+  ;
+end // end OC0AS75
+
+// Update - insert discrepancies
+Function OC0AS80()
+  ;
+   /* Update - insert discrepancies*/
+  ;
+  ;
+   /* First see if any discrepancies were entered*/
+  ;
+  OC0AW01.OC0AWDSF = "N"; /* Init discrepancy found flag*/
+  OC0AW01.OC0AWMIX = 1; /* Set subscript to 1*/
+  ;
+  while (OC0AW01.OC0AWMIX < 14
+   && OC0AW01.OC0AWDSF == "N")
+    if (OC0AM001.XDTCD[OC0AWMIX] > " ") /* If there is a dscrp entered*/
+      OC0AW01.OC0AWDSF = "Y"; /* Turn on discrp entered flag*/
+    end
+    OC0AW01.OC0AWMIX = OC0AW01.OC0AWMIX + 1; /* Increment subscript*/
+  end
+  ;
+  ;
+  ;
+   /* If no discrepancies entered, don't do inserts*/
+  ;
+  if (OC0AW01.OC0AWDSF == "N") /* if no discrepancies entered*/
+    return; /* go back to calling statement*/
+  end
+  ;
+  OC0AW01.OC0AWERR = "N"; /* Init error flag*/
+  ;
+   /* Get the letter header for the discrepancies*/
+  ;
+  OC0AS82();
+  ;
+  if (OC0AW01.OC0AWERR == "Y") /* if bad letter header insert*/
+    return;
+  end
+  ;
+  ;
+   /* Insert discrepancies*/
+  ;
+  OC0AW01.OC0AWMIX = 1; /* Set subscript to 1*/
+  ;
+  OC0AW01.OC0AWDCT = 0; /* Init discrepancies added count*/
+  OC0AS84(); /* Get last discrepancy number*/
+  while (OC0AW01.OC0AWMIX < 14
+   && OC0AW01.OC0AWERR == "N")
+    OC0AS85(); /* insert discrepancy*/
+    OC0AW01.OC0AWMIX = OC0AW01.OC0AWMIX + 1; /* Increment subscript*/
+  end
+  ;
+  if (OC0AW01.OC0AWERR == "N") /* Inserts all okay*/
+    OC0AW01.OC0AWTXT = " DISCREPANCIES SUCCE";
+    OC0AW01.OC0AWCNT = "SSFULLY ADDED       ";
+    COMMAREA.CAMSG = OC0AW01.OC0AWMSG;
+  else
+     /* next sentence*/
+     /* a -911 was encounterd*/
+     /* screen is reconversed as for errors*/
+  end
+  ;
+  ;
+end // end OC0AS80
+
+// OC5050 - Get letter header
+Function OC0AS82()
+   /* Get an unsent letter header for the discrepancies.*/
+   /* Call subroutine OC5050 which will find an unsent*/
+   /* letter header or insert one if there is none.*/
+   /* --------------------------------------------------*/
+  ;
+  ;
+  if (OCWREC.OC1SNDDT == 0) /* If the date-to-send is not yet*/
+                                   /* determined*/
+    OC0AS75(); /* Get the date to send*/
+    if (OC0AW01.OC0AWERR == "Y") /* If bad date-to-send lookup*/
+      return;
+    end
+  end
+  ;
+  ;
+   /* Set up pass record parameters*/
+  ;
+  set OCBREC empty; /* init pass record*/
+  OCBREC.OP1PARTN = OCWREC.OP1PARTN; /* part char*/
+  OCBREC.OP1CUOID = OCWREC.OP1CUOID; /* cust order id*/
+  OCBREC.XLDCD = "D"; /* discrepancy letter*/
+  OCBREC.OP1ENTDT = OCWREC.OP1ENTDT; /* order entered date*/
+  OCBREC.XGPCD = OCWREC.XGPCD; /* GPC code*/
+  OCBREC.XOTCD = OCWREC.XOTCD; /* system order type*/
+  OCBREC.XXXUSRID = COMMAREA.CAUSERID; /* user id*/
+  OCBREC.ZZZCHGDT = XX0XWDAT; /* Current date*/
+  OCBREC.ZZZCHGTM = XX0XWTIM; /* Current time*/
+  OCBREC.OC1SNDDT = OCWREC.OC1SNDDT; /* date-to-send*/
+  OCBREC.OCWINIFL = OCWREC.OCWINIFL; /* initial mail flag global*/
+  OCBREC.XSOCD = OCWREC.XSOCD; /* sales office id*/
+  ;
+  call "OC5050" (OCBREC) {isNoRefresh = yes, isExternal = yes}; /* Call letter header module*/
+  ;
+   /* Check return code*/
+  ;
+  if (OCBREC.OCBRTNCD == 0) /* good return code*/
+    OCWREC.OC1SNDDT = OCBREC.OC1SNDDT; /* Date-to-send to global rec*/
+    OCWREC.OCWINIFL = OCBREC.OCWINIFL; /* Initial mail flag to global*/
+  else
+    if (OCBREC.OCBRTNCD == 1) /* DB busy - posted by OC5050*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+      converseLib.validationFailed(006); /* DB busy msg*/
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback();
+    else
+      TA1REC.TA1LOCAT[1] = "OC0AS82"; /* Stmt group*/
+      TA1REC.TA1LOCAT[2] = "OC5050"; /* Subroutine called*/
+      TA1REC.TA1LOCAT[3] = "D"; /* Letter type*/
+      OC0AW01.OC0AWKY3 = " "; /* Init error key*/
+      OC0AW01.OC0AWRTN = OCBREC.OCBRTNCD; /* return code to key*/
+      OC0AW01.OC0AWORD = OCWREC.OCWCUOID; /* Cust order id to key*/
+      TAEREC.TAEDESC2 = OC0AW01.OC0AWKY3; /* Error key to desc*/
+      TAEREC.TAEDESC1 = "BAD RETURN CODE FROM OC5050 - DATA PROBLEM";
+      converseLib.validationFailed(038); /* data problem*/
+      OC0AW01.OC0AWERR = "Y";
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback();
+      XS0ASNP(); /* non-DB2 post, return here*/
+    end
+  end
+end // end OC0AS82
+
+// Get last discrepancy number
+Function OC0AS84()
+   /* Get the last discrepancy number used for*/
+   /* the current order number/letter number.*/
+   /* ------------------------------------------------*/
+  ;
+  set SQLCA empty;
+  set OCDREC empty; /* Init pass record*/
+  OCDREC.OCDTASK = "SM"; /* Select max function*/
+  OC4REC.OP1CUOID = OCWREC.OP1CUOID; /* Order number*/
+  OC4REC.OP1PARTN = OCWREC.OP1PARTN; /* Part char*/
+  OC4REC.OC1LTRNB = OCBREC.OC1LTRNB; /* Letter number*/
+  ;
+  call "IO5880" (OCDREC, SQLCA, OC4REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (OCDREC.OCDIND < 0) /* No discrepancies for letter*/
+      OC0AW01.OC4DSCPN = 0; /* Set discrepancy number to 0*/
+    else
+      OC0AW01.OC4DSCPN = OC4REC.OC4DSCPN; /* Set dscrp# to returned#*/
+    end
+  else
+    TA1REC.TA1LOCAT[1] = "OC0AS84"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO5880"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "SM"; /* function*/
+    OC0AW01.OC0AWKY2 = " "; /* Init error key*/
+    OC0AW01.OC0AWKPA = OCWREC.OP1PARTN; /* Error part char*/
+    OC0AW01.OC0AWKPB = OCWREC.OCWCUOID; /* Error order nbr key*/
+    OC0AW01.OC0AWKPC = OCBREC.OC1LTRNB; /* Error letter nbr key*/
+    TA1REC.TA1TBLKE = OC0AW01.OC0AWKY2; /* Formatted error key*/
+    TA1REC.TA1DBASE = "DORDC"; /* database name*/
+    TA1REC.TA1TBLVU = "VDSCRP01"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      XS0ASDP(); /* Post and return*/
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback(); /* Rollback updates*/
+      converseLib.validationFailed(006); /* DB busy*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    else
+      COMMAREA.CAMSG = "BAD DB RETURN ON MAX DISCREPANCY CALL";
+      XS0ASDC(); /* Post and exit*/
+    end
+  end
+  ;
+end // end OC0AS84
+
+// Build dscrps for map line
+Function OC0AS85()
+   /* Insert discrepancies for one map line.*/
+   /* The discrepancy entered on the line may*/
+   /* apply to one style, all styles for a*/
+   /* suborder, or the order as a whole.*/
+   /* -------------------------------------------*/
+  ;
+  if (OC0AM001.XDTCD[OC0AWMIX] == " ") /* If no discrepancy on line*/
+    return; /* skip*/
+  end
+  ;
+   /* Style level discrepancy*/
+  ;
+  if (OC0AM001.SY1STNBR[OC0AWMIX] != " " /* If style is entered*/
+   || OC0AM001.XDTCD[OC0AWMIX] == "IS")  /* or invalid style dscrp*/
+    set OC4REC empty; /* Init record*/
+    OC4REC.OC4STYFL = "N"; /* All styles flag set to no*/
+    OC4REC.SY1STNBR = OC0AM001.SY1STNBR[OC0AWMIX]; /* Style*/
+    OC4REC.SY2CLRID = OC0AM001.SY2CLRID[OC0AWMIX]; /* Color*/
+    OC4REC.XDMCD = OC0AM001.XDMCD[OC0AWMIX]; /* Dim*/
+    OC4REC.OP1CUNDT = OC0AW03.OP1CUNDT[OC0AWMIX]; /* Cust prod id*/
+    OC4REC.KUIPRDID = OC0AW03.KUIPRDID[OC0AWMIX]; /* Cust prod id*/
+    OC4REC.OP2CPLNB = OC0AW03.OP2CPLNB[OC0AWMIX]; /* PO line nbr*/
+    OC0AS86(); /* Move other fields and insert dscrp*/
+    return; /* All done with this line - GOBACK*/
+  end
+  ;
+   /* Order level discrepancy*/
+  ;
+  if (OC0AM001.OCASUBOR[OC0AWMIX] == "ALL " /* If dscrp applies to all*/
+   || OC0AM001.OCASUBOR[OC0AWMIX] == " ALL" /* styles on the order*/
+   || OC0AM001.OCASUBOR[OC0AWMIX] == "A   " /* styles on the order*/
+   || OC0AM001.OCASUBOR[OC0AWMIX] == " A  " 
+   || OC0AM001.OCASUBOR[OC0AWMIX] == "  A " 
+   || OC0AM001.OCASUBOR[OC0AWMIX] == "   A" 
+   || OC0AM001.OCASUBOR[OC0AWMIX] == "AL  " 
+   || OC0AM001.OCASUBOR[OC0AWMIX] == " AL " 
+   || OC0AM001.OCASUBOR[OC0AWMIX] == "  AL")
+    set OC4REC empty; /* Init record*/
+    OC4REC.OC4STYFL = "Y"; /* All styles flag set to yes*/
+    OC0AS86(); /* Move other fields and insert dscrp*/
+    return; /* All done with this line - GOBACK*/
+  end
+  ;
+   /* If you get this far, the discrepancy*/
+   /* applies to all styles on a specific*/
+   /* suborder. A discrepancy row is written*/
+   /* for each product on the suborder*/
+   /* specified, on either OP or OB depending*/
+   /* on where the suborder was found.*/
+  ;
+  if (OC0AW03.OCAWHFND[OC0AWMIX] == "OP") /* If the suborder found on OP*/
+    OC0AS56(); /* Select OP products for suborder*/
+    OC0AS51(); /* Fetch first OP item*/
+    if (SQLCA.VAGen_SQLCODE == 100) /* empty results table*/
+      TA1REC.TA1LOCAT[1] = "OC0AS85"; /* stmt group*/
+      TA1REC.TA1LOCAT[2] = "IO0440"; /* i/o mod*/
+      TA1REC.TA1LOCAT[3] = "SN"; /* function*/
+      OC0AW01.OC0AWKY2 = " "; /* init error key*/
+      OC0AW01.OC0AWKPA = OCWREC.OP1PARTN; /* part char key*/
+      OC0AW01.OC0AWKPB = OCWREC.OCWCUOID; /* order nbr key*/
+      OC0AW01.OC0AWKPC = OC0AW01.OC0AWSID; /* suborder id key*/
+      TA1REC.TA1TBLKE = OC0AW01.OC0AWKY2; /* error key*/
+      TA1REC.TA1DBASE = "DORDER"; /* database name*/
+      TA1REC.TA1TBLVU = "VITEM001"; /* database view name*/
+      COMMAREA.CAMSG = "DISCREPANCY CANNOT BE ADDED; ORDER DATA PROBLEM";
+      XS0ASDC();
+    end
+    while (SQLCA.VAGen_SQLCODE == 0)
+      if (OP2REC.OP2LNIST != "XL") /* If product not cancelled*/
+        OC0AS87(); /* Build product dscrp from OP*/
+      end
+      if (SQLCA.VAGen_SQLCODE == 0)
+        OC0AS51(); /* Fetch next OP item*/
+      end
+    end
+    OC0AS52(); /* Close OP cursor*/
+  else /* Else suborder found on OB*/
+    OC0AS53(); /* Select OB products for suborder*/
+    OC0AS54(); /* Fetch first OB item*/
+    while (SQLCA.VAGen_SQLCODE == 0)
+      OC0AS88(); /* Build product dscrp from OB*/
+      if (SQLCA.VAGen_SQLCODE == 0)
+        OC0AS54(); /* Fetch next OB item*/
+      end
+    end
+    if (SQLCA.VAGen_SQLCODE == 100) /* If normal end of items*/
+      OC0AS55(); /* Close OB cursor*/
+    end
+  end
+end // end OC0AS85
+
+// IO5880 - Fill dscrp & insert
+Function OC0AS86()
+   /* This statement group fills in the 'generic' fields*/
+   /* in the discrepancy record and inserts one discrepancy*/
+   /* row.*/
+   /* -------------------------------------------------------*/
+  ;
+  OC4REC.OP1PARTN = OCWREC.OP1PARTN; /* Part char*/
+  OC4REC.OP1CUOID = OCWREC.OP1CUOID; /* Cust order id*/
+  OC4REC.XGPCD = OCWREC.XGPCD; /* GPC*/
+  OC4REC.OC1LTRNB = OCBREC.OC1LTRNB; /* Letter number*/
+  OC4REC.OC4EXPEC = OC0AM001.OC4EXPEC[OC0AWMIX]; /* Expected value*/
+  OC4REC.OC4ACTUA = OC0AM001.OC4ACTUA[OC0AWMIX]; /* Acutal value*/
+  OC4REC.OC4DORCD = "M"; /* Dscrp origin - Manually added*/
+  OC4REC.XXXUSRID = COMMAREA.CAUSERID; /* User ID*/
+  OC4REC.ZZZSDT = XX0XWDAT; /* Set up date*/
+  OC4REC.ZZZCHGDT = XX0XWDAT; /* Change date*/
+  OC4REC.ZZZSTM = XX0XWTIM; /* Set up time*/
+  OC4REC.ZZZCHGTM = XX0XWTIM; /* Change time*/
+  ;
+  OC0AW01.OC4DSCPN = OC0AW01.OC4DSCPN + 1; /* Increment dscrp nbr*/
+  OC4REC.OC4DSCPN = OC0AW01.OC4DSCPN; /* Move dscrp nbr out*/
+  ;
+  sysVar.arrayIndex = 1;
+  if (OC0AM001.XDTCD[OC0AWMIX] in XDTTBL.XDTCD) /* validate dscrp code*/
+    OC4REC.XDTCD = XDTTBL.XDTCD[sysVar.arrayIndex];
+  else
+    set TAEREC empty;
+    set TA1REC empty;
+    TA1REC.TA1LOCAT[1] = "OC0AS86"; /* Stmt group*/
+    TA1REC.TA1TBLKE = OC0AM001.XDTCD[OC0AWMIX]; /* key*/
+    TAEREC.TAEDESC1 = "DSCRP TYPE NOT FOUND IN XDTTBL.XDTCD";
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* rollback updates*/
+    XS0ASNR(); /* non-DB2, post, return to menu (OC0M)*/
+  end
+   /* ----------------------------------*/
+     /* Insert discrepancy row*/
+   /* ----------------------------------*/
+  set SQLCA empty;
+  set OCDREC empty; /* Dscrp IO mod pass record*/
+  ;
+  OCDREC.OCDTASK = "A "; /* Add dscrp*/
+  ;
+  call "IO5880" (OCDREC, SQLCA, OC4REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OC0AW01.OC0AWDCT = OC0AW01.OC0AWDCT + 1; /* Add to dscrp added count*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0AS86"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO5880"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "A "; /* function*/
+    OC0AW01.OC0AWKY1 = " "; /* Init error key*/
+    OC0AW01.OC0AWKPA = OCWREC.OP1PARTN; /* part char key*/
+    OC0AW01.OC0AWKPB = OCWREC.OCWCUOID; /* order nbr key*/
+    OC0AW01.OC0AWKPC = OC4REC.OC1LTRNB; /* letter number*/
+    OC0AW01.OC0AWKPD = OC4REC.OC4DSCPN; /* dscrp number*/
+    TA1REC.TA1TBLKE = OC0AW01.OC0AWKY1; /* error key*/
+    TA1REC.TA1DBASE = "DORDC"; /* database name*/
+    TA1REC.TA1TBLVU = "VDSCRP01"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      VGVar.handleSysLibraryErrors = 0;
+      sysLib.rollback(); /* Rollback updates*/
+      XS0ASDP(); /* Post and return*/
+      converseLib.validationFailed(006); /* DB busy*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    else /* all other codes - abort*/
+      COMMAREA.CAMSG = "DATA PROBLEM - TRY AGAIN LATER";
+      XS0ASDC();
+    end
+  end
+  ;
+end // end OC0AS86
+
+// Build dscrp from OP
+Function OC0AS87()
+   /* Use fields from the OP item to build a*/
+   /* discrepancy row.*/
+   /* -------------------------------------------*/
+  ;
+  set OC4REC empty; /* Init dscrp record*/
+  ;
+  OC4REC.OC4STYFL = "N"; /* Set all styles flag to no*/
+  OC4REC.OP1CUNDT = OC0AW03.OP1CUNDT[OC0AWMIX]; /* Need date for subord*/
+  OC4REC.SY1STNBR = OP2REC.SY1STNBR; /* Style*/
+  OC4REC.SY2CLRID = OP2REC.SY2CLRID; /* Color*/
+  OC4REC.XDMCD = OP2REC.XDMCD; /* Dimension*/
+  OC4REC.KUIPRDID = OP2REC.KUIPRDID; /* Cust prod id*/
+  OC4REC.OP2CPLNB = OP2REC.OP2CPLNB; /* PO line nbr*/
+  OC0AS86(); /* Fill in rest of fields and insert record*/
+  ;
+end // end OC0AS87
+
+// Build dscrp from OB
+Function OC0AS88()
+   /* Use fields from the OB item to build a*/
+   /* discrepancy row.*/
+   /* -------------------------------------------*/
+  ;
+  set OC4REC empty; /* Init dscrp record*/
+  ;
+  OC4REC.OC4STYFL = "N"; /* Set all styles flag to no*/
+  OC4REC.OP1CUNDT = OC0AW03.OP1CUNDT[OC0AWMIX]; /* Need date for subord*/
+  OC4REC.SY1STNBR = OB2REC.SY1STNBR; /* Style*/
+  OC4REC.SY2CLRID = OB2REC.SY2CLRID; /* Color*/
+  OC4REC.XDMCD = OB2REC.XDMCD; /* Dimension*/
+  OC4REC.KUIPRDID = OB2REC.CU-CUST-PROD-ID; /* Cust prod id*/
+  OC4REC.OP2CPLNB = OB2REC.OP2CPLNB; /* PO line nbr*/
+  OC0AS86(); /* Fill in rest of fields and insert record*/
+  ;
+end // end OC0AS88
+
+// Application security
+Function OC0AS99()
+  ;
+   /* **** retrieve o/c commarea and check security *****/
+  ;
+    /* this prevents users from entering system using fastpath*/
+  ;
+  OCWREC.OCWGROUP = COMMAREA.CAUSERA; /* get commarea*/
+  ;
+   /* Disallow entry for inquiry-only id's*/
+  ;
+  if (COMMAREA.CACHGFL == "N") /* User is inquiry-only*/
+    OC0AW01.OC0AWTXT = "DISCREPANCY ADD FUNC";
+    OC0AW01.OC0AWCNT = "TION NOT AVAILABLE FOR INQUIRY-ONLY";
+    COMMAREA.CAMSG = OC0AW01.OC0AWMSG;
+    COMMAREA.CATOAP = "OC0M"; /* Go to OC menu*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.commit();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    COMMAREA.CAFROMAP = COMMAREA.CACURRAP;
+    COMMAREA.CACURRAP = COMMAREA.CATOAP;
+    COMMAREA.CATOAP = " ";
+    sysVar.transferName = COMMAREA.CACURRAP;
+    transfer to program sysVar.transferName passing COMMAREA;
+    XSPF4(); /* Transfer failure*/
+    exit program;
+  end
+  ;
+  ;
+   /* *************************************************************/
+end // end OC0AS99
+
+// process pf keys
+Function OC0ASPF()
+  ;
+  ;
+  if (OC0AM001.CATOAP != " ") /* Fast path application entered*/
+    if (OC0AM001.CATOAP == "OC0D") /* discrepancy type select*/
+      OC0AM001.CATOAP = " "; /* initialize to appl*/
+      converseLib.validationFailed(99); /* can not fast path to oc0d*/
+      OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+      return; /* converse map*/
+    else
+      COMMAREA.CATOAP = OC0AM001.CATOAP;
+      if (OC0AM001.OC0AMITM != " ") /* Fast path item*/
+        COMMAREA.CAITEM = OC0AM001.OC0AMITM;
+      end
+    end
+  end
+  ;
+  if (converseVar.eventKey is enter) /* Check for fast-path request*/
+    if (COMMAREA.CATOAP != " ") /* If fast path application entered*/
+      OC0AS72(); /* Purge temp storage*/
+      if (COMMAREA.CATOSYS != "OC") /* If not going to another OC appl*/
+        COMMAREA.CAUSERA = " "; /* reinit user commarea*/
+      end
+      XSEXIT();
+      ;
+      sysVar.transferName = "OC0M";
+      transfer to transaction sysVar.transferName passing COMMAREA;
+    end
+  end
+  ;
+  ;
+  COMMAREA.CAUSERA = OCWREC.OCWGROUP;
+  ;
+  ;
+  if (converseVar.eventKey is pf3)
+    OC0AS72(); /* purge temp storage*/
+    XS0AS03(); /* go to o/c menu*/
+    OC0AM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    return; /* converse map*/
+  end
+  ;
+  if (converseVar.eventKey is pf4)
+    OC0AS72(); /* purge temp storage*/
+    XSPF4(); /* go to main menu*/
+    OC0AM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    return; /* converse map*/
+  end
+  ;
+  if (converseVar.eventKey is pf6)
+    OC0AS72(); /* purge temp storage*/
+    XS0AS06(); /* go to discrepancy letter screen*/
+    OC0AM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    return; /* converse map*/
+  end
+  ;
+  if (converseVar.eventKey is pf13)
+    OC0AS72(); /* purge temp storage*/
+    XS0AS13(); /* go to letter summary*/
+    OC0AM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    OC0AW01.OC0AWERR = "Y"; /* Turn on error flag*/
+    return; /* converse map*/
+  end
+  ;
+  if (converseVar.eventKey is enter
+   || converseVar.eventKey is pf12) /* if edit only*/
+     /* next sentence*/
+  else
+    converseLib.validationFailed(1); /* invalid pf key*/
+    OC0AW01.OC0AWERR = "Y"; /* set error flag*/
+  end
+  ;
+  ;
+  ;
+end // end OC0ASPF
+
+//*** RECORD=OC0AW01 ****
+// *     Application work record for Discrepancy Add Screen
+// *     (OC0A)
+// *
+// *     Csp record: OC0AW01
+// *
+// *
+// *
+// ***********************
+Record OC0AW01 type basicRecord
+  5 OC0AWGP1 OC0AWGP1 ; 
+    10 OC0AWSB1 OC0AWSB1 ; 
+    10 OC0AWMIX OC0AWMIX ; 
+    10 OC0AWERR OC0AWERR ; 
+    10 OC0AWCHG OC0AWCHG ; 
+    10 OC0AWBSY OC0AWBSY ; 
+    10 OC0AWQSF OC0AWQSF ; 
+    10 OC0AWDSF OC0AWDSF ; 
+    10 OC0AWDUP OC0AWDUP ; 
+    10 OC4DSCPN OC4DSCPN ; 
+    10 OC0AWDCT OC0AWDCT ; 
+    10 OC0AWMSG OC0AWMSG ; 
+      15 OC0AWTXT OC0AWTXT ; 
+      15 OC0AWCNT OC0AWCNT ; 
+    10 OC0AWMS2 OC0AWMS2 ; 
+      15 OC0AWMP1 OC0AWMP1 ; 
+      15 OC0AWMP2 OC0AWMP2 ; 
+      15 OC0AWMP3 OC0AWMP3 ; 
+    10 OC0AWSID OC0AWSID ; 
+    10 OC0AWKY1 OC0AWKY1 ; 
+      15 OC0AWKY2 OC0AWKY2 ; 
+        20 OC0AWKPA OC0AWKPA ; 
+        20 OC0AWKF1 OC0AWKF1 ; 
+        20 OC0AWKPB OC0AWKPB ; 
+        20 OC0AWKF2 OC0AWKF2 ; 
+        20 OC0AWKPC OC0AWKPC ; 
+      15 OC0AWKF3 OC0AWKF3 ; 
+      15 OC0AWKPD OC0AWKPD ; 
+    10 OC0AWITM OC0AWITM ; 
+      15 OC0AWDGT OC0AWDGT [20] ; 
+    10 OC0AWKY3 OC0AWKY3 ; 
+      15 OC0AWRTN OC0AWRTN ; 
+      15 OC0AWORD OC0AWORD ; 
+end // end OC0AW01
+
+//*** RECORD=OC0AW02 ****
+// *     Temporary storage record used to save a copy of the
+// *     discrepancy lines on the Discrepancy Add Screen (OC0A)
+// *
+// *     Csp record: OC0AW02
+// *
+// *      file name: OC0A
+// *
+// *      Loaded in: OC0A
+// *
+// *   Displayed in: OC0A
+// *
+// *
+// *
+// ***********************
+Record OC0AW02 type basicRecord
+  5 OC0AWGP2 OC0AWGP2 ; 
+    10 OC0AWTSL OC0AWTSL ; 
+    10 OC0AWTSR OC0AWTSR [14] ; 
+      15 XDTCD XDTCD ; 
+      15 SY1STNBR SY1STNBR ; 
+      15 SY2CLRID SY2CLRID ; 
+      15 XDMCD XDMCD ; 
+      15 OCASUBOR OCASUBOR ; 
+      15 OC4EXPEC OC4EXPEC ; 
+      15 OC4ACTUA OC4ACTUA ; 
+end // end OC0AW02
+
+//*** RECORD=OC0AW03 ****
+// *     This area is used to save map line fields and some
+// *     additional fields passed back from OC5000 which are
+// *     associated with the line, but not on the map.
+// *
+// *     Csp record: OC0AW03
+// *
+// *
+// *
+// ***********************
+Record OC0AW03 type basicRecord
+  5 OC0AWGP3 OC0AWGP3 ; 
+    10 OC0AWSAV OC0AWSAV [14] ; 
+      15 XDTCD XDTCD ; 
+      15 SY1STNBR SY1STNBR ; 
+      15 SY2CLRID SY2CLRID ; 
+      15 XDMCD XDMCD ; 
+      15 OCASUBOR OCASUBOR ; 
+      15 OC4EXPEC OC4EXPEC ; 
+      15 OC4ACTUA OC4ACTUA ; 
+      15 OCAMSGNO OCAMSGNO ; 
+      15 OC0AWXER OC0AWXER ; 
+      15 OCASTYFL OCASTYFL ; 
+      15 OCASUBFL OCASUBFL ; 
+      15 OCAEXPFL OCAEXPFL ; 
+      15 OCADUPFL OCADUPFL ; 
+      15 OP2CPLNB OP2CPLNB ; 
+      15 KUIPRDID KUIPRDID ; 
+      15 OP1CUNDT OP1CUNDT ; 
+      15 OCAWHFND OCAWHFND ; 
+end // end OC0AW03
+
+// DB busy on build flag
+DataItem OC0AWBSY char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Order number changed flag
+DataItem OC0AWCHG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Continue msg
+DataItem OC0AWCNT char(40)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Dscrp entered count
+DataItem OC0AWDCT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Item character
+DataItem OC0AWDGT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// discrepancy entered flag
+DataItem OC0AWDSF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Dup style error flag
+DataItem OC0AWDUP char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error flag
+DataItem OC0AWERR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// OC0AW01 GROUP LEVEL
+DataItem OC0AWGP1 char(227)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// OC0AW02 GROUP LEVEL
+DataItem OC0AWGP2 char(942)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// OC0AW03 GROUP LEVEL
+DataItem OC0AWGP3 char(1386)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CAITEM reformat area
+DataItem OC0AWITM char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Filler 1
+DataItem OC0AWKF1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Filler 2
+DataItem OC0AWKF2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Filler 3
+DataItem OC0AWKF3 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Key part A - 2 alpha
+DataItem OC0AWKPA char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Key part b - 9 numeric
+DataItem OC0AWKPB num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Key part c - 9 numeric
+DataItem OC0AWKPC num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Key part d - 4 numeric
+DataItem OC0AWKPD num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Formatted error key
+DataItem OC0AWKY1 char(27)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 3-part key
+DataItem OC0AWKY2 char(22)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// key for post
+DataItem OC0AWKY3 char(18)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Map line subscript
+DataItem OC0AWMIX num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Msg part1
+DataItem OC0AWMP1 char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Msg part2
+DataItem OC0AWMP2 char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Msg part3
+DataItem OC0AWMP3 char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Message area 2
+DataItem OC0AWMS2 char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Message area 1
+DataItem OC0AWMSG char(60)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// op-cust-ord-id for key
+DataItem OC0AWORD num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Question mark found flag
+DataItem OC0AWQSF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// return code for key
+DataItem OC0AWRTN num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Map line saved for compare
+DataItem OC0AWSAV char(99)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// WS SUBSCRIPT
+DataItem OC0AWSB1 num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Numeric suborder id
+DataItem OC0AWSID num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// temp storage lgth
+DataItem OC0AWTSL num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// temp storage row
+DataItem OC0AWTSR char(67)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// Dscrp confirm text
+DataItem OC0AWTXT char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// XDT field error flag
+DataItem OC0AWXER char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+
