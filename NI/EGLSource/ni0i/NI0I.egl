@@ -1,0 +1,859 @@
+package ni0i;
+
+import corpcom2.XX0XW01;
+import corpcom3.XPNL002;
+import corpcom3.XPNL005;
+import corpcom4.XSENTRY;
+import corpcom4.XSNLS01;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import corpz3.ZIVCD;
+import ku.common.KUCCOID;
+import ni.common.NIBLIAMT;
+import ni.common.NIBLITXT;
+import ni.common.NIDIVCID;
+import ni.common.NIWREC;
+import nl.common.NLXREC;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+import vv.common.VMIHDR01;
+import vv.common.VMIITM01;
+import vv.common.VMISCI01;
+import vv.common.VNLIVX01;
+//*** PROGRAM=NI0I ****
+// ************************************************************
+// 
+//               ni0i - misc ivc - ivc type Quick View
+//               -------------------------------------
+// 
+// This application allows the user to get a quick look at
+// the line items for a misc ivc or an ivc type.  this will
+// show them exactly how the line items will look on the
+// printed invoice.
+// 
+// Maintenance History:
+//   Date   Who    Remarks
+// -------- ------ --------------------------------------------
+// 08-01-89 crr    creation
+// 07-10-90 jshann ref task # 76 - display invoice type & cust
+//                 number when coming from ni0a & ni0b
+// 01-31-92 jjudki REF TASK # 146- Don't zero out misc inv#
+//                in ni0i110.
+// 11-18-92 jjudki Add zchcd to key in ni0is05 for io4450.
+//  5-12-93 jjudki Darken pf17 with inquiry mode.
+// *********************
+Program NI0I type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "NL00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  NI0IW01 NI0IW01; // record
+  NI0IW02 NI0IW02; // record
+  NIWREC NIWREC; // record
+  NLXREC NLXREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  VMIHDR01 VMIHDR01; // record
+  VMIITM01 VMIITM01; // record
+  VMISCI01 VMISCI01; // record
+  VNLIVX01 VNLIVX01; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use NI0IM.NI0IM100 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    NI0I000: NI0I000();
+    exit program;
+  end // end main
+end // end NI0I
+
+// main flow
+Function NI0I000()
+   /* ************************************************************/
+   /* *   this is the "main logic" for the application.         **/
+   /* *                                                         **/
+   /* *   perform initialization, set application revision nbrs,**/
+   /* *   then do main perform until done with application      **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  NLXREC.NLXCPROC = "NI0I000";
+  COMMAREA.CACURRAP = "NI0I";
+  ;
+  NI0I001(); /* initilize the application*/
+  ;
+  NLXREC.NLXEOAF = "N"; /* set end-of-application flag to 'no'*/
+  ;
+  while (NLXREC.NLXEOAF == "N") /* while not end-of-aplication*/
+    NI0I050(); /* process the application screen(s)*/
+  end
+  ;
+  COMMAREA.CACURRAP = "NL0A";
+  XPNL002();
+end // end NI0I000
+
+// initialize application
+Function NI0I001()
+  NLXREC.NLXCPROC = "NI0I001";
+  ;
+  converseVar.commitOnConverse = 1; /* force db2 to commit on each screen converse*/
+  VGVar.handleHardIOErrors = 1; /* return control to appl if hard db2 error*/
+  ;
+  set NI0IW01 empty; /* clear working storage rec1*/
+  set NI0IW02 empty; /* clear working storage rec2*/
+  set NIWREC empty;
+  set VMIITM01 empty;
+  set VMISCI01 empty;
+  set VNLIVX01 empty;
+  set SQLCA empty;
+  ;
+  XSENTRY(); /* appl entry security*/
+  XSSEGTR(); /* set segmented transaction id*/
+  ;
+   /* TEMP001;*/
+  ;
+  set NLXREC empty; /* clear common working storage*/
+  ;
+   /* set up key if special entry options*/
+  NIWREC.NIWGROUP = COMMAREA.CAUSERA;
+  if (NIWREC.NIWFRMAP == "NI0A" /* user in middle of inquiry list*/
+   || NIWREC.NIWFRMAP == "NI0B")
+    NI0IW01.NI0IWINQ = "Y"; /* inquiry list flag*/
+    NI0IW01.NIDIVCID = NIWREC.NIWIAIVC[NIWIAIDX];
+    VNLIVX01.NIDIVCID = NIWREC.NIWIAIVC[NIWIAIDX];
+    NI0IS04(); /* read xref*/
+    if (SQLCA.VAGen_SQLCODE == 0)
+      if (VNLIVX01.NIDREFID == 0)
+        VMIHDR01.NIDIVCID = VNLIVX01.NIDIVCID; /* load niarec key*/
+      else
+        VMIHDR01.NIDIVCID = VNLIVX01.NIDREFID; /* load niarec key*/
+      end
+      NI0IS07(); /* read misc ivc header record*/
+      NI0IW01.ZIVCD = VMIHDR01.ZIVCD; /* save for map in ni0i101*/
+      NI0IW01.KUCCOID = VMIHDR01.KUCCOID; /* save for map in ni0i101*/
+      NI0IS05(); /* read misc ivc line items*/
+    else
+      set NI0IM100.NIDIVCID cursor, modified, bold;
+      converseLib.validationFailed(47); /* invalid cd*/
+      NI0IW01.NI0IWIER = "Y";
+    end
+  else
+    if (COMMAREA.CAITEM != " ") /* fastpath entry*/
+      NI0IW01.ZIVCD = COMMAREA.CAITEM;
+      NI0IS03(); /* look up ivc type*/
+      if (NI0IW01.NI0IWONE == "Y")
+        converseLib.validationFailed(70); /* invalid cd*/
+        NI0IW01.NI0IWIER = "Y";
+      end
+    else
+      if (COMMAREA.CAFROMAP == "NI0G" /* entry from other misc ivc appls*/
+       || COMMAREA.CAFROMAP == "NI0H")
+        if (NIWREC.NIDIVCID == 0)
+          NI0IW01.ZIVCD = NIWREC.ZIVCD;
+          NI0IW01.KUCCOID = NIWREC.KUCCOID;
+          NI0IS03(); /* look up ivc type*/
+          if (NI0IW01.NI0IWONE == "Y")
+            converseLib.validationFailed(70); /* invalid cd*/
+            NI0IW01.NI0IWIER = "Y";
+          end
+        else
+          NI0IW01.NIDIVCID = NIWREC.NIDIVCID;
+          NI0IW01.ZIVCD = NIWREC.ZIVCD;
+          NI0IW01.KUCCOID = NIWREC.KUCCOID;
+          VNLIVX01.NIDIVCID = NIWREC.NIDIVCID;
+          NI0IS04(); /* read xref*/
+          if (SQLCA.VAGen_SQLCODE == 0)
+            NI0IS05(); /* read misc ivc line items*/
+          else
+            set NI0IM100.NIDIVCID cursor, modified, bold;
+            converseLib.validationFailed(47); /* invalid cd*/
+            NI0IW01.NI0IWIER = "Y";
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (NI0IW01.NI0IWINQ == "Y")
+    NI0ISS1();
+  end
+  ;
+  NLXREC.NLXSNAME[1] = "NI0IM100"; /* init screens used in this appl*/
+  NLXREC.NLXCSCRN = "NI0IM100"; /* set first screen to display*/
+  ;
+end // end NI0I001
+
+// decide which map to display
+Function NI0I050()
+   /* ************************************************************/
+   /* *   control process the application screen(s)             **/
+   /* *                                                         **/
+   /* *  note that this process is being performed in a         **/
+   /* *  "while loop" until the end-of-application flag is set  **/
+   /* *  to 'y'.                                                **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  NLXREC.NLXCPROC = "NI0I050"; /* set current process name*/
+  ;
+  sysVar.arrayIndex = 0;
+  NLXREC.NLXSCRNX = 0;
+  ;
+  if (NLXREC.NLXCSCRN in NLXREC.NLXSNAME) /* if current-screen-name is*/
+    NLXREC.NLXSCRNX = sysVar.arrayIndex; /* in the screen-array, then set*/
+  end /* the screen-index*/
+  ;
+  set TA1REC empty;
+  TA1REC.TA1MAP = NLXREC.NLXCSCRN; /* prepare for abend*/
+  ;
+  NLXREC.NLXBLDSC = "Y"; /* set build screen flag to 'yes'*/
+  NLXREC.NLXEOSF = "N"; /* set end-of-screen flag to 'no'*/
+  NLXREC.NLXERRF = "N"; /* clear error flag*/
+  ;
+  if (NLXREC.NLXSCRNX == 1) /* if screen xx0xm100*/
+    while (NLXREC.NLXEOSF == "N") /* show until user is done*/
+      NI0I100();
+    end
+  else
+    TA1REC.TA1MAP = NLXREC.NLXCSCRN;
+    TA1REC.TA1TBLKE = "UNKNOWN SCREEN NAME";
+    TA1REC.TA1LOCAT[2] = NLXREC.NLXCSCRN;
+    XPNL005(); /* abend*/
+  end
+  ;
+   /* at this point;*/
+       /* if the end-of-application flag (NLXeoaf ) = 'n'*/
+         /* the perform will return to the top of nl0%050...*/
+       /* else*/
+         /* the perform will auto return to nl0%000.*/
+  ;
+end // end NI0I050
+
+// converse map m100
+Function NI0I100()
+   /* ************************************************************/
+   /* *    process screen nl0%m100                              **/
+   /* *                                                         **/
+   /* *  note that this process is being performed in a         **/
+   /* *     "while loop" from nl0%050 until the end-of-screen   **/
+   /* *     flag (nlxeosfl) is set to 'y'.                      **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  NLXREC.NLXCPROC = "NI0I100";
+  ;
+  if (NLXREC.NLXBLDSC == "Y")
+    NI0I101();
+    NLXREC.NLXBLDSC = "N";
+  end
+  ;
+   /* ***********************************************************/
+  converse NI0IM100 ;
+   /* ***********************************************************/
+  ;
+  VAGen_EZEMSG = " ";
+  NLXREC.NLXERRF = "N";
+  ;
+  if (NI0IW01.NI0IWINQ == "Y")
+    NI0I114(); /* special pfkey edit for inq list*/
+  else
+    NI0I110(); /* validate pfkeys*/
+  end
+  ;
+  if (NLXREC.NLXERRF == "N"
+   && NI0IM100 is modified)
+    NI0I120(); /* edit entries and update*/
+  end
+  ;
+  if (NLXREC.NLXERRF == "N")
+    NI0I130(); /* determine next action*/
+  end
+  ;
+   /* at this point;*/
+     /* if the end-of-screen flag (nlxeosfl) is 'n'*/
+        /* we go back to top of process nl0%100.*/
+     /* if the end-of-screen flag (nlxeosfl) is 'y'*/
+        /* we return to nl0%050.*/
+end // end NI0I100
+
+// build screen
+Function NI0I101()
+  NLXREC.NLXCPROC = "NI0I101";
+  ;
+   /* **************************************/
+   /* build screen*/
+   /* **************************************/
+  ;
+   /* SET NI0IM100 EMPTY;*/
+  converseLib.clearScreen();
+  
+  NI0IM100.XXXCURDT = VGVar.currentShortGregorianDate; /* system date*/
+  ;
+  NI0IM100.KUCCOID = NI0IW01.KUCCOID;
+  NI0IM100.ZIVCD = NI0IW01.ZIVCD;
+  NI0IM100.NIDIVCID = NI0IW01.NIDIVCID;
+  ;
+  if (NI0IW01.NI0IWIER == "Y") /* error on init*/
+    NI0IW01.NI0IWIER = "N";
+    return;
+  end
+  ;
+  if (NI0IW01.ZIVCD == " " /* user must enter key fields*/
+   && NI0IW01.NIDIVCID == 0)
+    return;
+  end
+  ;
+   /* fill in all screen fields*/
+  ;
+   /* move from ws array to screen*/
+  ;
+  NI0IW01.NI0IWDX3 = 1;
+  while (NI0IWDX3 < 17)
+    NI0IS02();
+  end
+  NI0IW01.NI0IWDX3 = 16;
+  ;
+  if (converseVar.validationMsgNum == 0) /* only use this msg if no others are in use*/
+    if (NI0IW01.NI0IWDX1 >= NI0IW01.NI0IWDX2)
+      converseLib.validationFailed(69);
+    end
+  end
+  ;
+end // end NI0I101
+
+// edit pfkeys
+Function NI0I110()
+   /* **************************************/
+   /* edit pk keys*/
+   /* **************************************/
+  ;
+  NLXREC.NLXCPROC = "NI0I110";
+  ;
+  if (NI0IM100.CATOAP != " ") /* if any fastpath data entered*/
+    COMMAREA.CATOAP = NI0IM100.CATOAP;
+    COMMAREA.CAITEM = NI0IM100.CAITEM;
+    COMMAREA.CAUSERA = NIWREC.NIWGROUP;
+    XPNL002();
+    return;
+  end
+  ;
+  if (converseVar.eventKey is enter
+   || converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8)
+     /* next sentence*/
+  else
+    if (converseVar.eventKey is pa1
+     || converseVar.eventKey is pa2
+     || converseVar.eventKey is pa3)
+      converseLib.clearScreen();
+      
+      converseLib.validationFailed(62); /* pa1/2 cause loss of keyed data-rekey*/
+                                   /* any change*/
+       /* set alterable fields modified*/
+      NLXREC.NLXERRF = "Y";
+    else
+      if (converseVar.eventKey is pf1)
+        XSNLS01(); /* nil help routine - exit to gd01*/
+      else
+        if (converseVar.eventKey is pf4)
+          XSPF4();
+        else
+          if (converseVar.eventKey is pf3)
+            COMMAREA.CATOAP = "NI0J";
+            XPNL002();
+            return;
+          else
+            if (converseVar.eventKey is pf13)
+              COMMAREA.CATOAP = "NI0G";
+              NIWREC.NIDIVCID = NI0IW01.NIDIVCID;
+              NIWREC.KUCCOID = NI0IW01.KUCCOID;
+              NIWREC.ZIVCD = NI0IW01.ZIVCD;
+              COMMAREA.CAUSERA = NIWREC.NIWGROUP;
+              XPNL002();
+              return;
+            else
+              if (converseVar.eventKey is pf17)
+                COMMAREA.CATOAP = "NI0H";
+   /* MOVE 0 TO NIWREC.NIDIVCID;*/
+                NIWREC.KUCCOID = NI0IW01.KUCCOID;
+                NIWREC.ZIVCD = NI0IW01.ZIVCD;
+                COMMAREA.CAUSERA = NIWREC.NIWGROUP;
+                XPNL002();
+                return;
+              else
+                if (converseVar.eventKey is pf21)
+                  COMMAREA.CATOAP = "NI0A";
+                  COMMAREA.CAUSERA = " ";
+                  XPNL002();
+                  return;
+                else
+                  COMMAREA.CATOAP = " ";
+                  converseLib.validationFailed(2); /* INVALID FUNCTION KEY*/
+                  NLXREC.NLXERRF = "Y";
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end // end NI0I110
+
+// special pf key edit
+Function NI0I114()
+   /* **************************************/
+   /* edit pk keys*/
+   /* **************************************/
+  ;
+  NLXREC.NLXCPROC = "NI0I114";
+  ;
+  if (converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8)
+     /* next sentence*/
+  else
+    if (converseVar.eventKey is pf3)
+      COMMAREA.CATOAP = "NI0J";
+      COMMAREA.CAUSERA = " ";
+      XPNL002();
+      return;
+    else
+      if (converseVar.eventKey is pf13)
+        COMMAREA.CATOAP = "NI0G";
+        XPNL002();
+        return;
+      else
+        if (converseVar.eventKey is pf21)
+          COMMAREA.CATOAP = NIWREC.NIWFRMAP;
+          NIWREC.NIWQUIT = "Y";
+          COMMAREA.CAUSERA = NIWREC.NIWGROUP;
+          XPNL002();
+          return;
+        else
+          if (converseVar.eventKey is enter)
+            COMMAREA.CATOAP = NIWREC.NIWFRMAP;
+            XPNL002();
+            return;
+          else
+            COMMAREA.CATOAP = " ";
+            converseLib.validationFailed(2); /* INVALID FUNCTION KEY*/
+            NLXREC.NLXERRF = "Y";
+          end
+        end
+      end
+    end
+  end
+end // end NI0I114
+
+// edit entries and update
+Function NI0I120()
+   /* **************************************/
+   /* edit entries and update*/
+   /* **************************************/
+  ;
+  NLXREC.NLXCPROC = "NI0I120";
+  ;
+  set NI0IM100.KUCCOID normal;
+  set NI0IM100.ZIVCD cursor, normal;
+  set NI0IM100.NIDIVCID normal;
+  ;
+   /* edit selections - perform edits in reverse sequence*/
+  ;
+  if (NI0IM100.ZIVCD != " " /* cannot fill in both keys*/
+   || NI0IM100.KUCCOID != 0)
+    if (NI0IM100.NIDIVCID != 0)
+      set NI0IM100.ZIVCD cursor, modified, bold;
+      set NI0IM100.KUCCOID modified, bold;
+      set NI0IM100.NIDIVCID modified, bold;
+      converseLib.validationFailed(1); /* invalid cd*/
+      NLXREC.NLXERRF = "Y";
+      return;
+    end
+  end
+  ;
+  if (NI0IM100.ZIVCD == " " /* cannot fill in company without zivcd*/
+   && NI0IM100.KUCCOID != 0)
+    set NI0IM100.ZIVCD cursor, modified, bold;
+    set NI0IM100.KUCCOID modified, bold;
+    converseLib.validationFailed(1); /* invalid cd*/
+    NLXREC.NLXERRF = "Y";
+    return;
+  end
+  ;
+   /* edit key chg*/
+  if (NI0IM100.ZIVCD == " ")
+    if (NI0IM100.NIDIVCID == 0)
+      set NI0IM100.ZIVCD cursor, modified, bold;
+      set NI0IM100.KUCCOID modified, bold;
+      set NI0IM100.NIDIVCID modified, bold;
+      converseLib.validationFailed(3); /* invalid cd*/
+      NLXREC.NLXERRF = "Y";
+    else
+      VNLIVX01.NIDIVCID = NI0IM100.NIDIVCID;
+      NI0IS04(); /* read xref first*/
+      if (SQLCA.VAGen_SQLCODE == 0)
+        NI0IS05(); /* read misc ivc line items*/
+        VMIHDR01.NIDIVCID = VMIITM01.NIDIVCID; /* load misc header key*/
+        NI0IS07(); /* read misc ivc hdr*/
+      else
+        set NI0IM100.NIDIVCID cursor, modified, bold;
+        converseLib.validationFailed(47); /* invalid cd*/
+        NLXREC.NLXERRF = "Y";
+      end
+    end
+  else
+    NI0IW01.KUCCOID = NI0IM100.KUCCOID;
+    NI0IW01.ZIVCD = NI0IM100.ZIVCD;
+    NI0IS03(); /* build and read cursor*/
+    if (NI0IW01.NI0IWONE == "Y") /* no line items in cursor*/
+      set NI0IM100.ZIVCD cursor, modified, bold;
+      set NI0IM100.KUCCOID modified, bold;
+      converseLib.validationFailed(70); /* ivc typ does not exist*/
+      NLXREC.NLXERRF = "Y";
+    end
+  end
+  ;
+  if (NLXREC.NLXERRF == "Y")
+     /* next sentence*/
+  else
+    NI0IW01.ZIVCD = NI0IM100.ZIVCD;
+    NI0IW01.KUCCOID = NI0IM100.KUCCOID;
+    NI0IW01.NIDIVCID = NI0IM100.NIDIVCID;
+  end
+end // end NI0I120
+
+// determine next action
+Function NI0I130()
+  NLXREC.NLXCPROC = "NI0I130";
+  ;
+   /* **************************************/
+   /* determine next action*/
+   /* **************************************/
+  ;
+  if (converseVar.eventKey is enter)
+    NLXREC.NLXBLDSC = "Y";
+    NI0IW01.NI0IWDX2 = NI0IW01.NI0IWDX2 - 16;
+    if (NI0IW01.NI0IWDX2 < 1)
+      NI0IW01.NI0IWDX2 = 1;
+    end
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf7)
+    if (NI0IW01.NI0IWDX2 <= 17)
+      converseLib.validationFailed(029); /* cannot scroll back*/
+    else
+      NI0IW01.NI0IWDX2 = NI0IW01.NI0IWDX2 - 32;
+      if (NI0IW01.NI0IWDX2 < 1)
+        NI0IW01.NI0IWDX2 = 1;
+      end
+      NLXREC.NLXBLDSC = "Y";
+    end
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf8)
+    if (NI0IW01.NI0IWDX2 > NI0IW01.NI0IWDX1)
+      converseLib.validationFailed(030); /* cannot scroll forward*/
+    else
+      NLXREC.NLXBLDSC = "Y";
+      return;
+    end
+  end
+  ;
+end // end NI0I130
+
+// read nicrec for ni0im100
+Function NI0IS01()
+  NLXREC.NLXCPROC = "NI0IS01"; /* set current proc name*/
+  ;
+   /* fetch from cursor*/
+  call "IO4420" ("N1", SQLCA, VMISCI01) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (NI0IW01.NI0IWONE == "Y")
+      NI0IW01.NI0IWONE = "N";
+      NI0IW01.NI0IWDX1 = 0;
+      set NI0IW02 empty;
+    end
+    NI0IW01.NI0IWDX1 = VMISCI01.NIBLINBR;
+    NI0IW02.NIBLITXT[NI0IWDX1] = VMISCI01.NIBLITXT;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      call "IO4420" ("C1", SQLCA, VMISCI01) {isNoRefresh = yes, isExternal = yes};
+      NI0IW01.NI0IWEND = "Y";
+    else
+      TA1REC.TA1LOCAT[2] = "N1     "; /* database action*/
+      TA1REC.TA1LOCAT[3] = "IO4420 "; /* io module*/
+      TA1REC.TA1DBASE = "DNILO"; /* database*/
+      TA1REC.TA1TBLVU = "VMISCI01"; /* table view*/
+      XPNL005(); /* abend routine*/
+    end
+  end
+  ;
+end // end NI0IS01
+
+// move line items to ni0im100
+Function NI0IS02()
+  NLXREC.NLXCPROC = "NI0IS02";
+  ;
+   /* move ws array to screen*/
+  ;
+  if (NI0IW01.NI0IWDX2 <= NI0IW01.NI0IWDX1)
+    NI0IM100.NIBLITXT[NI0IWDX3] = NI0IW02.NIBLITXT[NI0IWDX2];
+    NI0IM100.NIBLIAMT[NI0IWDX3] = NI0IW02.NIBLIAMT[NI0IWDX2];
+  end
+  ;
+  NI0IWDX2 = NI0IWDX2 + 1;
+  NI0IWDX3 = NI0IWDX3 + 1;
+  ;
+end // end NI0IS02
+
+// declare cursor for nicrec
+Function NI0IS03()
+  NLXREC.NLXCPROC = "NI0IS03";
+  ;
+   /* declare and read cursor - store line items to ws*/
+  ;
+  VMISCI01.ZIVCD = NI0IW01.ZIVCD;
+  VMISCI01.KUCCOID = NI0IW01.KUCCOID;
+  call "IO4420" ("S1", SQLCA, VMISCI01) {isNoRefresh = yes, isExternal = yes};
+  ;
+   /* fetch and move rows to ws array*/
+  ;
+  NI0IW01.NI0IWEND = "N";
+  NI0IW01.NI0IWONE = "Y";
+  while (NI0IW01.NI0IWEND == "N")
+    NI0IS01(); /* fetch row from nicrec*/
+  end
+  NI0IW01.NI0IWDX2 = 1; /* initialize array row on screen index*/
+  ;
+end // end NI0IS03
+
+// select unique from nidrec
+Function NI0IS04()
+  ;
+  NLXREC.NLXCPROC = "NI0IS04"; /* set current proc name*/
+  ;
+  call "IO4460" ("S ", SQLCA, VNLIVX01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (VNLIVX01.ZDTCD != "MI") /* not a misc ivc*/
+      SQLCA.VAGen_SQLCODE = 100;
+      return;
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      return;
+    else
+      TA1REC.TA1LOCAT[2] = "S      "; /* database action*/
+      TA1REC.TA1LOCAT[3] = "IO4460 "; /* io module*/
+      TA1REC.TA1DBASE = "DNILO"; /* database*/
+      TA1REC.TA1TBLVU = "VNLIVX01"; /* table view*/
+      XPNL005(); /* abend routine*/
+    end
+  end
+  ;
+end // end NI0IS04
+
+// declare cursor for nibrec
+Function NI0IS05()
+  NLXREC.NLXCPROC = "NI0IS05";
+  ;
+   /* declare and read cursor - store line items to ws*/
+  ;
+  if (VNLIVX01.NIDREFID == 0)
+    VMIITM01.NIDIVCID = VNLIVX01.NIDIVCID; /* key is key*/
+  else
+    VMIITM01.NIDIVCID = VNLIVX01.NIDREFID; /* key is reference key*/
+  end
+  ;
+  VMIITM01.ZCHCD = "**"; /* zch-chg-typ-cd*/
+  ;
+  call "IO4450" ("S1", SQLCA, VMIITM01) {isNoRefresh = yes, isExternal = yes};
+  ;
+   /* fetch and move rows to ws array*/
+  ;
+  NI0IW01.NI0IWEND = "N";
+  NI0IW01.NI0IWONE = "Y";
+  while (NI0IW01.NI0IWEND == "N")
+    NI0IS06(); /* fetch row from nibrec*/
+  end
+  NI0IW01.NI0IWDX2 = 1; /* initialize array row on screen index*/
+  ;
+  if (NI0IW01.NI0IWONE == "Y") /* no line items in cursor*/
+     /* abend since xref was found - line items should exist*/
+    TA1REC.TA1LOCAT[2] = "S1     "; /* database action*/
+    TA1REC.TA1LOCAT[3] = "IO4450 "; /* io module*/
+    TA1REC.TA1DBASE = "DNILO"; /* database*/
+    TA1REC.TA1TBLVU = "VMIITM01"; /* table view*/
+    XPNL005(); /* abend routine*/
+  end
+  ;
+end // end NI0IS05
+
+// fetch rows from nibrec
+Function NI0IS06()
+  NLXREC.NLXCPROC = "NI0IS06"; /* set current proc name*/
+  ;
+   /* fetch from cursor*/
+  call "IO4450" ("N1", SQLCA, VMIITM01) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (NI0IW01.NI0IWONE == "Y")
+      NI0IW01.NI0IWONE = "N";
+      NI0IW01.NI0IWDX1 = 0;
+      set NI0IW02 empty;
+    end
+    NI0IW01.NI0IWDX1 = VMIITM01.NIBLINBR;
+    NI0IW02.NIBLITXT[NI0IWDX1] = VMIITM01.NIBLITXT;
+    NI0IW02.NIBLIAMT[NI0IWDX1] = VMIITM01.NIBLIAMT;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      call "IO4450" ("C1", SQLCA, VMIITM01) {isNoRefresh = yes, isExternal = yes};
+      NI0IW01.NI0IWEND = "Y";
+    else
+      TA1REC.TA1LOCAT[2] = "N1     "; /* database action*/
+      TA1REC.TA1LOCAT[3] = "IO4450 "; /* io module*/
+      TA1REC.TA1DBASE = "DNILO"; /* database*/
+      TA1REC.TA1TBLVU = "VMIITM01"; /* table view*/
+      XPNL005(); /* abend routine*/
+    end
+  end
+  ;
+end // end NI0IS06
+
+// select unique from niarec
+Function NI0IS07()
+  NLXREC.NLXCPROC = "NI0IS07"; /* set current proc name*/
+  ;
+   /* MOVE NIBREC.NIDIVCID TO NIAREC.NIDIVCID; moved to ni0i120*/
+  ;
+  call "IO4440" ("S ", SQLCA, VMIHDR01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    NI0IM100.ZIVCD = VMIHDR01.ZIVCD;
+    NI0IM100.KUCCOID = VMIHDR01.KUCCOID;
+  else
+     /* abend on 100 - since xref was found*/
+    TA1REC.TA1LOCAT[2] = "S      "; /* database action*/
+    TA1REC.TA1LOCAT[3] = "IO4440 "; /* io module*/
+    TA1REC.TA1DBASE = "DNILO"; /* database*/
+    TA1REC.TA1TBLVU = "VMIHDR01"; /* table view*/
+    XPNL005(); /* abend routine*/
+  end
+  ;
+end // end NI0IS07
+
+// security for fields
+Function NI0ISS1()
+   /* ****** this sets security for user entering from ivc inq*/
+  ;
+  NLXREC.NLXCPROC = "NI0ISS1";
+  ;
+  set NI0IM100.ZIVCD skip;
+  set NI0IM100.KUCCOID skip;
+  set NI0IM100.NIDIVCID skip;
+  set NI0IM100.CATOAP skip;
+  set NI0IM100.CAITEM skip;
+  set NI0IM100.NI0IM-100-PF17 skip, invisible;
+end // end NI0ISS1
+
+//*** RECORD=NI0IW01 ****
+// this is the main working storage record for ni0h.
+// ***********************
+Record NI0IW01 type basicRecord
+  10 ZIVCD ZIVCD ; 
+  10 KUCCOID KUCCOID ; 
+  10 NIDIVCID NIDIVCID ; 
+  10 NI0IWINQ NI0IWINQ ; 
+  10 NI0IWDX1 NI0IWDX1 ; 
+  10 NI0IWDX2 NI0IWDX2 ; 
+  10 NI0IWDX3 NI0IWDX3 ; 
+  10 NI0IWDX4 NI0IWDX4 ; 
+  10 NI0IWEND NI0IWEND ; 
+  10 NI0IWONE NI0IWONE ; 
+  10 NI0IWIER NI0IWIER ; 
+end // end NI0IW01
+
+//*** RECORD=NI0IW02 ****
+// this is the line item array for ni0h
+// ***********************
+Record NI0IW02 type basicRecord
+  10 NIBLITXT NIBLITXT [100] ; 
+  10 NIBLIAMT NIBLIAMT [100] ; 
+end // end NI0IW02
+
+// max in ws array index
+DataItem NI0IWDX1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// last row of array on scrn idx
+DataItem NI0IWDX2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// screen position index
+DataItem NI0IWDX3 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work index
+DataItem NI0IWDX4 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// quit flag
+DataItem NI0IWEND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// init error flag
+DataItem NI0IWIER char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// inquiry list flag
+DataItem NI0IWINQ char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// first time flag
+DataItem NI0IWONE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+
