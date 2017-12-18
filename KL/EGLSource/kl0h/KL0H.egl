@@ -1,0 +1,2593 @@
+package kl0h;
+
+import corpcom1.CLAREC;
+import corpcom1.CLCREC;
+import corpcom1.CLWREC;
+import corpcom1.CLXREC;
+import corpcom3.XPCL002;
+import corpcom3.XPCL004;
+import corpcom3.XPCL010;
+import corpcom3.XPCL011;
+import corpcom4.XSCLSFL;
+import corpcom4.XSENTRY;
+import corpcom4.XSPF1;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import corpy2.YASTBL;
+import corpy2.YATTBL;
+import corpy2.YCRTBL;
+import corpy2.YCTTBL;
+import iv.common.IV0REC;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+import vv.common.VLVLPY01;
+//*** PROGRAM=KL0H ****
+// ************************************************************
+// a/r reference
+// 
+// overview:  this application allows credit department to
+//            enter customer claim numbers and corresponding
+//            a/r reference numbers.  these are used in the
+//            a/r automatch.  the customer claim numbers may
+//            have been entered previously, by the sales office
+// 
+//            a record can be changed by either putting a
+//            selection code (a,c,p) in the first field or
+//            typing in the desired change over the current
+//            record.
+// 
+// maintence history:
+// date      by     rev description of change
+// --------  ------ --- --------------------------------------
+// 05/30/87  lholco  0  create application
+// 11/04/87  pgilho     convert to use iomods
+// 01/31/89  JWOOD      ADDED NONCSP OPTION ON CALLS
+// 01/31/89  JWOOD      ADDED XSSEGTR LOGIC
+// 05/16/89  gdecke     DB2 structure changes: clarec.
+// 09-22-89  bcourt     remove 5-16 ref to unused tables: X CT,
+//                      X WH; & recs: KU C, SY C, SY 2, CL I.
+// 08-08-91  wjohns     Renamed application and commarea
+//                        referrences to renamed claims appls.
+// 01-13-92  sgorga     set ta1,ta2rec empty - kl0h001.
+// 09-26-94  twatso     add coding for golf level pay changes
+//                      to return the master invoice if a 'p'
+//                      type invoice is entered.  kl0h122
+//                      Added vlvlpy01 record also
+// 02-29-98  rgilli     Y2K MODIFICATIONS MADE TO:
+//                      Re-generate to include new version of
+//                      xpcl004.
+//                      CL0HW01: Added to new date fields
+//                               CL0HW-DT-ENTER & CL0HW-CUR-DT
+//                      KL0H001: Remove century windowing and
+//                               move ezedtel vs ezedte.
+//                      KL0H120: Add year validation which was
+//                               removed from xpcl004.  Change
+//                               year validation from yy to
+//                               ccyy.
+//                      KL0H125: Add year validation which was
+//                               removed from xpcl004.  Change
+//                               year validation from yy to
+//                               ccyy.
+//                      KL0H130: Add year validation which was
+//                               removed from xpcl004.  Change
+//                               year validation from yy to
+//                               ccyy.
+// ************************************************************
+// *********************
+Program KL0H type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "CL00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  CL0HW01 CL0HW01; // record
+  CL0HW02 CL0HW02; // record
+  CLAREC CLAREC; // record
+  CLCREC CLCREC; // record
+  CLWREC CLWREC; // record
+  CLXREC CLXREC; // record
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  IV0REC IV0REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  VLVLPY01 VLVLPY01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use YASTBL {deleteAfterUse = yes}; // table
+  use YATTBL {deleteAfterUse = yes}; // table
+  use YCRTBL {deleteAfterUse = yes}; // table
+  use YCTTBL {deleteAfterUse = yes}; // table
+  use KL0HM.KL0HM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    KL0H000: KL0H000();
+    exit program;
+  end // end main
+end // end KL0H
+
+// select unique from vlvlpy01
+Function KL0H-GET-MSTR-IVC()
+   /* **************************************/
+   /* select unique on vlvlpy01*/
+   /* **************************************/
+   /* 09-26-94 twatso   added for golf level pay change.*/
+   /* If we have found the invoice and it is a*/
+   /* level pay invoice, find the master ivc*/
+   /* which will be used to find another iv0rec rec*/
+   /* **************************************/
+  ;
+  set SQLCA empty;
+  call "VLVLPY01" ("S ", SQLCA, VLVLPY01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    converseLib.validationFailed(765); /* let them know it is master invoice*/
+    KL0HM001.IV0IVCID[CLXLINEX] = VLVLPY01.IV-MSTR-IVC-ID;
+  end
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0)
+    if (SQLCA.VAGen_SQLCODE == -911)
+      converseLib.validationFailed(4); /* database is busy*/
+      CLXREC.CLXERRF = "Y";
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+          /* next sentence*/
+      else
+        ;
+        TA1REC.TA1LOCAT[2] = "KL0H-GET-MSTR-IVC"; /* location*/
+        TA1REC.TA1LOCAT[4] = "VLVLPY01"; /* iomod name*/
+        TA1REC.TA1DBASE = "DINVC"; /* database name*/
+        TA1REC.TA1TBLVU = "VLVLPY01"; /* table view name*/
+        TA1REC.TA1TBLKE = KL0HM001.IV0IVCID[CLXLINEX]; /* table key*/
+        ;
+        XPCL010(); /* error diagnosis routine*/
+      end
+    end
+  end
+end // end KL0H-GET-MSTR-IVC
+
+// application main logic
+Function KL0H000()
+   /* ************************************************************/
+   /* *   this is the "main logic" for the application.         **/
+   /* *                                                         **/
+   /* *   xsentry checks to ensure that this application was    **/
+   /* *         entered from another csp application.           **/
+   /* *   xclentry checks to ensure that the claim header has   **/
+   /* *         been flagged as "in use" if this application    **/
+   /* *         is does updates.                                **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  ;
+  ;
+  ;
+  COMMAREA.CACURRAP = "KL0H";
+  ;
+  ;
+  ;
+  ;
+  KL0H001(); /* initilize the application*/
+  ;
+  ;
+  CLXREC.CLXEOAF = "N"; /* set end-of-application flag to 'no'*/
+  ;
+  while (CLXREC.CLXEOAF == "N") /* while not end-of-aplication*/
+    KL0H050(); /* process the application screen(s)*/
+  end
+  ;
+  COMMAREA.CATOAP = "KL0A";
+  XPCL002(); /* exit this application*/
+  ;
+  ;
+  ;
+  ;
+end // end KL0H000
+
+// initialize application
+Function KL0H001()
+   /* ************************************************************/
+   /* *      initialize the application working storage         **/
+   /* ************************************************************/
+   /* MAINTENANCE HISTORY                              **/
+   /* 01-13-92  sgorga  Set ta1rec, ta2rec empty.              **/
+   /* **/
+   /* ************************************************************/
+  ;
+   /* statements not needed - io mods now used*/
+  ;
+   /* MOVE 1 TO EZECNVCM; force commit on each screen converse*/
+   /* MOVE 1 TO EZEFEC ; return control to program if hard error*/
+  ;
+   /* TEMP001                         ; set up values for testing*/
+  XSENTRY(); /* check entered thru main menu*/
+  XSSEGTR(); /* SET SEGMENTED TRANSACTION ID*/
+  XPCL011(); /* claims entry module*/
+  ;
+  ;
+  set TA1REC empty;
+  set TA2REC empty;
+  set CLXREC empty; /* clear out the "common" working*/
+                                   /* storage*/
+  set CL0HW01 empty; /* clear out storage for cl0h*/
+  set CL0HW02 empty; /* clear out storage for layout of array*/
+  ;
+  ;
+  ;
+   /* --------------------- y2k out begin ------------------*/
+   /* MOVE EZEDTE TO CLXREC.XXXCYMD;    /* move in yymmdd*/
+   /* IF CLXREC.XXXCYY < 50;            /* if year < 50*/
+    /* MOVE 020 TO CLXREC.XXXCCC;      /* assume next century*/
+   /* ELSE;*/
+    /* MOVE 019 TO CLXREC.XXXCCC;*/
+   /* END;*/
+   /* --------------------- y2k out end   ------------------*/
+   /* --------------------- y2k in begin  ------------------*/
+  CLXREC.XXXCDTE = VGVar.currentGregorianDate;
+   /* --------------------- y2k in end    ------------------*/
+  ;
+  ;
+          /* move date to map and then save it*/
+  KL0HM001.XXXCURDT = VGVar.currentShortGregorianDate;
+   /* --------------------- y2k out begin ------------------*/
+   /* MOVE EZEDTE TO CL0HW01.CL0HWZZD;*/
+   /* --------------------- y2k out end   ------------------*/
+   /* --------------------- y2k in begin  ------------------*/
+  CL0HW01.CL0HWZZD = VGVar.currentGregorianDate;
+   /* --------------------- y2k in end    ------------------*/
+  ;
+       /* dashes used for date on screen*/
+  ;
+  CL0HW01.CL0HWFI1 = "-";
+  CL0HW01.CL0HWFI2 = "-";
+  CL0HW01.CL0HWMAR = 28; /* maximum size for db array*/
+  CLWREC.CLWADLAR = "N"; /* additional a/r references flag*/
+   /* for passing to other applications*/
+  ;
+  ;
+  CLXREC.CLXCSCRN = "KL0HM001"; /* set first screen name*/
+  ;
+         /* the following three lines refer to data held*/
+         /* for one screen*/
+  ;
+  CLXREC.CLXSNAME[1] = "KL0HM001"; /* initialize the screen names*/
+  CLXREC.CLXMAXLN[1] = 14; /* set maximum lines on a screen*/
+  CLXREC.CLXARY1X[1] = 1; /* for loading the db information*/
+  ;
+  ;
+  CLXREC.CLXARAYX = 1; /* generic array index*/
+  CLXREC.CLXLINEX = 1; /* generic screen-lineindex*/
+  ;
+  CLXREC.CLXBLDSC = "Y"; /* set need-to-build-screen to yes*/
+  CLXREC.CLXBLDAY = "Y"; /* set need-to-build-array to yes*/
+  ;
+  ;
+     /* if database is locked on the db2 calls in s35,*/
+     /* a message is sent to the screen,a flag*/
+     /* is switched on and no other processing is done.*/
+  ;
+  if (CLAREC.YCTCD != " ")
+    KL0HM001.CLACTCNM = CLAREC.CLACTCNM;
+  else
+    KL0HS35(); /* read contact name from database*/
+  end
+  KL0HS37(); /* move header data to screen*/
+  ;
+  ;
+  ;
+end // end KL0H001
+
+// main cl0u branch control
+Function KL0H050()
+   /* ************************************************************/
+   /* *    process the application screen(s)                    **/
+   /* *                                                         **/
+   /* *  note that this process being performed in a            **/
+   /* *  "while loop" until the end-of-application flag is set  **/
+   /* *  to 'y'.                                                **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0H050"; /* set current process name*/
+  ;
+  ;
+  if (CLXREC.CLXCSCRN in CLXREC.CLXSNAME) /* ezetst always eq 1*/
+    CLXREC.CLXSCRNX = sysVar.arrayIndex; /* because there is only one screen*/
+  end
+  ;
+  ;
+  CLXREC.CLXEOSF = "N"; /* set end-of-screen flag to 'no'*/
+  ;
+  ;
+  while (CLXREC.CLXEOSF == "N") /* while not end-of-screen*/
+    KL0H100(); /* process screen cl0hm001*/
+  end
+  ;
+  ;
+   /* at this point;*/
+       /* if the end-of-application flag (clxeoafl) = 'n'*/
+           /* we go back to the top of cl0%050...*/
+       /* if the end-of-application flag (clxeoafl) = 'y'*/
+           /* we return to cl0%000.*/
+  ;
+  ;
+  ;
+end // end KL0H050
+
+// converse screen m001
+Function KL0H100()
+   /* ************************************************************/
+   /* *    process screen cl0hm001                              **/
+   /* *                                                         **/
+   /* *  note that this process is being performed in a         **/
+   /* *     "while loop" from cl0h050 until the end-of-screen   **/
+   /* *     flag (clxeosfl) is set to 'y'.                      **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0H100"; /* set current process name*/
+  ;
+       /* build array if first time thru or scroll key was hit*/
+  if (CLXREC.CLXBLDAY == "Y")
+    KL0HS30();
+  end
+  ;
+  ;
+  if (CL0HW01.CL0HW91C == "Y") /* if there was a deadlock for clcrec*/
+    CL0HW01.CL0HW91C = "N";
+    KL0HS30();
+  end
+  ;
+  if (CL0HW01.CL0HW91A == "Y") /* if there was a deadlock for clarec*/
+    CL0HW01.CL0HW91A = "N";
+    KL0HS35();
+    KL0HS37();
+  end
+  ;
+  ;
+  ;
+  if (CLXREC.CLXBLDSC == "Y") /* screen has no data in its body*/
+    KL0H101(); /* fill it with data*/
+  end
+  ;
+  KL0HS50(); /* check security for map fields*/
+                            /* may change map fields to protected*/
+  ;
+   /* MOVE 1 TO EZESEGM;*/
+  ;
+   /* ***********************************************************/
+  converse KL0HM001 ;
+   /* ***********************************************************/
+  ;
+  ;
+  CLXREC.CLXMSG = " "; /* set non-ezemno error message to*/
+                                   /* spaces*/
+  CLXREC.CLXERRF = "N"; /* reset error flag*/
+  CL0HW01.CL0HWPFL = "N"; /* edit for 'p' in selection field*/
+  CL0HW01.CL0HWSIA = "N"; /* init stay-in-application flag*/
+  ;
+  ;
+  if (KL0HM001 is modified) /* if there were entries*/
+    CLXREC.CLXEDITF = "Y"; /* then set do-edits-flag to 'yes'*/
+  else
+    CLXREC.CLXEDITF = "N"; /* if no entries, then no edits*/
+  end
+  ;
+  ;
+  ;
+  CLXREC.CLXLINEX = 1;
+  while (CLXREC.CLXLINEX <= 14)
+    KL0H111(); /* set modified fields modified*/
+  end
+  ;
+  ;
+  KL0H110(); /* handle any special entries*/
+       /* may exit appl from this process*/
+  ;
+   /* cl0h180 fills in partially filled lines on the map*/
+   /* with defaults from the previous line on the map.*/
+   /* this is a shortcut requested by the users.*/
+  ;
+  CLXREC.CLXLINEX = 1;
+  while (CLXREC.CLXLINEX <= CLXREC.CLXMAXLN)
+    KL0H180(); /* handles shortcuts for the user*/
+  end
+  ;
+  ;
+  ;
+  CLXREC.CLXLINEX = CLXREC.CLXMAXLN[CLXSCRNX]; /* move 14*/
+  if (CLXREC.CLXEDITF == "Y") /* if we stil want to edit*/
+    while (CLXREC.CLXLINEX > 0) /* edit from line 14 to line 1*/
+      KL0H120(); /* go validate screen entries*/
+    end
+  end
+  ;
+  ;
+   /* if there were no map errors, reset the map to its original*/
+   /* condition*/
+  ;
+  if (CLXREC.CLXERRF == "N") /* if there were no map errors*/
+    CLXREC.CLXLINEX = 1;
+    if (COMMAREA.CAALVL[3] == "Y"
+     || COMMAREA.CADLVL[3] == "Y"
+     || COMMAREA.CACLVL[3] == "Y")
+      set KL0HM001.CL0HMSEL[CLXLINEX] cursor; /* move cursor to first field*/
+    else
+      set KL0HM001.CATOAP cursor; /* move cursor to fast path field*/
+    end
+    ;
+     /* if invoice nbr was wrong, a warning was sent to the screen.*/
+     /* if the user didn't change the invoice nbr, we will accept*/
+     /* it and set the field as defined*/
+    ;
+    while (CLXREC.CLXLINEX <= CLXREC.CLXMAXLN)
+      set KL0HM001.IV0IVCID[CLXLINEX] initialAttributes;
+      CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1;
+    end
+  end
+  ;
+   /* if old primary is being deleted,*/
+     /* set flag to indicate if a new primary needs to be*/
+     /* picked and set by the program, or if was selected*/
+     /* by the 'p' option*/
+  ;
+  if (CL0HW01.CL0HWARD == "Y")
+    if (CL0HW01.CL0HWPFL == "Y")
+      CL0HW01.CL0HWAR1 = "N";
+    else
+      CL0HW01.CL0HWAR1 = "Y";
+      CL0HW01.CL0HWARD = "N";
+    end
+  end
+  ;
+   /* if no screen errors, if primary being changed*/
+   /* if valid security, reset old primary*/
+  ;
+  if (CLXREC.CLXERRF == "N")
+    if (CL0HW01.CL0HWPFL == "Y")
+      CLXREC.CLXLINEX = CL0HW01.CL0HWPNT;
+      KL0HS52(); /* check security*/
+      if (CLXREC.CLXUPDTF == "N")
+         /* NEXT SENTENCE                   ; not allowed to do action*/
+      else
+        KL0H125(); /* reset old primary to 'n'*/
+      end
+    end
+  end
+  ;
+   /* if no screen errors , check for security violations.*/
+   /* if valid security, do add/change/delete functions*/
+  ;
+  if (CLXREC.CLXERRF == "N") /* if there were no map errors*/
+    if (converseVar.eventKey is pf12)
+      KL0H131(); /* change primary flag on map*/
+    else
+      CLXREC.CLXLINEX = 1;
+      ;
+       /* if user didnt enter selection, cl0h180 decides what*/
+       /* action will be performed on each line and moves the*/
+       /* appropriate selection (A,R) to the selection field.*/
+       /* if the option is P, then the record is handled*/
+       /* similiar to a changed record. P stands for changing*/
+       /* the Primary ar-ref-nbr.*/
+      ;
+      while (CLXREC.CLXLINEX <= CLXREC.CLXMAXLN) /* look at lines on screen*/
+        KL0HS52(); /* check security for updates*/
+        if (CLXREC.CLXUPDTF == "N") /* not allowed to do requested action*/
+           /* next sentence*/
+        else
+          if (KL0HM001.CL0HMSEL[CLXLINEX] == "A" /* add or change record*/
+           || KL0HM001.CL0HMSEL[CLXLINEX] == "U" 
+           || KL0HM001.CL0HMSEL[CLXLINEX] == "P")
+            KL0H130();
+          else
+            if (KL0HM001.CL0HMSEL[CLXLINEX] == "X") /* delete record*/
+              KL0H140();
+            else
+              if (CL0HW01.CL0HWAR1 == "Y") /* need to find a primary to set*/
+                CLXREC.CLXARAYX = CLXREC.CLXARY1X[CLXSCRNX]; /* figure out if*/
+                CLXREC.CLXARAYX = CLXREC.CLXARAYX + CLXREC.CLXLINEX - 1;
+                                   /* there are still*/
+                if (CLXREC.CLXARAYX <= CLXREC.CLXLSTAX) /* entries in array*/
+                  KL0H130();
+                end
+              end
+            end
+          end
+          VGVar.handleSysLibraryErrors = 0;
+          sysLib.commit();
+        end
+        CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1; /* increment counter*/
+      end
+    end
+  end
+  ;
+    /* process pf keys*/
+  ;
+  if (CLXREC.CLXERRF == "N" /* if there were no map errors*/
+   && CL0HW01.CL0HWSIA == "N") /* and not supposed to stay in appl*/
+    KL0H115(); /* process pfkeys*/
+  end
+  ;
+   /* at this point;*/
+     /* if the end-of-screen flag (clxeosfl) is 'n'*/
+        /* we go back to top of process cl0%100.*/
+     /* if the end-of-screen flag (clxeosfl) is 'y'*/
+        /* we return to cl0%050.*/
+  ;
+  ;
+  ;
+end // end KL0H100
+
+// build screen cl0hm001
+Function KL0H101()
+   /* ************************************************************/
+   /* *      this process builds screen cl0hm001                **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0H101"; /* set current process name*/
+  ;
+  ;
+  CLXREC.CLXLINEX = 1;
+  CLXREC.CLXARAYX = CLXREC.CLXARY1X[CLXSCRNX];
+  set KL0HM001 initial;
+  ;
+  ;
+  KL0HS37(); /* move claim header info to screen*/
+  ;
+  ;
+  while (CLXREC.CLXLINEX <= 14)
+    KL0HS25(); /* build each screen line*/
+    CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1;
+    CLXREC.CLXARAYX = CLXREC.CLXARAYX + 1;
+  end
+  ;
+  CLXREC.CLXBLDSC = "N"; /* screen body has data in it*/
+  ;
+  ;
+end // end KL0H101
+
+// handle screen m001 spec entrys
+Function KL0H110()
+   /* ************************************************************/
+   /* *                                                         **/
+   /* *  check for key usage or data entered in the             **/
+   /* *  option/item fields                                     **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0H110"; /* set current process name*/
+  ;
+  ;
+  ;
+  if (converseVar.eventKey is pf2
+   || converseVar.eventKey is pf5
+   || converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8
+   || converseVar.eventKey is pf12
+   || converseVar.eventKey is pf16
+   || converseVar.eventKey is pf17
+   || converseVar.eventKey is pf18)
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf1)
+    XSPF1();
+    /* MOVE 'N' TO CLXREC.CLXEDITF;*/
+    /* MOVE 'Y' TO CLXREC.CLXERRF;*/
+    /* MOVE 'Y' TO CLXREC.CLXEOSF;*/
+    /* MOVE 'Y' TO CLXREC.CLXEOAF;*/
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf4)
+    XSPF4(); /* change to cl0hs04*/
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf3)
+    COMMAREA.CATOAP = "KL0A";
+    CLXREC.CLXEDITF = "N";
+    XPCL002();
+    return;
+  end
+  ;
+   /* ***************************  fast path out******/
+  if (converseVar.eventKey is enter)
+    if (KL0HM001.CATOAP == " "
+     && KL0HM001.CAITEM == " ")
+      return;
+    else
+      if (KL0HM001.CATOAP != " ")
+        COMMAREA.CATOAP = KL0HM001.CATOAP;
+        COMMAREA.CAITEM = KL0HM001.CAITEM;
+        CLXREC.CLXEDITF = "N"; /* don't edit data*/
+        XPCL002(); /* try it*/
+        return;
+         /* ******************************************************/
+      else
+        if (KL0HM001.CATOAP == " "
+         && KL0HM001.CAITEM != " ")
+          converseLib.validationFailed(01); /* enter option field*/
+          CLXREC.CLXEDITF = "N"; /* don't edit data*/
+          CLXREC.CLXERRF = "Y"; /* there are errors w/in screen*/
+          return;
+        end
+      end
+    end
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pa1
+   || converseVar.eventKey is pa2)
+    converseLib.clearScreen();
+    
+    converseLib.validationFailed(62); /* pa keys cause loss of data*/
+    CLXREC.CLXEDITF = "N"; /* don't edit data*/
+    CLXREC.CLXERRF = "Y"; /* error in screen*/
+    return;
+  end
+  ;
+  ;
+   /* if no other condition was met*/
+  converseLib.validationFailed(02); /* invalid pfkey*/
+  CLXREC.CLXEDITF = "N"; /* don't edit data*/
+  CLXREC.CLXERRF = "Y"; /* error in screen*/
+  ;
+end // end KL0H110
+
+// set modified fields modified
+Function KL0H111()
+  if (KL0HM001.CL0HMSEL[CLXLINEX] is modified) /* selection field*/
+    set KL0HM001.CL0HMSEL[CLXLINEX] modified;
+  end
+  ;
+  ;
+  if (KL0HM001.ARCREFNB[CLXLINEX] is modified) /* a/r ref number field*/
+    set KL0HM001.ARCREFNB[CLXLINEX] modified;
+  end
+  ;
+  ;
+  if (KL0HM001.YASCD[CLXLINEX] is modified) /* status code field*/
+    set KL0HM001.YASCD[CLXLINEX] modified;
+  end
+  ;
+  ;
+  if (KL0HM001.IV0IVCID[CLXLINEX] is modified) /* invoice id field*/
+    set KL0HM001.IV0IVCID[CLXLINEX] modified;
+  end
+  ;
+  ;
+  if (KL0HM001.ARCCHKNB[CLXLINEX] is modified) /* check number field*/
+    set KL0HM001.ARCCHKNB[CLXLINEX] modified;
+  end
+  ;
+  ;
+  if (KL0HM001.CL0HMCKD[CLXLINEX] is modified) /* check date field*/
+    set KL0HM001.CL0HMCKD[CLXLINEX] modified;
+  end
+  ;
+  ;
+  if (KL0HM001.ARCCCREF[CLXLINEX] is modified)
+                                   /* customer claim number field*/
+    set KL0HM001.ARCCCREF[CLXLINEX] modified;
+  end
+  ;
+  ;
+  if (KL0HM001.ARCARAMT[CLXLINEX] is modified) /* amount field*/
+    set KL0HM001.ARCARAMT[CLXLINEX] modified;
+  end
+  ;
+  CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1; /* increment counter*/
+  ;
+end // end KL0H111
+
+// handle pfkeys
+Function KL0H115()
+   /* ************************************************************/
+   /* *                                                         **/
+   /* *   check pf keys and 'enter' for next action.  since     **/
+   /* *   pf3, pf4 and fast path were already acted upon,after  **/
+   /* *   the converse, we only have to take care of the rest.  **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0H115"; /* set current process name*/
+  ;
+  ;
+  if (converseVar.eventKey is pf12)
+    return;
+  end
+  ;
+  if (converseVar.eventKey is enter)
+    KL0H116();
+                                   /* depending on flags can go many places*/
+  else
+    /* *******************/
+    if (converseVar.eventKey is pf2)
+      if (CLAREC.CLAMEIND == "Y") /* if there is a memo*/
+        COMMAREA.CATOAP = "KL0M";
+        COMMAREA.CAUSERA = CLWREC.CLWGROUP;
+        XPCL002();
+      else
+        converseLib.validationFailed(31); /* no memo exists for claim*/
+        CLXREC.CLXERRF = "Y";
+      end
+      return;
+      ;
+      ;
+      /* ******************/
+    else
+      if (converseVar.eventKey is pf5)
+        COMMAREA.CAUSERA = CLWREC.CLWGROUP;
+        COMMAREA.CATOAP = "KL0E";
+        XPCL002();
+      else
+        if (converseVar.eventKey is pf7)
+          KL0HS07(); /* handle pfkey 7*/
+        else
+          if (converseVar.eventKey is pf8)
+            KL0HS08(); /* handle pfkey 8*/
+          else
+            if (converseVar.eventKey is pf16)
+              COMMAREA.CATOAP = "KL0N";
+              XPCL002();
+            else
+              if (converseVar.eventKey is pf17)
+                COMMAREA.CATOAP = "KL0F";
+                XPCL002();
+              else
+                if (converseVar.eventKey is pf18)
+                  CLWREC.CLWMCMNT = "N"; /* claim comment*/
+                  COMMAREA.CATOAP = "KL0G";
+                  XPCL002();
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end // end KL0H115
+
+// handle pfkeys
+Function KL0H116()
+   /* ************************************************************/
+   /* *                                                         **/
+   /* *   if the claim reason is for traffic and g/l, or traffic**/
+   /* *   and product, the flow is to g/l, product and traffic  **/
+   /* *   comes last                                            **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0H116"; /* set current process name*/
+  ;
+   /* MOVE 'Y' TO CLXREC.CLXEOSF;*/
+   /* MOVE 'Y' TO CLXREC.CLXEOAF;*/
+  ;
+  ;
+  XSCLSFL(); /* set value in commarea.catoap*/
+  XPCL002(); /* now try to get there*/
+  ;
+   /* IF CLWREC.CLWMNOPT = 1;*/
+    /* OR CLWREC.CLWMNOPT = 4;*/
+    /* OR CLWREC.CLWMNOPT = 5;*/
+    /* OR CLWREC.CLWMNOPT = 8;*/
+    /* ;*/
+    /* ;*/
+    /* IF CLAREC.YCTCD = 'NBC';*/
+      /* MOVE 'KL0K' TO COMMAREA.CATOAP     ; nike bank g/l*/
+    /* ELSE ;*/
+      /* ;*/
+      /* ;*/
+      /* IF CLAREC.YCTCD = 'SCO';*/
+        /* MOVE 'KL0W' TO COMMAREA.CATOAP   ; shipping charges*/
+        /* EZERTN;*/
+      /* ELSE ;*/
+        /* ;*/
+        /* ;*/
+        /* IF CLAREC.YCTCD = 'ADJ';*/
+          /* OR CLAREC.YCTCD = 'DAA';*/
+    /* IF CLAREC.YCRCD IN YCRTBL.YCRCD; look up value in table*/
+            /* IF YCRTBL.YCRALWGL(EZETST) = 'Y';*/
+              /* MOVE 'KL0J' TO COMMAREA.CATOAP; claim g/l*/
+              /* EZERTN;*/
+            /* ELSE ;*/
+   /* IF YCRTBL.YCRALWPR(EZETST) = 'Y'; claim reason = product*/
+     /* MOVE 'KL0L' TO COMMAREA.CATOAP; adjustmet summary*/
+                /* EZERTN;*/
+              /* ELSE ;*/
+                /* IF YCRTBL.YCRALWTF(EZETST) = 'Y';*/
+                  /* ;claim reason = traffic or over*/
+   /* ;                           short, or routing, or (g/l and*/
+   /* ;                           traffic) or (product &traffic)*/
+                  /* MOVE 'KL0I' TO COMMAREA.CATOAP; traffic*/
+                  /* EZERTN;*/
+                /* END ;*/
+              /* END ;*/
+            /* END ;*/
+          /* END ;*/
+        /* END ;*/
+      /* END ;*/
+    /* END ;*/
+   /* END ;*/
+  ;
+  ;
+   /* this is not active for phase a, since the menu won't*/
+   /* accept these options.  but since they are valid for*/
+   /* next phase, they are coded in.*/
+  ;
+  ;
+  ;
+   /* IF CLWREC.CLWMNOPT = 2*/
+   /* OR CLWREC.CLWMNOPT = 6*/
+   /* OR CLWREC.CLWMNOPT = 7*/
+   /* IF clarec.YCTCD = 'RTS'*/
+   /* OR clarec.YCTCD = 'RFL'*/
+     /* MOVE 'KL0O' TO COMMAREA.CATOAP ; return-to-stock summary*/
+     /* ezertn*/
+   /* ELSE*/
+   /* IF clarec.YCTCD = 'DEF'*/
+   /* OR clarec.YCTCD = 'NIL'*/
+   /* OR clarec.YCTCD = 'cdr'*/
+     /* MOVE 'KL0R' TO COMMAREA.CATOAP ; defective authorization*/
+     /* ezertn*/
+  ;
+   /* menu options 10 and greater are active only for phase a*/
+  ;
+   /* IF CLWREC.CLWMNOPT = 3;*/
+    /* OR CLWREC.CLWMNOPT = 13;*/
+    /* IF CLAREC.YCTCD = 'NIL';*/
+   /* MOVE 'CL0X' TO COMMAREA.CATOAP     ; international defective*/
+      /* ;   ezertn*/
+    /* END ;*/
+   /* END ;*/
+   /* ;*/
+   /* ;*/
+   /* IF CLWREC.CLWMNOPT = 10;*/
+    /* IF CLAREC.YCTCD = 'RTS';*/
+      /* OR CLAREC.YCTCD = 'RFL';*/
+      /* MOVE 'KL0U' TO COMMAREA.CATOAP     ; return inspection*/
+      /* EZERTN;*/
+    /* ELSE ;*/
+      /* IF CLAREC.YCTCD = 'DEF';*/
+        /* OR CLAREC.YCTCD = 'CDR';*/
+   /* MOVE 'KL0V' TO COMMAREA.CATOAP   ; defective inspection*/
+        /* EZERTN;*/
+      /* END ;*/
+    /* END ;*/
+   /* END ;*/
+  ;
+  ;
+   /* IF CLWREC.CLWMNOPT = 11;*/
+    /* MOVE 'KL0U' TO COMMAREA.CATOAP       ; return inspection*/
+    /* EZERTN;*/
+   /* END ;*/
+   /* ;*/
+   /* ;*/
+   /* IF CLWREC.CLWMNOPT = 12;*/
+   /* MOVE 'KL0V' TO COMMAREA.CATOAP       ; defective inspection*/
+    /* EZERTN;*/
+   /* END ;*/
+   /* ;*/
+end // end KL0H116
+
+// process screen m001 entries
+Function KL0H120()
+   /* ************************************************************/
+   /* *     this process handles all edits of screen fields,    **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0H120"; /* set current process name*/
+  ;
+  ;
+  if (KL0HM001.CL0HMCKD[CLXLINEX] != " ")
+    CLXREC.XXXFLDT = KL0HM001.CL0HMCKD[CLXLINEX];
+    if (CLXREC.XXXSEP5 != "-"
+     || KL0HM001.CL0HMCKD[CLXLINEX] is modified)
+                                  /* move to generic field*/
+      CLXREC.XXXEDFLD = KL0HM001.CL0HMCKD[CLXLINEX];
+      ;
+      XPCL004(); /* validate date*/
+      ;
+      if (CLXREC.CLXVALDT == "Y") /* if valid date*/
+        /* -------------------------- y2k in begin --------------------*/
+        CL0HW01.CL0HW-DT-ENTER = TA2REC.TA2GRGGN; /* ccyymmdd*/
+        CL0HW01.CL0HW-CUR-DT = VGVar.currentGregorianDate; /* ccyymmdd*/
+        if (CL0HW01.CL0HW-DT-ENTER-CCYY <= CL0HW01.CL0HW-CUR-DT-CCYY)
+          set KL0HM001.CL0HMCKD[CLXLINEX] initialAttributes;
+          KL0HM001.CL0HMCKD[CLXLINEX] = CLXREC.XXXFLDT;
+        else
+          set KL0HM001.CL0HMCKD[CLXLINEX] cursor, modified, bold;
+          CLXREC.CLXERRF = "Y"; /* set error flag to yes*/
+          converseLib.validationFailed(17); /* date is not valid*/
+        end
+        /* -------------------------- y2k in end   --------------------*/
+        set KL0HM001.CL0HMCKD[CLXLINEX] initialAttributes;
+        KL0HM001.CL0HMCKD[CLXLINEX] = CLXREC.XXXFLDT;
+                                   /* move mm-dd-yy*/
+      else
+        set KL0HM001.CL0HMCKD[CLXLINEX] cursor, modified, bold;
+        CLXREC.CLXERRF = "Y"; /* set error flag to yes*/
+        converseLib.validationFailed(17); /* date is not valid*/
+      end
+    end
+  end
+  ;
+  ;
+  if (KL0HM001.IV0IVCID[CLXLINEX] is modified
+   && KL0HM001.IV0IVCID[CLXLINEX] != 0)
+    KL0H122(); /* invoice id edit*/
+  end
+  ;
+  ;
+  if (KL0HM001.YASCD[CLXLINEX] is modified)
+    KL0H123(); /* status code edit*/
+  end
+  ;
+  if (KL0HM001.ARCREFNB[CLXLINEX] != " ")
+    if (KL0HM001.YASCD[CLXLINEX] == " ")
+      KL0HM001.YASCD[CLXLINEX] = "O";
+    end
+  end
+  ;
+   /* if entry is already primary and user has a 'p' in selection*/
+   /* field, change the 'p' to ' '*/
+  ;
+  if (KL0HM001.CLCPMAR[CLXLINEX] == "Y"
+   && KL0HM001.CL0HMSEL[CLXLINEX] == "P")
+    KL0HM001.CL0HMSEL[CLXLINEX] = " ";
+  end
+  ;
+  ;
+  if (KL0HM001.CL0HMSEL[CLXLINEX] == "A"
+   || KL0HM001.CL0HMSEL[CLXLINEX] == "U"
+   || KL0HM001.CL0HMSEL[CLXLINEX] == "P"
+   || KL0HM001.CL0HMSEL[CLXLINEX] == "X"
+   || KL0HM001.CL0HMSEL[CLXLINEX] == " ")
+    set KL0HM001.CL0HMSEL[CLXLINEX] initialAttributes;
+  else
+     /* MOVE CL0HM001.CL0HMSEL(CLXLINEX) TO CL0HW01.CL0HWUPD(CLXLIN*/
+     /* save selection for redisplay of map*/
+    set KL0HM001.CL0HMSEL[CLXLINEX] cursor, modified, bold;
+    CLXREC.CLXERRF = "Y";
+    converseLib.validationFailed(8); /* selection is not valid*/
+  end
+  ;
+   /* if primary ar record is being deleted, make a note of it*/
+   /* so can be sure something else gets set to primary*/
+  ;
+  if (KL0HM001.CL0HMSEL[CLXLINEX] == "X") /* line being deleted*/
+    CLXREC.CLXARAYX = CLXREC.CLXARY1X[CLXSCRNX]; /* find array entry*/
+    CLXREC.CLXARAYX = CLXREC.CLXARAYX + CLXREC.CLXLINEX - 1;
+    if (CL0HW02.CL0HWPAR[CLXARAYX] == "Y") /* if this was primary*/
+      CL0HW01.CL0HWARD = "Y"; /* set no ar flag*/
+    end
+  end
+  ;
+   /* only one 'P'rimary ar-ref-nbr allowed on the screen.*/
+  ;
+  if (KL0HM001.CL0HMSEL[CLXLINEX] == "P")
+    CL0HW01.CL0HWAR1 = "N"; /* don't worry - primary will be set*/
+    if (CL0HW01.CL0HWPFL == "Y") /* already a 'p' on the screen*/
+         /* MOVE CL0HM001.CL0HMSEL(CLXLINEX) TO CL0HW01.CL0HWUPD(CLXL*/
+       /* save selection for redisplay of map*/
+      set KL0HM001.CL0HMSEL[CLXLINEX] cursor, modified, bold;
+      CLXREC.CLXERRF = "Y";
+      converseLib.validationFailed(161); /* select only one primary ar-ref-nbr*/
+    else
+      if (KL0HM001.ARCREFNB[CLXLINEX] != " ")
+        CL0HW01.CL0HWPFL = "Y";
+        CL0HW01.CL0HWPNT = CLXREC.CLXLINEX; /* keep array entry*/
+      else
+        set KL0HM001.CL0HMSEL[CLXLINEX] cursor, modified, bold;
+        CLXREC.CLXERRF = "Y";
+        converseLib.validationFailed(167); /* primary flag not permitted no ar/ref*/
+      end
+    end
+  end
+  ;
+  ;
+  ;
+  CLXREC.CLXLINEX = CLXREC.CLXLINEX - 1; /* decrement counter for array*/
+  ;
+  ;
+end // end KL0H120
+
+// edit invoice number
+Function KL0H122()
+   /* **************************************************************/
+   /* edit invoice number*/
+   /* maintenance:*/
+   /* 09-23-94 twatso  added code to use a new iomod to get*/
+   /* the master invoice number if the invoice*/
+   /* entered online is a 'p' lvl-pay invoice*/
+   /* new db2 table vlvlpy01 used in iomod*/
+   /* ***************************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0H122"; /* set current process name*/
+  ;
+  if (CLAREC.YCTCD in YCTTBL.YCTCD              
+   && YCTTBL.YCTRQIVC[sysVar.arrayIndex] == "Y" 
+   && CLAREC.YCRCD in YCRTBL.YCRCD              
+   && YCRTBL.YCRSPARN[sysVar.arrayIndex] == "N" /* reason is special arrangement*/
+   && KL0HM001.IV0IVCID[CLXLINEX] == 0)        
+    converseLib.validationFailed(141); /* invoice number is required*/
+    set KL0HM001.IV0IVCID[CLXLINEX] cursor, modified, bold;
+    CLXREC.CLXERRF = "Y"; /* set error flag to yes*/
+    return;
+  end
+  ;
+  IV0REC.IV0IVCID = KL0HM001.IV0IVCID[CLXLINEX]; /* load key*/
+  CLXREC.CLXORDIV = KL0HM001.IV0IVCID[CLXLINEX]; /* find part number*/
+  IV0REC.IV0PARTN = CLXREC.CLXPARTN; /* move part number to key*/
+  CL0HW02.CL0HWPTN[CLXLINEX] = CLXREC.CLXPARTN;
+   /* load for later update of db*/
+  ;
+  call "IO1110" ("S ", SQLCA, IV0REC) {isNoRefresh = yes, isExternal = yes}; /* sel unique vivhdx01*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      converseLib.validationFailed(140); /* warning - invoice number not found*/
+      set KL0HM001.IV0IVCID[CLXLINEX] cursor, bold;
+      CLXREC.CLXERRF = "Y"; /* set error flag to yes*/
+    else
+      TA1REC.TA1DBASE = "DINVC ";
+      TA1REC.TA1TBLVU = "VIVHDX01";
+      CL0HW01.CL0HWNUM = IV0REC.IV0IVCID;
+      TA1REC.TA1TBLKE = CL0HW01.CL0HWNUM;
+      TA1REC.TA1LOCAT[3] = "CL0H122";
+      TA1REC.TA1LOCAT[4] = "IO1110";
+      XPCL010(); /* db2 error routine*/
+    end
+  end
+  ;
+   /* 09-23-94 twatso added for golf level pay changes*/
+  if (SQLCA.VAGen_SQLCODE == 0
+   && IV0REC.IV-LVL-PAY-IND == "P") /* if level pay indicator = 'p'*/
+    set VLVLPY01 empty; /* go and get the master invoice for*/
+                                   /* that 'p' invoice*/
+    VLVLPY01.IV0IVCID = IV0REC.IV0IVCID; /* using vivhdx01 invoice*/
+    ;
+    KL0H-GET-MSTR-IVC(); /* gets the master invoice*/
+                                  /* and moves message to screen*/
+    if (SQLCA.VAGen_SQLCODE == 0) /* let them know invoice # is diff than*/
+                                   /* entered*/
+      KL0HM001.IV0IVCID[CLXLINEX] = VLVLPY01.IV-MSTR-IVC-ID;
+      IV0REC.IV0IVCID = KL0HM001.IV0IVCID[CLXLINEX]; /* load key*/
+      CLXREC.CLXORDIV = KL0HM001.IV0IVCID[CLXLINEX];
+                                   /* find part number*/
+      IV0REC.IV0PARTN = CLXREC.CLXPARTN; /* move part number to key*/
+      CL0HW02.CL0HWPTN[CLXLINEX] = CLXREC.CLXPARTN;
+      ;
+      call "IO1110" ("S ", SQLCA, IV0REC) {isNoRefresh = yes, isExternal = yes}; /* sel unique vivhdx01*/
+                                  /* using the master invoice number*/
+      if (SQLCA.VAGen_SQLCODE == 0)
+        /* next sentence*/
+      else
+        if (SQLCA.VAGen_SQLCODE == 100)
+          converseLib.validationFailed(140); /* warning - invoice number not found*/
+          set KL0HM001.IV0IVCID[CLXLINEX] cursor, bold;
+          CLXREC.CLXERRF = "Y"; /* set error flag to yes*/
+        else
+          TA1REC.TA1DBASE = "DINVC ";
+          TA1REC.TA1TBLVU = "IV0REC";
+          CL0HW01.CL0HWNUM = IV0REC.IV0IVCID;
+          TA1REC.TA1TBLKE = CL0HW01.CL0HWNUM;
+          TA1REC.TA1LOCAT[3] = "CL0H122";
+          TA1REC.TA1LOCAT[4] = "IO1110";
+          XPCL010(); /* db2 error routine*/
+        end
+      end
+    end
+  end
+  ;
+end // end KL0H122
+
+// edit ar status code
+Function KL0H123()
+  ;
+  CLXREC.CLXCPROC = "CL0H123"; /* set current process name*/
+  ;
+  if (KL0HM001.YASCD[CLXLINEX] in YASTBL.YASCD) /* read table for inquiry*/
+    set KL0HM001.YASCD[CLXLINEX] initialAttributes;
+  else
+    converseLib.validationFailed(136); /* invalid a/r status*/
+    set KL0HM001.YASCD[CLXLINEX] cursor, modified, bold;
+    CLXREC.CLXERRF = "Y"; /* set error flag to yes*/
+    return;
+  end
+  ;
+  if (KL0HM001.YASCD[CLXLINEX] == " ")
+    KL0HM001.YASCD[CLXLINEX] = "O";
+  end
+  ;
+end // end KL0H123
+
+// reset old primary ar to 'n'
+Function KL0H125()
+   /* *************************************************************/
+   /* reset old primary to 'n'*/
+   /* 1. look thru current screen array from the top for old pmry*/
+      /* if found, if activity flag is 'd' no action required. If*/
+      /* not, set activity to 'u' and set primary flag in screen*/
+      /* to 'n'*/
+   /* 2. if old primary not found in current screen array, could*/
+      /* be on a scrolled screen, so check in database array.  If*/
+      /* found there, update database array to 'n', and update*/
+      /* the record on the database.*/
+   /* 3. if not found, no action required.*/
+   /* *************************************************************/
+  ;
+  ;
+  CLXREC.CLXCPROC = "CL0H125"; /* set current process name*/
+  ;
+  CLXREC.CLXLINEX = 1;
+  CLXREC.CLXARAYX = CLXREC.CLXARY1X[CLXSCRNX];
+                                   /* first line on screen*/
+  ;
+  while (CLXREC.CLXLINEX <= CLXREC.CLXMAXLN)
+    if (CL0HW02.CL0HWPAR[CLXARAYX] == "Y")
+      if (KL0HM001.CLCPMAR[CLXLINEX] == "Y")
+        if (KL0HM001.CL0HMSEL[CLXLINEX] == "P") /* this is the new one*/
+          KL0HM001.CL0HMSEL[CLXLINEX] = " "; /* reset sel code - this*/
+          CL0HW02.CL0HWSEL[CLXARAYX] = " "; /* is already the primary*/
+          CL0HW01.CL0HWPFL = " ";
+          CL0HW01.CL0HWPNT = 0;
+          CLXREC.CLXLINEX = CLXREC.CLXMAXLN + 1;
+        end
+        if (KL0HM001.CL0HMSEL[CLXLINEX] == "X")
+           /* NEXT SENTENCE - old primary will be deleted*/
+        else
+          KL0HM001.CLCPMAR[CLXLINEX] = " "; /* cl0h130 will reset*/
+          if (KL0HM001.CL0HMSEL[CLXLINEX] == "A"
+           || KL0HM001.CL0HMSEL[CLXLINEX] == "U")
+             /* NEXT SENTENCE - activity code already set*/
+          else
+            KL0HM001.CL0HMSEL[CLXLINEX] = "U"; /* set to be updated*/
+          end
+        end
+      else
+         /* NEXT SENTENCE - has been manually reset*/
+      end
+      CLXREC.CLXLINEX = CLXREC.CLXMAXLN + 1; /* force end*/
+      CL0HW01.CL0HWPNT = 0; /* indicate found old pmry*/
+    end
+    CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1; /* increment scr counter*/
+    CLXREC.CLXARAYX = CLXREC.CLXARAYX + 1; /* increment db counter*/
+  end
+  ;
+    /* if haven't found primary yet, check database array*/
+  ;
+  if (CL0HW01.CL0HWPNT != 0)
+    if (CLXREC.CLXARY1X > 1)
+      CLXREC.CLXARAYX = 1;
+      while (CLXREC.CLXARAYX < CLXREC.CLXARY1X) /* part not on screen*/
+        if (CL0HW02.CL0HWPAR[CLXARAYX] == "Y")
+          CLCREC.CLACLMNB = CLAREC.CLACLMNB;
+          CLCREC.ARCREFNB = CL0HW02.CL0HWARN[CLXARAYX];
+          CLCREC.ARCCCREF = CL0HW02.CL0HWCLN[CLXARAYX];
+          CLCREC.ARCCHKNB = CL0HW02.CL0HWCKN[CLXARAYX];
+          CLCREC.IV0IVCID = CL0HW02.CL0HWIVC[CLXARAYX];
+          CLCREC.IV0PARTN = CL0HW02.CL0HWPTN[CLXARAYX];
+          CLCREC.YASCD = CL0HW02.CL0HWARS[CLXARAYX];
+          CLCREC.ARCARAMT = CL0HW02.CL0HWARA[CLXARAYX];
+          CLCREC.ZZZCHGCT = CL0HW02.CL0HWZZC[CLXARAYX];
+          CLXREC.XXXEDFLD = CL0HW02.CL0HWCKD[CLXARAYX];
+          XPCL004(); /* date routine*/
+          if (CLXREC.CLXVALDT == "Y")
+            /* ---------- y2k in begin ---------------*/
+            CL0HW01.CL0HW-DT-ENTER = TA2REC.TA2GRGGN; /* ccyymmdd*/
+            CL0HW01.CL0HW-CUR-DT = VGVar.currentGregorianDate; /* ccyymmdd*/
+            if (CL0HW01.CL0HW-DT-ENTER-CCYY <= CL0HW01.CL0HW-CUR-DT-CCYY)
+              /* ---------- y2k in end   ---------------*/
+              CLCREC.ARCCHKDT = TA2REC.TA2GRGGN;
+            else
+              CLCREC.ARCCHKDT = 0;
+            end
+          else
+            CLCREC.ARCCHKDT = 0;
+          end
+          CLCREC.ZZZCHGDT = CL0HW01.CL0HWZZD;
+          CL0HW02.CL0HWPAR[CLXARAYX] = "N";
+          CLCREC.CLCPMAR = CL0HW02.CL0HWPAR[CLXARAYX];
+          ;
+          call "IO1170" ("U ", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* update clcrec*/
+          ;
+          if (SQLCA.VAGen_SQLCODE != 0)
+            TA1REC.TA1DBASE = "DCLAIM";
+            TA1REC.TA1TBLVU = "VCLARX01";
+            CLXREC.CLXCPROC = "CL0H125"; /* (cwh 7-17-89)*/
+            XPCL010();
+          end
+          ;
+          CL0HW01.CL0HWPNT = 0;
+          CLXREC.CLXARAYX = CLXREC.CLXARY1X;
+        else
+          CLXREC.CLXARAYX = CLXREC.CLXARAYX + 1;
+        end
+      end
+    end
+  end
+  ;
+   /* if still not found, check end part of array*/
+  ;
+  if (CL0HW01.CL0HWPNT != 0)
+    CLXREC.CLXARAYX = CLXREC.CLXARY1X + CLXREC.CLXMAXLN + 1;
+    while (CLXREC.CLXARAYX <= CLXREC.CLXLSTAX)
+      if (CL0HW02.CL0HWPAR[CLXARAYX] == "Y")
+         /* udpate record*/
+        CLCREC.CLACLMNB = CLAREC.CLACLMNB;
+        CLCREC.ARCREFNB = CL0HW02.CL0HWARN[CLXARAYX];
+        CLCREC.ARCCCREF = CL0HW02.CL0HWCLN[CLXARAYX];
+        CLCREC.ARCCHKNB = CL0HW02.CL0HWCKN[CLXARAYX];
+        CLCREC.IV0IVCID = CL0HW02.CL0HWIVC[CLXARAYX];
+        CLCREC.IV0PARTN = CL0HW02.CL0HWPTN[CLXARAYX];
+        CLCREC.YASCD = CL0HW02.CL0HWARS[CLXARAYX];
+        CLCREC.ARCARAMT = CL0HW02.CL0HWARA[CLXARAYX];
+        CLXREC.XXXEDFLD = CL0HW02.CL0HWCKD[CLXARAYX];
+        XPCL004(); /* date routine*/
+        if (CLXREC.CLXVALDT == "Y")
+            /* ---------- y2k in begin ---------------*/
+          CL0HW01.CL0HW-DT-ENTER = TA2REC.TA2GRGGN; /* ccyymmdd*/
+          CL0HW01.CL0HW-CUR-DT = VGVar.currentGregorianDate; /* ccyymmdd*/
+          if (CL0HW01.CL0HW-DT-ENTER-CCYY <= CL0HW01.CL0HW-CUR-DT-CCYY)
+            /* ---------- y2k in end   ---------------*/
+            CLCREC.ARCCHKDT = TA2REC.TA2GRGGN;
+          else
+            CLCREC.ARCCHKDT = 0;
+          end
+        else
+          CLCREC.ARCCHKDT = 0;
+        end
+        CLCREC.ZZZCHGCT = CL0HW02.CL0HWZZC[CLXARAYX];
+        CLCREC.ZZZCHGDT = CL0HW01.CL0HWZZD;
+        CL0HW02.CL0HWPAR[CLXARAYX] = "N";
+        CLCREC.CLCPMAR = CL0HW02.CL0HWPAR[CLXARAYX];
+        ;
+        call "IO1170" ("U ", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* update clcrec*/
+        ;
+        if (SQLCA.VAGen_SQLCODE != 0)
+          TA1REC.TA1DBASE = "DCLAIM";
+          TA1REC.TA1TBLVU = "VCLARX01";
+          CLXREC.CLXCPROC = "CL0H125"; /* (cwh 7-17-89)*/
+          XPCL010();
+        end
+        ;
+        CL0HW01.CL0HWPNT = 0;
+        CLXREC.CLXARAYX = CLXREC.CLXLSTAX;
+      else
+        CLXREC.CLXARAYX = CLXREC.CLXARAYX + 1;
+      end
+    end
+  end
+end // end KL0H125
+
+// update of/add to database
+Function KL0H130()
+   /* *************************************************************/
+   /* ADD/UPDATE LOGIC*/
+   /* 1. find position of current line in array, because if any*/
+      /* key fields were updated on a replace, the old record is*/
+      /* deleted, and a new record stored*/
+   /* 2. if record is to be added, but a record exists with that*/
+      /* key already, delete the existing record.  This is per*/
+      /* user request.*/
+   /* 3. if record is to be updated, and any of the key fields*/
+      /* are to be changed, delete existing record.  Change*/
+      /* the selection code to 'A', to make logic flow simpler*/
+      /* in rest of paragraph.*/
+   /* 3. move fileds from the screen to the clcrec and to the*/
+      /* array.*/
+   /* 4. if selection code still 'U' or 'P', update the row.*/
+      /* Otherwise add the row.*/
+   /* *************************************************************/
+  ;
+  ;
+  CLXREC.CLXCPROC = "CL0H130"; /* set current process name*/
+  ;
+  if (KL0HM001.CL0HMSEL[CLXLINEX] == "U"
+   || KL0HM001.CL0HMSEL[CLXLINEX] == "P"
+   || CL0HW01.CL0HWAR1 == "Y")
+        /* find position of current line in array*/
+    CLXREC.CLXARAYX = CLXREC.CLXARY1X[CLXSCRNX]; /* first line on screen*/
+    CLXREC.CLXARAYX = CLXREC.CLXARAYX + CLXREC.CLXLINEX - 1;
+                                   /* find needed line*/
+    ;
+  else
+        /* find position to add record to array*/
+    if (KL0HM001.CL0HMSEL[CLXLINEX] == "A")
+      CLXREC.CLXLSTAX = CLXREC.CLXLSTAX + 1;
+      CLXREC.CLXARAYX = CLXREC.CLXLSTAX;
+    else
+      if (CL0HW01.CL0HWAR1 == "Y")
+            /* find position of current line in array*/
+        CLXREC.CLXARAYX = CLXREC.CLXARY1X[CLXSCRNX]; /* as for 'u'*/
+        CLXREC.CLXARAYX = CLXREC.CLXARAYX + CLXREC.CLXLINEX - 1;
+      end
+    end
+  end
+  ;
+  CL0HW01.CL0HWSIA = "Y"; /* changes made, so stay in this*/
+                                   /* application*/
+  ;
+    /* if key fields were modified, need to delete record*/
+    /* then add record instead of replacing record.*/
+    /* this keeps the indexes healthy*/
+  ;
+  if (KL0HM001.CL0HMSEL[CLXLINEX] == "U"
+   || KL0HM001.CL0HMSEL[CLXLINEX] == "P")
+    if (KL0HM001.ARCREFNB[CLXLINEX] != CL0HW02.CL0HWARN[CLXARAYX]
+     || KL0HM001.ARCCCREF[CLXLINEX] != CL0HW02.CL0HWCLN[CLXARAYX]
+     || KL0HM001.ARCCHKNB[CLXLINEX] != CL0HW02.CL0HWCKN[CLXARAYX]
+     || KL0HM001.IV0IVCID[CLXLINEX] != CL0HW02.CL0HWIVC[CLXARAYX])
+      KL0H133(); /* delete clcrec*/
+      KL0HM001.CL0HMSEL[CLXLINEX] = "A"; /* set to be added now*/
+    end
+  end
+  ;
+    /* if record is to be added, delete anything that may*/
+    /* already exist with that key*/
+  ;
+  if (KL0HM001.CL0HMSEL[CLXLINEX] == "A")
+    KL0H134(); /* delete clcrec*/
+  end
+  ;
+   /* move in key fields from screen*/
+  ;
+  CLCREC.CLACLMNB = CLAREC.CLACLMNB;
+  CLCREC.ARCREFNB = KL0HM001.ARCREFNB[CLXLINEX];
+  CLCREC.IV0IVCID = KL0HM001.IV0IVCID[CLXLINEX];
+  CLCREC.ARCCHKNB = KL0HM001.ARCCHKNB[CLXLINEX];
+  CLCREC.ARCCCREF = KL0HM001.ARCCCREF[CLXLINEX];
+  ;
+   /* move data from screen to record to be written to database*/
+  ;
+  CLCREC.YASCD = KL0HM001.YASCD[CLXLINEX];
+  CLCREC.ARCARAMT = KL0HM001.ARCARAMT[CLXLINEX];
+  CLCREC.IV0PARTN = CL0HW02.CL0HWPTN[CLXARAYX];
+  CLCREC.ZZZCHGDT = CL0HW01.CL0HWZZD;
+  CLCREC.ZZZCHGCT = CL0HW02.CL0HWZZC[CLXARAYX];
+  ;
+   /* set primary flag if option 'p'*/
+  ;
+  if (KL0HM001.CL0HMSEL[CLXLINEX] == "P")
+    CLCREC.CLCPMAR = "Y";
+    KL0HM001.CLCPMAR[CLXLINEX] = "Y";
+    CL0HW02.CL0HWPAR[CLXARAYX] = "Y";
+    CL0HW01.CL0HWAR1 = "N";
+  end
+  ;
+    /* check to see if this should be the primary ar flag*/
+  ;
+  if (CL0HW01.CL0HWAR1 == "Y" /* claim has no primary yet*/
+   && KL0HM001.ARCREFNB[CLXLINEX] != " ") /* and this row has one*/
+    CLCREC.CLCPMAR = "Y"; /* set flag to pmry*/
+    KL0HM001.CLCPMAR[CLXLINEX] = "Y";
+    CL0HW02.CL0HWPAR[CLXARAYX] = "Y";
+    CL0HW01.CL0HWAR1 = "N";
+  end
+  ;
+  if (KL0HM001.CLCPMAR[CLXLINEX] == " ")
+    CLCREC.CLCPMAR = "N";
+  else
+    CLCREC.CLCPMAR = KL0HM001.CLCPMAR[CLXLINEX];
+  end
+  ;
+       /* change format of date from mm-dd-yy to 0ccyymmdd*/
+  ;
+  CLXREC.XXXEDFLD = KL0HM001.CL0HMCKD[CLXLINEX];
+  XPCL004(); /* date routine*/
+  if (CLXREC.CLXVALDT == "Y")
+    /* -------------------------- y2k in begin --------------------*/
+    CL0HW01.CL0HW-DT-ENTER = TA2REC.TA2GRGGN; /* ccyymmdd*/
+    CL0HW01.CL0HW-CUR-DT = VGVar.currentGregorianDate; /* ccyymmdd*/
+    if (CL0HW01.CL0HW-DT-ENTER-CCYY <= CL0HW01.CL0HW-CUR-DT-CCYY)
+      /* -------------------------- y2k in end   --------------------*/
+      CLCREC.ARCCHKDT = TA2REC.TA2GRGGN;
+    else
+      CLCREC.ARCCHKDT = 0;
+    end
+  else
+    CLCREC.ARCCHKDT = 0;
+  end
+  ;
+       /* get date to be put on database record*/
+  ;
+  set TA2REC empty;
+  TA2DTOPT = "GETDATE"; /* funcion request*/
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date module*/
+  if (TA2REC.TA2RTNCD == 0)
+    CLCREC.ZZZCHGTM = TA2TIMHM;
+  else
+    CLCREC.ZZZCHGTM = 0;
+  end
+  ;
+  ;
+   /* if field was changed (has a P or U selection code)*/
+   /* update the record.  Otherwise, move in key fields from*/
+   /* screen and add.*/
+  ;
+  if (KL0HM001.CL0HMSEL[CLXLINEX] == "A")
+    call "IO1170" ("A ", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* add new record*/
+    ;
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1DBASE = "DCLAIM";
+      TA1REC.TA1TBLVU = "VCLARX01";
+      CLXREC.CLXCPROC = "CL0H130"; /* (cwh 7-17-89)*/
+      XPCL010();
+    else
+      CLXREC.CLXBLDAY = "Y"; /* need to refresh array*/
+      CLXREC.CLXBLDSC = "Y"; /* need to refresh screen*/
+    end
+  else /* existing record needs updated*/
+    ;
+    call "IO1170" ("U ", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* update record*/
+    ;
+    if (SQLCA.VAGen_SQLCODE != 0)
+      TA1REC.TA1DBASE = "DCLAIM";
+      TA1REC.TA1TBLVU = "VCLARX01";
+      CLXREC.CLXCPROC = "CL0H130"; /* (cwh 7-17-89)*/
+      XPCL010();
+    else
+      CLXREC.CLXBLDAY = "Y"; /* need to refresh array*/
+      CLXREC.CLXBLDSC = "Y"; /* need to refresh screen*/
+    end
+  end
+  ;
+  ;
+end // end KL0H130
+
+// change primary flag on screen
+Function KL0H131()
+   /* *************************************************************/
+      /* change primary flag to reflect if p option was chosen*/
+  ;
+   /* *************************************************************/
+  ;
+  ;
+  CLXREC.CLXCPROC = "CL0H131"; /* set current process name*/
+  ;
+  if (CL0HW01.CL0HWPFL == "Y") /* primary was changed*/
+    CLXREC.CLXLINEX = 1;
+    while (CLXREC.CLXLINEX <= 14)
+      ;
+       /* if working with primary a/r*/
+      if (KL0HM001.CLCPMAR[CLXLINEX] == "Y") /* if this is current primary*/
+        if (KL0HM001.CL0HMSEL[CLXLINEX] == "P") /* and selected as primary*/
+           /* next sentence*/
+        else
+          KL0HM001.CL0HMSEL[CLXLINEX] = "U"; /* it will be changed*/
+        end
+      end
+      ;
+      if (KL0HM001.CL0HMSEL[CLXLINEX] == "P")
+        KL0HM001.CLCPMAR[CLXLINEX] = "Y";
+      else
+         /* if line has data, move 'n' to selection field*/
+        if (KL0HM001.ARCREFNB[CLXLINEX] != " "
+         || KL0HM001.ARCCHKNB[CLXLINEX] != " "
+         || KL0HM001.ARCCCREF[CLXLINEX] != " ")
+          KL0HM001.CLCPMAR[CLXLINEX] = "N";
+        else
+          KL0HM001.CLCPMAR[CLXLINEX] = " ";
+        end
+      end
+      CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1;
+    end
+  end
+end // end KL0H131
+
+// delete record with changed key
+Function KL0H133()
+  CLXREC.CLXCPROC = "CL0H133"; /* set current process name*/
+  ;
+   /* cl0h133 and cl0h134 are the same, except one takes the*/
+   /* key from the screen, and one from the array.*/
+  ;
+   /* move in key fields from array*/
+  ;
+  CLCREC.CLACLMNB = CLAREC.CLACLMNB;
+  CLCREC.ARCREFNB = CL0HW02.CL0HWARN[CLXARAYX];
+  CLCREC.ARCCHKNB = CL0HW02.CL0HWCKN[CLXARAYX];
+  CLCREC.ARCCCREF = CL0HW02.CL0HWCLN[CLXARAYX];
+  CLCREC.IV0IVCID = CL0HW02.CL0HWIVC[CLXARAYX];
+  ;
+   /* see of a record is there: if there, see if primary*/
+    /* if so, flag needs to be saved*/
+    /* THEN DELETE*/
+  ;
+  call "IO1170" ("S ", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* see if a record exists*/
+  if (SQLCA.VAGen_SQLCODE < 0)
+    TA1REC.TA1DBASE = "DCLAIM";
+    TA1REC.TA1DBASE = "VCLARX01";
+    XPCL010();
+  else
+    if (SQLCA.VAGen_SQLCODE == 0) /* record with like key found*/
+      if (CLCREC.CLCPMAR == "Y") /* if old was primary*/
+        KL0HM001.CLCPMAR[CLXLINEX] = "Y"; /* save flag so new*/
+      end /* record will be set*/
+      call "IO1170" ("D ", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* delete a/r record*/
+      if (SQLCA.VAGen_SQLCODE != 0)
+        TA1REC.TA1DBASE = "DCLAIM ";
+        TA1REC.TA1DBASE = "VCLARX01";
+        XPCL010();
+      else
+        CLXREC.CLXBLDAY = "Y"; /* need to refresh array*/
+        CLXREC.CLXBLDSC = "Y"; /* need to refresh screen*/
+      end
+    end
+  end
+  ;
+  ;
+  ;
+end // end KL0H133
+
+// delete record with changed key
+Function KL0H134()
+  ;
+   /* if a record is to be added, the user has asked that*/
+   /* any record with the same key already in existence be*/
+   /* deleted.  (This will also delete any existing records*/
+   /* with the same key that another existing record is being*/
+   /* changed to - also by design).  Weird, bu true.*/
+  ;
+   /* cl0h133 and cl0h134 are the same except one deletes*/
+   /* using keys from the screen and one from the array*/
+  ;
+  CLXREC.CLXCPROC = "CL0H134"; /* set current process name*/
+  ;
+   /* move in key fields from screen*/
+  ;
+  CLCREC.CLACLMNB = CLAREC.CLACLMNB;
+  CLCREC.ARCREFNB = KL0HM001.ARCREFNB[CLXLINEX];
+  CLCREC.ARCCHKNB = KL0HM001.ARCCHKNB[CLXLINEX];
+  CLCREC.ARCCCREF = KL0HM001.ARCCCREF[CLXLINEX];
+  CLCREC.IV0IVCID = KL0HM001.IV0IVCID[CLXLINEX];
+  ;
+   /* see if a reocrd is there: if there, see if primary*/
+    /* flag needs to be saved, then delete*/
+  ;
+  call "IO1170" ("S ", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* see if a record exists*/
+  if (SQLCA.VAGen_SQLCODE < 0)
+    TA1REC.TA1DBASE = "DCLAIM ";
+    TA1REC.TA1DBASE = "VCLARX01";
+    XPCL010();
+  else
+    if (SQLCA.VAGen_SQLCODE == 0) /* record with like key found*/
+      if (CLCREC.CLCPMAR == "Y") /* if old was primary*/
+        KL0HM001.CLCPMAR[CLXLINEX] = "Y"; /* save flag so new*/
+      end /* record will be set*/
+      call "IO1170" ("D ", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* delete*/
+      if (SQLCA.VAGen_SQLCODE < 0)
+        TA1REC.TA1DBASE = "DCLAIM ";
+        TA1REC.TA1DBASE = "VCLARX01";
+        XPCL010();
+      else
+        if (SQLCA.VAGen_SQLCODE == 0)
+          CLXREC.CLXBLDAY = "Y"; /* need to refresh array*/
+          CLXREC.CLXBLDSC = "Y"; /* need to refresh screen*/
+        end
+      end
+    end
+  end
+  ;
+  ;
+  ;
+end // end KL0H134
+
+// delete from database
+Function KL0H140()
+  CLXREC.CLXCPROC = "CL0H140"; /* set current process name*/
+  ;
+  ;
+  CL0HW01.CL0HWSIA = "Y"; /* changes made, so stay in this*/
+                                   /* application*/
+  ;
+  ;
+   /* find what line on the screen is being worked on*/
+  ;
+  CLXREC.CLXARAYX = CLXREC.CLXARY1X[CLXSCRNX];
+                                   /* first line on screen*/
+  CLXREC.CLXARAYX = CLXREC.CLXARAYX + CLXREC.CLXLINEX - 1;
+                                   /* find needed line*/
+  ;
+   /* move data from array to record to be deleted from database*/
+  ;
+  CLCREC.ARCREFNB = CL0HW02.CL0HWARN[CLXARAYX];
+  CLCREC.ARCCCREF = CL0HW02.CL0HWCLN[CLXARAYX];
+  CLCREC.ARCCHKNB = CL0HW02.CL0HWCKN[CLXARAYX];
+  CLCREC.CLACLMNB = CLAREC.CLACLMNB;
+  CLCREC.IV0IVCID = CL0HW02.CL0HWIVC[CLXARAYX];
+  CLCREC.ZZZCHGCT = CL0HW02.CL0HWZZC[CLXARAYX];
+  ;
+   /* call iomod to delete the record*/
+  ;
+  call "IO1170" ("D ", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* call*/
+  ;
+  if (SQLCA.VAGen_SQLCODE < 0)
+    TA1REC.TA1DBASE = "DCLAIM ";
+    TA1REC.TA1TBLVU = "VCLARX01";
+    XPCL010();
+  else
+    CLXREC.CLXBLDAY = "Y"; /* need to refresh array*/
+    CLXREC.CLXBLDSC = "Y"; /* need to refresh screen*/
+  end
+  ;
+end // end KL0H140
+
+// create duplicate lines
+Function KL0H180()
+   /* ************************************************************/
+   /* *     in order to keep user keystrokes to a minimum,      **/
+   /* *     when the user enters data on one line, but only     **/
+   /* *     certain fields on the following lines, then all    **/
+   /* *     the data from the following line must default to    **/
+   /* *     the first line.                                    **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0H180"; /* set current process name*/
+  ;
+   /* if we are on the second screen subtract 14 to get position*/
+   /* on screen of last array entry*/
+  ;
+  if (CLXREC.CLXARY1X > CLXREC.CLXMAXLN)
+    CLXREC.CLXARAYX = CLXREC.CLXLSTAX - CLXREC.CLXMAXLN;
+  else
+    CLXREC.CLXARAYX = CLXREC.CLXLSTAX;
+  end
+  ;
+  ;
+   /* if we are dealing with new entries onto the screen*/
+  ;
+  ;
+  if (CL0HW01.CL0HWNEF[CLXLINEX] == "Y")
+    if (KL0HM001.CL0HMCKD[CLXLINEX] == " ")
+      if (KL0HM001.ARCREFNB[CLXLINEX] != " "
+       || KL0HM001.YASCD[CLXLINEX] != " "
+       || KL0HM001.IV0IVCID[CLXLINEX] != 0
+       || KL0HM001.ARCCHKNB[CLXLINEX] != " "
+       || KL0HM001.ARCCCREF[CLXLINEX] != " "
+       || KL0HM001.ARCARAMT[CLXLINEX] != 0)
+        KL0HM001.CL0HMSEL[CLXLINEX] = "A";
+        if (CLXREC.CLXLINEX >= 2)
+          CL0HW01.CL0HWCTR = CLXREC.CLXLINEX - 1;
+          KL0H182(); /* check whether each field s/b moved*/
+        end
+      end
+    else
+      if (KL0HM001.ARCREFNB[CLXLINEX] == " "
+       && KL0HM001.YASCD[CLXLINEX] == " "
+       && KL0HM001.IV0IVCID[CLXLINEX] == 0
+       && KL0HM001.ARCCHKNB[CLXLINEX] == " "
+       && KL0HM001.ARCCCREF[CLXLINEX] == " "
+       && KL0HM001.ARCARAMT[CLXLINEX] == 0)
+        set KL0HM001.CL0HMCKD[CLXLINEX] cursor, modified, bold;
+        converseLib.validationFailed(250);
+        CLXREC.CLXEDITF = "N";
+        CLXREC.CLXERRF = "Y";
+        CLXREC.CLXLINEX = 15;
+        return;
+      else
+        if (KL0HM001.ARCREFNB[CLXLINEX] != " "
+         || KL0HM001.YASCD[CLXLINEX] != " "
+         || KL0HM001.IV0IVCID[CLXLINEX] != 0
+         || KL0HM001.ARCCHKNB[CLXLINEX] != " "
+         || KL0HM001.ARCCCREF[CLXLINEX] != " "
+         || KL0HM001.ARCARAMT[CLXLINEX] != 0)
+          KL0HM001.CL0HMSEL[CLXLINEX] = "A";
+          if (CLXREC.CLXLINEX >= 2)
+            CL0HW01.CL0HWCTR = CLXREC.CLXLINEX - 1;
+            KL0H182(); /* check whether each field s/b moved*/
+          end
+        end
+      end
+    end
+  else
+    ;
+      /* if we are dealing with current entries on the screen*/
+      /* that aren't being deleted*/
+    ;
+    if (KL0HM001.CL0HMSEL[CLXLINEX] != "X")
+      KL0H184();
+    end
+  end
+  ;
+  CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1;
+  ;
+end // end KL0H180
+
+// create duplicate lines
+Function KL0H182()
+   /* ************************************************************/
+   /* *     check each field to see if the data from the        **/
+   /* *     one above should be carried down*/
+   /* **/
+   /* **/
+   /* ************************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0H182"; /* set current process name*/
+  ;
+  ;
+  if (KL0HM001.ARCREFNB[CLXLINEX] == " ")
+    KL0HM001.ARCREFNB[CLXLINEX] = KL0HM001.ARCREFNB[CL0HWCTR];
+    set KL0HM001.ARCREFNB[CLXLINEX] modified;
+  end
+  ;
+  if (KL0HM001.YASCD[CLXLINEX] == " ")
+    if (KL0HM001.YASCD[CL0HWCTR] == " ")
+      KL0HM001.YASCD[CL0HWCTR] = "O";
+    end
+    KL0HM001.YASCD[CLXLINEX] = KL0HM001.YASCD[CL0HWCTR];
+    set KL0HM001.YASCD[CLXLINEX] modified;
+  end
+  ;
+  if (KL0HM001.IV0IVCID[CLXLINEX] == 0)
+    KL0HM001.IV0IVCID[CLXLINEX] = KL0HM001.IV0IVCID[CL0HWCTR];
+    set KL0HM001.IV0IVCID[CLXLINEX] modified;
+  end
+  ;
+  if (KL0HM001.ARCCHKNB[CLXLINEX] == " ")
+    KL0HM001.ARCCHKNB[CLXLINEX] = KL0HM001.ARCCHKNB[CL0HWCTR];
+    set KL0HM001.ARCCHKNB[CLXLINEX] modified;
+  end
+  ;
+  if (KL0HM001.CL0HMCKD[CLXLINEX] == " ")
+    KL0HM001.CL0HMCKD[CLXLINEX] = KL0HM001.CL0HMCKD[CL0HWCTR];
+    set KL0HM001.CL0HMCKD[CLXLINEX] modified;
+  end
+  ;
+  if (KL0HM001.ARCCCREF[CLXLINEX] == " ")
+    KL0HM001.ARCCCREF[CLXLINEX] = KL0HM001.ARCCCREF[CL0HWCTR];
+    set KL0HM001.ARCCCREF[CLXLINEX] modified;
+  end
+  ;
+   /* IF CL0HM001.ARCARAMT(CLXLINEX) EQ 0;*/
+    /* IF CL0HM001.ARCARAMT(CLXLINEX) IS MODIFIED;*/
+      /* ;next sentence*/
+    /* ELSE ;*/
+   /* MOVE CL0HM001.ARCARAMT(CL0HWCTR) TO CL0HM001.ARCARAMT(CLXLIN*/
+      /* SET CL0HM001.ARCARAMT(CLXLINEX) MODIFIED;*/
+    /* END ;*/
+   /* END ;*/
+  ;
+end // end KL0H182
+
+// check for modified fields
+Function KL0H184()
+  ;
+  CLXREC.CLXCPROC = "CL0H184"; /* set current process name*/
+  ;
+  if (CLXREC.CLXLINEX <= CLXREC.CLXLSTAX)
+    if (KL0HM001.ARCREFNB[CLXLINEX] is modified /* a/r ref number field*/
+     || KL0HM001.YASCD[CLXLINEX] is modified    /* status code field*/
+     || KL0HM001.IV0IVCID[CLXLINEX] is modified /* invoice id field*/
+     || KL0HM001.ARCCHKNB[CLXLINEX] is modified /* check number field*/
+     || KL0HM001.CL0HMCKD[CLXLINEX] is modified /* check date field*/
+     || KL0HM001.ARCCCREF[CLXLINEX] is modified /* cust clm nbr field*/
+     || KL0HM001.ARCARAMT[CLXLINEX] is modified) /* amount field*/
+      if (KL0HM001.CL0HMSEL[CLXLINEX] == "P")
+        /* next sentence - don't want to overlay change of primary flag*/
+      else
+        KL0HM001.CL0HMSEL[CLXLINEX] = "U";
+      end
+    end
+  end
+end // end KL0H184
+
+// page backward
+Function KL0HS07()
+   /* ************************************************************/
+   /* *    this process handles the entry of pf key 7           **/
+   /* *             (paging backward)                           **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  ;
+  CLXREC.CLXARAYX = CLXREC.CLXARY1X[CLXSCRNX]; /* set array index*/
+  ;
+  ;
+  if (CLXREC.CLXMAXLN[CLXSCRNX] >= CLXREC.CLXARAYX)
+    CLXREC.CLXARAYX = 1;
+    converseLib.validationFailed(7); /* top of data*/
+  else
+    CLXREC.CLXARAYX = CLXREC.CLXARAYX - CLXREC.CLXMAXLN[CLXSCRNX];
+  end
+  ;
+  ;
+  CLXREC.CLXARY1X[CLXSCRNX] = CLXREC.CLXARAYX;
+  ;
+  ;
+  CLXREC.CLXBLDSC = "Y"; /* need to rebuild screen to show new data*/
+  CLXREC.CLXBLDAY = "Y"; /* need to rebuild array to show new*/
+                                   /* data*/
+  ;
+end // end KL0HS07
+
+// page forward
+Function KL0HS08()
+   /* ************************************************************/
+   /* *   this process handles the entry of pf key 8            **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* *                                                         **/
+   /* ************************************************************/
+  ;
+  ;
+  CLXREC.CLXARAYX = CLXREC.CLXARY1X[CLXSCRNX];
+  ;
+  if (KL0HM001.ARCREFNB[14] != " "
+   || KL0HM001.IV0IVCID[14] != 0
+   || KL0HM001.CL0HMCKD[14] != " "
+   || KL0HM001.ARCCCREF[14] != " ")
+    /* next sentence - user may want to add lines to next screen*/
+  else
+    converseLib.validationFailed(3); /* at end of data*/
+    return;
+  end
+  ;
+  ;
+  ;
+  CLXREC.CLXARAYX = CLXREC.CLXARAYX + 13;
+  ;
+  CLXREC.CLXBLDSC = "Y"; /* need to rebuild screen to show new data*/
+  CLXREC.CLXBLDAY = "Y"; /* need to rebuild array to show new*/
+                                   /* data*/
+  ;
+  if (CLXREC.CLXARAYX > CL0HW01.CL0HWMAR)
+    converseLib.validationFailed(3); /* at end of data*/
+    return;
+  end
+  ;
+  ;
+  CLXREC.CLXARY1X[CLXSCRNX] = CLXREC.CLXARAYX;
+  ;
+  ;
+end // end KL0HS08
+
+// fill screen with data
+Function KL0HS25()
+   /* ************************************************************/
+   /* *                                                         **/
+   /* *   take data from the database array and place           **/
+   /* *   onto the screen on line at a time.                    **/
+   /* *   cl0hwupd is used if a user previously entered an      **/
+   /* *   update selection that was invalid or unauthorized.*/
+   /* *   it holds the update selection for displaying when     **/
+   /* *   the map is reconversed.*/
+   /* ************************************************************/
+  ;
+  if (CLXREC.CLXARAYX <= CLXREC.CLXLSTAX
+   /* if index LE last bucket in array*/
+   && CLXREC.CLXLINEX <= 14)
+    CL0HW01.CL0HWNEF[CLXLINEX] = "N";
+     /* MOVE CL0HW01.CL0HWUPD(CLXLINEX) TO CL0HM001.CL0HMSEL(CLXLIN*/
+    KL0HM001.ARCREFNB[CLXLINEX] = CL0HW02.CL0HWARN[CLXARAYX];
+    KL0HM001.YASCD[CLXLINEX] = CL0HW02.CL0HWARS[CLXARAYX];
+    KL0HM001.CLCPMAR[CLXLINEX] = CL0HW02.CL0HWPAR[CLXARAYX];
+    KL0HM001.IV0IVCID[CLXLINEX] = CL0HW02.CL0HWIVC[CLXARAYX];
+    KL0HM001.ARCCHKNB[CLXLINEX] = CL0HW02.CL0HWCKN[CLXARAYX];
+    KL0HM001.CL0HMCKD[CLXLINEX] = CL0HW02.CL0HWCKD[CLXARAYX];
+    KL0HM001.ARCCCREF[CLXLINEX] = CL0HW02.CL0HWCLN[CLXARAYX];
+    KL0HM001.ARCARAMT[CLXLINEX] = CL0HW02.CL0HWARA[CLXARAYX];
+  else
+    CL0HW01.CL0HWNEF[CLXLINEX] = "Y";
+  end
+  ;
+end // end KL0HS25
+
+// read dclaim.vclarx01 into aray
+Function KL0HS30()
+  ;
+  CLXREC.CLXCPROC = "CL0HS30"; /* set current process name*/
+  ;
+  set CLCREC empty;
+  set CL0HW02 empty;
+  CLCREC.CLACLMNB = CLAREC.CLACLMNB; /* load key*/
+  CLCREC.CLCPMAR = "*"; /* wild card draw*/
+  ;
+  call "IO1170" ("S1", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* initial read of database*/
+                                         /* order by ar-ref-nbr*/
+  if (SQLCA.VAGen_SQLCODE == 0)
+    CL0HW01.CL0HW91C = "N"; /* good database read*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911
+     || SQLCA.VAGen_SQLCODE == -913)
+      CLXREC.CLXBLDSC = "N"; /* don't build screen*/
+      CLXREC.CLXEDITF = "N"; /* don't edit the screen*/
+      CLXREC.CLXERRF = "Y"; /* the screen had errors*/
+      CL0HW01.CL0HW91C = "Y"; /* try the database later*/
+      return;
+    else
+      TA1REC.TA1DBASE = "DCLAIM";
+      TA1REC.TA1TBLVU = "VCLARX01";
+      CL0HW01.CL0HWNUM = CLCREC.CLACLMNB;
+      TA1REC.TA1TBLKE = CL0HW01.CL0HWNUM;
+      TA1REC.TA1LOCAT[3] = "CL0HS30";
+      TA1REC.TA1LOCAT[4] = "IO1170";
+      XPCL010(); /* abend*/
+    end
+  end
+  ;
+  ;
+  call "IO1170" ("N1", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* fetch first row*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    CLXREC.CLXARAYX = 1;
+    CL0HW01.CL0HWAR1 = "N"; /* don't need to create primary ar*/
+    while (CLXREC.CLXBLDAY == "Y" /* flag set to no when cursor is closed*/
+     && CLXREC.CLXARAYX <= CL0HW01.CL0HWMAR)
+                                   /* not exceeding array bounds*/
+      KL0HS31(); /* fill db array*/
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      CLXREC.CLXLSTAX = 0;
+      CL0HW01.CL0HWAR1 = "Y"; /* need to create primary ar*/
+    else
+      TA1REC.TA1DBASE = "DCLAIM";
+      TA1REC.TA1TBLVU = "VCLARX01";
+      CL0HW01.CL0HWNUM = CLCREC.CLACLMNB;
+      TA1REC.TA1TBLKE = CL0HW01.CL0HWNUM;
+      TA1REC.TA1LOCAT[3] = "CL0HS30";
+      TA1REC.TA1LOCAT[4] = "IO1170";
+      XPCL010(); /* abend*/
+    end
+  end
+  ;
+  if (CLXREC.CLXARAYX >= CL0HW01.CL0HWMAR)
+    converseLib.validationFailed(251); /* call sys.dev. to increase size of*/
+                                   /* cl0h*/
+  end
+  ;
+end // end KL0HS30
+
+// fill database array
+Function KL0HS31()
+  ;
+  CLXREC.CLXCPROC = "CL0HS31"; /* set current process name*/
+  ;
+                  /* fill array with database information*/
+  CL0HW02.CL0HWSEL[CLXARAYX] = " ";
+  CL0HW02.CL0HWARN[CLXARAYX] = CLCREC.ARCREFNB;
+  CL0HW02.CL0HWARS[CLXARAYX] = CLCREC.YASCD;
+  CL0HW02.CL0HWIVC[CLXARAYX] = CLCREC.IV0IVCID;
+  CL0HW02.CL0HWPTN[CLXARAYX] = CLCREC.IV0PARTN;
+  CL0HW02.CL0HWCKN[CLXARAYX] = CLCREC.ARCCHKNB;
+  CL0HW02.CL0HWCLN[CLXARAYX] = CLCREC.ARCCCREF;
+  CL0HW02.CL0HWARA[CLXARAYX] = CLCREC.ARCARAMT;
+  CL0HW02.CL0HWZZC[CLXARAYX] = CLCREC.ZZZCHGCT;
+  CL0HW02.CL0HWPAR[CLXARAYX] = CLCREC.CLCPMAR;
+  ;
+     /* reformat the date from 0ccyymmdd to mm-dd-yy*/
+  ;
+  if (CLCREC.ARCCHKDT == 0)
+    CL0HW02.CL0HWCKD[CLXARAYX] = " ";
+  else
+    set TA2REC empty;
+    CL0HW01.CL0HWDT1 = CLCREC.ARCCHKDT; /* strip off leading zero*/
+    TA2REC.TA2GRGGN = CL0HW01.CL0HWDT3; /* format is ccyymmdd*/
+    TA2REC.TA2DTOPT = "GREGGREG";
+    TA2REC.TA2GRTYP = "G";
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+    if (TA2REC.TA2RTNCD == 0)
+      CL0HW02.CL0HWCKD[CLXARAYX] = TA2REC.TA2GRGB;
+    else
+      CL0HW02.CL0HWCKD[CLXARAYX] = " ";
+    end
+  end
+  ;
+  ;
+   /* store key that will be used later for the database inquiries*/
+  ;
+  if (CLCREC.ARCREFNB != " ")
+    CL0HW02.CL0HWDBF[CLXARAYX] = "REF"; /* use ar-ref-nbr for key*/
+  else
+    CL0HW02.CL0HWDBF[CLXARAYX] = "CLM";
+                                   /* ar-cust-clm-refnbr is key*/
+  end
+  ;
+  ;
+  call "IO1170" ("N1", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* next row for inquiry*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      KL0HS32(); /* close cursor*/
+    else
+      TA1REC.TA1DBASE = "DCLAIM";
+      TA1REC.TA1TBLVU = "VCLARX01";
+      CL0HW01.CL0HWNUM = CLCREC.CLACLMNB;
+      TA1REC.TA1TBLKE = CL0HW01.CL0HWNUM;
+      TA1REC.TA1LOCAT[3] = "CL0HS31";
+      TA1REC.TA1LOCAT[4] = "IO1170";
+      XPCL010(); /* abend*/
+    end
+  end
+  ;
+  ;
+  CLXREC.CLXARAYX = CLXREC.CLXARAYX + 1;
+  ;
+  ;
+  ;
+end // end KL0HS31
+
+// close clarx cursor
+Function KL0HS32()
+  ;
+  CLXREC.CLXCPROC = "CL0HS32"; /* set current process name*/
+  ;
+   /* close cursor*/
+  ;
+  call "IO1170" ("C1", SQLCA, CLCREC) {isNoRefresh = yes, isExternal = yes}; /* initial read of database*/
+                                         /* order by ar-ref-nbr*/
+  if (SQLCA.VAGen_SQLCODE == 0)
+    CLXREC.CLXBLDAY = "N"; /* set need-to-build-array flag to no*/
+    CLXREC.CLXLSTAX = CLXREC.CLXARAYX;
+  else
+    TA1REC.TA1DBASE = "DCLAIM";
+    TA1REC.TA1TBLVU = "VCLARX01";
+    CL0HW01.CL0HWNUM = CLCREC.CLACLMNB;
+    TA1REC.TA1TBLKE = CL0HW01.CL0HWNUM;
+    TA1REC.TA1LOCAT[3] = "CL0HS32";
+    TA1REC.TA1LOCAT[4] = "IO1170";
+    XPCL010(); /* db2 abend routine*/
+  end
+  ;
+end // end KL0HS32
+
+// read screen header data
+Function KL0HS35()
+  ;
+  CLXREC.CLXCPROC = "CL0HS35"; /* set current process name*/
+  ;
+   /* claclmnb (used for key) is loaded in init process xpcl001*/
+  ;
+  call "IO1160" ("S ", SQLCA, CLAREC) {isNoRefresh = yes, isExternal = yes}; /* read claim header record*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    KL0HM001.CLACTCNM = CLAREC.CLACTCNM;
+    CL0HW01.CL0HW91A = "N"; /* good database read*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      KL0HM001.CLACTCNM = " ";
+      CL0HW01.CL0HW91A = "N"; /* good database read*/
+      converseLib.validationFailed(5); /* no header for claim number*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911
+       || SQLCA.VAGen_SQLCODE == -913)
+        CLXREC.CLXBLDSC = "N";
+        CLXREC.CLXEDITF = "N";
+        CLXREC.CLXERRF = "Y";
+        CL0HW01.CL0HW91A = "Y"; /* try database later*/
+      else
+        TA1REC.TA1DBASE = "DCLAIM";
+        TA1REC.TA1TBLVU = "VCLHDR01";
+        CL0HW01.CL0HWNUM = CLAREC.CLACLMNB;
+        TA1REC.TA1TBLKE = CL0HW01.CL0HWNUM;
+        TA1REC.TA1LOCAT[3] = "CL0HS35";
+        TA1REC.TA1LOCAT[4] = "IO1160";
+        XPCL010(); /* db2 abend routine*/
+      end
+    end
+  end
+  ;
+end // end KL0HS35
+
+// move header data to screen
+Function KL0HS37()
+  ;
+  CLXREC.CLXCPROC = "CL0HWS37"; /* set current process name*/
+  ;
+  KL0HM001.CLACLMNB = CLAREC.CLACLMNB;
+  KL0HM001.KUCCOID = CLAREC.KUCCOID;
+  KL0HM001.KUMSTRID = CLAREC.KUMSTRID;
+  KL0HM001.XNXCD = CLAREC.XNXCD;
+  KL0HM001.KUCCONM = CLWREC.KUCCONM;
+  ;
+end // end KL0HS37
+
+// check security for map display
+Function KL0HS50()
+   /* **********************************************************/
+   /* protects the map from unauthorized add/change/delete*/
+   /* functions.*/
+    /* if a credit user entered claims, they are allowed*/
+    /* to change any fields on the map. otherwise the map*/
+    /* is display only.*/
+   /* **********************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0HS50"; /* set current process name*/
+  ;
+   /* protect primary ar ref nbr from being altered*/
+  ;
+  if (KL0HM001.CLCPMAR[1] == "Y")
+    set KL0HM001.ARCREFNB[1] skip;
+  end
+  ;
+  if (COMMAREA.CAALVL[3] == "Y"
+   || COMMAREA.CACLVL[3] == "Y")
+    return; /* LEAVE FIELDS UNPROTECTED*/
+  else
+    CLXREC.CLXLINEX = 1;
+    while (CLXREC.CLXLINEX <= CLXREC.CLXMAXLN)
+      KL0HS51(); /* set map fields protected*/
+    end
+    set KL0HM001.CATOAP cursor; /* move cursor to fastpath item*/
+    return;
+  end
+end // end KL0HS50
+
+// check security for map display
+Function KL0HS51()
+   /* **********************************************************/
+   /* set map fields protected so unauthorized users can't*/
+   /* do unauthorized functions.*/
+   /* **********************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0HS51"; /* set current process name*/
+  ;
+  set KL0HM001.CL0HMSEL[CLXLINEX] skip;
+  ;
+  ;
+  set KL0HM001.ARCREFNB[CLXLINEX] skip;
+  ;
+  ;
+  set KL0HM001.YASCD[CLXLINEX] skip;
+  ;
+  ;
+  set KL0HM001.IV0IVCID[CLXLINEX] skip;
+  ;
+  ;
+  set KL0HM001.ARCCHKNB[CLXLINEX] skip;
+  ;
+  ;
+  set KL0HM001.CL0HMCKD[CLXLINEX] skip;
+  ;
+  ;
+  set KL0HM001.ARCCCREF[CLXLINEX] skip;
+  ;
+  ;
+  set KL0HM001.ARCARAMT[CLXLINEX] skip;
+  ;
+  CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1; /* increment counter*/
+  ;
+end // end KL0HS51
+
+// check security for updates
+Function KL0HS52()
+   /* **********************************************************/
+   /* check security to see if user is authorized.*/
+   /* this check is done line by line.*/
+   /* **********************************************************/
+  ;
+  CLXREC.CLXCPROC = "CL0HS52"; /* set current process name*/
+  ;
+  if (COMMAREA.CAALVL[3] == "Y" /* credit add*/
+   || COMMAREA.CACLVL[3] == "Y" /* credit change*/
+   || COMMAREA.CADLVL[3] == "Y") /* credit delete*/
+    CLXREC.CLXUPDTF = "Y"; /* allowed to do updates*/
+    CL0HW01.CL0HWUPD[CLXLINEX] = " "; /* init sel. field*/
+    set KL0HM001.CL0HMSEL[CLXLINEX] initialAttributes;
+  else
+    CLXREC.CLXUPDTF = "N"; /* no selection field to check*/
+  end
+end // end KL0HS52
+
+Record CL0HW01 type basicRecord
+  5 CL0HW1GP CL0HW1GP ; 
+    10 CL0HWDON CL0HWDON ; 
+    10 CL0HWX1 CL0HWX1 ; 
+    10 CL0HWSIA CL0HWSIA ; 
+    10 CL0HWCTN CL0HWCTN ; 
+    10 CL0HW91A CL0HW91A ; 
+    10 CL0HW91C CL0HW91C ; 
+    10 CL0HWAR1 CL0HWAR1 ; 
+    10 CL0HWARD CL0HWARD ; 
+    10 CL0HWPFL CL0HWPFL ; 
+    10 CL0HWPNT CL0HWPNT ; 
+    10 CL0HWUPD CL0HWUPD [14] ; 
+    10 CL0HWNEF CL0HWNEF [14] ; 
+    10 CL0HWCTR CL0HWCTR ; 
+    10 CL0HWMAR CL0HWMAR ; 
+    10 CL0HWZZD CL0HWZZD ; 
+    10 CL0HWDT1 CL0HWDT1 ; 
+      15 CL0HWC01 CL0HWC01 ; 
+      15 CL0HWDT3 CL0HWDT3 ; 
+        20 CL0HWCC1 CL0HWCC1 ; 
+        20 CL0HWYY1 CL0HWYY1 ; 
+        20 CL0HWMM1 CL0HWMM1 ; 
+        20 CL0HWDD1 CL0HWDD1 ; 
+    10 CL0HWDT2 CL0HWDT2 ; 
+      15 CL0HWMM2 CL0HWMM2 ; 
+      15 CL0HWFI1 CL0HWFI1 ; 
+      15 CL0HWDD2 CL0HWDD2 ; 
+      15 CL0HWFI2 CL0HWFI2 ; 
+      15 CL0HWYY2 CL0HWYY2 ; 
+    10 CL0HWNUM CL0HWNUM ; 
+    10 CL0HW-DT-ENTER CL0HW-DT-ENTER ; 
+      15 CL0HW-DT-ENTER-CCYY CL0HW-DT-ENTER-CCYY ; 
+      15 CL0HW-DT-ENTER-MMDD CL0HW-DT-ENTER-MMDD ; 
+    10 CL0HW-CUR-DT CL0HW-CUR-DT ; 
+      15 CL0HW-CUR-DT-CCYY CL0HW-CUR-DT-CCYY ; 
+      15 CL0HW-CUR-DT-MMDD CL0HW-CUR-DT-MMDD ; 
+end // end CL0HW01
+
+//*** RECORD=CL0HW02 ****
+// this record is used as an array to store the database info
+// from dclaim.vclarx01 (dcl00207).
+// ***********************
+Record CL0HW02 type basicRecord
+  5 CL0HW2GR CL0HW2GR [105] ; 
+    10 CL0HWSEL CL0HWSEL ; 
+    10 CL0HWARN CL0HWARN ; 
+    10 CL0HWARS CL0HWARS ; 
+    10 CL0HWCKN CL0HWCKN ; 
+    10 CL0HWCKD CL0HWCKD ; 
+    10 CL0HWCLN CL0HWCLN ; 
+    10 CL0HWARA CL0HWARA ; 
+    10 CL0HWPAR CL0HWPAR ; 
+    10 CL0HWIVC CL0HWIVC ; 
+    10 CL0HWPTN CL0HWPTN ; 
+    10 CL0HWDBF CL0HWDBF ; 
+    10 CL0HWZZC CL0HWZZC ; 
+end // end CL0HW02
+
+DataItem CL0HW-CUR-DT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem CL0HW-CUR-DT-CCYY num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem CL0HW-CUR-DT-MMDD num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem CL0HW-DT-ENTER num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem CL0HW-DT-ENTER-CCYY num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem CL0HW-DT-ENTER-MMDD num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cl0hw01 group level
+DataItem CL0HW1GP char(127)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// cl0hw02 group level
+DataItem CL0HW2GR char(77)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// y/n,was clarec deadlocked
+DataItem CL0HW91A char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// y/n,was clcrec deadlocked
+DataItem CL0HW91C char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// y/n,is there prim ar ref nbr
+DataItem CL0HWAR1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ar-ar-amt
+DataItem CL0HWARA num(11,2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// y/n,is prim ar being deleted
+DataItem CL0HWARD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ar-ref-nbr
+DataItem CL0HWARN char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// yas-ar-stat-cd
+DataItem CL0HWARS char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 0ccyymmdd leading zero
+DataItem CL0HWC01 num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ccyymmdd century field
+DataItem CL0HWCC1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ar-ck-dt
+DataItem CL0HWCKD char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ar-cust-ck-nbr
+DataItem CL0HWCKN char(13)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// cl-clm-nbr
+DataItem CL0HWCLN char(18)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// cl-cust-ctct-nm
+DataItem CL0HWCTN char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// screen line counter
+DataItem CL0HWCTR num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// clm;ar-clm-nbr.ref;ar-ref-nbr
+DataItem CL0HWDBF char(3)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ccyymmdd day field
+DataItem CL0HWDD1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mmddyy day field
+DataItem CL0HWDD2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// done flag
+DataItem CL0HWDON char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// 0ccyymmdd date format
+DataItem CL0HWDT1 num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mmddyy date format
+DataItem CL0HWDT2 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ccyymmdd  date format
+DataItem CL0HWDT3 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// slash '-'
+DataItem CL0HWFI1 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// slash '-'
+DataItem CL0HWFI2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// iv-ivc-id
+DataItem CL0HWIVC num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// maximum size for db array
+DataItem CL0HWMAR num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ccyymmdd month field
+DataItem CL0HWMM1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mmddyy month field
+DataItem CL0HWMM2 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// new-entry flag
+DataItem CL0HWNEF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ta1rec info
+DataItem CL0HWNUM num(10)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// is this a primary ar ref nbr
+DataItem CL0HWPAR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// y/n,pmry selection chg fl
+DataItem CL0HWPFL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// pmry ar pointer
+DataItem CL0HWPNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// index for iv-ivc-ic
+DataItem CL0HWPTN char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// add/change/delete selection
+DataItem CL0HWSEL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// stay-in-this-application flag
+DataItem CL0HWSIA char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// update selection marker
+DataItem CL0HWUPD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ws index
+DataItem CL0HWX1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// ccyymmdd year field
+DataItem CL0HWYY1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mmddyy year field
+DataItem CL0HWYY2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// change count
+DataItem CL0HWZZC smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// date for zzchgdt
+DataItem CL0HWZZD num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

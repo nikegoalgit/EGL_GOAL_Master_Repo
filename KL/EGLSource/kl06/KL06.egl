@@ -1,0 +1,2278 @@
+package kl06;
+
+import corpcom1.CL-RPS-BILL-STAT;
+import corpcom1.CL-RPS-NBR;
+import corpcom1.CL-RPS-STAT-ID;
+import corpcom1.CLACLMNB;
+import corpcom1.CLAREC;
+import corpcom1.CLWREC;
+import corpcom1.CLXREC;
+import corpcom3.XPCL002;
+import corpcom3.XPCL006;
+import corpcom3.XPCL010;
+import corpcom3.XPCL011;
+import corpcom4.XSENTRY;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.CLYREC;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import corpy2.YATTBL;
+import corpy2.YUATBL;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+import vv.common.VCLRPS01;
+//*** PROGRAM=KL06 ****
+// ;***********************************************************
+// ;*  this application WILL LIST AND UPDATE RPS LABEL STATUS *
+// ;*  CODES DEPENDING ON CODES ENTERED BY THE USER.          *
+// ;*  THE DCLAIM.VCLRPS01 TABLE WILL BE UPDATED.             *
+// ;*                                                         *
+// ;*  NOTE: sgorga - Whenever an RPS-generated nbr comes in  *
+// ;*        on a package (instead of the NIKE-generated RPS  *
+// ;*        nbr), our warehouse people manually enter the nbr.
+// ;*        Then, this pgm creates a row on the dclaim.vclrps
+// ;*        tbl for that RPS nbr, but FIRST ADDS 100000000 to
+// ;*        the RPS nbr!  SO - RPS-gen nbr = 926182 would be *
+// ;*        stored as 100926182.  Whenever the pgm searches  *
+// ;*        for an RPS-generated nbr, it first adds 100000000
+// ;*        to the nbr.  This was set up by Jerry Decker.    *
+// ;***********************************************************
+// ;*       M A I N T E N A N C E    H I S T O R Y    L O G   *
+// ;*---------------------------------------------------------*
+// ;* PROJ#   date   pgmr    description                      *
+// ;* -----  ------  -----   ---------------------------------*
+// ;* cl1051 3-04-92 gdecke  create application               *
+// ;* cl1051 6-19-92 gdecke  SHOW CL-RPS-BILL-STAT            *
+// ;* cl0    8-19-92 gdecke  BUILD DUPLACATE PKG NBR MSG.     *
+// ;*                        ALLOW USER TO ADD RPS PKG NBRS.  *
+// ;*       12-11-92 sgorga  Corrected logic in KL06S-Add-RPS-
+// ;*       line.  Both claim # and pkg # must be entered (not
+// ;*       = 0) when PF20 key is pressed; else error msg 743.
+// ;*       12-17-92 sgorga  Fixed bugs:  Code change to
+// ;*       prevent pgm from creating an RPS-generated nbr =
+// ;*       100000000.  Code change to prevent pgm from moving
+// ;*       0 to the RPS nbr & trying to select RPS =100000000.
+// ;*       Code change to move the clm # to vclrps01, instead
+// ;*       of pgm trying to select RPS lines for claim # 0 !
+// ;*       Changes to: add-rps-line, bild-rps-tbl, bild-dup-
+// ;*       msg(comments only). Map - lef-jus clm#/pkg# entered
+// ;* 08-08-00 CTRAN CHANGE RPS TO FEDEX ON KL06M001
+// ;***********************************************************
+// *********************
+Program KL06 type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "CL00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  CL06W01 CL06W01; // record
+  CL06W03 CL06W03; // record
+  CLAREC CLAREC; // record
+  CLWREC CLWREC; // record
+  CLXREC CLXREC; // record
+  CLYREC CLYREC; // record
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  VCLRPS01 VCLRPS01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use YATTBL {deleteAfterUse = yes}; // table
+  use YUATBL {deleteAfterUse = yes}; // table
+  use KL06M.KL06M001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    KL06000: KL06000();
+  end // end main
+end // end KL06
+
+// application main logic
+Function KL06000()
+   /* *************************************************************/
+   /* *   this is the main logic for application kl06            **/
+   /* *                                                          **/
+   /* *   xsentry checks to ensure that this application was     **/
+   /* *      entered from another csp application.               **/
+   /* *                                                          **/
+   /* *************************************************************/
+  ;
+  CLXREC.CLXCPROC = "KL06000"; /* SET CURRENT PROCESS NAME*/
+  ;
+  KL06001(); /* initialize the application*/
+  ;
+  KL06M001.XXXRVNBR = "1"; /* appl maint revision number*/
+  ;
+  KL06M001.XXXCURDT = VGVar.currentShortGregorianDate; /* get current date for map m001*/
+  ;
+  ;
+  CLXREC.CLXEOAF = "N"; /* set end-of-appl flag to 'no'*/
+  ;
+  while (CLXREC.CLXEOAF == "N") /* while not end-of-appl*/
+    KL06050(); /* process the application screen(s)*/
+  end
+  ;
+  ;
+  COMMAREA.CATOAP = "KL06"; /* in case of trouble*/
+  XPCL002(); /* exit application*/
+  ;
+  ;
+end // end KL06000
+
+// initialize application
+Function KL06001()
+   /* *************************************************************/
+   /* *     initialize the application working storage           **/
+   /* *                                                          **/
+   /* *  check if entry thru main menu.                          **/
+   /* *  initialize maps, records and working storage.           **/
+   /* *  set screen number, screen name and number of lines      **/
+   /* *  possible on each.                                       **/
+   /* *                                                          **/
+   /* *************************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y     L O G        **/
+   /* *-------------------------------------------------------------**/
+   /* *   DATE     PGMR      DESCRIPTION                            **/
+   /* *-------------------------------------------------------------**/
+   /* * 03-03-92  GDECKE     CREATE STATEMENT GROUP                 **/
+   /* *-------------------------------------------------------------**/
+  ;
+  CLXREC.CLXCPROC = "KL06001"; /* SET CURRENT PROCESS NAME*/
+  ;
+  converseVar.commitOnConverse = 1; /* force db2 to commit on each screen*/
+                                   /* converse*/
+  VGVar.handleHardIOErrors = 1; /* return control to program if hard db2*/
+                                   /* error*/
+  ;
+  ;
+   /* ****TEMP001;*/
+   /* ****  **** temp code for testing *****/
+  ;
+  XSENTRY(); /* check entered thru main menu*/
+  XSSEGTR(); /* set segmented transaction id*/
+  XPCL011(); /* claims entry module*/
+  ;
+     /* initialize working storage constants, records.*/
+  ;
+  ;
+  set KL06M001 initial; /* clear out map kl0cm001*/
+  set CLYREC empty; /* clear out clyrec*/
+  set CL06W01 empty; /* clear out CL06w01*/
+  set CL06W03 empty; /* clear out CL06w01*/
+  set CLXREC empty; /* clear out clxrec*/
+  set TA1REC empty; /* clear out ta2rec*/
+  set TA2REC empty; /* clear out ta2rec*/
+  set SQLCA empty; /* clear out sqlca*/
+  ;
+  ;
+  TA2REC.TA2DTOPT = "GETDATE";
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+  if (TA2REC.TA2RTNCD == 0)
+    CLXREC.XXXCDTE = TA2REC.TA2GRGGN;
+    CLXREC.XXXCTIME = TA2REC.TA2TIME;
+  else
+    TA1REC.TA1TBLKE = "GETTING CURRENT DATE IN KL06001";
+    XPCL010();
+  end
+  ;
+  ;
+  CLXREC.CLXEOAF = "N"; /* set application-done-switch to 'no'*/
+  ;
+  CL06W01.CL06W-RPS-UPDATE-FL = "N"; /* INDICATES IF ANY UPDATES DONE*/
+  ;
+  CLXREC.CLXCSCRN = "KL06M001"; /* set screen name*/
+  ;
+  CLXREC.CLXSNAME[1] = "KL06M001"; /* initialize the names of the*/
+  ;
+  CLXREC.CLXMAXLN[1] = 39; /* max lines on map 1*/
+  CLXREC.CLXARY1X[1] = 1; /* start lines on map 1*/
+  ;
+  CL06W01.CL06WMX1 = 1950; /* max lines in CL06w03 table*/
+  CLXREC.CLXCURLN = 1; /* ; set current CL06w03 line nbr to 1*/
+  ;
+  CLXREC.CLXERRF = "N";
+  CL06W01.CL06WOVR[1] = "N"; /* reset override flags;*/
+  CL06W01.CL06WOVR[2] = "N"; /* reset override flags;*/
+  CL06W01.CL06WOVR[3] = "N"; /* reset override flags;*/
+  CL06W01.CL06WOVR[4] = "N"; /* reset override flags;*/
+  CL06W01.CL06WOVR[5] = "N"; /* reset override flags;*/
+  CL06W01.CL06WOVR[6] = "N"; /* reset override flags;*/
+  ;
+end // end KL06001
+
+// main KL06 branch control
+Function KL06050()
+   /* *************************************************************/
+   /* *       main KL06 branch control                           **/
+   /* *                                                          **/
+   /* *  note that this process is being performed in a 'while'  **/
+   /* *  loop until the end-of-application flag is set to 'y'.   **/
+   /* *                                                          **/
+   /* *************************************************************/
+   /* *     M A I N T E N A N C E     H I S T O R Y     L O G       **/
+   /* *-------------------------------------------------------------**/
+   /* *  DATE    PGMR    DESCRIPTION                                **/
+   /* *-------------------------------------------------------------**/
+   /* * 03-03-92 GDECKE  CREATE STATEMENT GROUP                     **/
+   /* *-------------------------------------------------------------**/
+  ;
+  ;
+  CLXREC.CLXCPROC = "KL06050"; /* set current process name*/
+  ;
+  if (CLXREC.CLXCSCRN in CLXREC.CLXSNAME) /* if current screen name is*/
+    CLXREC.CLXSCRNX = sysVar.arrayIndex; /* in the screen array, then set*/
+  end /* the screen index*/
+  ;
+  ;
+  CLXREC.CLXEOSF = "N"; /* set end of screen flag to 'no'*/
+  CLXREC.CLXBLDSC = "Y"; /* set build screen flag to 'yes'*/
+  CLXREC.CLXERRF = "N"; /* SET ERROR FLAG TO 'N'*/
+  ;
+  ;
+  if (CLXREC.CLXSCRNX == 1) /* if screen co0%m001*/
+    while (CLXREC.CLXEOSF == "N") /* while not end of screen*/
+      KL06100(); /* process screen cl0%m001*/
+    end
+  else
+    TA1REC.TA1TBLKE = "CLAIMS UNKNOWN SCREEN NAME";
+    XPCL010();
+  end
+  ;
+  ;
+    /* at this point:*/
+       /* if the end of application flag (clxeoaf ) = 'n'*/
+         /* the perform will return to the top of cl0%050*/
+       /* else*/
+         /* the perform will auto return to cl0%000.*/
+  ;
+  ;
+end // end KL06050
+
+// sales sample products
+Function KL06100()
+   /* *************************************************************/
+   /* *   process screen kl06m001                                **/
+   /* *                                                          **/
+   /* *  note - this process is being performed in a 'while'     **/
+   /* *         loop from Kl06050 until the end of screen flag   **/
+   /* *         (clxeosfl) is set to 'y'.                        **/
+   /* *                                                          **/
+   /* ***************************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y     L O G       **/
+   /* *------------------------------------------------------------**/
+   /* *   DATE    PGMR     DESCRIPTION                             **/
+   /* *------------------------------------------------------------**/
+   /* * 03-03-92  GDECKE   CREATE STATEMENT GROUP                  **/
+   /* * 04-17-92  GDECKE   DONT AUTOSKIP STATUS IF USER COULD      **/
+   /* *                    UPDATE, BUT CLM STATUS = CMP.           **/
+   /* * 04-17-92  GDECKE   DONT USE CLWREC INDEX.                  **/
+   /* *------------------------------------------------------------**/
+  ;
+  ;
+  CLXREC.CLXCPROC = "KL06100"; /* set current process name*/
+  ;
+  CLXREC.CLXMAXLN[CLXSCRNX] = 39; /* reset maximum line per page*/
+  ;
+  if (CLXREC.CLXBLDSC == "Y")
+    KL06101(); /* build screen because newrc*/
+  end /* ; to display or pf7/pf8 keyed*/
+  ;
+    /* WHEN KL06101 DOES NOT RESET RPS STATUSES FROM 'A' TO BLANK*/
+    /* THE FOLLOWING STATEMENT WILL DO THE JOB;*/
+  ;
+  CLXREC.CLXLINEX = 1;
+  while (CLXREC.CLXLINEX <= CLXREC.CLXMAXLN[CLXSCRNX])
+    if (KL06M001.CL-RPS-STAT-ID[CLXLINEX] == "A")
+      KL06M001.CL-RPS-STAT-ID[CLXLINEX] = " ";
+    end
+    CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1;
+  end
+  ;
+  CLXREC.CLXBLDSC = "N"; /* skip build screen next time thru*/
+     /* skip build when have errors to show, of pf 12 was keyed*/
+  ;
+  CL06W01.CL06W-ALLOW-PF20 = "Y";
+  if (COMMAREA.CAFROMAP == "KL0A") /* IF FASTPATH FROM KL0Q PROTECT DATA*/
+    KL06S-SKIP-FLDS();
+    CL06W01.CL06W-ALLOW-PF20 = "N";
+  else
+    if (CLWREC.CLWACTIV == "A" /* IF ADD OR CHANGE MODE THEN OK TO*/
+     || CLWREC.CLWACTIV == "C") /* UPDATE ohibit data entry*/
+       /* NEXT SENTENCE*/
+    else
+      if (COMMAREA.CAFROMAP == "KL0E")
+        if (CLWREC.TF1CARCD == "A"
+         || CLWREC.TF1CARCD == "C")
+             /* NEXT SENTENCE*/
+        else
+          KL06S-SKIP-FLDS();
+          CL06W01.CL06W-ALLOW-PF20 = "N";
+        end
+      else
+        KL06S-SKIP-FLDS();
+        CL06W01.CL06W-ALLOW-PF20 = "N";
+      end
+    end
+  end
+  ;
+  ;
+  converse KL06M001 ;
+  ;
+  if (converseVar.eventKey is enter /* if both claim number and rps pkg number are on map*/
+   && KL06M001.CLACLMNB != 0        /* then clear old claim nbr because rps*/
+   /* number*/
+   && KL06M001.KL06M-RPS-NBR-IN != 0) /* is the thing to process now.*/
+    KL06M001.CLACLMNB = 0;
+  end
+  ;
+  KL06M001.XXXMSG = " "; /* move spaces to duplicate rps msg*/
+  CLXREC.CLXMSG = " "; /* set non ezemno error message to*/
+                                   /* spaces*/
+  CLXREC.CLXERRF = "N"; /* re-set error flag.*/
+  CLXREC.CLXUPDTF = "N"; /* init have-updates-flag*/
+  ;
+  CLXREC.CLXLINEX = 1;
+  ;
+  if (CLXREC.CLXCURLN < 1)
+    CLXREC.CLXCURLN = 1;
+  end
+  ;
+  CL06W01.CL06W-STAT-IDX = CLXREC.CLXCURLN; /* examine all lines*/
+  ;
+    /* set the edit and update flags*/
+  ;
+  if (KL06M001.CLACLMNB is modified
+   || KL06M001.KL06M-RPS-NBR-IN is modified
+   || KL06M001.CL-RPS-STAT-ID[1] is modified
+   || KL06M001.CL-RPS-STAT-ID[2] is modified
+   || KL06M001.CL-RPS-STAT-ID[3] is modified
+   || KL06M001.CL-RPS-STAT-ID[4] is modified
+   || KL06M001.CL-RPS-STAT-ID[5] is modified
+   || KL06M001.CL-RPS-STAT-ID[6] is modified
+   || KL06M001.CL-RPS-STAT-ID[7] is modified
+   || KL06M001.CL-RPS-STAT-ID[8] is modified
+   || KL06M001.CL-RPS-STAT-ID[9] is modified
+   || KL06M001.CL-RPS-STAT-ID[10] is modified
+   || KL06M001.CL-RPS-STAT-ID[11] is modified
+   || KL06M001.CL-RPS-STAT-ID[12] is modified
+   || KL06M001.CL-RPS-STAT-ID[13] is modified
+   || KL06M001.CL-RPS-STAT-ID[14] is modified
+   || KL06M001.CL-RPS-STAT-ID[15] is modified
+   || KL06M001.CL-RPS-STAT-ID[16] is modified
+   || KL06M001.CL-RPS-STAT-ID[17] is modified
+   || KL06M001.CL-RPS-STAT-ID[18] is modified
+   || KL06M001.CL-RPS-STAT-ID[19] is modified
+   || KL06M001.CL-RPS-STAT-ID[20] is modified
+   || KL06M001.CL-RPS-STAT-ID[21] is modified
+   || KL06M001.CL-RPS-STAT-ID[22] is modified
+   || KL06M001.CL-RPS-STAT-ID[23] is modified
+   || KL06M001.CL-RPS-STAT-ID[24] is modified
+   || KL06M001.CL-RPS-STAT-ID[25] is modified
+   || KL06M001.CL-RPS-STAT-ID[26] is modified
+   || KL06M001.CL-RPS-STAT-ID[27] is modified
+   || KL06M001.CL-RPS-STAT-ID[28] is modified
+   || KL06M001.CL-RPS-STAT-ID[29] is modified
+   || KL06M001.CL-RPS-STAT-ID[30] is modified
+   || KL06M001.CL-RPS-STAT-ID[31] is modified
+   || KL06M001.CL-RPS-STAT-ID[32] is modified
+   || KL06M001.CL-RPS-STAT-ID[33] is modified
+   || KL06M001.CL-RPS-STAT-ID[34] is modified
+   || KL06M001.CL-RPS-STAT-ID[35] is modified
+   || KL06M001.CL-RPS-STAT-ID[36] is modified
+   || KL06M001.CL-RPS-STAT-ID[37] is modified
+   || KL06M001.CL-RPS-STAT-ID[38] is modified
+   || KL06M001.CL-RPS-STAT-ID[39] is modified)
+    CLXREC.CLXEDITF = "Y"; /* set perform-edit flag*/
+    CLXREC.CLXUPDTF = "Y"; /* set update table flag*/
+  else
+    CLXREC.CLXEDITF = "N"; /* if no entries, then no edits*/
+    CLXREC.CLXUPDTF = "N"; /* set update table flag*/
+  end
+  ;
+    /* IF NEW CLAIM NUMBER OR RPS NUMBER WAS ENTERED THEN*/
+    /* REBUILD THE TABLE AND THE FIRST SCREEN USING THE NEW DATA*/
+  ;
+  ;
+  ;
+  KL06110(); /* handle any special entries*/
+  ;
+  ;
+  if (converseVar.eventKey is enter
+   && KL06M001.CLACLMNB == 0
+   && KL06M001.KL06M-RPS-NBR-IN == 0)
+    converseLib.validationFailed(718);
+    CLXREC.CLXBLDSC = "Y";
+    CLXREC.CLXEDITF = "N"; /* if no entries, then no edits*/
+    CLXREC.CLXUPDTF = "N"; /* set update table flag*/
+  end
+  if (CLXREC.CLXERRF == "N"        /* show error message if pf20 used and*/
+   && converseVar.eventKey is pf20 /* kl06 is not in update mode*/
+   && CL06W01.CL06W-ALLOW-PF20 == "N")
+    converseLib.validationFailed(745);
+    CLXREC.CLXBLDSC = "Y";
+    CLXREC.CLXEDITF = "N"; /* if no entries, then no edits*/
+    CLXREC.CLXUPDTF = "N"; /* set update table flag*/
+  end
+  ;
+  if (CLXREC.CLXEDITF == "Y") /* if we still want to edit*/
+    KL06120(); /* to process screen entries*/
+  end
+  ;
+  if (CLXREC.CLXERRF == "Y")
+    CLXREC.CLXCSCRN = "KL06M001"; /* show map KL06m001 next*/
+    CLXREC.CLXEOSF = "N"; /* continue processing KL06m001*/
+  else
+    if (converseVar.eventKey is enter
+     || converseVar.eventKey is pf20)
+      if (CLXREC.CLXUPDTF == "Y")
+        KL06S-UPDAT-STATUS();
+      end
+    end
+    ;
+    if (converseVar.eventKey is pf7)
+      if (CLXREC.CLXUPDTF == "Y")
+        KL06S-UPDAT-STATUS();
+      end
+      KL06S07();
+    end
+    ;
+    if (converseVar.eventKey is pf8)
+      if (CLXREC.CLXUPDTF == "Y")
+        KL06S-UPDAT-STATUS();
+      end
+      KL06S08();
+    end
+    ;
+    /* *****   ADD FUNCTION*/
+    if (converseVar.eventKey is pf20)
+      if (CLXREC.CLXUPDTF == "Y")
+        KL06S-ADD-RPS-LINE();
+      end
+    end
+  end
+  ;
+  ;
+   /* at this point:*/
+     /* if the end of screen flag (clxeosfl) is 'n' the perform*/
+       /* returns to top of process KL06100*/
+     /* else*/
+       /* the perform returns to KL06050*/
+  ;
+  ;
+end // end KL06100
+
+// initialize screen KL06M001
+Function KL06101()
+   /* *************************************************************/
+   /* *                                                          **/
+   /* *     this process will initialize screen KL06M001.        **/
+   /* *       it will read the necessary tables or will scroll   **/
+   /* *       forward or back                                    **/
+   /* *                                                          **/
+   /* *                                                          **/
+   /* *************************************************************/
+   /* *    M A I N T E N A N C E    H I S T O R Y    L O G       **/
+   /* *----------------------------------------------------------**/
+   /* *   DATE     PGMR    DESCRIPTION                           **/
+   /* *----------------------------------------------------------**/
+   /* * 03-03-92   GDECKE  CREATE STATEMENT GROUP                **/
+   /* * 04-17-92   GDECKE  FIX INDEX PROBLEM IN CLWREC           **/
+   /* * 06-12-92   GDECKE  SHOW BILLING STATUS                   **/
+   /* * 08-21-92   GDECKE  allow user to enter rps originated nbr**/
+   /* *************************************************************/
+  ;
+  CLXREC.CLXCPROC = "KL06101"; /* set current process name*/
+  ;
+  CLXREC.CLXARY1X[CLXSCRNX] = CLXREC.CLXCURLN;
+  ;
+  ;
+    /* the following computes the page number to be displayed*/
+  ;
+  CL06W01.CL06WPAG = CLXREC.CLXARY1X[CLXSCRNX] + CLXREC.CLXMAXLN[1];
+  CL06W01.CL06WPAG = CL06W01.CL06WPAG - 1;
+  CL06W01.CL06WPAG = CL06W01.CL06WPAG / 39;
+  if (CL06W01.CL06WPAG < 1)
+    CL06W01.CL06WPAG = 1;
+  end
+  KL06M001.KL06MPGE = CL06W01.CL06WPAG;
+  ;
+  if (KL06M001.KL06MPGE == 1) /* if page 1 and no other errors then*/
+    if (CLXREC.CLXERRF == "N") /* reset attributes per map definition*/
+      set KL06M001.CLACLMNB initialAttributes;
+      set KL06M001.KL06M-RPS-NBR-IN initialAttributes;
+    end
+  else
+                                   /* non-product data from re-entry*/
+    set KL06M001.CL-RPS-STAT-ID[1] cursor;
+  end
+  ;
+     /* build a table of all the rps numbers for the claim*/
+     /* do not rebuild table if redisplaying data for the claim*/
+  ;
+  if (CLXREC.CLXERRF == "Y")
+    return;
+  end
+  ;
+  if (KL06M001.CLACLMNB == CL06W01.CLACLMNB
+   && CL06W01.CLACLMNB != 0
+   && KL06M001.KL06M-RPS-NBR-IN == 0)
+    set KL06M001.CLACLMNB modified;
+    CL06W01.CL06W-RPS-NBR-FOUND-FL = "Y";
+  else
+    KL06S-BILD-RPS-TBL();
+    CLXREC.CLXCURLN = 1;
+    CLXREC.CLXARY1X[CLXSCRNX] = 1;
+    if (CLXREC.CLXERRF == "Y")
+      return;
+    else
+      CL06W01.CLACLMNB = KL06M001.CLACLMNB;
+    end
+  end
+  ;
+   /* SAVE THE CLAIM NUMBER FROM THE MAP SO THE EDIT/UPDATE*/
+   /* PROCESSES AFTER THE CONVERSE CAN TELL IF THE VALUES CHANGED*/
+   /* THIS SAVE IS DONE AFTER KL06S-BILD-RPS-TBL BECAUSE THE BUILD*/
+   /* PROCESS CAN CHANGE THE CLAIM NUMBER IF NONE WAS ENTERED, OR*/
+   /* IF IT WAS TAKEN FROM AN ENTERED RPS NUMBER.*/
+  ;
+  ;
+  ;
+  ;
+  if (CL06W01.CL06W-RPS-NBR-FOUND-FL == "N")
+    CL06W01.CL06WIX3 = 1; /* CLEAR OUT THE DETAIL AREA OF MAP*/
+    while (CL06W01.CL06WIX3 <= CLXREC.CLXMAXLN[1])
+      KL06M001.CL-RPS-NBR[CL06WIX3] = " ";
+      KL06M001.KL06M-RPS-ORIGIN[CL06WIX3] = " ";
+      KL06M001.CL-RPS-STAT-ID[CL06WIX3] = " ";
+      KL06M001.CL-RPS-BILL-STAT[CL06WIX3] = " ";
+      set KL06M001.CL-RPS-STAT-ID[CL06WIX3] invisible, skip;
+      CL06W01.CL06WIX3 = CL06W01.CL06WIX3 + 1;
+    end
+    ;
+    if (KL06M001.CLACLMNB != 0)
+      CLXREC.CLXERRF = "Y";
+      converseLib.validationFailed(719);
+      set KL06M001.CLACLMNB cursor, modified, bold;
+      return;
+    else
+      CLXREC.CLXERRF = "Y";
+      if (converseVar.eventKey is pf20)
+        converseLib.validationFailed(745);
+      else
+        converseLib.validationFailed(717);
+      end
+      set KL06M001.KL06M-RPS-NBR-IN cursor, modified, bold;
+      return;
+    end
+  end
+  ;
+  ;
+     /* move a page of tabled up rps numbers to map kl06m001*/
+     /* the data displayed depends on value in clxary1x which*/
+     /* gets adjusted by the pf7 and pf8 routines.*/
+  ;
+  set KL06M001.CL-RPS-STAT-ID[1] cursor;
+  CLXREC.CLXLINEX = 1; /* move tabled lines to map*/
+  CL06W01.CL06W-STAT-IDX = CLXREC.CLXARY1X[CLXSCRNX];
+  while (CLXREC.CLXLINEX <= CLXREC.CLXMAXLN[CLXSCRNX])
+    if (CL06W03.CL-RPS-NBR[CL06W-STAT-IDX] == 0)
+      set KL06M001.CL-RPS-STAT-ID[CLXLINEX] invisible, skip;
+    else
+      set KL06M001.CL-RPS-STAT-ID[CLXLINEX] initialAttributes;
+    end
+    KL06M001.CL-RPS-NBR[CLXLINEX] = CL06W03.CL-RPS-NBR[CL06W-STAT-IDX];
+    if (CL06W03.CL-RPS-NBR[CL06W-STAT-IDX] > 100000000) /* rps origin*/
+      KL06M001.KL06M-RPS-ORIGIN[CLXLINEX] = "+";
+    else
+      KL06M001.KL06M-RPS-ORIGIN[CLXLINEX] = " ";
+    end
+    if (CL06W03.CL-RPS-STAT-ID[CL06W-STAT-IDX] == "A")
+      KL06M001.CL-RPS-STAT-ID[CLXLINEX] = " ";
+    else
+      KL06M001.CL-RPS-STAT-ID[CLXLINEX] = CL06W03.CL-RPS-STAT-ID[CL06W-STAT-IDX];
+    end
+    KL06M001.CL-RPS-BILL-STAT[CLXLINEX] = CL06W03.CL-RPS-BILL-STAT[CL06W-STAT-IDX];
+    if (KL06M001.KL06M-RPS-ORIGIN[CLXLINEX] == "+")
+      CL06W01.CL06W-WK-RPS-NBR = KL06M001.CL-RPS-NBR[CLXLINEX]                              + 100000000;
+    else
+      CL06W01.CL06W-WK-RPS-NBR = KL06M001.CL-RPS-NBR[CLXLINEX];
+    end
+    if (CL06W01.CL06W-WK-RPS-NBR == CL06W01.CL-RPS-NBR
+     && CL06W01.CL-RPS-NBR != 0)
+      set KL06M001.CL-RPS-STAT-ID[CLXLINEX] cursor;
+    end
+    CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1; /* increment screen line number*/
+    CL06W01.CL06W-STAT-IDX = CL06W01.CL06W-STAT-IDX + 1;
+  end
+  ;
+  if (CL06W01.CL-RPS-NBR != 0)
+    if (CL06W01.CL-RPS-NBR in KL06M001.CL-RPS-NBR)
+       /* next sentence*/
+    else
+      if (CL06W01.CL-RPS-NBR in CL06W03.CL-RPS-NBR)
+        CLXREC.CLXCURLN = sysVar.arrayIndex;
+        CLXREC.CLXARY1X[CLXSCRNX] = CLXREC.CLXCURLN;
+        ;
+     /* move a page of tabled up rps numbers to map kl06m001*/
+     /* the data displayed depends on value in clxary1x which*/
+     /* gets adjusted by the pf7 and pf8 routines.*/
+        ;
+        set KL06M001.CL-RPS-STAT-ID[1] cursor;
+        CLXREC.CLXLINEX = 1; /* move tabled lines to map*/
+        CL06W01.CL06W-STAT-IDX = CLXREC.CLXARY1X[CLXSCRNX];
+        while (CLXREC.CLXLINEX <= CLXREC.CLXMAXLN[CLXSCRNX])
+          if (CL06W03.CL-RPS-NBR[CL06W-STAT-IDX] == 0)
+            set KL06M001.CL-RPS-STAT-ID[CLXLINEX] invisible, skip;
+          else
+            set KL06M001.CL-RPS-STAT-ID[CLXLINEX] initialAttributes;
+          end
+          KL06M001.CL-RPS-NBR[CLXLINEX] = CL06W03.CL-RPS-NBR[CL06W-STAT-IDX];
+          if (CL06W03.CL-RPS-NBR[CL06W-STAT-IDX] > 100000000) /* rps origin*/
+            KL06M001.KL06M-RPS-ORIGIN[CLXLINEX] = "+";
+          end
+          if (CL06W03.CL-RPS-STAT-ID[CL06W-STAT-IDX] == "A")
+            KL06M001.CL-RPS-STAT-ID[CLXLINEX] = " ";
+          else
+            KL06M001.CL-RPS-STAT-ID[CLXLINEX] = CL06W03.CL-RPS-STAT-ID[CL06W-STAT-IDX];
+          end
+          KL06M001.CL-RPS-BILL-STAT[CLXLINEX] = CL06W03.CL-RPS-BILL-STAT[CL06W-STAT-IDX];
+          if (KL06M001.CL-RPS-NBR[CLXLINEX] == CL06W01.CL-RPS-NBR
+           && CL06W01.CL-RPS-NBR != 0)
+            set KL06M001.CL-RPS-STAT-ID[CLXLINEX] cursor;
+          end
+          CLXREC.CLXLINEX = CLXREC.CLXLINEX + 1; /* increment screen line number*/
+          CL06W01.CL06W-STAT-IDX = CL06W01.CL06W-STAT-IDX + 1;
+        end
+        ;
+        ;
+      end
+    end
+    CL06W01.CL-RPS-NBR = 0; /* clear saved value so the positioning*/
+                                  /* will not be repeated*/
+  end
+end // end KL06101
+
+// validate screen m001 pf keys
+Function KL06110()
+   /* *************************************************************/
+   /* *   validate screen Kl06m001 pf keys                       **/
+   /* *                                                          **/
+   /* * the only keys acted upon at this time are pf3 and pf4    **/
+   /* * and enter.                                               **/
+   /* *                                                          **/
+   /* * the other keys are just verified that they are used by   **/
+   /* * this application. if the pf key is not recognized, the   **/
+   /* * application resets all modified fields to remain modified**/
+   /* * then reshows the map with an error message.              **/
+   /* *                                                          **/
+   /* * these other pf keys are acted upon after the editing and **/
+   /* * updating have occured.                                   **/
+   /* *************************************************************/
+   /* *     M A I N T E N A N C E     H I S T O R Y     L O G    **/
+   /* *----------------------------------------------------------**/
+   /* *   DATE     PGMR     DESCRIPTION                          **/
+   /* *----------------------------------------------------------**/
+   /* * 03-03-92   GDECKE   CREATE STATEMENT GROUP               **/
+   /* * 08-20-92   GDECKE   ALLOW USER ENTRY OF RPS NUMBER - PF20**/
+   /* *************************************************************/
+  ;
+  CLXREC.CLXCPROC = "KL06110"; /* set current process name*/
+  ;
+  ;
+  if (converseVar.eventKey is enter
+   && CLXREC.CLXEDITF == "N"
+   && CLXREC.CLXUPDTF == "N"
+   && COMMAREA.CAFROMAP == "KL0T"
+   && CL06W01.CL06W-RPS-UPDATE-FL == "Y")
+    KL06S05();
+  end
+  ;
+  ;
+  if (converseVar.eventKey is enter /* normal 'enter;*/
+   || converseVar.eventKey is pf20) /* add new rps number;*/
+    if (KL06M001.CATOAP != " ")
+      COMMAREA.CATOAP = KL06M001.CATOAP;
+      COMMAREA.CAITEM = KL06M001.CAITEM;
+      XPCL006(); /* check item for length and type*/
+      if (CLXREC.CLXVITMF == "N") /* item field not valid*/
+        set KL06M001.CATOAP cursor, modified, bold;
+        set KL06M001.CAITEM modified, bold;
+        converseLib.validationFailed(285); /* item field or option field invalid*/
+        KL06M001.XXXMSG = CLXREC.CLXMSG;
+        CLXREC.CLXERRF = "Y";
+        return;
+      else
+        if (COMMAREA.CAITEM != " ")
+          set CLAREC empty;
+          CLAREC.CLACLMNB = CLWREC.CLWITM1N;
+          call "IO1160" ("S ", SQLCA, CLAREC) {isNoRefresh = yes, isExternal = yes}; /* get cl*/
+        end
+      end
+      XPCL002(); /* check security/xfer*/
+      KL06M001.XXXMSG = COMMAREA.CAMSG; /* security failed*/
+      COMMAREA.CATOAP = " ";
+      CLXREC.CLXERRF = "Y";
+      CLXREC.CLXEDITF = "Y";
+    else
+      if (KL06M001.CAITEM != " ") /* fastpath request*/
+        set KL06M001.CATOAP cursor, modified, bold;
+        converseLib.validationFailed(1); /* item field not valid unless option is entered*/
+        CLXREC.CLXERRF = "Y";
+        CLXREC.CLXEDITF = "Y";
+      end
+    end
+    ;
+    return;
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf3) /* skip edit, update - exit*/
+    KL06S03();
+  end
+  ;
+  if (converseVar.eventKey is pf4) /* skip edit, update - exit*/
+    KL06S04();
+  end
+  ;
+  if (converseVar.eventKey is pf5) /* skip edit, update - exit*/
+    KL06S05();
+  end
+  ;
+  if (converseVar.eventKey is pf7) /* page back*/
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf8) /* page forward*/
+    return;
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf20) /* ADD RPS NUMBER*/
+    return;
+  end
+  ;
+  ;
+    /* all other pf keys are invalid*/
+  ;
+  converseLib.validationFailed(2); /* pf key not valid*/
+  KL06S26(); /* set fields modfd so user n*/
+  CLXREC.CLXEDITF = "N"; /* do not edit map, just re-show it*/
+  CLXREC.CLXUPDTF = "N";
+  ;
+  ;
+end // end KL06110
+
+// process screen m001 entrys
+Function KL06120()
+   /* *************************************************************/
+   /* *  this process handles all edits of screen fields, and any**/
+   /* *  subsequent updating required by entries into screen     **/
+   /* *  KL06M001.                                               **/
+   /* **                                                         **/
+   /* *************************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y    L O G      **/
+   /* *----------------------------------------------------------**/
+   /* *   DATE    PGMR     DESCRIPTION                           **/
+   /* *----------------------------------------------------------**/
+   /* * 03-03-92  GDECKE   CREATE STATEMENT GROUP                **/
+   /* * 08-21-92  GDECKE   allow user entry of new rps number    **/
+   /* *************************************************************/
+  ;
+  CLXREC.CLXCPROC = "KL06120"; /* set current process name*/
+  ;
+  ;
+     /* individual field edits:*/
+  ;
+  if (KL06M001.CLACLMNB != CL06W01.CLACLMNB /* build new screen if new clm*/
+   && KL06M001.CLACLMNB != 0                
+   && converseVar.eventKey is enter)       
+    converseLib.validationFailed(349);
+    CLXREC.CLXBLDSC = "Y";
+    CLXREC.CLXUPDTF = "N";
+    return;
+  else
+    if (KL06M001.KL06M-RPS-NBR-IN != CL06W01.CL-RPS-NBR
+     /* rebuild screen if new rps*/
+     && KL06M001.KL06M-RPS-NBR-IN != 0
+     && converseVar.eventKey is enter)
+      converseLib.validationFailed(349);
+      CLXREC.CLXBLDSC = "Y";
+      CLXREC.CLXUPDTF = "N";
+      return;
+    end
+  end
+  ;
+  ;
+  if (KL06M001.CL-RPS-NBR != 0)
+    KL06S-EDIT-RPS-ST(); /* status id's on all map lines*/
+  end
+  ;
+  if (CL06W01.CL06WCT1 > 0) /* if at least one item changed*/
+    CLXREC.CLXBLDSC = "Y"; /* flag to re-build screen*/
+  end
+  ;
+  ;
+end // end KL06120
+
+// ADD A NEW LINE TO VCLRPS01 TBL
+Function KL06S-ADD-CLRPS()
+   /* ***********************************************************/
+   /* *  ADD A NEW LINE ON DCLAIM.VCLRPS01.                    **/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* *  08-20-92  gdecke  created                             **/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "KL06S-ADD-CLRPS"; /* set current process name*/
+  ;
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("A ", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* RECORD FOUND*/
+    CL06W01.CL06W-DEADLOCK-COUNT = 0;
+    CL06W01.CL06W-DEADLOCK-FLAG = "N";
+    return;
+  end
+  ;
+  if (SQLCA.VAGen_SQLCODE == -911) /* DEADLOCK*/
+    CL06W01.CL06W-DEADLOCK-COUNT = CL06W01.CL06W-DEADLOCK-COUNT + 1;
+    if (CL06W01.CL06W-DEADLOCK-COUNT > 2) /* IF DEADLOCKED THREE TIMES*/
+      converseLib.validationFailed(4); /* SHOW ERROR MESSAGE*/
+      CL06W01.CL06W-DEADLOCK-FLAG = "N";
+      CLXREC.CLXERRF = "Y";
+    end
+    return;
+  end
+  ;
+  TA1REC.TA1LOCAT[2] = "KL06S-ADD-CLRPS"; /* LOCATION*/
+  TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+  TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+  TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+  CLXREC.XXXWDTE = VCLRPS01.CLACLMNB; /* CLAIM NUMBER*/
+  TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+  ;
+  XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+  ;
+   /* --- END OF STATEMENT GROUP ---*/
+end // end KL06S-ADD-CLRPS
+
+// ADD NEW LINE TO VCLRPS01 TBL.
+Function KL06S-ADD-RPS-LINE()
+   /* ***********************************************************/
+   /* *  ADD NEW LINE TO VCLRPS01 TABLE.                       **/
+   /* *  FUNCTION IS CONTROLLED BY ENTERING CLAIM NUMBER, RPS  **/
+   /* *  PACKAGE NUMBER AND PRESSING PF20 KEY.                 **/
+   /* **/
+   /* Note:  Both claim nbr & package nbr (which is the RPS    **/
+   /* generated nbr) must be entered on KL06 & then PF20**/
+   /* pressed in order for the RPS generated nbr to be  **/
+   /* added to the vclrps01 table.                      **/
+   /* **/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* 08-20-92  gdecke  created                               **/
+   /* 12-11-92  sgorga  Corrected logic (from 'and' to 'or')  **/
+   /* to require both claim # & package # be entered   **/
+   /* (NOT = 0) in order to allow a row to be created  **/
+   /* on the vclrps01 table for rps-generated pkg #'s. **/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "KL06S-ADD-RPS-LINE"; /* set current process name*/
+  ;
+  if (KL06M001.CLACLMNB == 0 /* if either the claim nbr or*/
+   || KL06M001.KL06M-RPS-NBR-IN == 0) /* the rps nbr = 0  on the map,*/
+    CLXREC.CLXERRF = "Y"; /* can't create row for rps-gen #*/
+    converseLib.validationFailed(743);
+    return;
+  else
+    set VCLRPS01 empty;
+    VCLRPS01.CLACLMNB = KL06M001.CLACLMNB;
+    CL06W01.CL06W-WK-RPS-NBR = KL06M001.KL06M-RPS-NBR-IN + 100000000;
+    VCLRPS01.CL-RPS-NBR = CL06W01.CL06W-WK-RPS-NBR;
+    KL06S-TEST-RPS-NBR();
+    if (CLXREC.CLXERRF == "Y") /* DO NOT ALLOW DUPLICATE ON SAME CLAIM*/
+      return;
+    end
+    ;
+    ;
+    VCLRPS01.CL-RPS-STAT-ID = "R";
+    VCLRPS01.XXXZIP = "     ";
+    VCLRPS01.XWHCD = COMMAREA.XWHCD;
+    if (CLAREC.CLACLMNB != 0
+     && CLAREC.CLACLMNB == KL06M001.CLACLMNB)
+      VCLRPS01.CLLRTNNB = CLAREC.CLACRTNB;
+    else
+      set CLAREC empty;
+      set SQLCA empty;
+      CLAREC.CLACLMNB = KL06M001.CLACLMNB;
+      call "IO1160" ("S ", SQLCA, CLAREC) {isNoRefresh = yes, isExternal = yes}; /* get clm hdr*/
+      if (SQLCA.VAGen_SQLCODE == 0)
+        VCLRPS01.CLLRTNNB = CLAREC.CLACRTNB;
+      else
+        VCLRPS01.CLLRTNNB = 1;
+      end
+    end
+    VCLRPS01.ZZZSDT = CLXREC.XXXCDTE;
+    VCLRPS01.ZZZCHGDT = CLXREC.XXXCDTE;
+    VCLRPS01.ZZZCHGTM = CLXREC.XXXCHHMM;
+    CL06W01.CL06W-DEADLOCK-COUNT = 0;
+    CL06W01.CL06W-DEADLOCK-FLAG = "Y";
+    while (CL06W01.CL06W-DEADLOCK-FLAG == "Y")
+      KL06S-ADD-CLRPS();
+    end
+    if (CL06W01.CL06W-DEADLOCK-COUNT > 0)
+      return;
+    else
+      CL06W01.CL06W-RPS-UPDATE-FL = "Y";
+      KL06M001.KL06M-RPS-NBR-IN = 0; /* force redisplay of all rps*/
+      CL06W01.CLACLMNB = 0; /* lines for the claim*/
+      CLXREC.CLXCURLN = 1;
+      CLXREC.CLXARY1X[CLXSCRNX] = 1;
+      CLXREC.CLXBLDSC = "Y";
+      set KL06M001.CLACLMNB modified;
+    end
+  end
+  ;
+  ;
+  if (converseVar.validationMsgNum == 0)
+    converseLib.validationFailed(349); /* show processing completed message*/
+  end
+  ;
+   /* --- END OF STATEMENT GROUP ---*/
+end // end KL06S-ADD-RPS-LINE
+
+// BUILD DUPLICATE PKG NBR MSG
+Function KL06S-BILD-DUP-MSG()
+   /* ***********************************************************/
+   /* *  SELECT THE DCLAIM.VCLRPS01 LINES THAT HAVE THE PACKAGE**/
+   /* *  NUMBER BUT WERE ORIGINATED BY RPS & ENTERED IN KL06   **/
+   /* **/
+   /* This process adds 100000000 to the rps # (because if it  **/
+   /* originated by RPS, we would store it that way) and searches*/
+   /* vclrps01 to see if it exists.  If it finds it, the       **/
+   /* duplicate flag is set to 'Y'.  However, that doesn't mean**/
+   /* there are duplicates.  Further down, the code checks the **/
+   /* cl06w01.cl06wix4 index.  The duplicate msg will only     **/
+   /* appear if that index is greater than 1.  If there is only**/
+   /* one occurrance of the nbr (meaning no dups), the index   **/
+   /* will = 1 by the time the pgm begins to check the index.  **/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* * 08-19-92  gdecke  created                              **/
+   /* 12-17-92 sgorga  Added comments/documentation.         **/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "KL06S-BILD-DUP-MSG"; /* set current process name*/
+  CL06W01.CL06W-RPS-DUP-FOUND-FL = "N";
+  ;
+  set VCLRPS01 empty;
+  ;
+  VCLRPS01.CL-RPS-NBR = KL06M001.KL06M-RPS-NBR-IN;
+  VCLRPS01.CL-RPS-NBR = VCLRPS01.CL-RPS-NBR + 100000000;
+  ;
+    /* SELECT SET OF ALL RPS ORIGINATED RPS PACKAGE NUMBERS*/
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("S2", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0) /* SQL ERROR OR DEADLOCK*/
+    TA1REC.TA1LOCAT[2] = "KL06S-BILD-DUP-MSG"; /* LOCATION*/
+    TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+    TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+    TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+    CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+    TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+    ;
+    XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+  end
+  ;
+  ;
+    /* FETCH THE LINES FOR VCLRPS01 TABLE AND ADD DUPLICATE*/
+    /* PACKATE NUMBER MESSAGE.*/
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  CL06W01.CL06WIX4 = 1;
+  while (CL06W01.CL06WIX4 <= 7
+   && SQLCA.VAGen_SQLCODE == 0)
+    call "IO6220" ("N2", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+    ;
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0)
+      CL06W01.CL06W-RPS-DUP-FOUND-FL = "Y";
+      CL06W01.CL06W-DUP-CLM-NBR[CL06WIX4] = VCLRPS01.CLACLMNB;
+      CL06W01.CL06WIX4 = CL06W01.CL06WIX4 + 1;
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+         /* next sentence;*/
+      else
+        TA1REC.TA1LOCAT[2] = "KL06S-BILD-DUP-MSG"; /* LOCATION*/
+        TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+        TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+        TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+        CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+        TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+        ;
+        XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+      end
+    end
+  end
+  ;
+  ;
+    /* CLOSE CURSOR ON VCLRPS01*/
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("C2", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0) /* SQL ERROR OR DEADLOCK*/
+    TA1REC.TA1LOCAT[2] = "KL06S-BILD-DUP-MSG"; /* LOCATION*/
+    TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+    TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+    TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+    CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+    TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+    ;
+    XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+  end
+  ;
+    /* move stored claim numbers to message as needed*/
+    /* ADD COMMAS TO MESSAGE as NEEDED*/
+  ;
+   /* In the below coding, the index is set down by 1.  If there are*/
+   /* no duplicates, the index won't be > 1 so dup msg won't appear.*/
+  ;
+  if (CL06W01.CL06W-RPS-DUP-FOUND-FL == "Y")
+    CL06W01.CL06W-DUP-PKG-MSG-TEXT = " "; /* clear message area*/
+    CL06W01.CL06WIX4 = CL06W01.CL06WIX4 - 1; /* LOCATE LAST CLM NBR*/
+    if (KL06M001.CLACLMNB == 0)
+      ;
+      KL06M001.CLACLMNB = CL06W01.CL06W-DUP-CLM-NBR[1];
+      KL06M001.KL06M-RPS-NBR-IN = 0; /* force redisplay of entire*/
+      CL06W01.CLACLMNB = 0; /* list of rps lines for claim*/
+      CLXREC.CLXCURLN = 1;
+      CLXREC.CLXARY1X[CLXSCRNX] = 1;
+      CLXREC.CLXBLDSC = "Y";
+      set KL06M001.CLACLMNB modified;
+      ;
+      if (CL06W01.CL06WIX4 > 6)
+        CL06W01.CL06W-DUP-PKG-MORE = "MORE";
+        CL06W01.CL06W-DUP-PKG-COMMA[5] = ", ";
+        converseLib.validationFailed(742);
+        set KL06M001.CLACLMNB cursor, modified, bold;
+      end
+      ;
+      if (CL06W01.CL06WIX4 > 5)
+        CL06W01.CL06W-DUP-PKG-COMMA[4] = ", ";
+        CL06W01.CL06W-DUP-CLM-NUM[5] = CL06W01.CL06W-DUP-CLM-NBR[6];
+      end
+      ;
+      if (CL06W01.CL06WIX4 > 4)
+        CL06W01.CL06W-DUP-PKG-COMMA[3] = ", ";
+        CL06W01.CL06W-DUP-CLM-NUM[4] = CL06W01.CL06W-DUP-CLM-NBR[5];
+      end
+      ;
+      if (CL06W01.CL06WIX4 > 3)
+        CL06W01.CL06W-DUP-PKG-COMMA[2] = ", ";
+        CL06W01.CL06W-DUP-CLM-NUM[3] = CL06W01.CL06W-DUP-CLM-NBR[4];
+      end
+      ;
+      if (CL06W01.CL06WIX4 > 2)
+        CL06W01.CL06W-DUP-PKG-COMMA[1] = ", ";
+        CL06W01.CL06W-DUP-CLM-NUM[2] = CL06W01.CL06W-DUP-CLM-NBR[3];
+      end
+      ;
+      if (CL06W01.CL06WIX4 > 1)
+        CL06W01.CL06W-DUP-CLM-NUM[1] = CL06W01.CL06W-DUP-CLM-NBR[2];
+        CL06W-DUP-MSG-LIT = "DUPLICATE PKG NBR ON CLM: ";
+        if (CL06W01.CL06W-DUP-CLM-NBR[2] == 0)
+          CL06W01.CL06W-DUP-CLM-ALPHA[2] = "       ";
+        end
+        if (CL06W01.CL06W-DUP-CLM-NBR[3] == 0)
+          CL06W01.CL06W-DUP-CLM-ALPHA[3] = "       ";
+        end
+        if (CL06W01.CL06W-DUP-CLM-NBR[4] == 0)
+          CL06W01.CL06W-DUP-CLM-ALPHA[4] = "       ";
+        end
+        if (CL06W01.CL06W-DUP-CLM-NBR[5] == 0)
+          CL06W01.CL06W-DUP-CLM-ALPHA[5] = "       ";
+        end
+        XXXMSG = CL06W01.CL06W-DUP-PKG-MSG-TEXT;
+      end
+      ;
+    else
+   /* *** there is already a claim number to use*/
+      if (CL06W01.CL06WIX4 > 5)
+        CL06W01.CL06W-DUP-PKG-MORE = "MORE";
+        CL06W01.CL06W-DUP-PKG-COMMA[5] = ", ";
+        converseLib.validationFailed(742);
+        set KL06M001.CLACLMNB cursor, modified, bold;
+      end
+      ;
+      if (CL06W01.CL06WIX4 > 4)
+        CL06W01.CL06W-DUP-PKG-COMMA[4] = ", ";
+        CL06W01.CL06W-DUP-CLM-NUM[5] = CL06W01.CL06W-DUP-CLM-NBR[5];
+      end
+      ;
+      if (CL06W01.CL06WIX4 > 3)
+        CL06W01.CL06W-DUP-PKG-COMMA[3] = ", ";
+        CL06W01.CL06W-DUP-CLM-NUM[4] = CL06W01.CL06W-DUP-CLM-NBR[4];
+      end
+      ;
+      if (CL06W01.CL06WIX4 > 2)
+        CL06W01.CL06W-DUP-PKG-COMMA[2] = ", ";
+        CL06W01.CL06W-DUP-CLM-NUM[3] = CL06W01.CL06W-DUP-CLM-NBR[3];
+      end
+      ;
+      if (CL06W01.CL06WIX4 > 1)
+        CL06W01.CL06W-DUP-PKG-COMMA[1] = ", ";
+        CL06W01.CL06W-DUP-CLM-NUM[2] = CL06W01.CL06W-DUP-CLM-NBR[2];
+      end
+      ;
+      if (CL06W01.CL06WIX4 > 0)
+        CL06W01.CL06W-DUP-CLM-NUM[1] = CL06W01.CL06W-DUP-CLM-NBR[1];
+        CL06W-DUP-MSG-LIT = "DUPLICATE PKG NBR ON CLM: ";
+        if (CL06W01.CL06W-DUP-CLM-NBR[2] == 0)
+          CL06W01.CL06W-DUP-CLM-ALPHA[2] = "       ";
+        end
+        if (CL06W01.CL06W-DUP-CLM-NBR[3] == 0)
+          CL06W01.CL06W-DUP-CLM-ALPHA[3] = "       ";
+        end
+        if (CL06W01.CL06W-DUP-CLM-NBR[4] == 0)
+          CL06W01.CL06W-DUP-CLM-ALPHA[4] = "       ";
+        end
+        if (CL06W01.CL06W-DUP-CLM-NBR[5] == 0)
+          CL06W01.CL06W-DUP-CLM-ALPHA[5] = "       ";
+        end
+        XXXMSG = CL06W01.CL06W-DUP-PKG-MSG-TEXT;
+      end
+      ;
+    end
+  end
+  ;
+end // end KL06S-BILD-DUP-MSG
+
+// BUILD W/S TABLE OF RPS LINES
+Function KL06S-BILD-RPS-TBL()
+   /* ***********************************************************/
+   /* *  SELECT THE DCLAIM.VCLRPS01 LINE TO GET RPS STATUS     **/
+   /* *  AND BUILD A TABLE OF ALL RPS LABEL NUMBERS.           **/
+   /* *                                                        **/
+   /* *  IMPORTANT NOTE:   Regarding NIKE-generated RPS nbrs & **/
+   /* *  RPS-generated RPS nbrs:                               **/
+   /* *     Whenever an RPS-generated nbr comes in on a package**/
+   /* *  (instead of the NIKE-generated RPS nbr), our ware-    **/
+   /* *  house people manually enter that RPS nbr (on the KL06 **/
+   /* *  screen).  Then, this pgm creates a row on the         **/
+   /* *  dclaim.vclrps01 tbl for that RPS nbr, but FIRST ADDS  **/
+   /* *  100000000 to the RPS nbr!  SO - If the RPS-generated  **/
+   /* *  nbr = 926182, the warehouse person will enter 926182, **/
+   /* *  and the pgm will add 100000000 to the nbr & store it  **/
+   /* *  as 100926182.  Whenever this pgm searches for an RPS- **/
+   /* *  generated nbr, it first adds 100000000 to the nbr.    **/
+   /* *  This was set up by Jerry Decker.  Documented by sgorga.*/
+   /* *                                                        **/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* 03-19-92  gdecke  created                               **/
+   /* 06-12-92  gdecke  SHOW CL-RPS-BILL-STAT                 **/
+   /* 08-19-92  gdecke  BUILD DUPLACATE PACKAGE NBR MSG.      **/
+   /* 12-14-92  sgorga  Corrected code moving 0 to pkg #      **/
+   /* before going to bild-dup-msg process. Zeroing **/
+   /* pkg # caused  a call using 100000000 as the   **/
+   /* pkg # to be searched for.  Added code to move **/
+   /* m001 clm # to vclrps01.cladlmnb before the 'S1'*/
+   /* call to IO6220 (because if the pgm went to the**/
+   /* dup-msg process before this 'S1' call was     **/
+   /* made, the vclrps01 clm # = 0).                **/
+   /* **/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "KL06S-BILD-RPS-TBL"; /* set current process name*/
+  ;
+  CL06W01.CL06W-RPS-NBR-FOUND-FL = "N";
+  ;
+  KL06S-CL06W3-EMPTY(); /* CLEAR rps status working storage table*/
+  set VCLRPS01 empty;
+  ;
+  if (KL06M001.CLACLMNB == 0         /* IF THE TRANSFER TO KL06 WAS DONE*/
+   && KL06M001.KL06M-RPS-NBR-IN == 0 /* WHILE LOGGING RETRUNS*/
+   && COMMAREA.CAFROMAP == "KL0T"    /* IN KL0T THEN USE THE SAVED CLAIM*/
+   && CLWREC.TF1CARCD != "    "      /* NUMBER IN CLWREC*/
+   && CLWREC.CLACLMNB != 0)         
+    CLAREC.CLAGROUP = CLWREC.CLAGROUP;
+    if (CLWREC.CLACLMNB != CLAREC.CLACLMNB)
+      CLAREC.CLACRTNB = 999;
+      CLAREC.CLACLMNB = CLWREC.CLACLMNB;
+    end
+    KL06M001.CLACLMNB = CLWREC.CLACLMNB;
+  else
+    CLAREC.CLAGROUP = CLWREC.CLAGROUP;
+    if (CLAREC.XGPCD == "   ")
+      CLAREC.CLACLMNB = 0;
+    end
+  end
+  ;
+   /* if claim number not changed and rps number was chnaged,*/
+   /* then clear the old claim number.*/
+  ;
+  if (KL06M001.CLACLMNB != 0
+   && KL06M001.CLACLMNB == CL06W01.CLACLMNB
+   && KL06M001.KL06M-RPS-NBR-IN != 0
+   && KL06M001.KL06M-RPS-NBR-IN != CL06W01.CL-RPS-NBR)
+    KL06M001.CLACLMNB = 0;
+  end
+  ;
+  ;
+    /* SAVE THE RPS NUMBER FROM THE MAP SO THAT THE EDIT/UPDATE*/
+    /* PROCESSES AFTER THE CONVERSE CAN TELL IF THE VALUES CHANGED*/
+    /* AND THE SCREEN BUILD PROCESS CAN POSITION THE CURSOR ON THE*/
+    /* ENTERED RPS NUMBER.*/
+  ;
+  CL06W01.CL-RPS-NBR = KL06M001.KL06M-RPS-NBR-IN;
+  ;
+  if (KL06M001.CLACLMNB == 0)
+    if (KL06M001.KL06M-RPS-NBR-IN == 0)
+      if (CLAREC.CLACLMNB == 0)
+        CLXREC.CLXERRF = "Y";
+        converseLib.validationFailed(718);
+        set KL06M001.CLACLMNB cursor, modified, bold;
+        return;
+      else
+        KL06M001.CLACLMNB = CLAREC.CLACLMNB;
+        VCLRPS01.CLACLMNB = CLAREC.CLACLMNB;
+        set KL06M001.CLACLMNB modified;
+      end
+    else /* (claim # = 0 and pkg # not = 0)*/
+      VCLRPS01.CL-RPS-NBR = KL06M001.KL06M-RPS-NBR-IN;
+      KL06S-GET-RPS-S2(); /* search for rps row & get clm #*/
+      if (KL06M001.CLACLMNB == 0) /* No row found for rps # (so clm = 0)*/
+        /* Since no RPS row was found using the RPS nbr, check to*/
+        /* see if the RPS nbr is an RSP-generated nbr.  Do this by*/
+        /* going to bild-dup-msg which will add 100000000 to the rps #*/
+        /* and search the vclrps table for that number.*/
+        KL06S-BILD-DUP-MSG(); /* Add 100000000 to rps # & search table*/
+        if (KL06M001.CLACLMNB == 0) /* rps-generated RPS # not found - clm#=0*/
+          return;
+        else
+          VCLRPS01.CLACLMNB = KL06M001.CLACLMNB;
+          KL06M001.KL06M-RPS-NBR-IN = 0;
+          set KL06M001.KL06M-RPS-NBR-IN modified;
+          set KL06M001.CLACLMNB modified;
+        end
+      else
+        KL06M001.CLACLMNB = VCLRPS01.CLACLMNB;
+        set KL06M001.KL06M-RPS-NBR-IN modified;
+        set KL06M001.CLACLMNB modified;
+         /* Check to see if there is an RPS-generated rps # the same*/
+         /* as the NIKE nbr.  Do this by going to bild-dup-msg.*/
+         /* Bild-dup-msg will add 100000000 to the rps nbr.  If found,*/
+         /* that means we have a duplicate.*/
+        KL06S-BILD-DUP-MSG();
+        KL06M001.KL06M-RPS-NBR-IN = 0; /* to clear package nbr from*/
+      end /* displaying on the screen.*/
+    end
+  else
+    VCLRPS01.CLACLMNB = KL06M001.CLACLMNB;
+    KL06M001.KL06M-RPS-NBR-IN = 0;
+    set KL06M001.CLACLMNB modified;
+    set KL06M001.KL06M-RPS-NBR-IN modified;
+  end
+  ;
+  ;
+    /* SELECT SET OF ALL VCLRPS01 LINES FOR THE CLAIM*/
+  ;
+   /* slg  Below move of map clm # to rps tbl is to replenish*/
+   /* the rps clm # in case pgm just went to dup-msg process*/
+  VCLRPS01.CLACLMNB = KL06M001.CLACLMNB;
+  ;
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("S1", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0) /* SQL ERROR OR DEADLOCK*/
+    TA1REC.TA1LOCAT[2] = "KL06S-BILD-RPS-TBL"; /* LOCATION*/
+    TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+    TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+    TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+    CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+    TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+    ;
+    XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+  end
+  ;
+  ;
+    /* FETCH THE LINES FOR VCLRPS01 TABLE AND ADD TO W/S TABLE*/
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  CL06W01.CL06WIX3 = 1;
+  while (CL06W01.CL06WIX3 <= CL06W01.CL06WMX1
+   && SQLCA.VAGen_SQLCODE == 0)
+    call "IO6220" ("N1", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+    ;
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0)
+      CL06W01.CL06W-RPS-NBR-FOUND-FL = "Y";
+      CL06W03.CL-RPS-NBR[CL06WIX3] = VCLRPS01.CL-RPS-NBR;
+      CL06W03.CL-RPS-STAT-ID[CL06WIX3] = VCLRPS01.CL-RPS-STAT-ID;
+      CL06W03.CL-RPS-BILL-STAT[CL06WIX3] = VCLRPS01.CL-RPS-BILL-STAT;
+      CL06W01.CL06WIX3 = CL06W01.CL06WIX3 + 1;
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+         /* next sentence;*/
+      else
+        TA1REC.TA1LOCAT[2] = "KL06S-BILD-RPS-TBL"; /* LOCATION*/
+        TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+        TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+        TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+        CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+        TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+        ;
+        XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+      end
+    end
+  end
+  ;
+  ;
+    /* CLOSE CURSOR ON VCLRPS01*/
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("C1", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0) /* SQL ERROR OR DEADLOCK*/
+    TA1REC.TA1LOCAT[2] = "KL06S-BILD-RPS-TBL"; /* LOCATION*/
+    TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+    TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+    TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+    CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+    TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+    ;
+    XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+  end
+  ;
+    /* test for possible rps table overflow*/
+  ;
+  if (CL06W01.CL06WIX3 >= CL06W01.CL06WMX1)
+    if (CL06W01.CL06W-OVERFLOW-WARN != "Y")
+      converseLib.validationFailed(734);
+      set KL06M001.CLACLMNB cursor, modified, bold;
+      CLXREC.CLXERRF = "Y";
+      CL06W01.CL06W-OVERFLOW-WARN = "Y";
+    end
+  end
+  ;
+    /* test for no rps lines found*/
+  ;
+  if (CL06W01.CL06W-RPS-NBR-FOUND-FL == "N")
+    CLXREC.CLXERRF = "Y";
+    converseLib.validationFailed(719);
+    set KL06M001.CLACLMNB cursor, modified, bold;
+    CL06W01.CL06WIX3 = 1; /* clear out the detail area*/
+    while (CL06W01.CL06WIX3 <= CLXREC.CLXMAXLN[1])
+      KL06M001.CL-RPS-NBR[CL06WIX3] = " ";
+      KL06M001.KL06M-RPS-ORIGIN[CL06WIX3] = " ";
+      KL06M001.CL-RPS-STAT-ID[CL06WIX3] = " ";
+      KL06M001.CL-RPS-BILL-STAT[CL06WIX3] = " ";
+      set KL06M001.CL-RPS-STAT-ID[CL06WIX3] invisible, skip;
+      CL06W01.CL06WIX3 = CL06W01.CL06WIX3 + 1;
+    end
+  end
+end // end KL06S-BILD-RPS-TBL
+
+// set cl06w03 table empty
+Function KL06S-CL06W3-EMPTY()
+   /* ***********************************************************/
+   /* *  set cl06w03 table empty                               **/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* *  08-19-92  gdecke  created                             **/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "KL06S-CL06W3-EMPTY"; /* set current process name*/
+  ;
+  set CL06W03 empty; /* CLEAR rps status working storage table*/
+  ;
+end // end KL06S-CL06W3-EMPTY
+
+// EDIT RPS STATUS CODE INPUT
+Function KL06S-EDIT-RPS-ST()
+   /* ***********************************************************/
+   /* *  IF THE RA HEADER RPS FLAG IS 'Y' TRY TO GET THE RPS   **/
+   /* *  TABLE LINES FOR THE CLAIM, AND EDIT FOR VALID RPS     **/
+   /* *  STATUS INPUT.                                         **/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* *  02-05-92  gdecke  created                             **/
+   /* *  04-14-92  gdecke  CHANGE TO MESSAGE NUMBER 700        **/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "CL06S-EDIT-RPS-ST"; /* set process name*/
+  ;
+  CL06W01.CL06WIX3 = CLXREC.CLXMAXLN[1];
+  ;
+  while (CL06W01.CL06WIX3 > 0)
+    if (KL06M001.CL-RPS-NBR[CL06WIX3] != 0)
+      ;
+      if (KL06M001.CL-RPS-STAT-ID[CL06WIX3] == " ")
+        KL06M001.CL-RPS-STAT-ID[CL06WIX3] = "A";
+      end
+      ;
+      if (KL06M001.KL06M-RPS-ORIGIN[CL06WIX3] == "+")
+        CL06W01.CL06W-WK-RPS-NBR = KL06M001.CL-RPS-NBR[CL06WIX3]                                + 100000000;
+      else
+        CL06W01.CL06W-WK-RPS-NBR = KL06M001.CL-RPS-NBR[CL06WIX3];
+      end
+      ;
+      if (KL06M001.CL-RPS-STAT-ID[CL06WIX3] == "A"
+       || KL06M001.CL-RPS-STAT-ID[CL06WIX3] == "O"
+       || KL06M001.CL-RPS-STAT-ID[CL06WIX3] == "R")
+        if (CL06W01.CL06W-WK-RPS-NBR in CL06W03.CL-RPS-NBR)
+          if (CL06W03.CL-RPS-STAT-ID[sysVar.arrayIndex] == "X")
+            set KL06M001.CL-RPS-STAT-ID[CL06WIX3] cursor, modified, bold;
+            converseLib.validationFailed(721);
+          end
+        end
+      else
+        if (KL06M001.CL-RPS-STAT-ID[CL06WIX3] == "X")
+          if (CL06W01.CL06W-WK-RPS-NBR in CL06W03.CL-RPS-NBR)
+            if (CL06W03.CL-RPS-STAT-ID[sysVar.arrayIndex] != "X")
+              set KL06M001.CL-RPS-STAT-ID[CL06WIX3] cursor, modified, bold;
+              converseLib.validationFailed(700);
+              CLXREC.CLXERRF = "Y";
+            end
+          end
+        else
+          set KL06M001.CL-RPS-STAT-ID[CL06WIX3] cursor, modified, bold;
+          converseLib.validationFailed(700);
+          CLXREC.CLXERRF = "Y";
+        end
+      end
+    end
+    CL06W01.CL06WIX3 = CL06W01.CL06WIX3 - 1;
+  end
+  ;
+  ;
+  ;
+end // end KL06S-EDIT-RPS-ST
+
+// Get unique rps line/use RPS nb
+Function KL06S-GET-RPS-NBR()
+   /* ***********************************************************/
+   /* *  SELECT THE DCLAIM.VCLRPS01 LINE USING THE RPS NUMBER. **/
+   /* *  THE CLAIM NUMBER ON THAT LINE WILL THEN BE USED TO    **/
+   /* *  FETCH ALL THE RPS NUMBERS FOR THE CLAIM.              **/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* *  03-19-92  gdecke  created                             **/
+   /* *  09-15-92  gdecke  clear detail area with not found msg**/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "KL06S-GET-RPS-NBR "; /* set current process name*/
+  ;
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("S ", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 100) /* RECORD NOT FOUND*/
+    CLXREC.CLXERRF = "Y";
+    converseLib.validationFailed(717);
+    set KL06M001.KL06M-RPS-NBR-IN cursor, modified, bold;
+    CL06W01.CL06WIX3 = 1; /* clear out detail area*/
+    while (CL06W01.CL06WIX3 <= CLXREC.CLXMAXLN[1])
+      KL06M001.CL-RPS-NBR[CL06WIX3] = " ";
+      KL06M001.KL06M-RPS-ORIGIN[CL06WIX3] = " ";
+      KL06M001.CL-RPS-STAT-ID[CL06WIX3] = " ";
+      KL06M001.CL-RPS-BILL-STAT[CL06WIX3] = " ";
+      set KL06M001.CL-RPS-STAT-ID[CL06WIX3] invisible, skip;
+      CL06W01.CL06WIX3 = CL06W01.CL06WIX3 + 1;
+    end
+    return;
+  end
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0) /* SQL ERROR OR DEADLOCK*/
+    TA1REC.TA1LOCAT[2] = "KL06S-GET-RPS-LINE"; /* LOCATION*/
+    TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+    TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+    TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+    CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+    TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+    ;
+    XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+  end
+  ;
+  ;
+end // end KL06S-GET-RPS-NBR
+
+// BUILD DUPLICATE PKG NBR MSG
+Function KL06S-GET-RPS-S2()
+   /* ***********************************************************/
+   /* *  SELECT THE DCLAIM.VCLRPS01 LINES THAT HAVE THE PACKAGE**/
+   /* *  NUMBER BUT WERE ORIGINATED BY claims batch job cl2290.**/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* *  08-19-92  gdecke  created                             **/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "KL06S-GET-RPS-NBR "; /* set current process name*/
+  ;
+    /* SELECT SET OF ALL RPS ORIGINATED RPS PACKAGE NUMBERS*/
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("S2", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0) /* SQL ERROR OR DEADLOCK*/
+    TA1REC.TA1LOCAT[2] = "KL06S-GET-RPS-NBR "; /* LOCATION*/
+    TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+    TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+    TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+    CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+    TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+    ;
+    XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+  end
+  ;
+  ;
+    /* FETCH THE LINES FOR VCLRPS01 TABLE AND ADD DUPLICATE*/
+    /* PACKATE NUMBER MESSAGE.*/
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("N2", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    KL06M001.CLACLMNB = VCLRPS01.CLACLMNB;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      KL06M001.CLACLMNB = 0;
+    else
+      TA1REC.TA1LOCAT[2] = "KL06S-GET-RPS-NBR "; /* LOCATION*/
+      TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+      TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+      TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+      CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+      TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+      ;
+      XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+    end
+  end
+  ;
+  ;
+    /* CLOSE CURSOR ON VCLRPS01*/
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("C2", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0) /* SQL ERROR OR DEADLOCK*/
+    TA1REC.TA1LOCAT[2] = "KL06S-GET-RPS-NBR "; /* LOCATION*/
+    TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+    TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+    TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+    CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+    TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+    ;
+    XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+  end
+  ;
+end // end KL06S-GET-RPS-S2
+
+// in inquiry set fields skip
+Function KL06S-SKIP-FLDS()
+   /* *****************************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y     L O G         **/
+   /* *--------------------------------------------------------------**/
+   /* *   DATE    PGMR    DESCRIPTION                                **/
+   /* *--------------------------------------------------------------**/
+   /* * 03-31-92  twatso  created                                    **/
+   /* * 08-19-92  GDECKE  CHANGE COMMENT                             **/
+   /* *****************************************************************/
+  ;
+   /* KL06S-SKIP-FLDS   IF IN INQUIRY MODE THEN SET THE STATUS*/
+   /* FIELDS SO NOTHING CAN BE UPDATED.*/
+   /* *****************************************************************/
+  ;
+   /* set all the status fields to AUTOSKIP so no entry can take place*/
+  ;
+  set KL06M001.CL-RPS-STAT-ID[1] skip;
+  set KL06M001.CL-RPS-STAT-ID[2] skip;
+  set KL06M001.CL-RPS-STAT-ID[3] skip;
+  set KL06M001.CL-RPS-STAT-ID[4] skip;
+  set KL06M001.CL-RPS-STAT-ID[5] skip;
+  set KL06M001.CL-RPS-STAT-ID[6] skip;
+  set KL06M001.CL-RPS-STAT-ID[7] skip;
+  set KL06M001.CL-RPS-STAT-ID[8] skip;
+  set KL06M001.CL-RPS-STAT-ID[9] skip;
+  set KL06M001.CL-RPS-STAT-ID[10] skip;
+  set KL06M001.CL-RPS-STAT-ID[11] skip;
+  set KL06M001.CL-RPS-STAT-ID[12] skip;
+  set KL06M001.CL-RPS-STAT-ID[13] skip;
+  set KL06M001.CL-RPS-STAT-ID[14] skip;
+  set KL06M001.CL-RPS-STAT-ID[15] skip;
+  set KL06M001.CL-RPS-STAT-ID[16] skip;
+  set KL06M001.CL-RPS-STAT-ID[17] skip;
+  set KL06M001.CL-RPS-STAT-ID[18] skip;
+  set KL06M001.CL-RPS-STAT-ID[19] skip;
+  set KL06M001.CL-RPS-STAT-ID[20] skip;
+  set KL06M001.CL-RPS-STAT-ID[21] skip;
+  set KL06M001.CL-RPS-STAT-ID[22] skip;
+  set KL06M001.CL-RPS-STAT-ID[23] skip;
+  set KL06M001.CL-RPS-STAT-ID[24] skip;
+  set KL06M001.CL-RPS-STAT-ID[25] skip;
+  set KL06M001.CL-RPS-STAT-ID[26] skip;
+  set KL06M001.CL-RPS-STAT-ID[27] skip;
+  set KL06M001.CL-RPS-STAT-ID[28] skip;
+  set KL06M001.CL-RPS-STAT-ID[29] skip;
+  set KL06M001.CL-RPS-STAT-ID[30] skip;
+  set KL06M001.CL-RPS-STAT-ID[31] skip;
+  set KL06M001.CL-RPS-STAT-ID[32] skip;
+  set KL06M001.CL-RPS-STAT-ID[33] skip;
+  set KL06M001.CL-RPS-STAT-ID[34] skip;
+  set KL06M001.CL-RPS-STAT-ID[35] skip;
+  set KL06M001.CL-RPS-STAT-ID[36] skip;
+  set KL06M001.CL-RPS-STAT-ID[37] skip;
+  set KL06M001.CL-RPS-STAT-ID[38] skip;
+  set KL06M001.CL-RPS-STAT-ID[39] skip;
+end // end KL06S-SKIP-FLDS
+
+// CHECK FOR SAME RPS NBR ON CLM
+Function KL06S-TEST-RPS-NBR()
+   /* ***********************************************************/
+   /* *  SELECT THE DCLAIM.VCLRPS01 LINE USING THE RPS NUMBER  **/
+   /* *  AND CLAIM NUMBER. IF THE LINE IS FOUND THEN SHOW THE  **/
+   /* *  MESSAGE TO DISALLOW THE ADD. DONT ALLOW DUPLICATE     **/
+   /* *  RPS NUMBERS ON THE CLAIM.                             **/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* *  08-20-92  gdecke  created                             **/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "KL06S-TEST-RPS-NBR"; /* set current process name*/
+  ;
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("S ", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 100) /* RECORD NOT FOUND*/
+    return;
+  end
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* RECORD FOUND*/
+    CLXREC.CLXERRF = "Y";
+    converseLib.validationFailed(744);
+    set KL06M001.KL06M-RPS-NBR-IN cursor, modified, bold;
+    return;
+  end
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0) /* SQL ERROR OR DEADLOCK*/
+    TA1REC.TA1LOCAT[2] = "KL06S-TEST-RPS-NBR"; /* LOCATION*/
+    TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+    TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+    TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+    CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+    TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+    ;
+    XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+  end
+  ;
+  ;
+end // end KL06S-TEST-RPS-NBR
+
+// UPDATE STATUS ON VCLRPS01 TBL.
+Function KL06S-UPDAT-STATUS()
+   /* ***********************************************************/
+   /* *  UPDATE STATUS ON DCLAIM.VCLRPS01.                     **/
+   /* *  UPDATE THE STATUS OF ALL RPS NUMBERS CHANGED ON THE   **/
+   /* *  KL06M001 MAP.                                         **/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* *  03-19-92  gdecke  created                             **/
+   /* *  08-20-92  gdecke  handle rps originated pkg numbers.  **/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "KL06S-UPDAT-STATUS"; /* set current process name*/
+  ;
+  ;
+  ;
+  CL06W01.CL06WIX3 = 1;
+  while (CL06W01.CL06WIX3 <= CLXREC.CLXMAXLN[1]
+   && KL06M001.CL-RPS-NBR[CL06WIX3] > 0)
+    set VCLRPS01 empty;
+    if (KL06M001.KL06M-RPS-ORIGIN[CL06WIX3] == "+")
+      CL06W01.CL06W-WK-RPS-NBR = KL06M001.CL-RPS-NBR[CL06WIX3]                              + 100000000;
+    else
+      CL06W01.CL06W-WK-RPS-NBR = KL06M001.CL-RPS-NBR[CL06WIX3];
+    end
+    VCLRPS01.CL-RPS-NBR = CL06W01.CL06W-WK-RPS-NBR;
+    VCLRPS01.CLACLMNB = CLAREC.CLACLMNB;
+    VCLRPS01.CLACLMNB = KL06M001.CLACLMNB;
+    KL06S-GET-RPS-NBR();
+    if (CLXREC.CLXERRF == "Y")
+      return;
+    end
+    ;
+    if (KL06M001.CL-RPS-STAT-ID[CL06WIX3] != VCLRPS01.CL-RPS-STAT-ID)
+      ;
+   /* update the cl06w03 table and then update the vclrps01 db2 table*/
+      ;
+      if (CL06W01.CL06W-WK-RPS-NBR in CL06W03.CL-RPS-NBR)
+        CL06W03.CL-RPS-STAT-ID[sysVar.arrayIndex] = KL06M001.CL-RPS-STAT-ID[CL06WIX3];
+      end
+      ;
+      VCLRPS01.CL-RPS-STAT-ID = KL06M001.CL-RPS-STAT-ID[CL06WIX3];
+      if (CLAREC.CLACLMNB != 0
+       && CLAREC.CLACLMNB == KL06M001.CLACLMNB)
+        VCLRPS01.CLLRTNNB = CLAREC.CLACRTNB;
+      else
+        VCLRPS01.CLLRTNNB = 999;
+      end
+      VCLRPS01.ZZZCHGDT = CLXREC.XXXCDTE;
+      VCLRPS01.ZZZCHGTM = CLXREC.XXXCHHMM;
+      CL06W01.CL06W-DEADLOCK-COUNT = 0;
+      CL06W01.CL06W-DEADLOCK-FLAG = "Y";
+      while (CL06W01.CL06W-DEADLOCK-FLAG == "Y")
+        KL06S-UPDATE-CLRPS();
+      end
+      if (CL06W01.CL06W-DEADLOCK-COUNT > 0)
+        return;
+      else
+        CL06W01.CL06W-RPS-UPDATE-FL = "Y";
+      end
+    end
+    CL06W01.CL06WIX3 = CL06W01.CL06WIX3 + 1;
+  end
+  ;
+  ;
+  if (converseVar.validationMsgNum == 0)
+    converseLib.validationFailed(349); /* show processing completed message*/
+  end
+  ;
+   /* --- END OF STATEMENT GROUP ---*/
+end // end KL06S-UPDAT-STATUS
+
+// UPDATE STATUS ON VCLRPS01 TBL.
+Function KL06S-UPDATE-CLRPS()
+   /* ***********************************************************/
+   /* *  UPDATE STATUS ON DCLAIM.VCLRPS01.                     **/
+   /* ***********************************************************/
+   /* *    M A I N T E N A N C E     H I S T O R Y             **/
+   /* *--------------------------------------------------------**/
+   /* *    DATE    USER    DESCRIPTION                         **/
+   /* *--------------------------------------------------------**/
+   /* *  02-05-92  gdecke  created                             **/
+   /* ***********************************************************/
+  CLXREC.CLXCPROC = "KL06S-UPDATE-CLRPS"; /* set current process name*/
+  ;
+  ;
+  set SQLCA empty; /* CLEAR SQL RECORD*/
+  ;
+  call "IO6220" ("U ", SQLCA, VCLRPS01) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* RECORD FOUND*/
+    CL06W01.CL06W-DEADLOCK-COUNT = 0;
+    CL06W01.CL06W-DEADLOCK-FLAG = "N";
+    return;
+  end
+  ;
+  if (SQLCA.VAGen_SQLCODE == -911) /* DEADLOCK*/
+    CL06W01.CL06W-DEADLOCK-COUNT = CL06W01.CL06W-DEADLOCK-COUNT + 1;
+    if (CL06W01.CL06W-DEADLOCK-COUNT > 2) /* IF DEADLOCKED THREE TIMES*/
+      converseLib.validationFailed(4); /* SHOW ERROR MESSAGE*/
+      CL06W01.CL06W-DEADLOCK-FLAG = "N";
+      CLXREC.CLXERRF = "Y";
+    end
+    return;
+  end
+  ;
+  TA1REC.TA1LOCAT[2] = "KL06S-UPDATE-CLRPS"; /* LOCATION*/
+  TA1REC.TA1LOCAT[4] = "IO6220"; /* LOCATION*/
+  TA1REC.TA1DBASE = "DCLAIM"; /* DATABASE*/
+  TA1REC.TA1TBLVU = "VCLRPS01"; /* TABLE VIEW*/
+  CLXREC.XXXWDTE = CLAREC.CLACLMNB; /* CLAIM NUMBER*/
+  TA1REC.TA1TBLKE = CLXREC.XXXWDTE; /* TABLE KEY*/
+  ;
+  XPCL010(); /* ERROR DIAGNOSIS ROUTINE*/
+  ;
+   /* --- END OF STATEMENT GROUP ---*/
+end // end KL06S-UPDATE-CLRPS
+
+// pf3 exit to claims
+Function KL06S03()
+   /* *************************************************************/
+   /* * skip edits / update, go to higher level in claims        **/
+   /* *                                                          **/
+   /* * ** your application may need to go elsewhere **          **/
+   /* *                                                          **/
+   /* *************************************************************/
+  ;
+  CLXREC.CLXCPROC = "KL06S03"; /* SET CURRENT PROCESS NAME*/
+  ;
+  COMMAREA.CATOAP = "KL0A"; /* go to claims menu*/
+  ;
+  XPCL002(); /* common claims exit*/
+  ;
+  ;
+end // end KL06S03
+
+// pf4 exit to master menu
+Function KL06S04()
+   /* *************************************************************/
+   /* *  skip edits / update, go to goal master menu             **/
+   /* *************************************************************/
+  ;
+  CLXREC.CLXCPROC = "KL06S04"; /* SET CURRENT PROCESS NAME*/
+  ;
+  XSPF4();
+  ;
+  ;
+end // end KL06S04
+
+// pf5 exit to claims
+Function KL06S05()
+   /* *************************************************************/
+   /* * skip edits / update, go back to from application         **/
+   /* *************************************************************/
+   /* *    M A I N T E N A N C E    H I S T O R Y    L O G       **/
+   /* *----------------------------------------------------------**/
+   /* *   DATE    PGMR     DESCRIPTION                           **/
+   /* *----------------------------------------------------------**/
+   /* * 03-24-92  GDECKE   CREATE STATEMENT GROUP                **/
+   /* *************************************************************/
+  ;
+  CLXREC.CLXCPROC = "KL06S05"; /* SET CURRENT PROCESS NAME*/
+  ;
+  if (COMMAREA.CAFROMAP == "KL0E"
+   || COMMAREA.CAFROMAP == "KL0T"
+   || COMMAREA.CAFROMAP == "KL0B")
+    COMMAREA.CATOAP = COMMAREA.CAFROMAP; /* GO TO FROM APPL*/
+  else
+    COMMAREA.CATOAP = "KL0A"; /* go to claims menu*/
+  end
+  ;
+  ;
+  XPCL002(); /* common claims exit*/
+  ;
+  ;
+end // end KL06S05
+
+// page back on cl06m001-pf7
+Function KL06S07()
+   /* *************************************************************/
+   /* *                                                          **/
+   /* * this process handles the entry of pf key 7               **/
+   /* *      (paging backward)                                   **/
+   /* *************************************************************/
+  ;
+  ;
+  CLXREC.CLXCPROC = "KL06S07"; /* SET CURRENT PROCESS NAME*/
+  ;
+  CLXREC.CLXCURLN = CLXREC.CLXCURLN - CLXMAXLN[CLXSCRNX];
+  if (CLXREC.CLXCURLN <= 1)
+    CLXREC.CLXCURLN = 1;
+    converseLib.validationFailed(7);
+  end
+  ;
+  CLXREC.CLXARY1X[CLXSCRNX] = CLXREC.CLXCURLN;
+  ;
+  CLXREC.CLXBLDSC = "Y";
+  ;
+  ;
+end // end KL06S07
+
+// page frwd on cl06m001-pf8
+Function KL06S08()
+   /* *************************************************************/
+   /* * this process handles the entry of pf key 8               **/
+   /* *    (paging forward)                                      **/
+   /* *                                                          **/
+   /* *************************************************************/
+  ;
+  CLXREC.CLXCPROC = "KL06S08"; /* SET CURRENT PROCESS NAME*/
+  ;
+  if (CLXREC.CLXCURLN <= 1)
+    CLXREC.CLXCURLN = 1;
+  end
+  ;
+  CLXREC.CLXCURLN = CLXREC.CLXCURLN + CLXREC.CLXMAXLN[CLXSCRNX];
+  if (CLXREC.CLXCURLN > CL06W01.CL06WMX1
+   || CL06W03.CL-RPS-NBR[CLXCURLN] == 0)
+    converseLib.validationFailed(3); /* at end of data*/
+    CLXREC.CLXCURLN = CLXREC.CLXCURLN - CLXREC.CLXMAXLN[CLXSCRNX];
+  end
+  ;
+  CLXREC.CLXARY1X[CLXSCRNX] = CLXREC.CLXCURLN;
+  ;
+    /* force build new screen*/
+  ;
+  CLXREC.CLXBLDSC = "Y";
+  ;
+  ;
+end // end KL06S08
+
+// modify entered fields
+Function KL06S26()
+   /* *************************************************************/
+   /* *  since the map must be re-shown to the user before       **/
+   /* *  editing has been done, set fields modified to keep      **/
+   /* *  track of  all the fields entered by the user.           **/
+   /* *  the user will only need to re-do the pf key or enter    **/
+   /* *  key, not enter the data again.                          **/
+   /* *************************************************************/
+  ;
+  CLXREC.CLXCPROC = "KL06S26";
+  ;
+  if (KL06M001.CLACLMNB is modified)
+    set KL06M001.CLACLMNB modified;
+  end
+  ;
+  ;
+  if (KL06M001.KL06M-RPS-NBR-IN is modified)
+    set KL06M001.KL06M-RPS-NBR-IN modified;
+  end
+  ;
+  ;
+  CL06W01.CL06WIX2 = 1;
+  while (CL06W01.CL06WIX2 <= CLXREC.CLXMAXLN[1])
+    if (KL06M001.CL-RPS-NBR[CL06WIX2] is modified)
+      set KL06M001.CL-RPS-NBR[CL06WIX2] modified;
+    end
+    if (KL06M001.CL-RPS-STAT-ID[CL06WIX2] is modified)
+      set KL06M001.CL-RPS-STAT-ID[CL06WIX2] modified;
+    end
+    CL06W01.CL06WIX2 = CL06W01.CL06WIX2 + 1;
+  end
+  ;
+  ;
+  ;
+end // end KL06S26
+
+//*** RECORD=CL06W01 ****
+// ************************************************************
+// *   CL06w01 is the working storage record used by the cl06 *
+// *   application to pass switches and other data between    *
+// *   statement groups and processes within cl06.           **
+// ************************************************************
+// ***********************
+Record CL06W01 type basicRecord
+  5 CL06WGRP CL06WGRP ; 
+    10 CL06WMX1 CL06WMX1 ; 
+    10 CL06WMX2 CL06WMX2 ; 
+    10 CL06WIX1 CL06WIX1 ; 
+    10 CL06WIX2 CL06WIX2 ; 
+    10 CL06WIX3 CL06WIX3 ; 
+    10 CL06WIX4 CL06WIX4 ; 
+    10 CL06W-STAT-IDX CL06W-STAT-IDX ; 
+    10 CL06WCT1 CL06WCT1 ; 
+    10 CL06WCT2 CL06WCT2 ; 
+    10 CL06WCT3 CL06WCT3 ; 
+    10 CL06WDCT CL06WDCT ; 
+    10 CL06WDFL CL06WDFL ; 
+    10 CL06WPAG CL06WPAG ; 
+    10 CL06WOVR CL06WOVR [6] ; 
+    10 CL06W-RPS-NBR-FOUND-FL CL06W-RPS-NBR-FOUND-FL ; 
+    10 CL06W-DEADLOCK-COUNT CL06W-DEADLOCK-COUNT ; 
+    10 CL06W-DEADLOCK-FLAG CL06W-DEADLOCK-FLAG ; 
+    10 CLACLMNB CLACLMNB ; 
+    10 CL-RPS-NBR CL-RPS-NBR ; 
+    10 CL06W-RPS-UPDATE-FL CL06W-RPS-UPDATE-FL ; 
+    10 CL06W-OVERFLOW-WARN CL06W-OVERFLOW-WARN ; 
+    10 CL06W-DUP-PKG-MSG-TEXT CL06W-DUP-PKG-MSG-TEXT ; 
+      15 CL06W-DUP-MSG-LIT CL06W-DUP-MSG-LIT ; 
+      15 CL06W-DUP-CLM-NUMBER CL06W-DUP-CLM-NUMBER [5] ; 
+        20 CL06W-DUP-CLM-NUM CL06W-DUP-CLM-NUM ; 
+          25 CL06W-DUP-CLM-ALPHA CL06W-DUP-CLM-ALPHA ; 
+        20 CL06W-DUP-PKG-COMMA CL06W-DUP-PKG-COMMA ; 
+      15 CL06W-DUP-PKG-MORE CL06W-DUP-PKG-MORE ; 
+    10 CL06W-RPS-DUP-FOUND-FL CL06W-RPS-DUP-FOUND-FL ; 
+    10 CL06W-DUP-CLM-NBR CL06W-DUP-CLM-NBR [8] ; 
+    10 CL06W-WK-RPS-NBR CL06W-WK-RPS-NBR ; 
+    10 CL06W-ALLOW-PF20 CL06W-ALLOW-PF20 ; 
+end // end CL06W01
+
+//*** RECORD=CL06W03 ****
+// ************************************************************
+// *   CL04w03 is the working storage record used by the cl04 *
+// *   application to save the data entered in map cl04m001   *
+// *   and cl04m005.                                         **
+// ************************************************************
+// ***********************
+Record CL06W03 type basicRecord
+  5 CL06WGP3 CL06WGP3 ; 
+    10 CLACLMNB CLACLMNB ; 
+    10 KL06M-RPS-NBR-IN KL06M-RPS-NBR-IN ; 
+    10 CL-RPS-NBR CL-RPS-NBR [2000] ; 
+    10 CL-RPS-STAT-ID CL-RPS-STAT-ID [2000] ; 
+    10 CL-RPS-BILL-STAT CL-RPS-BILL-STAT [2000] ; 
+end // end CL06W03
+
+// allow pf20 if update mode flag
+DataItem CL06W-ALLOW-PF20 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DB2 DEADLOCK COUNT (-811)
+DataItem CL06W-DEADLOCK-COUNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// DB2 DEADLOCK FLAG (-811)
+DataItem CL06W-DEADLOCK-FLAG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DUPLICATE claim NUMBER:alpha
+DataItem CL06W-DUP-CLM-ALPHA char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// table of claims with dup pkg
+DataItem CL06W-DUP-CLM-NBR num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// DUPLICATE claim NUMBER:numeric
+DataItem CL06W-DUP-CLM-NUM num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// DUPLICATE claim NUMBER & COMMA
+DataItem CL06W-DUP-CLM-NUMBER char(9)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DUPLICATE msg PACKAGE LITERAL
+DataItem CL06W-DUP-MSG-LIT char(26)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DUPLICATE PACKAGE COMMA
+DataItem CL06W-DUP-PKG-COMMA char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DUPLACATE PACKAGE MORE
+DataItem CL06W-DUP-PKG-MORE char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DUPLICATE PACKAGE MESSAGE TEXT
+DataItem CL06W-DUP-PKG-MSG-TEXT char(75)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CL06W03 TABLE MAY OVERFLOW
+DataItem CL06W-OVERFLOW-WARN char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DUPLICATE RPS NBR FOUND FLAG
+DataItem CL06W-RPS-DUP-FOUND-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// RPS NUMBER FOUND FLAG
+DataItem CL06W-RPS-NBR-FOUND-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// INDICATES IF ANY RPS UPDATES
+DataItem CL06W-RPS-UPDATE-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// STATUS LINE INDEX
+DataItem CL06W-STAT-IDX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// rps number for origin test
+DataItem CL06W-WK-RPS-NBR int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// selected lines count
+DataItem CL06WCT1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// selected lines count 2
+DataItem CL06WCT2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// selected lines count 3
+DataItem CL06WCT3 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// deadlock count
+DataItem CL06WDCT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// deadlock flag
+DataItem CL06WDFL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// cl04w03 group field
+DataItem CL06WGP3 char(12011)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// cl04w01 group field
+DataItem CL06WGRP char(184)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// index #1
+DataItem CL06WIX1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// index #2
+DataItem CL06WIX2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// index #3
+DataItem CL06WIX3 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// index #4
+DataItem CL06WIX4 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// maximum index value #1
+DataItem CL06WMX1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// maximum index value #2
+DataItem CL06WMX2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// error-message-was-shown flag
+DataItem CL06WOVR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// COMPUTED PAGE NUMBER
+DataItem CL06WPAG int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// RPS CARTON NUMBER INPUT
+DataItem KL06M-RPS-NBR-IN num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+
