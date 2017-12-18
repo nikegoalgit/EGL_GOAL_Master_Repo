@@ -1,0 +1,1221 @@
+package pf0i;
+
+import corpcom3.XPPF002;
+import corpcom3.XPPF010;
+import corpcom3.XPPF030;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSPF1;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import pf.common.PFAREC;
+import pf.common.PFWREC;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+//*** PROGRAM=PF0I ****
+// PF0I: Parameter maintenance screen for the profitability
+//       reporting system.
+// 
+// Overview:
+//       This application maintains the profitability system
+//       control table.  This table contains only one row at
+//       all times.  The paramaters in this table control the
+//       time frame for the information reported by the
+//       profitability system.
+// 
+// Maintenance History:
+//   Date      By            Description of Change
+// --------  ------   ------------------------------------
+//  7-13-88  DCassi   Original transfer to production.
+//  8-19-88  DCassi   Added PFANXTNO and PFAYREND to PFAREC,
+//                    added PFAYREND logic, added PA2 logic,
+//                    and changed Fastpath error reporting.
+// 11-03-88  DCassi   Changed Base Period editing and changed
+//                    Fastpath error editing.
+//  1-03-89  DCassi   Added XSSEGTR call.
+//  3-27-89  DCassi   Allow last month as a valid base period
+//                    month in PF0I120.
+//  5-03-89  DCassi   Add current accounting close month
+//                    (PFACRACM) data item to the screen and
+//                    add edits for it.
+// 03-02-1998 TTHAN1  Y2KFIX - CHANGED: PF0IM001, PF0IW02 &
+//                    PF01120.
+// *********************
+Program PF0I type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "PF00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  PF0IW01 PF0IW01; // record
+  PFAREC PFAREC; // record
+  PFWREC PFWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use PF0ITMT {deleteAfterUse = yes}; // table
+  use PF0IM.PF0IM001 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    PF0I000: PF0I000();
+  end // end main
+end // end PF0I
+
+// pf0i mainline logic
+Function PF0I000()
+  PF0I001(); /* initialization*/
+  ;
+  while (PFWREC.PFWEOAF == "N") /* while application is active*/
+    PF0I100(); /* converse parameter maint. screen*/
+  end
+  ;
+  XPPF002(); /* pf common exit routine*/
+  ;
+  if (PFWREC.PFWMSG != " ") /* in case of reject from exit*/
+    COMMAREA.CAMSG = PFWREC.PFWMSG; /* save message*/
+  end
+  ;
+  COMMAREA.CATOAP = "PF0A"; /* and xfer to main PF menu*/
+  XSEXIT();
+end // end PF0I000
+
+// initialization
+Function PF0I001()
+  XSENTRY(); /* security checking*/
+  ;
+  XSSEGTR(); /* set cics start tran id*/
+  ;
+  COMMAREA.CACURRAP = "PF0I"; /* for xppf010 abend*/
+  ;
+  set PF0IM001 initial; /* clear summary request screen*/
+  set PFAREC empty; /* clear db2 i/o area*/
+  set PFWREC empty; /* clear pf system working storage*/
+  set PF0IW01 empty; /* clear pf0i application working*/
+                                   /* storage*/
+  set SQLCA empty; /* clear sql comm area*/
+  set TA1REC empty; /* clear ta0020 error diag rec*/
+  set TA2REC empty; /* clear ta0040 date routine rec*/
+  set ERRSQLCA empty; /* clear sql error comm area*/
+  ;
+  PFWREC.PFWEOAF = "N"; /* set end of appl flag*/
+  PFWREC.PFWERRF = "N"; /* set error flag*/
+  PF0IM001.XXXCURDT = VGVar.currentShortGregorianDate; /* move current date to screen*/
+  ;
+  PF0I910(); /* vpfctl01 table view select*/
+  ;
+  move PFAREC to PF0IM001 withV60Compat; /* move entire table row to screen*/
+  ;
+  if (PF0IM001.PFACRACM > 7)
+    PF0IM001.PFACRACM = PF0IM001.PFACRACM - 7;
+  else
+    PF0IM001.PFACRACM = PF0IM001.PFACRACM + 5;
+  end
+  ;
+  PF0I010(); /* format base period mth/yr desc*/
+  ;
+  PF0I020(); /* format screen descriptions*/
+end // end PF0I001
+
+// format base period mth/yr desc
+Function PF0I010()
+   /* -----------------------------------------------------------;*/
+    /* This routine takes a numeric month and year and creates  ;*/
+    /* a character string containing the month literal followed ;*/
+    /* by the year (including century) with only one space      ;*/
+    /* between them.  This prevents extra spaces from occurring ;*/
+    /* between the month and year for months with names that    ;*/
+    /* are short (such as May).  Examples:                      ;*/
+      /* 03 88 yields 'May 1988'     (not 'May       1988')     ;*/
+      /* 08 89 yields 'August 1989'  (not 'August    1989')     ;*/
+      /* 03 98 tthan1 y2kfix - date windowing                   ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.PFABSPRM == 1) /* format january date*/
+    PF0IW01.PF0IWM10 = "JANUARY 19";
+                                   /* move 10-byte month and century*/
+    PF0IW01.PF0IWY10 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY10 < 61)
+      PF0IW01.PF0IWM10 = "JANUARY 20";
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD10; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 2) /* format february date*/
+    PF0IW01.PF0IWM11 = "FEBRUARY 19"; /* move 11-byte month and cent.*/
+    PF0IW01.PF0IWY11 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY11 < 61)
+      PF0IW01.PF0IWM11 = "FEBRUARY 20";
+                                   /* move 11-byte month and cent.*/
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD11; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 3) /* format march date*/
+    PF0IW01.PF0IWM8 = "MARCH 19"; /* move 8-byte month and century*/
+    PF0IW01.PF0IWY8 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY8 < 61)
+      PF0IW01.PF0IWM8 = "MARCH 20"; /* move 8-byte month and century*/
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD8; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 4) /* format april date*/
+    PF0IW01.PF0IWM8 = "APRIL 19"; /* move 8-byte month and century*/
+    PF0IW01.PF0IWY8 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY8 < 61)
+      PF0IW01.PF0IWM8 = "APRIL 20"; /* move 8-byte month and century*/
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD8; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 5) /* format may date*/
+    PF0IW01.PF0IWM6 = "MAY 19"; /* move 6-byte month and century*/
+    PF0IW01.PF0IWY6 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY6 < 61)
+      PF0IW01.PF0IWM6 = "MAY 20"; /* move 6-byte month and century*/
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD6; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 6) /* format june date*/
+    PF0IW01.PF0IWM7 = "JUNE 19"; /* move 7-byte month and century*/
+    PF0IW01.PF0IWY7 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY7 < 61)
+      PF0IW01.PF0IWM7 = "JUNE 20"; /* move 7-byte month and century*/
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD7; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 7) /* format july date*/
+    PF0IW01.PF0IWM7 = "JULY 19"; /* move 7-byte month and century*/
+    PF0IW01.PF0IWY7 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY7 < 61)
+      PF0IW01.PF0IWM7 = "JULY 20"; /* move 7-byte month and century*/
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD7; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 8) /* format august date*/
+    PF0IW01.PF0IWM9 = "AUGUST 19"; /* move 9-byte month and century*/
+    PF0IW01.PF0IWY9 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY9 < 61)
+      PF0IW01.PF0IWM9 = "AUGUST 20"; /* move 9-byte month and century*/
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD9; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 9) /* format september date*/
+    PF0IW01.PF0IWM12 = "SEPTEMBER 19";
+                                   /* move 12-byte month and cent.*/
+    PF0IW01.PF0IWY12 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY12 < 61)
+      PF0IW01.PF0IWM12 = "SEPTEMBER 20";
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD12; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 10) /* format october date*/
+    PF0IW01.PF0IWM10 = "OCTOBER 19";
+                                   /* move 10-byte month and century*/
+    PF0IW01.PF0IWY10 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY10 < 61)
+      PF0IW01.PF0IWM10 = "OCTOBER 20";
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD10; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 11) /* format november date*/
+    PF0IW01.PF0IWM11 = "NOVEMBER 19"; /* move 11-byte month and cent.*/
+    PF0IW01.PF0IWY11 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY11 < 61)
+      PF0IW01.PF0IWM11 = "NOVEMBER 20";
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD11; /* move date to screen*/
+    return;
+  end
+  if (PF0IM001.PFABSPRM == 12) /* format december date*/
+    PF0IW01.PF0IWM11 = "DECEMBER 19"; /* move 11-byte month and cent.*/
+    PF0IW01.PF0IWY11 = PF0IM001.PFABSPRY; /* move 2-byte year*/
+  /* **************Y2K IN BEGIN**************/
+    if (PF0IW01.PF0IWY11 < 61)
+      PF0IW01.PF0IWM11 = "DECEMBER 20";
+    end
+  /* **************Y2K IN END****************/
+    PF0IM001.PF0IMBAD = PF0IW01.PF0IWD11; /* move date to screen*/
+    return;
+  end
+  ;
+  PF0IM001.PF0IMBAD = " "; /* fall through error - invalid month*/
+end // end PF0I010
+
+// format screen descriptions
+Function PF0I020()
+  if (PF0IM001.PFAIVCMO in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMIVD = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid month*/
+  end
+  if (PF0IM001.PFACLMMO in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMCLD = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid month*/
+  end
+  if (PF0IM001.PFACOMMO in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMCOD = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid month*/
+  end
+  if (PF0IM001.PFANBKMO in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMNBD = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid month*/
+  end
+  if (PF0IM001.PFAINVMO in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMIND = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid month*/
+  end
+  ;
+  if (PF0IM001.PFACRACM in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMAMD = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid month*/
+  end
+  ;
+  if (PF0IM001.PFACLSI == "P")
+    PF0IM001.PF0IMACD = "PRELIMINARY"; /* format accounting close ind*/
+  else
+    if (PF0IM001.PFACLSI == "F")
+      PF0IM001.PF0IMACD = "FINAL";
+    else
+      PF0IM001.PF0IMACD = " ";
+    end
+  end
+  ;
+  if (PF0IM001.PFAYREND == "O")
+    PF0IM001.PF0IMYCD = "OPEN"; /* format year end close ind*/
+  else
+    if (PF0IM001.PFAYREND == "C")
+      PF0IM001.PF0IMYCD = "CLOSE";
+    else
+      PF0IM001.PF0IMYCD = " ";
+    end
+  end
+end // end PF0I020
+
+// converse parameter maint scrn
+Function PF0I100()
+  if (PFWREC.PFWMSG != " ")
+    PF0IM001.VAGen_EZEMSG = PFWREC.PFWMSG;
+  end
+  ;
+  converse PF0IM001 ;
+  ;
+  set PF0IM001.PFABSPRM cursor, initialAttributes;
+  set PF0IM001.PFABSPRY initialAttributes;
+  set PF0IM001.PFAIVCMO initialAttributes;
+  set PF0IM001.PFACLMMO initialAttributes;
+  set PF0IM001.PFACOMMO initialAttributes;
+  set PF0IM001.PFANBKMO initialAttributes;
+  set PF0IM001.PFAINVMO initialAttributes;
+  set PF0IM001.PFACRACM initialAttributes;
+  set PF0IM001.PFALKOTF initialAttributes;
+  set PF0IM001.PFACLSI initialAttributes;
+  set PF0IM001.PFAYREND initialAttributes;
+  set PF0IM001.CATOAP initialAttributes;
+  set PF0IM001.CAITEM initialAttributes;
+  ;
+  PFWREC.PFWERRF = "N"; /* reset error flag*/
+  PFWREC.PFWMSG = " "; /* clear message line*/
+  PF0IM001.VAGen_EZEMSG = " ";
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+    /* check fast path and pf keys                              ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0I110(); /* check fast path and pf keys*/
+  ;
+  if (PFWREC.PFWERRF == "Y" /* if error found*/
+   || PFWREC.PFWEOAF == "Y") /* or end of application*/
+    return; /* just return*/
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+    /* edit unprotected fields                                  ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0I120(); /* edit unprotected fields*/
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf12) /* if edit pfkey pushed*/
+    converseLib.validationFailed(51); /* edit successful; press enter to perform update*/
+    return; /* return*/
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+    /* update control table                                     ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  move PF0IM001 to PFAREC byName; /* move entire screen to db row*/
+  ;
+  if (PFAREC.PFACRACM > 5)
+    PFAREC.PFACRACM = PFAREC.PFACRACM - 5;
+  else
+    PFAREC.PFACRACM = PFAREC.PFACRACM + 7;
+  end
+  ;
+  PF0I920(); /* vpfctl01 table view update*/
+  ;
+  if (PFWREC.PFWERRF == "Y") /* if error found*/
+    return;
+  end
+  ;
+  converseLib.validationFailed(92);
+                                   /* parameter maint successful; press pf3*/
+end // end PF0I100
+
+// check fast path and pf keys
+Function PF0I110()
+   /* -----------------------------------------------------------;*/
+    /* Check for fast path exit request.  Do not allow if any   ;*/
+    /* data has been entered, besides OPTION and ITEM           ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.CATOAP != " " /* if fast path*/
+   || PF0IM001.CAITEM != " ")
+    ;
+    PF0I111(); /* data entry check for fastpath*/
+    ;
+    if (converseVar.eventKey not enter)
+      converseLib.validationFailed(190); /* must press enter when using fastpath*/
+      PFWREC.PFWERRF = "Y";
+    end
+    ;
+    if (PFWREC.PFWERRF == "Y") /* if any errors occured*/
+      return; /* return*/
+    else /* else*/
+      COMMAREA.CAFROMAP = "PF0I"; /* allow fastpath*/
+      COMMAREA.CATOAP = PF0IM001.CATOAP;
+      COMMAREA.CAITEM = PF0IM001.CAITEM;
+      ;
+      XPPF002(); /* pf common exit routine*/
+      ;
+      return;
+    end
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check PF/PA keys.                                        ;*/
+   /* -----------------------------------------------------------;*/
+  if (converseVar.eventKey is enter)
+     /* no action*/
+  else
+    ;
+    PF0I112(); /* validate pf keys*/
+    ;
+  end
+end // end PF0I110
+
+// data entry check for fastpath
+Function PF0I111()
+   /* -----------------------------------------------------------;*/
+    /* Check all fields for data entry. If any one has been     ;*/
+    /* modified, set error flag, highlight it and return.       ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.CATOAP == "PF0I") /* if fastpath into same application*/
+    set PF0IM001.CATOAP cursor, bold;
+    converseLib.validationFailed(10); /* cannot transfer to requested screen*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFAYREND is modified)
+    set PF0IM001.PFAYREND cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFACLSI is modified)
+    set PF0IM001.PFACLSI cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFALKOTF is modified)
+    set PF0IM001.PFALKOTF cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFACRACM is modified)
+    set PF0IM001.PFACRACM cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFAINVMO is modified)
+    set PF0IM001.PFAINVMO cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFANBKMO is modified)
+    set PF0IM001.PFANBKMO cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFACOMMO is modified)
+    set PF0IM001.PFACOMMO cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFACLMMO is modified)
+    set PF0IM001.PFACLMMO cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFAIVCMO is modified)
+    set PF0IM001.PFAIVCMO cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFABSPRY is modified)
+    set PF0IM001.PFABSPRY cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+  if (PF0IM001.PFABSPRM is modified)
+    set PF0IM001.PFABSPRM cursor, bold;
+    converseLib.validationFailed(02); /* do not enter data if using fastpath*/
+    PFWREC.PFWERRF = "Y";
+  end
+end // end PF0I111
+
+// validate pf keys
+Function PF0I112()
+  PFWREC.PFWCPROC = "PF0I112"; /* set current process name*/
+  ;
+  if (converseVar.eventKey is pf1) /* help*/
+    XSPF1();
+    PFWREC.PFWMSG = COMMAREA.CAMSG; /* result of bad pass*/
+    PFWREC.PFWERRF = "Y"; /* set error flag*/
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf3) /* return to main profit menu*/
+    COMMAREA.CATOAP = "PF0A";
+    XSEXIT();
+    PFWREC.PFWMSG = COMMAREA.CAMSG; /* result of bad pass*/
+    PFWREC.PFWERRF = "Y"; /* set error flag*/
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf4) /* return to main system menu*/
+    XSPF4();
+    PFWREC.PFWMSG = COMMAREA.CAMSG; /* result of bad pass*/
+    PFWREC.PFWERRF = "Y"; /* set error flag*/
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf12) /* edit screen fields*/
+    return; /* (message 51 generated in PF0I100)*/
+  end
+  ;
+  if (converseVar.eventKey is pa2) /* cancel*/
+    ;
+    move PFAREC to PF0IM001 withV60Compat; /* move entire table row to screen*/
+    ;
+    if (PF0IM001.PFACRACM > 7)
+      PF0IM001.PFACRACM = PF0IM001.PFACRACM - 7;
+    else
+      PF0IM001.PFACRACM = PF0IM001.PFACRACM + 5;
+    end
+    ;
+    PF0I010(); /* format base period mth/yr desc*/
+    ;
+    PF0I020(); /* format screen descriptions*/
+    ;
+    PF0IM001.CATOAP = " ";
+    PF0IM001.CAITEM = " ";
+    converseLib.validationFailed(189); /* pa2 pressed; screen changes aborted*/
+    PFWREC.PFWERRF = "Y"; /* set error flag*/
+    return;
+  end
+  ;
+  converseLib.validationFailed(1); /* fall through error - invalid pfkey*/
+  PFWREC.PFWERRF = "Y"; /* set error flag*/
+end // end PF0I112
+
+// edit unprotected fields
+Function PF0I120()
+  /* *********************Y2K OUT BEGIN*******************/
+  /* MOVE EZEDTE TO PF0IW01.PF0IWCDT; /* save current date yymmdd*/
+  /* *********************Y2K OUT BEGIN*******************/
+  /* *********************Y2K OUT BEGIN*******************/
+  PF0IW01.PF0IWCDT = VGVar.currentGregorianDate; /* save current date CCyymmdd*/
+  /* *********************Y2K OUT BEGIN*******************/
+  ;
+   /* -----------------------------------------------------------;*/
+    /* set previous month                                       ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IW01.PF0IWCM == 01) /* if current month is JAN*/
+    PF0IW01.PF0IWAMM = 12; /* allow month = DEC*/
+  else /* else (any other month)*/
+    PF0IW01.PF0IWAMM = PF0IW01.PF0IWCM - 1; /* allow current month - 1*/
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check year end close indicator                           ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.PFAYREND == "O")
+    PF0IM001.PF0IMYCD = "OPEN";
+  else
+    if (PF0IM001.PFAYREND == "C")
+      PF0IM001.PF0IMYCD = "CLOSE";
+    else
+      PF0IM001.PF0IMYCD = " ";
+      set PF0IM001.PFAYREND cursor, bold;
+      converseLib.validationFailed(197); /* year end close indicator must be 'o'*/
+                                   /* or 'c'.*/
+      PFWREC.PFWERRF = "Y";
+    end
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check accounting close indicator                         ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.PFACLSI == "P")
+    PF0IM001.PF0IMACD = "PRELIMINARY";
+  else
+    if (PF0IM001.PFACLSI == "F")
+      PF0IM001.PF0IMACD = "FINAL";
+    else
+      if (PF0IM001.PFACLSI == " ")
+        PF0IM001.PF0IMACD = " ";
+      else
+        PF0IM001.PF0IMACD = " ";
+        set PF0IM001.PFACLSI cursor, bold;
+        converseLib.validationFailed(118); /* accounting close indicator must be*/
+        PFWREC.PFWERRF = "Y"; /* 'p', 'f' or blank.*/
+      end
+    end
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check Lockout indicator                                  ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.PFALKOTF == "Y"
+   || PF0IM001.PFALKOTF == "N")
+     /* this is okay*/
+  else
+    set PF0IM001.PFALKOTF cursor, bold;
+    converseLib.validationFailed(63); /* please enter 'y' or 'n' for summary*/
+    PFWREC.PFWERRF = "Y"; /* lockout*/
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check current accounting month.                          ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.PFACRACM in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMAMD = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid*/
+  else
+    PF0IM001.PF0IMAMD = " "; /* invalid month*/
+    set PF0IM001.PFACRACM cursor, bold;
+    converseLib.validationFailed(307);
+                                   /* month not valid; must be 1 through 12*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check distribution close month.  must be current or last ;*/
+    /* month.                                                   ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.PFAINVMO in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMIND = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid*/
+  else
+    PF0IM001.PF0IMIND = " "; /* invalid month*/
+  end
+  if (PF0IM001.PFAINVMO != PF0IW01.PF0IWAMM /* current month*/
+   && PF0IM001.PFAINVMO != PF0IW01.PF0IWCM) /* last month*/
+    set PF0IM001.PFAINVMO cursor, bold;
+    converseLib.validationFailed(70); /* month not valid; must be current or*/
+                                   /* last month*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check nike banked close month.  must be current or last  ;*/
+    /* month.                                                   ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.PFANBKMO in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMNBD = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid month*/
+  else
+    PF0IM001.PF0IMNBD = " "; /* invalid month*/
+  end
+  if (PF0IM001.PFANBKMO != PF0IW01.PF0IWAMM /* current month*/
+   && PF0IM001.PFANBKMO != PF0IW01.PF0IWCM) /* last month*/
+    set PF0IM001.PFANBKMO cursor, bold;
+    converseLib.validationFailed(70); /* month not valid; must be current or*/
+                                   /* last month*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check commissions close month.  must be current or last  ;*/
+    /* month.                                                   ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.PFACOMMO in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMCOD = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid month*/
+  else
+    PF0IM001.PF0IMCOD = " "; /* invalid month*/
+  end
+  if (PF0IM001.PFACOMMO != PF0IW01.PF0IWAMM /* current month*/
+   && PF0IM001.PFACOMMO != PF0IW01.PF0IWCM) /* last month*/
+    set PF0IM001.PFACOMMO cursor, bold;
+    converseLib.validationFailed(70); /* month not valid; must be current or*/
+                                   /* last month*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check claims close month.  must be current or last       ;*/
+    /* month.                                                   ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.PFACLMMO in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMCLD = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid month*/
+  else
+    PF0IM001.PF0IMCLD = " "; /* invalid month*/
+  end
+  if (PF0IM001.PFACLMMO != PF0IW01.PF0IWAMM /* current month*/
+   && PF0IM001.PFACLMMO != PF0IW01.PF0IWCM) /* last month*/
+    set PF0IM001.PFACLMMO cursor, bold;
+    converseLib.validationFailed(70); /* month not valid; must be current or*/
+                                   /* last month*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check invoice close month.  must be current or last      ;*/
+    /* month.                                                   ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0IM001.PFAIVCMO in PF0ITMT.PF0ITMNB)
+    PF0IM001.PF0IMIVD = PF0ITMT.PF0ITMDS[sysVar.arrayIndex]; /* valid month*/
+  else
+    PF0IM001.PF0IMIVD = " "; /* invalid month*/
+  end
+  if (PF0IM001.PFAIVCMO != PF0IW01.PF0IWAMM /* current month*/
+   && PF0IM001.PFAIVCMO != PF0IW01.PF0IWCM) /* last month*/
+    set PF0IM001.PFAIVCMO cursor, bold;
+    converseLib.validationFailed(70); /* month not valid; must be current or*/
+                                   /* last month*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check base period for validity.                          ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+    /* move entered base period to work storage, in yy mm format*/
+  ;
+  PF0IW01.PF0IWBM = PF0IM001.PFABSPRM; /* move scrn mm to wkg stor*/
+  PF0IW01.PF0IWBY = PF0IM001.PFABSPRY; /* move scrn yy to wkg stor*/
+  /* *********************Y2K IN BEGIN************************/
+  if (PF0IW01.PF0IWBM > 0
+   && PF0IW01.PF0IWBM < 13)
+    if (PF0IW01.PF0IWBY > 60)
+      PF0IW01.PF0IWBC = 19;
+    else
+      PF0IW01.PF0IWBC = 20;
+    end
+  else
+    PF0IW01.PF0IWBC = 0;
+  end
+  /* *********************Y2K IN END**************************/
+  ;
+    /* compute valid lower limit = current date minus 1 month*/
+  ;
+  if (PF0IW01.PF0IWCM == 01) /* if current month is JAN*/
+    PF0IW01.PF0IWLM = 12; /* lower month = DEC*/
+  /* *********************Y2K OUT BEGIN***********************/
+  /* PF0IW01.PF0IWLY = PF0IW01.PF0IWCY - 1;/* lower year = last year*/
+  /* *********************Y2K OUT END*************************/
+  /* *********************Y2K IN BEGIN************************/
+    PF0IW01.PF0IWLCY = PF0IW01.PF0IWCCY - 1; /* lower year = last year*/
+  /* *********************Y2K IN END**************************/
+  else /* else (any other month)*/
+    PF0IW01.PF0IWLM = PF0IW01.PF0IWCM - 1; /* lower month = last month*/
+  /* *********************Y2K OUT BEGIN***********************/
+  /* MOVE PF0IW01.PF0IWCY TO PF0IW01.PF0IWLY;/* lower year = current year*/
+  /* *********************Y2K OUT END*************************/
+  /* *********************Y2K IN BEGIN************************/
+    PF0IW01.PF0IWLCY = PF0IW01.PF0IWCCY; /* lower year = current year*/
+  /* *********************Y2K IN END**************************/
+  end
+  ;
+    /* compute valid upper limit = current date plus 1 month*/
+  ;
+  if (PF0IW01.PF0IWCM == 12) /* if current month is DEC*/
+    PF0IW01.PF0IWUM = 1; /* upper month = JAN*/
+  /* *********************Y3K OUT BEGIN*******************/
+  /* PF0IW01.PF0IWUY = PF0IW01.PF0IWCY + 1;/* upper year = next year*/
+  /* *********************Y3K OUT END*********************/
+  /* *********************Y3K IN BEGIN********************/
+    PF0IW01.PF0IWUCY = PF0IW01.PF0IWCCY + 1; /* upper year = next year*/
+  /* *********************Y3K IN END**********************/
+  else /* else (any other month)*/
+    PF0IW01.PF0IWUM = PF0IW01.PF0IWCM + 1; /* upper month = next month*/
+  /* *********************Y3K OUT BEGIN*******************/
+  /* MOVE PF0IW01.PF0IWCY TO PF0IW01.PF0IWUY;/* upper year = current year*/
+  /* *********************Y3K OUT END*********************/
+  /* *********************Y3K IN BEGIN********************/
+    PF0IW01.PF0IWUCY = PF0IW01.PF0IWCCY; /* upper year = current year*/
+  /* *********************Y3K IN END**********************/
+  end
+  ;
+    /* test entered base period against limits*/
+  ;
+  /* ******************Y2K OUT BEGIN*******************/
+  /* IF PF0IW01.PF0IWBYM LT PF0IW01.PF0IWLYM/* if base per less than low lim*/
+  /* OR PF0IW01.PF0IWBYM GT PF0IW01.PF0IWUYM;/* or over uppper limit*/
+  /* ******************Y2K OUT END*********************/
+  /* ******************Y2K OUT BEGIN*******************/
+  if (PF0IW01.PF0IWBCYM < PF0IW01.PF0IWLCYM /* if base per less than low lim*/
+   || PF0IW01.PF0IWBCYM > PF0IW01.PF0IWUCYM) /* or over uppper limit*/
+  /* ******************Y2K OUT END*********************/
+    set PF0IM001.PFABSPRM cursor, bold;
+    set PF0IM001.PFABSPRY bold;
+    converseLib.validationFailed(244); /* base per not valid; must be last,*/
+                                   /* cur, or next mth*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+    /* check for valid month and year values*/
+  ;
+  if (PF0IM001.PFABSPRM < 1 /* allow month in 1-12 range*/
+   || PF0IM001.PFABSPRM > 12)
+    set PF0IM001.PFABSPRM cursor, bold;
+    converseLib.validationFailed(40); /* please enter base period mth: 1-12*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+  /* **********************Y2K OUT BEGIN*********************/
+  /* IF PF0IM001.PFABSPRY EQ 0;       /* reject zero year*/
+  /* SET PF0IM001.PFABSPRY CURSOR,BRIGHT;*/
+  /* MOVE 93 TO EZEMNO;             /* please enter base period year*/
+  /* MOVE 'Y' TO PFWREC.PFWERRF;*/
+  /* END;*/
+  /* **********************Y2K OUT END***********************/
+  ;
+  if (PF0IM001.PFABSPRM == 0 /* reject zero month and year base*/
+   /* period*/
+   && PF0IM001.PFABSPRY == 0)
+    set PF0IM001.PFABSPRM cursor, bold;
+    set PF0IM001.PFABSPRY bold;
+    converseLib.validationFailed(91); /* please enter base period*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+  PF0I010(); /* format base period mth/yr desc*/
+end // end PF0I120
+
+// vpfctl01 table view select
+Function PF0I910()
+   /* -----------------------------------------------------------;*/
+    /* the control table always contains one and only one row,  ;*/
+    /* therefore no key is required for i/o.                    ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  call "IO2670" ("S ", SQLCA, PFAREC) {isNoRefresh = yes, isExternal = yes}; /* control table select*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if table i/o successful*/
+     /* next sentence                 do nothing*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+      PFWERRF = "Y";
+      converseLib.validationFailed(114); /* data base was busy, please retry*/
+    else /* fatal db2 error, transfer to ta*/
+      TA1REC.TA1LOCAT[2] = " ";
+      PFWREC.PFWHKEY = " ";
+      PFWREC.PFWCPROC = "PF0I910"; /* pass calling process*/
+      TA1REC.TA1LOCAT[4] = "IO2670"; /* pass i/o module name*/
+      TA1REC.TA1DBASE = "DPROFT";
+      TA1REC.TA1TBLVU = "VPFCTL01";
+      XPPF010(); /* abend routine*/
+    end
+  end
+  ;
+end // end PF0I910
+
+// vpfctl01 table view update
+Function PF0I920()
+  ;
+  XPPF030(); /* ta0040 date/time call routine*/
+  ;
+  PFAREC.ZZZCHGDT = TA2REC.TA2GRGGN; /* move system date*/
+  PFAREC.ZZZCHGTM = TA2REC.TA2TIMHM; /* move system time*/
+  ;
+   /* -----------------------------------------------------------;*/
+    /* the control table always contains one and only one row,  ;*/
+    /* therefore no key is required for i/o.                    ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  call "IO2670" ("U1", SQLCA, PFAREC) {isNoRefresh = yes, isExternal = yes}; /* control table update*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if table i/o successful*/
+     /* next sentence                 do nothing*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+      PFWERRF = "Y";
+      converseLib.validationFailed(114); /* data base was busy, please retry*/
+    else /* fatal db2 error, transfer to ta*/
+      TA1REC.TA1LOCAT[2] = " ";
+      PFWREC.PFWHKEY = " ";
+      PFWREC.PFWCPROC = "PF0I920"; /* pass calling process*/
+      TA1REC.TA1LOCAT[4] = "IO2670"; /* pass i/o module name*/
+      TA1REC.TA1DBASE = "DPROFT";
+      TA1REC.TA1TBLVU = "VPFCTL01";
+      XPPF010(); /* abend routine*/
+    end
+  end
+end // end PF0I920
+
+//*** RECORD=PF0IW01 ****
+//    The fields in this record are used to validate base
+// period entries on the "Parameter Maintenance" screen
+// of the application PF0I.
+// 03-02-1998  TTHAN1  Y2KFIX - CHANGE TO EXPAND DATE FIELDS.
+// ***********************
+Record PF0IW01 type basicRecord
+  10 PF0IWBCYM PF0IWBCYM ; 
+    15 PF0IWBCY PF0IWBCY ; 
+      20 PF0IWBC PF0IWBC ; 
+      20 PF0IWBY PF0IWBY ; 
+    15 PF0IWBM PF0IWBM ; 
+  10 PF0IWCDT PF0IWCDT ; 
+    15 PF0IWCCY PF0IWCCY ; 
+    15 PF0IWCM PF0IWCM ; 
+    15 PF0IWCD PF0IWCD ; 
+  10 PF0IWUCYM PF0IWUCYM ; 
+    15 PF0IWUCY PF0IWUCY ; 
+      20 PF0IWUC PF0IWUC ; 
+      20 PF0IWUY PF0IWUY ; 
+    15 PF0IWUM PF0IWUM ; 
+  10 PF0IWLCYM PF0IWLCYM ; 
+    15 PF0IWLCY PF0IWLCY ; 
+      20 PF0IWLC PF0IWLC ; 
+      20 PF0IWLY PF0IWLY ; 
+    15 PF0IWLM PF0IWLM ; 
+  10 PF0IWAMM PF0IWAMM ; 
+  10 PF0IWD6 PF0IWD6 ; 
+    15 PF0IWM6 PF0IWM6 ; 
+    15 PF0IWY6 PF0IWY6 ; 
+  10 PF0IWD7 PF0IWD7 ; 
+    15 PF0IWM7 PF0IWM7 ; 
+    15 PF0IWY7 PF0IWY7 ; 
+  10 PF0IWD8 PF0IWD8 ; 
+    15 PF0IWM8 PF0IWM8 ; 
+    15 PF0IWY8 PF0IWY8 ; 
+  10 PF0IWD9 PF0IWD9 ; 
+    15 PF0IWM9 PF0IWM9 ; 
+    15 PF0IWY9 PF0IWY9 ; 
+  10 PF0IWD10 PF0IWD10 ; 
+    15 PF0IWM10 PF0IWM10 ; 
+    15 PF0IWY10 PF0IWY10 ; 
+  10 PF0IWD11 PF0IWD11 ; 
+    15 PF0IWM11 PF0IWM11 ; 
+    15 PF0IWY11 PF0IWY11 ; 
+  10 PF0IWD12 PF0IWD12 ; 
+    15 PF0IWM12 PF0IWM12 ; 
+    15 PF0IWY12 PF0IWY12 ; 
+end // end PF0IW01
+
+// allowable month for curr/close
+DataItem PF0IWAMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem PF0IWBC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem PF0IWBCY num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// entered base per - yymm fmt
+DataItem PF0IWBCYM num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - mm
+DataItem PF0IWBM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - yy
+DataItem PF0IWBY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - yy
+DataItem PF0IWCCY num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - dd (not used)
+DataItem PF0IWCD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current date - yymmdd format
+DataItem PF0IWCDT num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - mm
+DataItem PF0IWCM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// base period desc 10 byte mm/cc
+DataItem PF0IWD10 char(12)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc 11 byte mm/cc
+DataItem PF0IWD11 char(13)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc 12 byte mm/cc
+DataItem PF0IWD12 char(14)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc 6 byte mm/cc
+DataItem PF0IWD6 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc 7 byte mm/cc
+DataItem PF0IWD7 char(9)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc 8 byte mm/cc
+DataItem PF0IWD8 char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc 9 byte mm/cc
+DataItem PF0IWD9 char(11)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem PF0IWLC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem PF0IWLCY num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// lower limit to base per yymm
+DataItem PF0IWLCYM num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - mm
+DataItem PF0IWLM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - yy
+DataItem PF0IWLY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// base period desc month/century
+DataItem PF0IWM10 char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc month/century
+DataItem PF0IWM11 char(11)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc month/century
+DataItem PF0IWM12 char(12)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc month/century
+DataItem PF0IWM6 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc month/century
+DataItem PF0IWM7 char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc month/century
+DataItem PF0IWM8 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc month/century
+DataItem PF0IWM9 char(9)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//    - yy
+DataItem PF0IWUC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem PF0IWUCY num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// upper limit to base per yymm
+DataItem PF0IWUCYM num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - mm
+DataItem PF0IWUM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//    - yy
+DataItem PF0IWUY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// base period desc year
+DataItem PF0IWY10 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc year
+DataItem PF0IWY11 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc year
+DataItem PF0IWY12 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc year
+DataItem PF0IWY6 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc year
+DataItem PF0IWY7 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc year
+DataItem PF0IWY8 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period desc year
+DataItem PF0IWY9 char(2)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+
