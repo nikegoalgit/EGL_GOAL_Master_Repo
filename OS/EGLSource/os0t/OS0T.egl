@@ -1,0 +1,2185 @@
+package os0t;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSOPS02;
+import corpcom4.XSPF1;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import om.common.OMAREC;
+import op.common.OP1REC;
+import op.common.OP2REC;
+import op.common.OPWREC01;
+import os.common.OS0TW-IO-COUNT1;
+import os.common.OS0TW-IO-COUNT2;
+import os.common.OS0TW-IO-IND1;
+import os.common.OS0TW-IO-IND2;
+import os.common.OS0TW-IO-IND3;
+import os.common.OS0TW-IO-MAX;
+import os.common.OS0TW-IO-TASK;
+import sy.common.SYCREC;
+import ta.common.TA1REC;
+import ta.common.TAEREC;
+import vv.common.VBULKS02;
+import vv.common.VXVO0001;
+import ww.common.WEU0100;
+import xx.common.*;
+import xx02.*;
+import xx02.XDSTBL;
+import xx04.*;
+import xx04.XOBTBL;
+import xx05.*;
+import xx05.XSOTBL;
+import xx06.*;
+import xx06.XWHTBL;
+//*** PROGRAM=OS0T ****
+// OVERVIEW:
+// 
+// This application is the customer service order utilities.
+// This application was written to replace the manual QMFs that
+// were being run by people in AD.  This is a powerful appli-
+// cation that is intented to be ONLY used by user/analyst in
+// the customer service group.  It does NOT do any checking on
+// the values the user is updated the order with which is why
+// great care must be taken when using the application.  The
+// applicatoin consists of a main menu and correspoding entry
+// screen.
+// 
+// STATEMENT GROUP MEANINGS:
+//    OS0TS-1000  = Change one type of bulk to another type
+//    OS0TS-2000  = Change direct ship code and warehouse
+//    OS0TS-3000  = Change sales office
+//    OS0TS-4000  = Change zz change date on order header
+//    OS0TS-5000  = Chnage bulk to draw
+//    OS0TS-13000 = Change order type
+// 
+// **  It is recommended when adding new options to this
+//     program that you copy all the OPT1 statement groups
+//     with the new OPT number and build from there.
+// 
+// IO MOD OVERVIEW:
+// 
+//    This application uses various OS subprograms to modify
+//    the databases.  They are as follows:
+// 
+//       OS1040 - DORDER.VORHDR01 modifier
+//          Option 'MC' counts how many rows to be updated
+//          option 'mn' counts how many rows to be updated
+//          Option 'U1' updates the bulk/draw code
+//          Option 'U2' updates the xds and xwh codes
+//          Option 'U3' updates the sales office id
+//          Option 'U4' updates the change date
+//          Option 'U6' updates the order type
+//          option 'u7' updates the sub-order
+// ********************************************************
+// *           M A I N T E N A N C E     L O G            *
+// ********************************************************
+// 
+//     DATE      user          DESCRIPTION OF CHANGE
+//   --------   ------   ----------------------------------
+//   12-12-94   GCALKI   Created
+// 
+//   03-31-98   VSANKA   Added  option 13 for change of
+//                       order type in os0tm001 screen.
+//                       Added option u7 for update of suborder
+//                       Added option mn for max count and
+//                       fetching old order type for suborder.
+//   04-23-98   ESHANM   Since OS0TSB3 is sepcific to OPT 13,
+//                       statement calling this st grp is
+//                       moved from OS0TS-VORHDR-COUNT to the
+//                       OS0TS-OPT13-EDIT.
+//  05-12-98    LRAO     Added the fecility to have sub-order
+//                       numbers for order numbers in screens
+//                       2 and 3. Look for TCS in Converse,
+//                       Edit and Enter Statement Gropus.
+//                       Included Direct-ship code and
+//                       sales-office validations.
+// *********************
+Program OS0T type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  OMAREC OMAREC; // record
+  OP1REC OP1REC; // record
+  OP2REC OP2REC; // record
+  OPWREC01 OPWREC01; // record
+  OS0TW01 OS0TW01; // record
+  OS0TW02 OS0TW02; // record
+  SQLCA SQLCA; // record
+  SYCREC SYCREC; // record
+  TA1REC TA1REC; // record
+  TAEREC TAEREC; // record
+  VBULKS02 VBULKS02; // record
+  VXVO0001 VXVO0001; // record
+  WEU0100 WEU0100; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XVOTBL {deleteAfterUse = yes}; // table
+  use XOBTBL {deleteAfterUse = yes}; // table
+  use XWHTBL {deleteAfterUse = yes}; // table
+  use XDSTBL {deleteAfterUse = yes}; // table
+  use XSOTBL {deleteAfterUse = yes}; // table
+  use OS0TM.OS0TM001,  // forms
+      OS0TM.OS0TM005, 
+      OS0TM.OS0TM010, 
+      OS0TM.OS0TM015, 
+      OS0TM.OS0TM020, 
+      OS0TM.OS0TM025, 
+      OS0TM.OS0TM060
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OS0T-0000-INIT: OS0T-0000-INIT();
+    goto OS0T-0001-INIT;
+    OS0T-0001-INIT: OS0T-0001-INIT();
+    goto OS0T-0001-CONVERSE;
+    OS0T-0001-CONVERSE: OS0T-0001-CONVERSE();
+    ;
+    /* process the selected option from the map*/
+    ;
+    if (OS0TM001.OS0TM-SELECTION == 1)
+      goto OS0T-1000-INIT; /* change bulk/draw code*/
+    end
+    ;
+    if (OS0TM001.OS0TM-SELECTION == 2)
+      goto OS0T-2000-INIT; /* change direct ship code*/
+    end
+    ;
+    if (OS0TM001.OS0TM-SELECTION == 3)
+      goto OS0T-3000-INIT; /* change sales office id*/
+    end
+    ;
+    if (OS0TM001.OS0TM-SELECTION == 4)
+      goto OS0T-4000-INIT; /* change zz change date*/
+    end
+    ;
+    if (OS0TM001.OS0TM-SELECTION == 5)
+      goto OS0T-5000-INIT; /* change draw to bulk*/
+    end
+     /* *TCS INCLUDE BEGIN*/
+    if (OS0TM001.OS0TM-SELECTION == 13)
+      goto OS0T-13000-INIT1; /* change draw to bulk*/
+    end
+     /* *TCS INCLUDE END*/
+    if (OS0TM001.OS0TM-SELECTION >= 6
+     /* *TCS INCLUDE BEGIN*/
+     && OS0TM001.OS0TM-SELECTION != 13
+     /* *TCS INCLUDE END*/
+     && converseVar.eventKey is enter)
+      set OS0TM001.OS0TM-SELECTION cursor, bold;
+      converseLib.validationFailed(1); /* invalid option entered*/
+    end
+    ;
+    goto OS0T-0001-CONVERSE; /* flow back to the converse*/
+    ;
+    OS0T-1000-INIT: OS0T-1000-INIT();
+    goto OS0T-1000-CONVERSE; /* flow to the option 1 converse*/
+    OS0T-1000-CONVERSE: OS0T-1000-CONVERSE();
+    ;
+    ;
+    if (converseVar.eventKey is pf3) /* user pressed pf3*/
+      goto OS0T-0000-INIT; /* go back to the main menu*/
+    end
+    ;
+    if (converseVar.eventKey is pa2 /* user pressed pa2*/
+     || OS0TW-UPDATED == "Y")       /* or order updated*/
+      goto OS0T-1000-INIT; /* go back to the start of option 1*/
+    end
+    ;
+    goto OS0T-1000-CONVERSE; /* continue making changes*/
+    ;
+    OS0T-2000-INIT: OS0T-2000-INIT();
+    ;
+    goto OS0T-2000-CONVERSE; /* flow to the converse*/
+    ;
+    OS0T-2000-CONVERSE: OS0T-2000-CONVERSE();
+    ;
+    if (converseVar.eventKey is pf3) /* user pressed pf3*/
+      goto OS0T-0000-INIT; /* return to the appl menu*/
+    end
+    ;
+    if (converseVar.eventKey is pa2 /* user pressed pa2*/
+     || OS0TW-UPDATED == "Y")       /* or order was updated*/
+      goto OS0T-2000-INIT; /* reset option 2*/
+    end
+    ;
+    goto OS0T-2000-CONVERSE; /* reconverse the map*/
+    ;
+    OS0T-3000-INIT: OS0T-3000-INIT();
+    ;
+    goto OS0T-3000-CONVERSE; /* flow to the converse*/
+    ;
+    OS0T-3000-CONVERSE: OS0T-3000-CONVERSE();
+    ;
+    if (converseVar.eventKey is pf3) /* user pressed pf3*/
+      goto OS0T-0000-INIT; /* go back to the menu*/
+    end
+    ;
+    if (converseVar.eventKey is pa2 /* user pressed pa2*/
+     || OS0TW-UPDATED == "Y")       /* or order was updated*/
+      goto OS0T-3000-INIT; /* go back to start of opt3*/
+    end
+    ;
+    goto OS0T-3000-CONVERSE; /* otherwise flow back to converse*/
+    ;
+    OS0T-4000-INIT: OS0T-4000-INIT();
+    ;
+    goto OS0T-4000-CONVERSE; /* flow to the converse*/
+    ;
+    OS0T-4000-CONVERSE: OS0T-4000-CONVERSE();
+    ;
+    if (converseVar.eventKey is pf3) /* user pressed pf3*/
+      goto OS0T-0000-INIT; /* go back to the menu*/
+    end
+    ;
+    if (converseVar.eventKey is pa2 /* user pressed pa2*/
+     || OS0TW-UPDATED == "Y")       /* or order was updated*/
+      goto OS0T-4000-INIT; /* go back to start of opt4*/
+    end
+    ;
+    goto OS0T-4000-CONVERSE; /* otherwise flow back to converse*/
+    ;
+    OS0T-5000-INIT: OS0T-5000-INIT();
+    ;
+    goto OS0T-5000-CONVERSE; /* flow to the converse*/
+    ;
+    OS0T-5000-CONVERSE: OS0T-5000-CONVERSE();
+    ;
+    ;
+    if (converseVar.eventKey is pf3) /* user pressed pf3*/
+      goto OS0T-0000-INIT; /* go back to menu*/
+    end
+    ;
+    if (converseVar.eventKey is pa2 /* user pressed pa2*/
+     || OS0TW-UPDATED == "Y")      
+      goto OS0T-5000-INIT;
+    end
+    ;
+    goto OS0T-5000-CONVERSE; /* otherwise converse*/
+    ;
+    ;
+    OS0T-13000-INIT1: OS0T-13000-INIT1();
+    goto OS0T-13000-CONVERS;
+    OS0T-13000-CONVERS: OS0T-13000-CONVERS();
+     /* *TCS INCLUDE BEGIN*/
+    if (converseVar.eventKey is pf3) /* user pressed pf3*/
+      goto OS0T-0000-INIT; /* go back to the main menu*/
+    end
+    ;
+    if (converseVar.eventKey is pa2 /* user pressed pa2*/
+     || OS0TW-UPDATED == "Y")       /* or order updated*/
+      goto OS0T-13000-INIT1; /* go back to the start of option 1*/
+    end
+    ;
+    goto OS0T-13000-CONVERS; /* continue making changes*/
+     /* *TCS INCLUDE END*/
+  end // end main
+end // end OS0T
+
+// main execute process
+Function OS0T-0000-INIT()
+     /* Check csp and order batch security*/
+  ;
+  XSENTRY(); /* check security*/
+  XSSEGTR(); /* set segmented trans id*/
+  ;
+     /* Initialize application*/
+  ;
+  OS0TS-INIT-OS0T();
+  ;
+  ;
+end // end OS0T-0000-INIT
+
+// converse menu after process
+Function OS0T-0001-CONVERSE()
+  ;
+  converseVar.segmentedMode = 1; /* force segmented converse mode*/
+  ;
+  converse OS0TM001 ;
+  ;
+  ;
+  OS0TM001.CAMSG = " ";
+  VAGen_EZEMSG = " ";
+  ;
+  /* Reset field attributes*/
+  ;
+  set OS0TM001.OS0TM-SELECTION initialAttributes;
+  ;
+  if (converseVar.eventKey is enter) /* user pressed enter*/
+    OS0TS-MENU-ENTER();
+  else
+    if (converseVar.eventKey is pf1 /* user presses a valid PF key*/
+     || converseVar.eventKey is pf3 
+     || converseVar.eventKey is pf4)
+      OS0TS-MENU-PF-KEYS();
+    else
+      converseLib.validationFailed(2); /* invalid pf key pressed*/
+    end
+  end
+  ;
+  ;
+end // end OS0T-0001-CONVERSE
+
+// Initialize menu processes
+Function OS0T-0001-INIT()
+  ;
+  OS0TS-MENU-MAP-BLD();
+  ;
+end // end OS0T-0001-INIT
+
+// converse option 1 map
+Function OS0T-1000-CONVERSE()
+  converse OS0TM005 ;
+  ;
+  ;
+  OS0TM005.CAMSG = " ";
+  VAGen_EZEMSG = " ";
+  ;
+  /* Reset field attributes*/
+  ;
+  set OS0TM005.OP-CUST-ORD-ID initialAttributes;
+  set OS0TM005.XBD-BULK-DRAW-CD-NEW initialAttributes;
+  ;
+  if (converseVar.eventKey is enter) /* user pressed enter*/
+    OS0TS-OPT1-ENTER();
+  else
+    if (converseVar.eventKey is pf3 /* user presses a valid PF key*/
+     || converseVar.eventKey is pf4 
+     || converseVar.eventKey is pa2)
+      OS0TS-OPT1-PF-KEYS(); /* process pf key pressed*/
+    else
+      converseLib.validationFailed(2); /* invalid PF key pressed*/
+    end
+  end
+  ;
+  ;
+end // end OS0T-1000-CONVERSE
+
+// initialize option 1 processing
+Function OS0T-1000-INIT()
+  ;
+  set OP1REC empty; /* clean out the header record*/
+  set OS0TM005 empty; /* clear the map*/
+  set OS0TM005.XBD-BULK-DRAW-CD-CNT invisible, protect; /* for looks*/
+  ;
+  OS0TW-ERRFL = "N";
+  OS0TW-VALIDATED = "N";
+  OS0TW-UPDATED = "N";
+  OS0TM005.OS0TM-MAP-DTE = OS0TW01.OS0TW-YYMMDD; /* move date to map*/
+  ;
+  ;
+end // end OS0T-1000-INIT
+
+// converse option 13 map
+Function OS0T-13000-CONVERS()
+   /* *TCS INCLUDE BEGIN 01/27/1998*/
+  ;
+  converse OS0TM060 ;
+   /*  */
+  ;
+  OS0TM060.CAMSG = " ";
+  VAGen_EZEMSG = " ";
+  ;
+  /* Reset field attributes*/
+  ;
+  set OS0TM060.OP-CUST-ORD-ID initialAttributes;
+  set OS0TM060.XOB-ORD-TYP-NEW initialAttributes;
+  set OS0TM060.OP1NORID initialAttributes; /* nike ord id is set defined.*/
+
+  if (converseVar.eventKey is enter) /* user pressed enter*/
+    OS0TS-OPT13-ENTER();
+  else
+    if (converseVar.eventKey is pf3 /* user presses a valid PF key*/
+     || converseVar.eventKey is pf4 
+     || converseVar.eventKey is pa2)
+      OS0TS-OPT13-PF-KEY(); /* process pf key pressed*/
+    else
+      converseLib.validationFailed(2); /* invalid PF key pressed*/
+    end
+  end
+   /* *TCS INCLUDE END 01/27/1998*/
+  ;
+end // end OS0T-13000-CONVERS
+
+// initialize option 2 processing
+Function OS0T-13000-INIT1()
+  ;
+   /* *TCS INCLUDE BEGIN  01/27/1998*/
+  set OP1REC empty; /* clean out the header record*/
+  set OS0TM060 empty; /* clear the map*/
+  ;
+  OS0TW-ERRFL = "N";
+  OS0TW-VALIDATED = "N";
+  OS0TW-UPDATED = "N";
+  OS0TM060.OS0TM-MAP-DTE = OS0TW01.OS0TW-YYMMDD; /* move date to map*/
+   /* *TCS INCLUDE END   01/27/1998*/
+  ;
+end // end OS0T-13000-INIT1
+
+// converse option 2 map
+Function OS0T-2000-CONVERSE()
+  converse OS0TM010 ;
+  ;
+  ;
+  OS0TM010.CAMSG = " ";
+  VAGen_EZEMSG = " ";
+  ;
+  /* Reset field attributes*/
+  ;
+  set OS0TM010.OP-CUST-ORD-ID initialAttributes;
+   /* **************TCS INCLUDE BEGIN 05/12/98 ***********************/
+  set OS0TM010.OP1NORID initialAttributes;
+   /* **************TCS INCLUDE END 05/12/98 *************************/
+  set OS0TM010.XDS-DIR-SHIP-CD-NEW initialAttributes;
+  set OS0TM010.XWH-WHSE-CD-NEW initialAttributes;
+  ;
+  if (converseVar.eventKey is enter) /* user pressed enter*/
+    OS0TS-OPT2-ENTER();
+  else
+    if (converseVar.eventKey is pf3 /* user presses a valid PF key*/
+     || converseVar.eventKey is pf4 
+     || converseVar.eventKey is pa2)
+      OS0TS-OPT2-PF-KEYS(); /* process pf key pressed*/
+    else
+      converseLib.validationFailed(2); /* invalid PF key pressed*/
+    end
+  end
+  ;
+  ;
+end // end OS0T-2000-CONVERSE
+
+// initialize option 2 processing
+Function OS0T-2000-INIT()
+  ;
+  set OP1REC empty; /* clean out the header record*/
+  set OS0TM010 empty; /* clear the map*/
+  ;
+  OS0TW-ERRFL = "N";
+  OS0TW-VALIDATED = "N";
+  OS0TW-UPDATED = "N";
+  OS0TM010.OS0TM-MAP-DTE = OS0TW01.OS0TW-YYMMDD; /* move date to map*/
+  ;
+  ;
+end // end OS0T-2000-INIT
+
+// converse option 3 map
+Function OS0T-3000-CONVERSE()
+  converse OS0TM015 ;
+  ;
+  ;
+  OS0TM015.CAMSG = " ";
+  VAGen_EZEMSG = " ";
+  ;
+  /* Reset field attributes*/
+  ;
+  set OS0TM015.OP-CUST-ORD-ID initialAttributes;
+  set OS0TM015.XSO-SLS-OFC-ID-NEW initialAttributes;
+   /* ***************TCS INCLUDE BEGIN 05/12/98 ******************/
+  set OS0TM015.OP1NORID initialAttributes;
+   /* ***************TCS INCLUDE END  05/12/98  ********************/
+  ;
+  if (converseVar.eventKey is enter) /* user pressed enter*/
+    OS0TS-OPT3-ENTER();
+  else
+    if (converseVar.eventKey is pf3 /* user presses a valid PF key*/
+     || converseVar.eventKey is pf4 
+     || converseVar.eventKey is pa2)
+      OS0TS-OPT3-PF-KEYS(); /* process pf key pressed*/
+    else
+      converseLib.validationFailed(2); /* invalid PF key pressed*/
+    end
+  end
+  ;
+  ;
+end // end OS0T-3000-CONVERSE
+
+// initialize option 3 processing
+Function OS0T-3000-INIT()
+  ;
+  set OP1REC empty; /* clean out the header record*/
+  set OS0TM015 empty; /* clear the map*/
+  ;
+  OS0TW-ERRFL = "N";
+  OS0TW-VALIDATED = "N";
+  OS0TW-UPDATED = "N";
+  OS0TM015.OS0TM-MAP-DTE = OS0TW01.OS0TW-YYMMDD; /* move date to map*/
+  ;
+  ;
+end // end OS0T-3000-INIT
+
+// converse option 4 map
+Function OS0T-4000-CONVERSE()
+  converse OS0TM020 ;
+  ;
+  ;
+  OS0TM020.CAMSG = " ";
+  VAGen_EZEMSG = " ";
+  ;
+  /* Reset field attributes*/
+  ;
+  set OS0TM020.OP-CUST-ORD-ID initialAttributes;
+  set OS0TM020.ZZ-CHNG-DT-NEW initialAttributes;
+  ;
+  if (converseVar.eventKey is enter) /* user pressed enter*/
+    OS0TS-OPT4-ENTER();
+  else
+    if (converseVar.eventKey is pf3 /* user presses a valid PF key*/
+     || converseVar.eventKey is pf4 
+     || converseVar.eventKey is pa2)
+      OS0TS-OPT4-PF-KEYS(); /* process pf key pressed*/
+    else
+      converseLib.validationFailed(2); /* invalid PF key pressed*/
+    end
+  end
+  ;
+  ;
+end // end OS0T-4000-CONVERSE
+
+// initialize option 4 processing
+Function OS0T-4000-INIT()
+  ;
+  set OP1REC empty; /* clean out the header record*/
+  set OS0TM020 empty; /* clear the map*/
+  ;
+  OS0TW-ERRFL = "N";
+  OS0TW-VALIDATED = "N";
+  OS0TW-UPDATED = "N";
+  OS0TM020.OS0TM-MAP-DTE = OS0TW01.OS0TW-YYMMDD; /* move date to map*/
+  OS0TM020.ZZ-CHNG-DT-NEW = OS0TW-DB2-DATE; /* default the date*/
+  ;
+  ;
+end // end OS0T-4000-INIT
+
+// converse option 5 map
+Function OS0T-5000-CONVERSE()
+  converse OS0TM025 ;
+  ;
+  ;
+  OS0TM025.CAMSG = " ";
+  VAGen_EZEMSG = " ";
+  ;
+  /* Reset field attributes*/
+  ;
+  set OS0TM025.OP-CUST-ORD-ID initialAttributes;
+  set OS0TM025.OS0TM-NEW-XBD-CD initialAttributes;
+  ;
+  if (converseVar.eventKey is enter) /* user pressed enter*/
+    OS0TS-OPT5-ENTER();
+  else
+    if (converseVar.eventKey is pf3 /* user presses a valid PF key*/
+     || converseVar.eventKey is pf4 
+     || converseVar.eventKey is pa2)
+      OS0TS-OPT5-PF-KEYS(); /* process pf key pressed*/
+    else
+      converseLib.validationFailed(2); /* invalid PF key pressed*/
+    end
+  end
+  ;
+  ;
+end // end OS0T-5000-CONVERSE
+
+// initialize option 5 processing
+Function OS0T-5000-INIT()
+  ;
+  set OP1REC empty; /* clean out the header record*/
+  set OS0TM025 empty; /* clear the map*/
+  set OS0TM025.CUST-ORD-ID-CNT invisible, protect; /* for looks*/
+  set OS0TM025.LINE-ITM-CNT invisible, protect; /* for looks*/
+  ;
+  OS0TW-ERRFL = "N";
+  OS0TW-VALIDATED = "N";
+  OS0TW-UPDATED = "N";
+  OS0TM025.OS0TM-MAP-DTE = OS0TW01.OS0TW-YYMMDD; /* move date to map*/
+  ;
+  ;
+end // end OS0T-5000-INIT
+
+// Initialize OS0T Application
+Function OS0TS-INIT-OS0T()
+  ;
+  set OP1REC empty; /* Order Header*/
+  set SQLCA empty; /* return code from DB2*/
+  set TA1REC empty; /* diagnostic record*/
+  ;
+  set OS0TM001 empty; /* map*/
+  ;
+  OS0TW01.OS0TW-YYMMDD = VGVar.currentShortGregorianDate;
+  OS0TW01.OS0TW-TIME = VGVar.currentFormattedTime;
+  ;
+  if (OS0TW01.OS0TW-YY <= 51)
+    OS0TW01.OS0TW-DB2-DATE-CC = 20;
+  else
+    OS0TW01.OS0TW-DB2-DATE-CC = 19;
+  end
+  ;
+  OS0TW01.OS0TW-DB2-DATE-YY = OS0TW01.OS0TW-YY; /* date reformat yy*/
+  OS0TW01.OS0TW-DB2-DATE-MM = OS0TW01.OS0TW-MM; /* date reformat mm*/
+  OS0TW01.OS0TW-DB2-DATE-DD = OS0TW01.OS0TW-DD; /* date reformat dd*/
+  ;
+  OS0TW01.OS0TW-DB2-TIME-HH = OS0TW01.OS0TW-TIME-HH;
+                                                        /* time reformat hh*/
+  OS0TW01.OS0TW-DB2-TIME-MM = OS0TW01.OS0TW-TIME-MM;
+                                                        /* time reformat mm*/
+  ;
+  TA1REC.TA1MAP = "OS0TM001"; /* map name for diags*/
+  ;
+  ;
+end // end OS0TS-INIT-OS0T
+
+// process enter key on menu
+Function OS0TS-MENU-ENTER()
+  if (OS0TM001.CATOAP == " ") /* fastpath application and parms blank*/
+    if (OS0TM001.CAITEM == " ")
+    /* next sentence*/
+    else
+      OS0TM001.CAITEM = " "; /* parms entered without application*/
+    end
+  else
+    COMMAREA.CATOAP = OS0TM001.CATOAP; /* move to commarea*/
+    COMMAREA.CAITEM = OS0TM001.CAITEM;
+    COMMAREA.CAUSERA = " "; /* clear user area*/
+    ;
+    XSEXIT(); /* transfer control*/
+    ;
+    set OS0TM001.CATOAP cursor, bold;
+    set OS0TM001.CAITEM bold;
+    OS0TM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    ;
+    if (converseVar.validationMsgNum != 0 /* error occurred*/
+     || OS0TM001.VAGen_EZEMSG != " ")    
+      return;
+    end
+  end
+  ;
+end // end OS0TS-MENU-ENTER
+
+// Build OS0T menu screen
+Function OS0TS-MENU-MAP-BLD()
+  ;
+     /* build map headings*/
+  ;
+  OS0TM001.OS0TM-MAP-DTE = OS0TW01.OS0TW-YYMMDD; /* map date*/
+  ;
+  OS0TM001.OS0TM-OPTION[1] = 01; /* option number*/
+  OS0TM001.OS0TM-OPTION[2] = 02; /* option number*/
+  OS0TM001.OS0TM-OPTION[3] = 03; /* option number*/
+  OS0TM001.OS0TM-OPTION[4] = 04; /* option number*/
+  OS0TM001.OS0TM-OPTION[5] = 05; /* option number*/
+  OS0TM001.OS0TM-OPTION[6] = 06; /* option number*/
+  OS0TM001.OS0TM-OPTION[7] = 07; /* option number*/
+  OS0TM001.OS0TM-OPTION[8] = 08; /* option number*/
+  OS0TM001.OS0TM-OPTION[9] = 09; /* option number*/
+  OS0TM001.OS0TM-OPTION[10] = 10; /* option number*/
+  OS0TM001.OS0TM-OPTION[11] = 11; /* option number*/
+  OS0TM001.OS0TM-OPTION[12] = 12; /* option number*/
+   /* *TCS INCLUDE BEGIN  01/27/1998*/
+  OS0TM001.OS0TM-OPTION[13] = 13; /* option number*/
+   /* *TCS INCLUDE END  01/27/1998*/
+  OS0TM001.OS0TM-DASH[1] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[2] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[3] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[4] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[5] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[6] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[7] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[8] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[9] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[10] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[11] = "-"; /* option dash*/
+  OS0TM001.OS0TM-DASH[12] = "-"; /* option dash*/
+   /* *TCS INCLUDE BEGIN 01/27/1998*/
+  OS0TM001.OS0TM-DASH[13] = "-"; /* option dash*/
+   /* *TCS INCLUDE END 01/27/1998*/
+  OS0TM001.OS0TM-DESCRIPTION[1] = "CHANGE BULK CODE              ";
+  OS0TM001.OS0TM-DESCRIPTION[2] = "CHANGE DIRECT SHIP CODE       ";
+  OS0TM001.OS0TM-DESCRIPTION[3] = "CHANGE SALES OFFICE ID        ";
+  OS0TM001.OS0TM-DESCRIPTION[4] = "CHANGE ORDER CHANGE DATE      ";
+  OS0TM001.OS0TM-DESCRIPTION[5] = "CHANGE DRAW TO BULK           ";
+  OS0TM001.OS0TM-DESCRIPTION[6] = "CHANGE ISEG                   ";
+  OS0TM001.OS0TM-DESCRIPTION[7] = "CHANGE THE CUTOFF DATE        ";
+  OS0TM001.OS0TM-DESCRIPTION[8] = "CHANGE VOGCUT                 ";
+  OS0TM001.OS0TM-DESCRIPTION[9] = "ADD TO VOGCUT                 ";
+  OS0TM001.OS0TM-DESCRIPTION[10] = "CHANGE DO NOT SHIP BEFORE DATE";
+  OS0TM001.OS0TM-DESCRIPTION[11] = "SALES PROGRAM CUSTOMER COPY   ";
+  OS0TM001.OS0TM-DESCRIPTION[12] = "DISPLAY COMP AUTHORIZATION    ";
+   /* *TCS INCLUDE BEGIN  01/27/1998*/
+  OS0TM001.OS0TM-DESCRIPTION[13] = "CHANGE ORDER TYPE             ";
+   /* *TCS INCLUDE END  01/27/1998*/
+  ;
+end // end OS0TS-MENU-MAP-BLD
+
+// process pf keys on menu
+Function OS0TS-MENU-PF-KEYS()
+  ;
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+    if (converseVar.eventKey is pf1) /* help requested*/
+      COMMAREA.CAUSERA = " ";
+      XSPF1(); /* transfer to help system*/
+      OS0TM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+    ;
+    if (converseVar.eventKey is pf3) /* transfer to OP0M*/
+      COMMAREA.CATOAP = "OP0M"; /* move to commarea*/
+      COMMAREA.CAUSERA = " "; /* clear user area*/
+      XSEXIT(); /* transfer control*/
+      set OS0TM001.CATOAP cursor, bold;
+      set OS0TM001.CAITEM bold;
+      OS0TM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+      if (converseVar.validationMsgNum != 0 /* error occurred*/
+       || OS0TM001.VAGen_EZEMSG != " ")    
+        return;
+      end
+    end
+    ;
+    if (converseVar.eventKey is pf4) /* transfer to MN0M requested*/
+      COMMAREA.CAUSERA = " ";
+      XSPF4(); /* pass control*/
+      OS0TM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+  end
+  ;
+end // end OS0TS-MENU-PF-KEYS
+
+// edit the map
+Function OS0TS-OPT1-EDIT()
+  ;
+  if (OS0TM005.XBD-BULK-DRAW-CD-NEW == " ")
+    converseLib.validationFailed(295);
+    set OS0TM005.XBD-BULK-DRAW-CD-NEW cursor, bold;
+  end
+  ;
+  if (OS0TM005.OP-CUST-ORD-ID <= 0)
+    converseLib.validationFailed(031);
+    set OS0TM005.OP-CUST-ORD-ID cursor, bold;
+  end
+  ;
+  OS0TW-CUST-ORD-ID = OS0TM005.OP-CUST-ORD-ID;
+  /* Tcs include pdorca 08/14/98 begin */
+  OS0TW-NIKE-ORD-ID = 0;
+  /* Tcs include pdorca 08/14/98 end  */
+  ;
+  if (converseVar.validationMsgNum == 0)
+    OS0TS-VORHDR-COUNT(); /* count the number of rows to be*/
+                                   /* updated*/
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    OS0TM005.XBD-BULK-DRAW-CD = OP1REC.XBDCD; /* display old xbdc*/
+    OS0TM005.CUST-ORD-ID-CNT = OS0TW-IO-COUNT1; /* display counts*/
+    set OS0TM005.XBD-BULK-DRAW-CD-CNT protect; /* cause its dark*/
+    OS0TM005.XBD-BULK-DRAW-CD-CNT = OS0TW-IO-COUNT2;
+    OP1REC.XBDCD = OS0TM005.XBD-BULK-DRAW-CD-NEW; /* move new xbdcd*/
+    OP1REC.ZZZCHGDT = OS0TW-DB2-DATE; /* move new date*/
+    set OS0TM005.OP-CUST-ORD-ID protect;
+    set OS0TM005.XBD-BULK-DRAW-CD-NEW protect;
+  end
+  ;
+end // end OS0TS-OPT1-EDIT
+
+// process enter
+Function OS0TS-OPT1-ENTER()
+  ;
+  if (OS0TM005.CATOAP == " ") /* fastpath application and parms blank*/
+    if (OS0TM005.CAITEM == " ")
+    /* next sentence*/
+    else
+      OS0TM005.CAITEM = " "; /* parms entered without application*/
+    end
+  else
+    COMMAREA.CATOAP = OS0TM005.CATOAP; /* move to commarea*/
+    COMMAREA.CAITEM = OS0TM005.CAITEM;
+    COMMAREA.CAUSERA = " "; /* clear user area*/
+    ;
+    XSEXIT(); /* transfer control*/
+    ;
+    set OS0TM005.CATOAP cursor, bold;
+    set OS0TM005.CAITEM bold;
+    OS0TM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    ;
+    if (converseVar.validationMsgNum != 0 /* error occurred*/
+     || OS0TM005.VAGen_EZEMSG != " ")    
+      return;
+    end
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    set OS0TW02 empty; /* clear the io parms*/
+    OS0TW-IO-TASK = "U1"; /* set io mod to update bulk code*/
+    OS0TS-VORHDR-UPDTE(); /* update the order*/
+  /* Tcs include 08/14/98 begin */
+    if ((OS0TM005.XBD-BULK-DRAW-CD-NEW == 0
+     && OS0TM005.XBD-BULK-DRAW-CD != 0)
+     || OS0TM005.XBD-BULK-DRAW-CD != 0
+     || OS0TM005.XBD-BULK-DRAW-CD-NEW == OS0TM005.XBD-BULK-DRAW-CD)
+        /* populate fields*/
+      ;
+      if ((OS0TM005.XBD-BULK-DRAW-CD-NEW == 0
+       && OS0TM005.XBD-BULK-DRAW-CD == 0))
+        ;
+      else
+        set OS0TW02 empty;
+        set VBULKS02 empty;
+        OS0TW02.OS0TW-IO-TASK = "S1"; /* get counts*/
+        VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+        VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+        ;
+        OS0TS-VBULK-SELEC1(); /* update vbulk table*/
+        if ((OS0TW-IO-COUNT1 > 0))
+          set VBULKS02 empty;
+
+          VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* part char*/
+          VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* order id*/
+          VBULKS02.XBDCD = OP1REC.XBDCD;
+          VBULKS02.ZZZCHGDT = OP1REC.ZZZCHGDT;
+          OS0TW-IO-TASK = "C1";
+          OS0TS-VBULK-UPDATE(); /* update if row is available*/
+        end
+      end
+    else
+      set OS0TW02 empty;
+      set VBULKS02 empty;
+      OS0TW02.OS0TW-IO-TASK = "S1"; /* get counts*/
+      VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+      VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+      OS0TS-VBULK-SELEC1(); /* update vbulk table*/
+      if (OS0TW-IO-COUNT1 == 0)
+        OS0TS-VBULK-SELECT(); /* sel & ins orders into vbulk for reg*/
+      end
+    end
+  /* Tcs include end 8/14/98*/
+  else
+    OS0TS-OPT1-EDIT(); /* edit the map*/
+  end
+  ;
+  ;
+  ;
+end // end OS0TS-OPT1-ENTER
+
+// process pf key pressed
+Function OS0TS-OPT1-PF-KEYS()
+  ;
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+    if (converseVar.eventKey is pf4) /* transfer to MN0M requested*/
+      COMMAREA.CAUSERA = " ";
+      XSPF4(); /* pass control*/
+      OS0TM005.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+  end
+  ;
+end // end OS0TS-OPT1-PF-KEYS
+
+// edit the map
+Function OS0TS-OPT13-EDIT()
+   /* *TCS INCLUDE BEGIN  01/27/1998*/
+  if (OS0TM060.XOB-ORD-TYP-NEW == " ") /* check of new base order type*/
+    converseLib.validationFailed(956);
+    set OS0TM060.XOB-ORD-TYP-NEW cursor, bold;
+  end
+  ;
+  ;
+  if (OS0TM060.XOB-ORD-TYP-NEW in XOBTBL.XOBCD
+   && XOBTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+   /* next sentence*/
+  else
+    converseLib.validationFailed(017); /* order type invalid*/
+  end
+  ;
+  if (OS0TM060.OP-CUST-ORD-ID <= 0)
+    converseLib.validationFailed(031);
+    set OS0TM060.OP-CUST-ORD-ID cursor, bold;
+  end
+  if (OS0TM060.OP1NORID != 0)
+    OS0TW-NIKE-ORD-ID = OS0TM060.OP1NORID;
+  else
+    OS0TW-NIKE-ORD-ID = 0;
+  end
+  OS0TW-CUST-ORD-ID = OS0TM060.OP-CUST-ORD-ID;
+  /* Tcs include 08/14/98 begin */
+  OS0TW-NIKE-ORD-ID = 0;
+  /* Tcs include 08/14/98 end */
+  ;
+  if (converseVar.validationMsgNum == 0)
+    OS0TS-VORHDR-COUNT(); /* count the number of rows to be updated*/
+    OS0TSB3(); /* Call specific to OPT13, so moved from VORHDR-COUNT -Eshanm*/
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    OS0TM060.XOB-ORD-TYP-OLD = OP1REC.XOBCD; /* display old base-orde*/
+    OS0TM060.CUST-ORD-ID-CNT = OS0TW-IO-COUNT1; /* display counts*/
+    OP1REC.XOBCD = OS0TM060.XOB-ORD-TYP-NEW; /* move new xoBcd*/
+    OP1REC.ZZZCHGDT = OS0TW-DB2-DATE; /* move new date*/
+    set OS0TM060.OP-CUST-ORD-ID protect;
+    set OS0TM060.OP1NORID protect;
+     /* SET OS0TM060.XOB-ORD-TYP-NEW PROTECT;*/
+  end
+   /* *TCS INCLUDE END   01/27/1998*/
+end // end OS0TS-OPT13-EDIT
+
+// process enter
+Function OS0TS-OPT13-ENTER()
+  ;
+   /* **********TCS INCLUDE BEGIN 03/31/1998***********/
+  ;
+  if (OS0TM060.CATOAP == " ") /* fastpath application and parms blank*/
+    if (OS0TM060.CAITEM == " ")
+    /* next sentence*/
+    else
+      OS0TM060.CAITEM = " "; /* parms entered without application*/
+    end
+  else
+    COMMAREA.CATOAP = OS0TM060.CATOAP; /* move to commarea*/
+    COMMAREA.CAITEM = OS0TM060.CAITEM;
+    COMMAREA.CAUSERA = " "; /* clear user area*/
+    ;
+    XSEXIT(); /* transfer control*/
+    ;
+    set OS0TM060.CATOAP cursor, bold;
+    set OS0TM060.CAITEM bold;
+    OS0TM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    ;
+    if (converseVar.validationMsgNum != 0 /* error occurred*/
+     || OS0TM060.VAGen_EZEMSG != " ")    
+      return;
+    end
+  end
+  if (OS0TW01.OS0TNOUPD == "Y"
+   || (OS0TM060.XOB-ORD-TYP-NEW != " "
+   && OS0TM060.XOB-ORD-TYP-NEW is modified))
+    OS0TW-VALIDATED = "N";
+    OS0TW01.OS0TNOUPD = "N";
+    set OS0TM060.XOB-ORD-TYP-NEW cursor, bold;
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    set OS0TW02 empty; /* clear the io parms*/
+    OS0TW01.OS0TWFND = "Y";
+    OP1REC.OP1NORID = OS0TW-NIKE-ORD-ID;
+    if (OS0TW01.OS0TWFND == "N") /* if nothing was found to load in*/
+      converseLib.validationFailed(482); /* invalid system order type*/
+      OMAREC.OMAERR = "Y"; /* set error flag*/
+      set OS0TM060.XOB-ORD-TYP-NEW cursor, modified, bold;
+    else
+      if (OS0TW-NIKE-ORD-ID != 0)
+        OS0TW-IO-TASK = "U7"; /* set io mod to update order type*/
+        OP1REC.OP1NORID = OS0TW-NIKE-ORD-ID;
+      else
+        OS0TW-IO-TASK = "U6";
+      end
+      OS0TS-VORHDR-UPDTE(); /* update the order*/
+    end
+  else
+    OS0TS-OPT13-EDIT(); /* edit the map*/
+  end
+  ;
+  ;
+   /* **********TCS INCLUDE END 03/31/1998***********/
+  ;
+end // end OS0TS-OPT13-ENTER
+
+// process pf key pressed
+Function OS0TS-OPT13-PF-KEY()
+   /* *TCS INCLDUE BEGIN  01/27/1998*/
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+    if (converseVar.eventKey is pf4) /* transfer to MN0M requested*/
+      COMMAREA.CAUSERA = " ";
+      XSPF4(); /* pass control*/
+      OS0TM005.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+  end
+   /* ** TCS INCLUDE END  01/27/1998*/
+end // end OS0TS-OPT13-PF-KEY
+
+// edit the map
+Function OS0TS-OPT2-EDIT()
+  ;
+  if (OS0TM010.XWH-WHSE-CD-NEW == " "
+   && OS0TM010.XDS-DIR-SHIP-CD-NEW == " ")
+    set OS0TM010.XWH-WHSE-CD-NEW bold, cursor;
+    converseLib.validationFailed(078); /* invalid warehouse code*/
+  end
+   /* ************TCS INCLUDE BEGIN 05/12/98*******/
+  if (OS0TM010.XWH-WHSE-CD-NEW in XWHTBL.XWHCD
+   && XWHTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* active*/
+      /* next sentence*/
+  else
+    set OS0TM010.XWH-WHSE-CD-NEW bold, cursor;
+    converseLib.validationFailed(078); /* invalid warehouse code*/
+  end
+   /* ************TCS INCLUDE END 05/12/98*******/
+  ;
+  if (OS0TM010.XDS-DIR-SHIP-CD-NEW == " "
+   && OS0TM010.XWH-WHSE-CD-NEW == " ")
+    set OS0TM010.XDS-DIR-SHIP-CD-NEW bold, cursor;
+    converseLib.validationFailed(074); /* invalid direct ship code*/
+  end
+   /* ************TCS INCLUDE BEGIN 05/12/98*******/
+  if (OS0TM010.XDS-DIR-SHIP-CD-NEW in XDSTBL.XDSCD
+   && XDSTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* active*/
+      /* next sentence*/
+  else
+    set OS0TM010.XDS-DIR-SHIP-CD-NEW bold, cursor;
+    converseLib.validationFailed(074); /* invalid direct ship code*/
+  end
+   /* ************TCS INCLUDE END 05/12/98*******/
+  ;
+  if (OS0TM010.OP-CUST-ORD-ID <= 0)
+    set OS0TM010.OP-CUST-ORD-ID bold, cursor;
+    converseLib.validationFailed(031); /* must enter order id*/
+  end
+  ;
+   /* *********** TCS INCLUDE BEGIN 05/12/98************/
+  if (OS0TM010.OP1NORID != 0)
+    OS0TW-NIKE-ORD-ID = OS0TM010.OP1NORID;
+  else
+    OS0TW-NIKE-ORD-ID = 0;
+  end
+   /* *********** TCS INCLUDE END 05/12/98 **************/
+  ;
+  OS0TW-CUST-ORD-ID = OS0TM010.OP-CUST-ORD-ID;
+  ;
+  if (converseVar.validationMsgNum == 0)
+    OS0TS-VORHDR-COUNT(); /* count the number of rows to be updated*/
+    set OS0TM010.OP-CUST-ORD-ID cursor;
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    OS0TM010.XDS-DIR-SHIP-CD = OP1REC.XDSCD; /* display old xds*/
+    OS0TM010.XWH-WHSE-CD = OP1REC.XWHCD; /* display old xwh*/
+    OS0TM010.CUST-ORD-ID-CNT = OS0TW-IO-COUNT1; /* display counts*/
+    OP1REC.XDSCD = OS0TM010.XDS-DIR-SHIP-CD-NEW; /* move new xdscd*/
+    OP1REC.XWHCD = OS0TM010.XWH-WHSE-CD-NEW; /* move new xwhcd*/
+    OP1REC.ZZZCHGDT = OS0TW-DB2-DATE; /* move new date*/
+    set OS0TM010.OP-CUST-ORD-ID protect;
+   /* ************TCS INCLUDE BEGIN 05/12/98*******/
+    set OS0TM010.OP1NORID protect;
+   /* ************TCS INCLUDE END   05/12/98*******/
+    set OS0TM010.XDS-DIR-SHIP-CD-NEW protect;
+    set OS0TM010.XWH-WHSE-CD-NEW protect;
+  end
+  ;
+end // end OS0TS-OPT2-EDIT
+
+// process enter
+Function OS0TS-OPT2-ENTER()
+  ;
+  if (OS0TM010.CATOAP == " ") /* fastpath application and parms blank*/
+    if (OS0TM010.CAITEM == " ")
+    /* next sentence*/
+    else
+      OS0TM010.CAITEM = " "; /* parms entered without application*/
+    end
+  else
+    COMMAREA.CATOAP = OS0TM010.CATOAP; /* move to commarea*/
+    COMMAREA.CAITEM = OS0TM010.CAITEM;
+    COMMAREA.CAUSERA = " "; /* clear user area*/
+    ;
+    XSEXIT(); /* transfer control*/
+    ;
+    set OS0TM010.CATOAP cursor, bold;
+    set OS0TM010.CAITEM bold;
+    OS0TM010.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    ;
+    if (converseVar.validationMsgNum != 0 /* error occurred*/
+     || OS0TM010.VAGen_EZEMSG != " ")    
+      return;
+    end
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    set OS0TW02 empty; /* clear the io parms*/
+     /* ********** TCS INCLUDE BEGIN 05/12/98 *****************/
+    if (OS0TW-NIKE-ORD-ID != 0)
+      OS0TW-IO-TASK = "U8"; /* set io mod to update direct ship*/
+      OP1REC.OP1NORID = OS0TW-NIKE-ORD-ID;
+    else
+     /* ********** TCS INCLUDE END 05/12/98 ********************/
+      OS0TW-IO-TASK = "U2";
+    end
+    OS0TS-VORHDR-UPDTE(); /* update the order*/
+     /* tcs include begin*/
+    ;
+    set OS0TW02 empty;
+    set VBULKS02 empty;
+    VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+    VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+    VBULKS02.XWHCD = OP1REC.XWHCD; /* move xsocd*/
+    if (OS0TW-NIKE-ORD-ID != 0)
+      OS0TW-IO-TASK = "S2";
+      VBULKS02.OP1NORID = OS0TW-NIKE-ORD-ID;
+    else
+      OS0TW-IO-TASK = "S1";
+    end
+    OS0TS-VBULK-SELEC1();
+    if (OS0TW-IO-COUNT1 > 0) /* if there are recs in vbulk update them*/
+      set VBULKS02 empty;
+      if (OS0TW-NIKE-ORD-ID != 0)
+        OS0TW-IO-TASK = "C8"; /* set io mod to update sales office*/
+        VBULKS02.OP1NORID = OS0TW-NIKE-ORD-ID;
+      else
+        OS0TW-IO-TASK = "C2";
+      end
+      VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+      VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+      VBULKS02.XWHCD = OP1REC.XWHCD;
+      VBULKS02.ZZZCHGDT = OP1REC.ZZZCHGDT;
+      OS0TS-VBULK-UPDATE();
+    end
+  /* tcs include end*/
+  else
+    OS0TS-OPT2-EDIT(); /* edit the map*/
+  end
+  ;
+  ;
+  ;
+end // end OS0TS-OPT2-ENTER
+
+// process pf key pressed
+Function OS0TS-OPT2-PF-KEYS()
+  ;
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+    if (converseVar.eventKey is pf4) /* transfer to MN0M requested*/
+      COMMAREA.CAUSERA = " ";
+      XSPF4(); /* pass control*/
+      OS0TM010.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+  end
+  ;
+end // end OS0TS-OPT2-PF-KEYS
+
+// edit the map
+Function OS0TS-OPT3-EDIT()
+  ;
+  if (OS0TM015.XSO-SLS-OFC-ID-NEW == " ")
+    converseLib.validationFailed(109);
+    set OS0TM015.XSO-SLS-OFC-ID-NEW bold, cursor;
+  end
+   /* **********TCS INCLUDE BEGIN 05/12/98 *************/
+  if (OS0TM015.XSO-SLS-OFC-ID-NEW in XSOTBL.XSOCD
+   && XSOTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* active*/
+     /* next sentence*/
+  else
+    converseLib.validationFailed(109);
+    set OS0TM015.XSO-SLS-OFC-ID-NEW bold, cursor;
+  end
+   /* **********TCS INCLUDE END 05/12/98 *************/
+  ;
+  if (OS0TM015.OP-CUST-ORD-ID <= 0)
+    converseLib.validationFailed(031);
+    set OS0TM015.OP-CUST-ORD-ID bold, cursor;
+  end
+   /* *************TCS INCLUDE BEGIN 05/12/98 ****************/
+  if (OS0TM015.OP1NORID != 0)
+    OS0TW-NIKE-ORD-ID = OS0TM015.OP1NORID;
+  else
+    OS0TW-NIKE-ORD-ID = 0;
+  end
+   /* *************TCS INCLUDE END 05/12/98 *********************/
+  ;
+  OS0TW-CUST-ORD-ID = OS0TM015.OP-CUST-ORD-ID;
+  ;
+  if (converseVar.validationMsgNum == 0)
+    OS0TS-VORHDR-COUNT(); /* count the number of rows to be updated*/
+    set OS0TM015.OP-CUST-ORD-ID cursor;
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    OS0TM015.XSO-SLS-OFC-ID = OP1REC.XSOCD; /* display old xbdc*/
+    OS0TM015.CUST-ORD-ID-CNT = OS0TW-IO-COUNT1; /* display counts*/
+    OP1REC.XSOCD = OS0TM015.XSO-SLS-OFC-ID-NEW; /* move new xsocd*/
+    OP1REC.ZZZCHGDT = OS0TW-DB2-DATE; /* move new date*/
+    set OS0TM015.OP-CUST-ORD-ID protect;
+   /* **********TCS INCLUDE BEGIN 05/12/98 *************/
+    set OS0TM015.OP1NORID protect;
+   /* **********TCS INCLUDE END   05/12/98 *************/
+    set OS0TM015.XSO-SLS-OFC-ID-NEW protect;
+  end
+  ;
+end // end OS0TS-OPT3-EDIT
+
+// process enter
+Function OS0TS-OPT3-ENTER()
+  ;
+  if (OS0TM015.CATOAP == " ") /* fastpath application and parms blank*/
+    if (OS0TM015.CAITEM == " ")
+    /* next sentence*/
+    else
+      OS0TM015.CAITEM = " "; /* parms entered without application*/
+    end
+  else
+    COMMAREA.CATOAP = OS0TM015.CATOAP; /* move to commarea*/
+    COMMAREA.CAITEM = OS0TM015.CAITEM;
+    COMMAREA.CAUSERA = " "; /* clear user area*/
+    ;
+    XSEXIT(); /* transfer control*/
+    ;
+    set OS0TM015.CATOAP cursor, bold;
+    set OS0TM015.CAITEM bold;
+    OS0TM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    ;
+    if (converseVar.validationMsgNum != 0 /* error occurred*/
+     || OS0TM015.VAGen_EZEMSG != " ")    
+      return;
+    end
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    set OS0TW02 empty; /* clear the io parms*/
+   /* ************TCS INCLUDE BEGIN 05/12/98 **************/
+    if (OS0TW-NIKE-ORD-ID != 0)
+      OS0TW-IO-TASK = "U9"; /* set io mod to update sales office*/
+      OP1REC.OP1NORID = OS0TW-NIKE-ORD-ID;
+    else
+   /* ************TCS INCLUDE END 05/12/98 ****************/
+      OS0TW-IO-TASK = "U3";
+    end
+    OS0TS-VORHDR-UPDTE(); /* update the order*/
+     /* Tcs include pdorca 08/14/98 begin */
+    set OS0TW02 empty;
+    set VBULKS02 empty;
+    VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+    VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+    VBULKS02.XSOCD = OP1REC.XSOCD; /* move xsocd*/
+    if (OS0TW-NIKE-ORD-ID != 0)
+      OS0TW-IO-TASK = "S2"; /* set io mod to update sales office*/
+      VBULKS02.OP1NORID = OS0TW-NIKE-ORD-ID;
+    else
+      OS0TW-IO-TASK = "S1";
+    end
+    OS0TS-VBULK-SELEC1();
+    if (OS0TW-IO-COUNT1 > 0) /* if there are recs in vbulk update them*/
+      set VBULKS02 empty;
+      if (OS0TW-NIKE-ORD-ID != 0)
+        OS0TW-IO-TASK = "C9"; /* set io mod to update sales office*/
+        VBULKS02.OP1NORID = OS0TW-NIKE-ORD-ID;
+      else
+        OS0TW-IO-TASK = "C3";
+      end
+
+      VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+      VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+      VBULKS02.XSOCD = OP1REC.XSOCD;
+      VBULKS02.ZZZCHGDT = OP1REC.ZZZCHGDT;
+
+
+      OS0TS-VBULK-UPDATE();
+    end
+     /* Tcs include pdorca 08/14/98 begin */
+  else
+    OS0TS-OPT3-EDIT(); /* edit the map*/
+  end
+  ;
+  ;
+  ;
+end // end OS0TS-OPT3-ENTER
+
+// process pf key pressed
+Function OS0TS-OPT3-PF-KEYS()
+  ;
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+    if (converseVar.eventKey is pf4) /* transfer to MN0M requested*/
+      COMMAREA.CAUSERA = " ";
+      XSPF4(); /* pass control*/
+      OS0TM015.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+  end
+  ;
+end // end OS0TS-OPT3-PF-KEYS
+
+// edit the map
+Function OS0TS-OPT4-EDIT()
+  ;
+  if (OS0TM020.OP-CUST-ORD-ID <= 0)
+    set OS0TM020.OP-CUST-ORD-ID bold, cursor;
+    converseLib.validationFailed(031); /* order id required*/
+  end
+  ;
+  OS0TW-CUST-ORD-ID = OS0TM020.OP-CUST-ORD-ID;
+  OS0TW-NIKE-ORD-ID = 0;
+  ;
+  if (converseVar.validationMsgNum == 0)
+    OS0TS-VORHDR-COUNT(); /* count the number of rows to be updated*/
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    OS0TM020.ZZ-CHNG-DT = OP1REC.ZZZCHGDT; /* display old date*/
+    OS0TM020.CUST-ORD-ID-CNT = OS0TW-IO-COUNT1; /* display counts*/
+    OP1REC.ZZZCHGDT = OS0TM020.ZZ-CHNG-DT-NEW; /* move new date*/
+    set OS0TM020.OP-CUST-ORD-ID protect;
+  end
+  ;
+end // end OS0TS-OPT4-EDIT
+
+// process enter
+Function OS0TS-OPT4-ENTER()
+  ;
+  if (OS0TM020.CATOAP == " ") /* fastpath application and parms blank*/
+    if (OS0TM020.CAITEM == " ")
+    /* next sentence*/
+    else
+      OS0TM020.CAITEM = " "; /* parms entered without application*/
+    end
+  else
+    COMMAREA.CATOAP = OS0TM020.CATOAP; /* move to commarea*/
+    COMMAREA.CAITEM = OS0TM020.CAITEM;
+    COMMAREA.CAUSERA = " "; /* clear user area*/
+    ;
+    XSEXIT(); /* transfer control*/
+    ;
+    set OS0TM020.CATOAP cursor, bold;
+    set OS0TM020.CAITEM bold;
+    OS0TM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    ;
+    if (converseVar.validationMsgNum != 0 /* error occurred*/
+     || OS0TM020.VAGen_EZEMSG != " ")    
+      return;
+    end
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    set OS0TW02 empty; /* clear the io parms*/
+    OS0TW-IO-TASK = "U4"; /* set io mod to update bulk code*/
+    OS0TS-VORHDR-UPDTE(); /* update the order*/
+    ;
+     /* Tcs include 08/14/98 begin */
+    set OS0TW02 empty;
+    set VBULKS02 empty;
+    VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+    VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+    OS0TW-IO-TASK = "S1"; /* set io mod to update sales office*/
+    OS0TS-VBULK-SELEC1();
+    if (OS0TW-IO-COUNT1 > 0) /* if there are recs in vbulk update them*/
+      set VBULKS02 empty;
+      OS0TW-IO-TASK = "C4";
+      VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+      VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order*/
+      VBULKS02.ZZZCHGDT = OP1REC.ZZZCHGDT;
+
+      OS0TS-VBULK-UPDATE();
+    end
+     /* Tcs include 08/14/98 end */
+  else
+    OS0TS-OPT4-EDIT(); /* edit the map*/
+  end
+  ;
+  ;
+  ;
+end // end OS0TS-OPT4-ENTER
+
+// process pf key pressed
+Function OS0TS-OPT4-PF-KEYS()
+  ;
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+    if (converseVar.eventKey is pf4) /* transfer to MN0M requested*/
+      COMMAREA.CAUSERA = " ";
+      XSPF4(); /* pass control*/
+      OS0TM005.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+  end
+  ;
+end // end OS0TS-OPT4-PF-KEYS
+
+// edit the map
+Function OS0TS-OPT5-EDIT()
+  ;
+  if (OS0TM025.OS0TM-NEW-XBD-CD == " ")
+    set OS0TM025.OP-CUST-ORD-ID bold, cursor;
+    converseLib.validationFailed(910); /* BULK DRAW CODE REQUIRED*/
+  end
+  ;
+  if (OS0TM025.OP-CUST-ORD-ID <= 0)
+    set OS0TM025.OP-CUST-ORD-ID bold, cursor;
+    converseLib.validationFailed(031); /* order id required*/
+  end
+  ;
+  OS0TW-CUST-ORD-ID = OS0TM025.OP-CUST-ORD-ID;
+  /* Tcs include  08/14/98 begin */
+  OS0TW-NIKE-ORD-ID = 0;
+  /* Tcs include  08/14/98 end */
+  ;
+  if (converseVar.validationMsgNum == 0)
+    OS0TS-VORHDR-COUNT(); /* count header updates*/
+    if (OS0TW-VALIDATED == "Y")
+      OS0TM025.CUST-ORD-ID-CNT = OS0TW-IO-COUNT1; /* display counts*/
+      OS0TM025.XBD-BULK-DRAW-CD = OP1REC.XBDCD; /* move draw cd*/
+      OS0TM025.OP-BULK-ORD-ID = OP1REC.OP1BLKID; /* move bulk ord*/
+      set OS0TM025.OP-CUST-ORD-ID skip;
+      set OS0TM025.OS0TM-NEW-XBD-CD skip;
+      set OS0TM025.CUST-ORD-ID-CNT skip;
+      OP1REC.ZZZCHGDT = OS0TW-DB2-DATE; /* move new date*/
+      OS0TW-VALIDATED = "N";
+      OS0TS-VITEM-COUNT(); /* count the nbr*/
+      if (OS0TW-VALIDATED == "Y")
+        OP2REC.ZZZCHGDT = OS0TW-DB2-DATE; /* move new date*/
+        OS0TM025.LINE-ITM-CNT = OS0TW-IO-COUNT1; /* display counts*/
+        set OS0TM025.LINE-ITM-CNT skip;
+      end
+    end
+  end
+  ;
+  ;
+end // end OS0TS-OPT5-EDIT
+
+// process enter
+Function OS0TS-OPT5-ENTER()
+  ;
+  if (OS0TM025.CATOAP == " ") /* fastpath application and parms blank*/
+    if (OS0TM025.CAITEM == " ")
+    /* next sentence*/
+    else
+      OS0TM025.CAITEM = " "; /* parms entered without application*/
+    end
+  else
+    COMMAREA.CATOAP = OS0TM025.CATOAP; /* move to commarea*/
+    COMMAREA.CAITEM = OS0TM025.CAITEM;
+    COMMAREA.CAUSERA = " "; /* clear user area*/
+    ;
+    XSEXIT(); /* transfer control*/
+    ;
+    set OS0TM025.CATOAP cursor, bold;
+    set OS0TM025.CAITEM bold;
+    OS0TM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* transfer failed*/
+    ;
+    if (converseVar.validationMsgNum != 0 /* error occurred*/
+     || OS0TM025.VAGen_EZEMSG != " ")    
+      return;
+    end
+  end
+  ;
+  if (OS0TW-VALIDATED == "Y")
+    set OS0TW02 empty; /* clear the io parms*/
+    OS0TW-IO-TASK = "U5"; /* set io mod to update bulk code*/
+    OS0TM005.OP-CUST-ORD-ID = OS0TM025.OP-CUST-ORD-ID; /* set up key in case of abend*/
+    OP1REC.XBDCD = OS0TM025.OS0TM-NEW-XBD-CD;
+    OP1REC.OP1BLKID = 0;
+    OS0TS-VORHDR-UPDTE(); /* update the order*/
+   /* Tcs include 08/14/98 begin */
+     /* update app bulk recs*/
+    set VBULKS02 empty;
+    VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+    VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+    OS0TW-IO-TASK = "S1"; /* set io mod to update sales office*/
+    OS0TS-VBULK-SELEC1();
+    if (OS0TW-IO-COUNT1 > 0) /* if there are recs in vbulk update them*/
+      set OS0TW02 empty; /* clear the io parms*/
+      set VBULKS02 empty;
+      OS0TW-IO-TASK = "C5";
+      VBULKS02.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+      VBULKS02.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order*/
+      VBULKS02.XBDCD = OP1REC.XBDCD; /* move bulkdraw cd*/
+      VBULKS02.ZZZCHGDT = OP1REC.ZZZCHGDT; /* change date*/
+      ;
+      OS0TS-VBULK-UPDATE();
+    end
+    /* Tcs include 08/14/98 end  */
+     /* update item table*/
+    if (OS0TW-UPDATED == "Y") /* if header was properly updated*/
+      OS0TW-UPDATED = "N";
+      set OS0TW02 empty; /* clear the io parms*/
+      OS0TW-IO-TASK = "U3"; /* set io mod to update bulk code*/
+      OS0TS-VITEM-UPDTE(); /* update the order*/
+    end
+  else
+    OS0TS-OPT5-EDIT(); /* edit the map*/
+  end
+  ;
+  ;
+end // end OS0TS-OPT5-ENTER
+
+// process pf key pressed
+Function OS0TS-OPT5-PF-KEYS()
+  ;
+  if (converseVar.validationMsgNum == 0) /* no errors*/
+    if (converseVar.eventKey is pf4) /* transfer to MN0M requested*/
+      COMMAREA.CAUSERA = " ";
+      XSPF4(); /* pass control*/
+      OS0TM025.VAGen_EZEMSG = COMMAREA.CAMSG; /* error occurred*/
+    end
+  end
+  ;
+end // end OS0TS-OPT5-PF-KEYS
+
+// get system ord type via xvotbl
+Function OS0TS-VBULK-INSERT()
+   /* **********TCS INCLUDE BEGIN 08/14/1998***********/
+   /* -----------------------------------------------------*/
+   /* Insert the record into bulks*/
+   /* ----------------------------------------------------------*/
+  ;
+  set SQLCA empty;
+  set VBULKS02 empty;
+
+  VBULKS02.OP1PARTN = OP1REC.OP1PARTN;
+  VBULKS02.OP1CUOID = OP1REC.OP1CUOID;
+  VBULKS02.OP1NORID = OP1REC.OP1NORID;
+  VBULKS02.KUCCOID = OP1REC.KUCCOID;
+  VBULKS02.KUMSTRID = OP1REC.KUMSTRID;
+  VBULKS02.XNXCD = OP1REC.XNXCD;
+  VBULKS02.XBDCD = OP1REC.XBDCD;
+  VBULKS02.XGPCD = OP1REC.XGPCD;
+  VBULKS02.OP1CUPO = OP1REC.OP1CUPO;
+  VBULKS02.XDVCD = OP1REC.XDVCD;
+  VBULKS02.XSOCD = OP1REC.XSOCD;
+  VBULKS02.XWHCD = OP1REC.XWHCD;
+  VBULKS02.OP1CUNDT = OP1REC.OP1CUNDT;
+  VBULKS02.OP1DSADT = OP1REC.OP1DSADT;
+  VBULKS02.SP1ID = OP1REC.SP1ID;
+  VBULKS02.ZZZSDT = OP1REC.ZZZSDT;
+  VBULKS02.ZZZSTM = OP1REC.ZZZSTM;
+  VBULKS02.ZZZCHGDT = OP1REC.ZZZCHGDT;
+  VBULKS02.ZZZCHGTM = OP1REC.ZZZCHGTM;
+  VBULKS02.ZZZCHGCT = OP1REC.ZZZCHGCT;
+  VBULKS02.SM4REPID = OP1REC.SM4REPID;
+
+  ;
+  call "OS1040" ("I1", SQLCA, OP1REC, VBULKS02) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1DBASE = "DORDB";
+    TA1REC.TA1TBLVU = "VBULKS02";
+    TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+    TA1REC.TA1LOCAT[3] = "INSERT";
+    TA1REC.TA1LOCAT[4] = "VBULKS02";
+    XSOPS02();
+  end
+   /* **********TCS INCLUDE END 03/31/1998***********/
+  ;
+end // end OS0TS-VBULK-INSERT
+
+// select rows to be inserted
+Function OS0TS-VBULK-SELEC1()
+   /* Tcs include 08/14/98 begin */
+  set SQLCA empty;
+  ;
+  call "OS1040" (OS0TW02, SQLCA, OP1REC, VBULKS02) {isNoRefresh = yes, isExternal = yes}; /* recs ins*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "S       ";
+    TA1REC.TA1LOCAT[2] = "        ";
+    TA1REC.TA1LOCAT[3] = "OS1040  ";
+    TA1REC.TA1DBASE = "DORDB   ";
+    TA1REC.TA1TBLVU = "VBULKS02";
+    TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+    XSOPS02(); /* abend*/
+  end
+   /* Tcs include 08/14/98 end */
+end // end OS0TS-VBULK-SELEC1
+
+// select rows to be inserted
+Function OS0TS-VBULK-SELECT()
+   /* Tcs include 08/14/98 begin */
+  set OS0TW02 empty;
+  set OP1REC empty;
+  set VBULKS02 empty;
+  set SQLCA empty;
+
+  OP1REC.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+  OP1REC.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+  ;
+  call "OS1040" ("S ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* select recs ins*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* all ok*/
+     /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "S1      ";
+    TA1REC.TA1LOCAT[2] = "        ";
+    TA1REC.TA1LOCAT[3] = "OS1040  ";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VORHDR01";
+    TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+    XSOPS02(); /* abend*/
+  end
+  ;
+  ;
+
+  call "OS1040" ("N1", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* fetch reco*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* if found, ok*/
+     /* next sentence*/
+  else /* else*/
+    if (SQLCA.VAGen_SQLCODE == 100) /* if none found*/
+      OS0TW01.OS0TW-ERRFL = "Y"; /* set the error flag*/
+      converseLib.validationFailed(032); /* order does not exist*/
+    else /* else*/
+      TA1REC.TA1LOCAT[1] = "N1      "; /* if other prob*/
+      TA1REC.TA1LOCAT[2] = "        ";
+      TA1REC.TA1LOCAT[3] = "ON1040  ";
+      TA1REC.TA1DBASE = "DORDER  ";
+      TA1REC.TA1TBLVU = "VORHDR01";
+      TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+      XSOPS02();
+    end
+  end
+  ;
+  ;
+  while (SQLCA.VAGen_SQLCODE == 0) /* while record found*/
+
+  /* insert rec*/
+
+    OS0TS-VBULK-INSERT();
+
+    call "OS1040" ("N1", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* fetch next*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0 /* all ok*/
+     || SQLCA.VAGen_SQLCODE == 100)
+          /* next sentence*/
+    else
+      TA1REC.TA1LOCAT[1] = "N1      "; /* if other prob*/
+      TA1REC.TA1LOCAT[2] = "        ";
+      TA1REC.TA1LOCAT[3] = "OS1040  ";
+      TA1REC.TA1PGMNM = "OS0T";
+      TA1REC.TA1DBASE = "DORDER  ";
+      TA1REC.TA1TBLVU = "VORDHDR1";
+      TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+      XSOPS02();
+    end
+  end
+  ;
+
+  ;
+  call "OS1040" ("C ", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* close curs*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+      /* next sentence*/
+  else
+    TA1REC.TA1PGMNM = "OS0T";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VORHDR01";
+    TA1REC.TA1LOC = "CLOSE";
+    TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+    XSOPS02();
+  end
+  ;
+   /* Tcs include 08/14/98 end */
+end // end OS0TS-VBULK-SELECT
+
+// select rows to be inserted
+Function OS0TS-VBULK-UPDATE()
+   /* Tcs include 08/14/98 begin */
+  set SQLCA empty;
+   /* fields are already populated in their resp places*/
+  ;
+  call "OS1040" (OS0TW02, SQLCA, OP1REC, VBULKS02) {isNoRefresh = yes, isExternal = yes}; /* ins*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* all ok*/
+     /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = OS0TW-IO-TASK;
+    TA1REC.TA1LOCAT[2] = "        ";
+    TA1REC.TA1LOCAT[3] = "OS1040  ";
+    TA1REC.TA1DBASE = "DORDB   ";
+    TA1REC.TA1TBLVU = "VBULKS02";
+    TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+    XSOPS02(); /* abend*/
+  end
+   /* Tcs include 08/14/98 end */
+end // end OS0TS-VBULK-UPDATE
+
+// count the number of rows
+Function OS0TS-VITEM-COUNT()
+  ;
+  set OS0TW02 empty;
+  set OP2REC empty;
+  set SQLCA empty;
+  ;
+  OS0TW02.OS0TW-IO-TASK = "MC"; /* get counts*/
+  OP2REC.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+  OP2REC.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+  ;
+  call "OS1050" (OS0TW02, SQLCA, OP2REC) {isNoRefresh = yes, isExternal = yes}; /* call vitem001 mod*/
+  ;
+    /* CHECK DB2 RETURN CODE*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0
+   && OS0TW-IO-COUNT1 != 0)
+    OS0TW-VALIDATED = "Y"; /* everything is ok*/
+    converseLib.validationFailed(892); /* press enter to continue*/
+  else
+    if (SQLCA.VAGen_SQLCODE >= 0
+     && OS0TW-IO-COUNT1 == 0)
+      OS0TW01.OS0TW-ERRFL = "Y"; /* set the error flag*/
+      converseLib.validationFailed(032); /* order does not exist*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        OS0TW01.OS0TW-ERRFL = "Y"; /* set the error flag*/
+        converseLib.validationFailed(010); /* database busy*/
+      else
+        TA1REC.TA1PGMNM = "OS0T";
+        TA1REC.TA1DBASE = "DORDER  ";
+        TA1REC.TA1TBLVU = "VORHDR01";
+        TA1REC.TA1LOC = "MC OS1050 OS0TS-VITEM-COUNT";
+        TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+        XSOPS02();
+      end
+    end
+  end
+  ;
+  ;
+end // end OS0TS-VITEM-COUNT
+
+// update the order item
+Function OS0TS-VITEM-UPDTE()
+  ;
+  set SQLCA empty;
+  ;
+  call "OS1050" (OS0TW02, SQLCA, OP2REC) {isNoRefresh = yes, isExternal = yes}; /* call vitem001 mod*/
+  ;
+    /* CHECK DB2 RETURN CODE*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OS0TW-UPDATED = "Y"; /* everything is ok*/
+    converseLib.validationFailed(418); /* update successful*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911)
+      OS0TW01.OS0TW-ERRFL = "Y"; /* set the error flag*/
+      converseLib.validationFailed(010); /* database busy*/
+    else
+      TA1REC.TA1PGMNM = "OS0T";
+      TA1REC.TA1DBASE = "DORDER  ";
+      TA1REC.TA1TBLVU = "VORHDR01";
+      TA1REC.TA1LOC = "U  OS1050 OS0TS-VITEM-UPDTE";
+      TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+      XSOPS02();
+    end
+  end
+  ;
+  ;
+end // end OS0TS-VITEM-UPDTE
+
+// count the number of rows
+Function OS0TS-VORHDR-COUNT()
+  ;
+  set OS0TW02 empty;
+  set OP1REC empty;
+  set SQLCA empty;
+  ;
+   /* **********TCS INCLUDE BEGIN 03/31/1998***********/
+  ;
+  if (OS0TW-NIKE-ORD-ID != 0)
+    OS0TW02.OS0TW-IO-TASK = "MN"; /* get counts*/
+    OP1REC.OP1PARTN = OS0TW-ORD-PART-CHAR;
+    OP1REC.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order*/
+    OP1REC.OP1NORID = OS0TW-NIKE-ORD-ID;
+    call "OS1040" (OS0TW02, SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* call vorhdr01*/
+  else
+    ;
+   /* **********TCS INCLUDE END 03/31/1998***********/
+    ;
+    OS0TW02.OS0TW-IO-TASK = "MC"; /* get counts*/
+    OP1REC.OP1PARTN = OS0TW-ORD-PART-CHAR; /* move part char*/
+    OP1REC.OP1CUOID = OS0TW-CUST-ORD-ID; /* move order id*/
+    call "OS1040" (OS0TW02, SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* call vorhdr01*/
+  end
+  ;
+    /* CHECK DB2 RETURN CODE*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0
+   && OS0TW-IO-COUNT1 != 0)
+    OS0TW-VALIDATED = "Y"; /* everything is ok*/
+    converseLib.validationFailed(892); /* press enter to continue*/
+    set OS0TM060.OP-CUST-ORD-ID cursor, bold;
+  else
+    if (SQLCA.VAGen_SQLCODE >= 0
+     && OS0TW-IO-COUNT1 == 0)
+      OS0TW01.OS0TW-ERRFL = "Y"; /* set the error flag*/
+      converseLib.validationFailed(032); /* order does not exist*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        OS0TW01.OS0TW-ERRFL = "Y"; /* set the error flag*/
+        converseLib.validationFailed(010); /* database busy*/
+      else
+        TA1REC.TA1PGMNM = "OS0T";
+        TA1REC.TA1DBASE = "DORDER  ";
+        TA1REC.TA1TBLVU = "VORHDR01";
+        TA1REC.TA1LOC = "MC OS1040 OS0TS-VORHDR-COUNT";
+        TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+        XSOPS02();
+      end
+    end
+  end
+  ;
+   /* **********TCS INCLUDE BEGIN 03/31/1998***********/
+  ;
+   /* OS0TSB3;/* deleted and is called from OS0TS-OPT13-EDIT directly-eshanm*/
+  ;
+   /* **********TCS INCLUDE END 03/31/1998***********/
+  ;
+  ;
+end // end OS0TS-VORHDR-COUNT
+
+// update the order
+Function OS0TS-VORHDR-UPDTE()
+  ;
+  if (OS0TW01.OS0TNOUPD == "Y")
+    ;
+    set OP1REC empty; /* clean out the header record*/
+    set OS0TM060 empty; /* clear the map*/
+    ;
+    OS0TW-ERRFL = "N";
+    OS0TW-VALIDATED = "N";
+    OS0TW-UPDATED = "N";
+    OS0TM060.OS0TM-MAP-DTE = OS0TW01.OS0TW-YYMMDD; /* move date*/
+    exit stack;
+  else
+    set SQLCA empty;
+    ;
+    call "OS1040" (OS0TW02, SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes}; /* call vorhdr01 mod*/
+    ;
+    /* CHECK DB2 RETURN CODE*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0)
+      OS0TW-UPDATED = "Y"; /* everything is ok*/
+      converseLib.validationFailed(418); /* update successful*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911)
+        OS0TW01.OS0TW-ERRFL = "Y"; /* set the error flag*/
+        converseLib.validationFailed(010); /* database busy*/
+      else
+        TA1REC.TA1PGMNM = "OS0T";
+        TA1REC.TA1DBASE = "DORDER  ";
+        TA1REC.TA1TBLVU = "VORHDR01";
+        TA1REC.TA1LOC = "U  OS1040 OS0TS-VORHDR-UPDTE";
+        TA1REC.TA1TBLKE = OS0TM005.OP-CUST-ORD-ID;
+        XSOPS02();
+      end
+    end
+  end
+  ;
+end // end OS0TS-VORHDR-UPDTE
+
+// get system ord type via xvotbl
+Function OS0TSB3()
+   /* **********TCS INCLUDE BEGIN 03/31/1998***********/
+   /* ----------------------------------------------------------*/
+   /* equipment check*/
+   /* ----------------------------------------------------------*/
+  ;
+   /* OS0TS-CHECK-EQMT;                      /* call to eu0100*/
+   /* IF WEU0100.WEU0100-EQUIP-PROD-FL = 'Y';*/
+      /* MOVE WEU0100.XPCCD TO OPWREC01.XPCCK;*/
+   /* ELSE;*/
+      /* MOVE '  ' TO OPWREC01.XPCCK;*/
+   /* END;*/
+  ;
+  OS0TW01.OS0TWFND = "N";
+  OP1REC.XOTCD = " ";
+  ;
+  ;
+  set VXVO0001 empty;
+  set SQLCA empty;
+  VXVO0001.XOBCD = OS0TM060.XOB-ORD-TYP-NEW;
+  VXVO0001.XGPCD = OP1REC.XGPCD;
+  VXVO0001.XSOCD = OP1REC.XSOCD;
+  VXVO0001.XDVCD = OP1REC.XDVCD;
+  VXVO0001.XBCCD = OP1REC.XBCCD;
+  VXVO0001.XPC-PROD-CAT-CD = OPWREC01.XPCCK;
+  VXVO0001.XXXSTAT = "A";
+  ;
+  call "VXVO0001" ("S4", SQLCA, VXVO0001) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1DBASE = "DCORP";
+    TA1REC.TA1TBLVU = "VXVO0001";
+    TA1REC.TA1TBLKE = VXVO0001-KEY;
+    TA1REC.TA1LOCAT[3] = "OS0TSB3";
+    TA1REC.TA1LOCAT[4] = "VXVO0001";
+    XSOPS02();
+  else
+    ;
+    call "VXVO0001" ("N4", SQLCA, VXVO0001) {isNoRefresh = yes, isExternal = yes};
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0)
+   /* MOVE OS0TM060.XOB-ORD-TYP-NEW TO OP1REC.XOBCD;/* new change*/
+      set OS0TM060.XOB-ORD-TYP-NEW protect;
+      OS0TW01.OS0TWFND = "Y";
+      OP1REC.XOTCD = VXVO0001.XOTCD;
+      OP1REC.OP1NORID = OS0TW-NIKE-ORD-ID;
+    else
+      if (SQLCA.VAGen_SQLCODE == +100)
+        converseLib.validationFailed(967);
+        set OS0TM060.XOB-ORD-TYP-NEW cursor, bold;
+        OS0TW01.OS0TNOUPD = "Y";
+      else
+        TA1REC.TA1DBASE = "DCORP";
+        TA1REC.TA1TBLVU = "VXVO0001";
+        TA1REC.TA1TBLKE = VXVO0001-KEY;
+        TA1REC.TA1LOCAT[3] = "OS0TSB3";
+        TA1REC.TA1LOCAT[4] = "VXVO0001";
+        XSOPS02();
+      end
+    end
+  end
+  ;
+  ;
+  call "VXVO0001" ("C4", SQLCA, VXVO0001) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1DBASE = "DCORP";
+    TA1REC.TA1TBLVU = "VXVO0001";
+    TA1REC.TA1TBLKE = VXVO0001-KEY;
+    TA1REC.TA1LOCAT[3] = "OS0TSB3";
+    TA1REC.TA1LOCAT[4] = "VXVO0001";
+    XSOPS02();
+  end
+   /* **********TCS INCLUDE END 03/31/1998***********/
+  ;
+end // end OS0TSB3
+
+//*** RECORD=OS0TW01 ****
+//     Working Storage Record for OS0T.
+// 
+// ************************************************************
+// *    MAINTENANCE LOG
+// ************************************************************
+// 
+//   12-12-94   gcalki   initial creation
+//   04-09-98   sgopal   A new flag OS0TNOUPD has been added
+// ***********************
+Record OS0TW01 type basicRecord
+  10 OS0TW-ERRFL OS0TW-ERRFL ; 
+  10 OS0TW-CUST-ORD-ID OS0TW-CUST-ORD-ID ; 
+    15 OS0TW-FILLER1 OS0TW-FILLER1 ; 
+    15 OS0TW-ORD-PART-CHAR OS0TW-ORD-PART-CHAR ; 
+  10 OS0TW-NIKE-ORD-ID OS0TW-NIKE-ORD-ID ; 
+  10 OS0TW-YYMMDD OS0TW-YYMMDD ; 
+    15 OS0TW-YY OS0TW-YY ; 
+    15 OS0TW-MM OS0TW-MM ; 
+    15 OS0TW-DD OS0TW-DD ; 
+  10 OS0TW-TIME OS0TW-TIME ; 
+    15 OS0TW-TIME-HH OS0TW-TIME-HH ; 
+    15 OS0TW-FILLER2 OS0TW-FILLER2 ; 
+    15 OS0TW-TIME-MM OS0TW-TIME-MM ; 
+    15 OS0TW-FILLER3 OS0TW-FILLER3 ; 
+    15 OS0TW-TIME-SS OS0TW-TIME-SS ; 
+  10 OS0TW-DB2-DATE OS0TW-DB2-DATE ; 
+    15 OS0TW-DB2-DATE-CC OS0TW-DB2-DATE-CC ; 
+    15 OS0TW-DB2-DATE-YY OS0TW-DB2-DATE-YY ; 
+    15 OS0TW-DB2-DATE-MM OS0TW-DB2-DATE-MM ; 
+    15 OS0TW-DB2-DATE-DD OS0TW-DB2-DATE-DD ; 
+  10 OS0TW-DB2-TIME OS0TW-DB2-TIME ; 
+    15 OS0TW-DB2-TIME-HH OS0TW-DB2-TIME-HH ; 
+    15 OS0TW-DB2-TIME-MM OS0TW-DB2-TIME-MM ; 
+  10 OS0TW-VALIDATED OS0TW-VALIDATED ; 
+  10 OS0TW-UPDATED OS0TW-UPDATED ; 
+  10 OS0TWFND OS0TWFND ; 
+  10 OS0TNOUPD OS0TNOUPD ; 
+end // end OS0TW01
+
+//*** RECORD=OS0TW02 ****
+//     Working Storage Record for OS0t used to pass IO data
+//     to the OS subprogram OS1040.
+// 
+// ************************************************************
+// *    MAINTENANCE LOG
+// ************************************************************
+// 
+//   12-09-94  gcalki  initial creation
+// ***********************
+Record OS0TW02 type basicRecord
+  10 OS0TW-IO-TASK OS0TW-IO-TASK ; 
+  10 OS0TW-IO-MAX OS0TW-IO-MAX ; 
+  10 OS0TW-IO-COUNT1 OS0TW-IO-COUNT1 ; 
+  10 OS0TW-IO-COUNT2 OS0TW-IO-COUNT2 ; 
+  10 OS0TW-IO-IND1 OS0TW-IO-IND1 ; 
+  10 OS0TW-IO-IND2 OS0TW-IO-IND2 ; 
+  10 OS0TW-IO-IND3 OS0TW-IO-IND3 ; 
+end // end OS0TW02
+
+DataItem OS0TNOUPD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// map Cust Ord ID
+DataItem OS0TW-CUST-ORD-ID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current date ccyymmdd
+DataItem OS0TW-DB2-DATE num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current cc
+DataItem OS0TW-DB2-DATE-CC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+
+DataItem OS0TW-DB2-DATE-DD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+// current mm
+DataItem OS0TW-DB2-DATE-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current yy
+DataItem OS0TW-DB2-DATE-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current time hhmm
+DataItem OS0TW-DB2-TIME num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current hh
+DataItem OS0TW-DB2-TIME-HH num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current mm
+DataItem OS0TW-DB2-TIME-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current dd
+DataItem OS0TW-DD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// temp storage error flag
+DataItem OS0TW-ERRFL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// filler for 1st 8 bytes
+DataItem OS0TW-FILLER1 num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// filler ':'
+DataItem OS0TW-FILLER2 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// filler ':'
+DataItem OS0TW-FILLER3 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current mm
+DataItem OS0TW-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// map Cust Ord ID
+DataItem OS0TW-NIKE-ORD-ID smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Part Char Number
+DataItem OS0TW-ORD-PART-CHAR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current time hh:mm:ss
+DataItem OS0TW-TIME char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current hh
+DataItem OS0TW-TIME-HH num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current mm
+DataItem OS0TW-TIME-MM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current ss
+DataItem OS0TW-TIME-SS num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// updated order flag
+DataItem OS0TW-UPDATED char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// validated order flag
+DataItem OS0TW-VALIDATED char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current yy
+DataItem OS0TW-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+
+DataItem OS0TW-YYMMDD num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+DataItem OS0TWFND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

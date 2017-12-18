@@ -1,0 +1,2438 @@
+package os0e;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import op.common.OPJCNDTB;
+import op.common.OPJCNDTX;
+import sy.common.SY1REC;
+import sy.common.SY2CLRID;
+import sy.common.SY2REC;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+import ta.common.TA5REC;
+import ta.common.TA5TSQIX;
+import ta.common.TAEREC;
+import xx.common.*;
+import xx.common.XGPCD;
+import xx.common.ZZZSDT;
+import xx02.*;
+import xx02.XDMCD;
+import xx02.XGPTBL;
+import xx08.*;
+import xx08.SY1STNBR;
+//*** PROGRAM=OS0E ****
+// OS0E -- LOST DEMAND -- PRODUCTS FOR ADDITIONAL BUYS
+//      csp version 3 program
+//      temp storage used:  add, read, update - os0ew02
+//      IO4780 - DORDER.VADBUY01 - scan, insert, delete
+// ;
+// This program consists of four screens:
+//   1.  menu
+//   2.  directory
+//   3.  add a new request
+//   4.  review an existing request
+// 
+// Screens 3 and 4 are the same screen, but the logic
+// controlling what happens on either screen is split
+// into separate processes.  Screen 3 uses processes
+// os0e300 and os0e310; screen 4 uses processes 400 and 410.
+// 
+// This program uses the DORDER.VADBUY01 database.  If
+// anything is changed for a request, the entire request
+// is first deleted then all rows saved/updated in temp storage
+// are inserted to create a fresh database.  This is done
+// because the database is not indexed.
+// 
+// No edits are done to prevent a duplicate style/color/
+// dimension on the same request, but it will not hurt
+// anything.  The duplicates are ignored by the batch program
+// OP3550 which uses this database to match customers on the
+// waiting list to the products for additional buys.
+// 
+// Requests or products are manually deleted by the user.
+// 
+// 
+// ------------------------------------------------------------
+//                    maintenance history
+// ------------------------------------------------------------
+// 
+// 02/01/90   ORICHA   CREATED PROGRAM.
+// 02/15/91   dmeier   regen for database changes
+// 09/17/93   bbake2   CSP4.1 conversion changes.  Application
+//                     was using SY2REC to call IO0560, which
+//                     was returning the record layout for
+//                     sy3rec, which overlaid linkage and
+//                     caused an S0C4 on the converse.  Changed
+//                     s3q,s3r,s3t to call io0130 for sy2rec.
+// 04/06/94   schase   Changed os0em010 and os0es1a to inter-
+//                     face with OP0X Appl.
+// 
+// NOTE!!  ANY NEW CODE ADDED THAT CAUSES THE PROGRAM TO
+// END (DXFER,XFER,ABEND ETC) MUST ALSO PURGE TEMP STORAGE
+// BEFORE THE EXIT TAKES PLACE.
+// USE OS0ES4A.
+// *********************
+Program OS0E type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  OS0EW01 OS0EW01; // record
+  OS0EW02 OS0EW02; // record
+  OSHREC OSHREC; // record
+  SQLCA SQLCA; // record
+  SY1REC SY1REC; // record
+  SY2REC SY2REC; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  TA5REC TA5REC; // record
+  TAEREC TAEREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XGPTBL; // table
+  use OS0EM.OS0EM010,  // forms
+      OS0EM.OS0EM020, 
+      OS0EM.OS0EM030
+   {
+    pfKeyEquate = yes
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OS0E000: OS0E000();
+    goto OS0E010; /* mainline--process the option*/
+    OS0E010: OS0E010();
+    goto OS0E010; /* loop back to beginning*/
+  end // end main
+end // end OS0E
+
+// initialize application
+Function OS0E000()
+  ;
+  ;
+  XSENTRY(); /* application entry validation*/
+  ;
+  ;
+  COMMAREA.CACURRAP = "OS0E"; /* init commarea*/
+  XSSEGTR(); /* set segmented trans id*/
+  ;
+  ;
+  set OS0EW01 empty;
+  set OS0EW02 empty;
+  set OSHREC empty;
+  set TA1REC empty;
+  set TA2REC empty;
+  set TA5REC empty;
+  set SQLCA empty;
+  set ERRSQLCA empty;
+  ;
+  OS0EM010.CAMSG = COMMAREA.CAMSG; /* commarea message*/
+  COMMAREA.CAMSG = " "; /* clear*/
+  ;
+  OS0ESAA(); /* format today's date for zzzsdt later*/
+  ;
+  OS0EW01.OS0EWEMF = "N"; /* init error/msg flag*/
+  OS0EW01.OS0EWOPT = "0"; /* init option field*/
+  ;
+end // end OS0E000
+
+// process the option - mainline
+Function OS0E010()
+  ;
+  if (OS0EW01.OS0EWOPT == "0")
+    if (OS0EW01.OS0EWEMF == "N")
+      OS0EM010.OS0EMOPT = " "; /* init field*/
+      OS0EM010.OSHRQTID = " "; /* init field*/
+      OS0EM010.CAMSG = COMMAREA.CAMSG;
+      COMMAREA.CAMSG = " ";
+      set OS0EM010.OS0EMOPT cursor;
+    end
+    OS0E100(); /* process menu*/
+  else
+    if (OS0EW01.OS0EWOPT == "1")
+      OS0E200(); /* prepare directory screen*/
+    else
+      if (OS0EW01.OS0EWOPT == "2")
+        OS0E300(); /* prepare add request screen*/
+      else
+        if (OS0EW01.OS0EWOPT == "3")
+          OS0E400(); /* prepare review request screen*/
+        else
+          OS0E100(); /* process menu when all else fails*/
+        end
+      end
+    end
+  end
+end // end OS0E010
+
+// converse menu
+Function OS0E100()
+  ;
+  OS0EM010.XXXCURDT = VGVar.currentShortGregorianDate; /* show today's date on map*/
+  converseLib.clearScreen();
+  
+  ;
+  converse OS0EM010 ;
+  ;
+  OS0EM010.CAMSG = " ";
+  converseLib.validationFailed(0);
+  set OS0EM010.OS0EMOPT initialAttributes;
+  set OS0EM010.OSHRQTID initialAttributes;
+  OS0EW01.OS0EWEMF = "N"; /* turn off error/msg flag*/
+  ;
+  OS0ES1A(); /* process action key*/
+  ;
+  if (OS0EW01.OS0EWEMF == "Y") /* if error/msg*/
+    OS0EW01.OS0EWOPT = "0"; /* set so map reconverses*/
+  end
+  ;
+end // end OS0E100
+
+// m020 prepare directory
+Function OS0E200()
+  ;
+  set OSHREC empty;
+  set OS0EM020 empty;
+  OS0EM020.CAMSG = COMMAREA.CAMSG;
+  COMMAREA.CAMSG = " ";
+  OS0EW01.OS0EWP24 = 0; /* init pf24 counter*/
+  OS0EW01.OS0EWSEL = " "; /* init selection/delete field*/
+  ;
+  OS0EW01.OS0EW2MX = 1; /* init map counter*/
+  while (OS0EW01.OS0EW2MX <= 30) /* while not at end of map*/
+    set OS0EM020.OS0EMSEL[OS0EW2MX] initialAttributes; /* init fields*/
+    OS0EW01.OS0EW2MX = OS0EW01.OS0EW2MX + 1;
+  end
+  ;
+  OS0EW01.OS0EW2MX = 0; /* init map counter*/
+  OS0ES2A(); /* get recs from adbuy table, load map*/
+  ;
+  if (OS0EW01.OS0EW2MX == 0)
+    converseLib.validationFailed(553); /* no current requests*/
+    OS0EW01.OS0EWOPT = "0";
+  end
+  ;
+  while (OS0EW01.OS0EW2MX > 0 /* while not zero*/
+   && OS0EW01.OS0EW2MX <= 30) /* and not end of map*/
+    if (OS0EM020.OSHRQTID[OS0EW2MX] == " ")
+      set OS0EM020.OS0EMSEL[OS0EW2MX] skip, invisible; /* clear unused lines*/
+    end
+    OS0EW01.OS0EW2MX = OS0EW01.OS0EW2MX + 1;
+  end
+  ;
+  set OS0EM020.OS0EMSEL[1] cursor;
+  ;
+  while (OS0EW01.OS0EWOPT == "1")
+    OS0E210(); /* display directory map*/
+  end
+end // end OS0E200
+
+// m020 display directory
+Function OS0E210()
+  ;
+  OS0EM020.XXXCURDT = VGVar.currentShortGregorianDate;
+  converseLib.clearScreen();
+  
+  ;
+  converse OS0EM020 ;
+  ;
+  ;
+  OS0EM020.CAMSG = " ";
+  OS0EM020.VAGen_EZEMSG = " ";
+  OS0EW01.OS0EWEMF = "N"; /* turn off error/msg flag*/
+  ;
+  OS0ES2E(); /* set fields defined*/
+  ;
+  OS0ES2F(); /* process action key*/
+  ;
+  if (OS0EW01.OS0EWEMF == "Y") /* if error/msg*/
+    OS0EW01.OS0EWOPT = "1"; /* set so map reconverses*/
+  end
+  ;
+  if (OS0EW01.OS0EWEMF == "N" /* if no errors/messages*/
+   && converseVar.eventKey is enter)
+    OS0EW01.OS0EWOPT = "3"; /* selection made, set trigger for*/
+  end /* transfer to review request*/
+  ;
+  ;
+  ;
+end // end OS0E210
+
+// m030 prepare for new request
+Function OS0E300()
+  ;
+  set OS0EM030 empty;
+  OS0EM030.CAMSG = COMMAREA.CAMSG;
+  COMMAREA.CAMSG = " ";
+  ;
+  OS0ESBA(); /* set pf keys for map*/
+  ;
+  set OSHREC empty;
+  ;
+  OS0EW01.OS0EWP19 = "N"; /* init refresh flag*/
+  OS0EW01.OS0EWEMF = "N"; /* init error/message flag*/
+  OS0EW01.OS0EWUPC = 0; /* init update count accumulator*/
+  OS0EW01.OS0EWUPF = "N"; /* init update taken place flag*/
+  ;
+  OS0EM030.OS0EMPRC = "OS0E310"; /* process number*/
+  OS0EM030.OS0EMNM = "*NEW  REQUEST*"; /* title*/
+  ;
+  set OS0EM030.OSHRQTID cursor;
+  ;
+  while (OS0EW01.OS0EWOPT == "2" /* while adding new request info*/
+   && OS0EW01.OS0EWP19 != "Y") /* and not refresh*/
+    OS0E310(); /* show new request map*/
+  end
+end // end OS0E300
+
+// converse product list
+Function OS0E310()
+  ;
+  OS0EM030.XXXCURDT = VGVar.currentShortGregorianDate; /* system date*/
+  converseLib.clearScreen();
+  
+  ;
+  converse OS0EM030 ;
+  ;
+  OS0EM030.CAMSG = " ";
+  OS0EM030.VAGen_EZEMSG = " ";
+  OS0EW01.OS0EWEMF = "N"; /* turn off error/msg flag*/
+  ;
+  if (OS0EW01.OS0EWUPF == "N") /* if no update done yet*/
+    OS0ES3A(); /* set header fields defined*/
+  end
+  ;
+  ;
+  OS0ES3B(); /* set array fields defined*/
+  set OS0EM030.SY1STNBR[1] cursor;
+  ;
+  OS0ES3C(); /* process action key*/
+  ;
+  if (OS0EW01.OS0EWEMF == "Y") /* if error/msg*/
+    OS0EW01.OS0EWOPT = "2"; /* set so map reconverses*/
+  end
+  ;
+end // end OS0E310
+
+// m030 prepare review request
+Function OS0E400()
+  ;
+  set OS0EW02 empty;
+  set OS0EM030 empty;
+  OS0ESBB(); /* set pf keys*/
+  ;
+  OS0EM030.CAMSG = COMMAREA.CAMSG;
+  COMMAREA.CAMSG = " ";
+  ;
+  set OSHREC empty;
+  OS0EW01.OS0EWEMF = "N"; /* init error/message flag*/
+  OS0EW01.OS0EWP13 = 0; /* delete/insert counter*/
+  OS0EW01.OS0EWTSU = "N"; /* temp stg needs to be updated flag*/
+  OS0EW01.OS0EWTSR = "N"; /* temp stg needs to be read flag*/
+  TA5REC.TA5TSQIX = 0; /* temp storage relative position*/
+  OS0EW01.TA5TSQIX = 0; /* init temp storage max page keeper*/
+  ;
+  OS0EM030.OS0EMPRC = "OS0E410"; /* process number*/
+  OS0EM030.OS0EMNM = "REVIEW REQUEST"; /* title*/
+  ;
+  OS0ES4A(); /* purge temp storage*/
+  ;
+  OS0ES4B(); /* read and load temp storage*/
+  ;
+  OS0EW01.OS0EWTSP = 1; /* init first page*/
+  OS0ES4E(); /* read temp storage*/
+  OS0ES4F(); /* move working storage w02 to map*/
+  ;
+  OS0EM030.OS0EMTSP = 1; /* move page nbr to map*/
+  set OS0EM030.OS0EMTSP cursor;
+  OS0EM030.TA5TSQIX = OS0EW01.TA5TSQIX; /* display last page*/
+  ;
+  ;
+  ;
+  set OS0EM030.OSHRQTID skip; /* protect*/
+  set OS0EM030.XGPCD skip; /* protect*/
+  ;
+  set OS0EM030.OS0EMTSP cursor;
+  ;
+  while (OS0EW01.OS0EWOPT == "3") /* while review request*/
+    OS0E410(); /* show review request screen*/
+  end
+  ;
+end // end OS0E400
+
+// m030 display review request
+Function OS0E410()
+  ;
+  converseLib.clearScreen();
+  
+  OS0EM030.XXXCURDT = VGVar.currentShortGregorianDate; /* system date*/
+  ;
+  converse OS0EM030 ;
+  ;
+  OS0EM030.CAMSG = " ";
+  converseLib.validationFailed(0);
+  OS0EW01.OS0EWTSR = "N"; /* turn off read temp storage? flag*/
+  OS0EW01.OS0EWTSU = "N"; /* turn off update temp storage? flag*/
+  OS0EW01.OS0EWEMF = "N"; /* turn off error/msg flag*/
+  set OS0EM030.OS0EMTSP cursor;
+  ;
+  OS0ES4G(); /* set array fields defined*/
+  ;
+  OS0ES4H(); /* process action key, examine paging*/
+  ;
+  if (OS0EW01.OS0EWEMF == "N" /* if no errors*/
+   && OS0EW01.OS0EWTSR == "N" /* and don't read new temp stg page*/
+   && converseVar.eventKey not pf9) /* and not showing an empty new page*/
+    OS0ES3E(); /* edit ending need date*/
+    OS0ES3G(); /* edit beginning need date*/
+    if (OS0EW01.OPJCNDTB != OS0EW02.OPJCNDTB /* if begin need dt chgd*/
+     || OS0EW01.OPJCNDTX != OS0EW02.OPJCNDTX) /* or end need dt chgd*/
+      OS0EW01.OS0EWTSU = "Y"; /* need to update temp stg*/
+    end
+    if (OS0EW01.OS0EWEMF == "N")
+      OS0ES4L(); /* validate screen*/
+    end
+  end
+  ;
+  if (OS0EW01.OS0EWEMF == "N" /* if no errors*/
+   && OS0EW01.OS0EWTSU == "Y") /* and update temp storage*/
+    OS0ES4P(); /* move map to working storage*/
+    OS0ES4Q(); /* update temp storage*/
+  end
+  ;
+  if (OS0EW01.OS0EWEMF == "N" /* if errors or messages*/
+   && OS0EW01.OS0EWP13 == 1)  /* first pass successful*/
+    OS0EM030.CAMSG = "PRESS PF13 TO CONFIRM UPDATE";
+    OS0EW01.OS0EWEMF = "Y"; /* turn on converse flag*/
+  else
+    if (OS0EW01.OS0EWEMF == "N" /* if errors or messages*/
+     && OS0EW01.OS0EWP13 == 2)  /* successful edits for deleting/inserting*/
+      OS0ES4W(); /* delete/insert processing*/
+      if (OS0EW01.OS0EWEMF == "N")
+        COMMAREA.CAMSG = "****   ALL UPDATES SUCCESSFUL ****";
+        OS0ES4A(); /* purge temp storage*/
+        if (OS0EW01.OS0EWSEL == "S") /* came from directory selection*/
+          OS0EW01.OS0EWOPT = "1"; /* return to directory*/
+        else
+          OS0EW01.OS0EWOPT = "0"; /* return to menu*/
+        end
+      end
+    end
+  end
+  ;
+  if (OS0EW01.OS0EWEMF == "Y" /* if errors or messages*/
+   && converseVar.eventKey not pf3)
+    OS0EW01.OS0EWOPT = "3"; /* set so map reconverses*/
+  end
+  ;
+end // end OS0E410
+
+// process action key m010
+Function OS0ES1A()
+  ;
+  ;
+  ;
+  if (converseVar.eventKey is enter)
+    OS0ES1B(); /* validate option*/
+  else
+    if (converseVar.eventKey is pf3) /* exit to op menu*/
+      COMMAREA.CATOAP = "OP0X"; /* op main menu*/
+      COMMAREA.CAUSERA = " "; /* clear user commarea*/
+      XSEXIT(); /* pass control to exit routine*/
+    else
+      if (converseVar.eventKey is pf4) /* exit to master menu*/
+        COMMAREA.CAUSERA = " "; /* clear user commarea*/
+        XSPF4(); /* invoke master menu request*/
+      else
+        converseLib.validationFailed(002); /* invalid pf key*/
+        OS0EW01.OS0EWEMF = "Y";
+      end
+    end
+  end
+  ;
+end // end OS0ES1A
+
+// validate the option m010
+Function OS0ES1B()
+  ;
+  if (OS0EM010.OS0EMOPT == "3")
+    if (OS0EM010.OSHRQTID > " ")
+      OS0ES1C(); /* validate request id in adbuy01*/
+    else
+      OS0EW01.OS0EWEMF = "Y";
+      converseLib.validationFailed(240); /* request id required for review*/
+      set OS0EM010.OSHRQTID cursor, bold;
+    end
+  end
+  ;
+  if (OS0EM010.OS0EMOPT == "1"
+   || OS0EM010.OS0EMOPT == "2"
+   || OS0EM010.OS0EMOPT == "3")
+     /* OR OS0EM010.OS0EMOPT EQ '4'*/
+    OS0EW01.OS0EWOPT = OS0EM010.OS0EMOPT; /* save option*/
+  else
+    OS0EW01.OS0EWEMF = "Y";
+    converseLib.validationFailed(001); /* option not valid*/
+    set OS0EM010.OS0EMOPT cursor, bold;
+  end
+  ;
+end // end OS0ES1B
+
+// m010 process call to vadbuy01
+Function OS0ES1C()
+  ;
+  OSHREC.OSHRQTID = OS0EM010.OSHRQTID;
+  OSHREC.XGPCD = "**";
+  OSHREC.SY1STNBR = "******";
+  ;
+  OS0ES1D(); /* validate request id -- declare cursor adbuy01*/
+  ;
+  OS0ES1E(); /* fetch one record to verify request's existance*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OS0EW01.OS0EWOPT = "3"; /* set trigger*/
+    OS0EW01.OSHRQTID = OS0EM010.OSHRQTID;
+  else /* it's not found*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+    set OS0EM010.OSHRQTID cursor, bold;
+    converseLib.validationFailed(241); /* request not found*/
+  end
+  ;
+  OS0ES1F(); /* close cursor*/
+end // end OS0ES1C
+
+// declare dorder.vadbuy01 oshrec
+Function OS0ES1D()
+  ;
+  call "IO4780" ("S1", SQLCA, OSHREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    OS0ES4A(); /* purge temp storage*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "S1      ";
+    TA1REC.TA1LOCAT[2] = "OS0ES1D ";
+    TA1REC.TA1LOCAT[3] = "OSHREC  ";
+    TA1REC.TA1LOCAT[4] = "IO4780  ";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VADBUY01";
+    if (OS0EW01.OS0EWOPT == "0")
+      TA1REC.TA1MAP = "OS0EM010";
+      TA1REC.TA1TBLKE = OS0EM010.OSHRQTID;
+    else
+      TA1REC.TA1MAP = "OS0EM030";
+      TA1REC.TA1TBLKE = OS0EM030.OSHRQTID;
+    end
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    XSPF4();
+    exit program;
+  end
+  ;
+end // end OS0ES1D
+
+// fetch next 'n1' vadbuy01
+Function OS0ES1E()
+  ;
+  call "IO4780" ("N1", SQLCA, OSHREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == 100)
+     /* next sentence*/
+  else
+    OS0ES4A(); /* purge temp storage*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "N1      ";
+    TA1REC.TA1LOCAT[2] = "OS0ES1E ";
+    TA1REC.TA1LOCAT[3] = "OSHREC  ";
+    TA1REC.TA1LOCAT[4] = "IO4780  ";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VADBUY01";
+    if (OS0EW01.OS0EWOPT == "0")
+      TA1REC.TA1TBLKE = OS0EM010.OSHRQTID;
+      TA1REC.TA1MAP = "OS0EM010";
+    else
+      TA1REC.TA1TBLKE = OS0EM030.OSHRQTID;
+      TA1REC.TA1MAP = "OS0EM030";
+    end
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    XSPF4();
+    exit program;
+  end
+  ;
+end // end OS0ES1E
+
+// close 'c1' cursor adbuy oshrec
+Function OS0ES1F()
+  ;
+  call "IO4780" ("C1", SQLCA, OSHREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    OS0ES4A(); /* purge temp storage*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "C1      ";
+    TA1REC.TA1LOCAT[2] = "OS0ES1F ";
+    TA1REC.TA1LOCAT[3] = "OSHREC  ";
+    TA1REC.TA1LOCAT[4] = "IO4780  ";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VADBUY01";
+    if (OS0EW01.OS0EWOPT == "0")
+      TA1REC.TA1TBLKE = OS0EM010.OSHRQTID;
+      TA1REC.TA1MAP = "OS0EM010";
+    else
+      TA1REC.TA1TBLKE = OS0EM030.OSHRQTID;
+      TA1REC.TA1MAP = "OS0EM030";
+    end
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    XSPF4();
+    exit program;
+  end
+  ;
+end // end OS0ES1F
+
+// call dorder.vadbuy01 's2'
+Function OS0ES2A()
+  ;
+  call "IO4780" ("S2", SQLCA, OSHREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    while (SQLCA.VAGen_SQLCODE == 0)
+      OS0ES2B(); /* fetch 'n2' recs*/
+    end
+  else
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "S1      ";
+    TA1REC.TA1LOCAT[2] = "OSHREC  ";
+    TA1REC.TA1LOCAT[3] = "OS0ES2A ";
+    TA1REC.TA1LOCAT[4] = "IO4780  ";
+    TA1REC.TA1MAP = "OS0EM020";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VADBUY01";
+    TA1REC.TA1TBLKE = "OPEN CSR";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    XSPF4();
+    exit program;
+  end
+  ;
+  OS0ES2D(); /* close cursor*/
+end // end OS0ES2A
+
+// fetch 'n2' adbuy; directory
+Function OS0ES2B()
+  ;
+  ;
+  call "IO4780" ("N2", SQLCA, OSHREC) {isNoRefresh = yes, isExternal = yes}; /* fetch next record*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    ;
+    OS0EW01.OS0EW2MX = OS0EW01.OS0EW2MX + 1;
+    OS0ES2C(); /* load map*/
+    ;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* returned set empty*/
+       /* next sentence*/
+    else
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OS0E";
+      TA1REC.TA1LOCAT[1] = "N2      ";
+      TA1REC.TA1LOCAT[2] = "OS0ES2B ";
+      TA1REC.TA1LOCAT[3] = "IO4780  ";
+      TA1REC.TA1LOCAT[4] = "OSHREC  ";
+      TA1REC.TA1MAP = "OS0EM020";
+      TA1REC.TA1DBASE = "DORDER  ";
+      TA1REC.TA1TBLVU = "VADBUY01";
+      TA1REC.TA1TBLKE = "FETCH   ";
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      COMMAREA.CAUSERA = " "; /* on error clear ws*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      XSPF4();
+      exit program;
+    end
+  end
+  ;
+end // end OS0ES2B
+
+// m020 load map directory
+Function OS0ES2C()
+  ;
+  OS0EM020.OSHRQTID[OS0EW2MX] = OSHREC.OSHRQTID; /* request id*/
+  ;
+  OS0EW01.OS0EWDT1 = OSHREC.OPJCNDTB;
+  OS0ESAB(); /* format date ccyymmdd to mmddyy*/
+  OS0EM020.OS0EMBDT[OS0EW2MX] = OS0EW01.OS0EWDT2; /* begin need dt*/
+  ;
+  OS0EW01.OS0EWDT1 = OSHREC.OPJCNDTX;
+  OS0ESAB(); /* format date ccyymmdd to mmddyy*/
+  OS0EM020.OS0EMEDT[OS0EW2MX] = OS0EW01.OS0EWDT2; /* end need date*/
+end // end OS0ES2C
+
+// close adbuy cursor 'c2'
+Function OS0ES2D()
+  ;
+  call "IO4780" ("C2", SQLCA, OSHREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "C2      ";
+    TA1REC.TA1LOCAT[2] = "OSHREC  ";
+    TA1REC.TA1LOCAT[3] = "OS0ES2D ";
+    TA1REC.TA1LOCAT[4] = "IO4780  ";
+    TA1REC.TA1MAP = "OS0EM020";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VADBUY01";
+    TA1REC.TA1TBLKE = "CLOSECSR";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    XSPF4();
+    exit program;
+  end
+  ;
+end // end OS0ES2D
+
+// m020 set fields defined
+Function OS0ES2E()
+  ;
+  OS0EW01.OS0EW2MX = 1;
+  ;
+  while (OS0EW01.OS0EW2MX <= 30)
+    if (OS0EM020.OSHRQTID[OS0EW2MX] > " "
+     && OS0EM020.OS0EMSEL[OS0EW2MX] != "*") /* already deleted & set autoskp*/
+      set OS0EM020.OS0EMSEL[OS0EW2MX] initialAttributes; /* request id*/
+    end
+    OS0EW01.OS0EW2MX = OS0EW01.OS0EW2MX + 1;
+  end
+end // end OS0ES2E
+
+// m020 process action key
+Function OS0ES2F()
+  ;
+  if (converseVar.eventKey is enter)
+    OS0ES2G(); /* validate screen*/
+  else
+    if (converseVar.eventKey is pf24)
+      OS0EW01.OS0EWP24 = OS0EW01.OS0EWP24 + 1; /* bump up counter*/
+      OS0ES2G(); /* validate screen*/
+    else
+      if (converseVar.eventKey is pf3) /* exit to op menu*/
+        OS0EW01.OS0EWOPT = "0"; /* return to menu*/
+      else
+        if (converseVar.eventKey is pf4) /* exit to master menu*/
+          COMMAREA.CAUSERA = " "; /* clear user commarea*/
+          XSPF4(); /* invoke master menu request*/
+        else
+          converseLib.validationFailed(002); /* invalid pf key*/
+          OS0EW01.OS0EWEMF = "Y";
+        end
+      end
+    end
+  end
+  ;
+end // end OS0ES2F
+
+// m020 validate screen
+Function OS0ES2G()
+  ;
+  OS0EW01.OS0EWSEL = " "; /* init selection field*/
+  OS0EW01.OSHRQTID = " "; /* init saved reqest field*/
+  OS0EW01.OS0EWIX = 0; /* general purpose subscript; used*/
+               /* ; to save the subscript of row selected/deleted*/
+   /* ********************************************/
+   /* count the number of selections*/
+   /* check if select code is valid*/
+   /* check if nothing was selected/deleted*/
+   /* ********************************************/
+  ;
+  OS0EW01.OS0EW2MX = 1; /* init map counter*/
+  OS0EW01.OS0EWCNT = 0; /* init selection counter*/
+  ;
+  while (OS0EW01.OS0EW2MX <= 30
+   && OS0EW01.OS0EWEMF == "N")
+    OS0ES2H(); /* ck array for select/delete*/
+    OS0EW01.OS0EW2MX = OS0EW01.OS0EW2MX + 1;
+  end
+  ;
+  if (OS0EW01.OS0EWCNT == 0) /* nothing found*/
+    converseLib.validationFailed(273); /* no selections have been made*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on error/msg flag*/
+    OS0EW01.OS0EWP24 = 0; /* reset counter*/
+    set OS0EM020.OS0EMSEL[1] cursor;
+  end
+  ;
+   /* ********************************************/
+   /* check delete processing*/
+   /* ********************************************/
+  ;
+  if (OS0EW01.OS0EWSEL == "D"
+   && converseVar.eventKey is enter)
+    OS0EW01.OS0EWEMF = "Y"; /* turn on error/msg flag*/
+    converseLib.validationFailed(550); /* press pf24 to delete*/
+    OS0EW01.OS0EWP24 = 0; /* reset counter*/
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf24 /* if delete key pressed*/
+   && OS0EW01.OS0EWEMF == "N")     /* no errors/messages*/
+    if (OS0EW01.OS0EWSEL == "D")
+      if (OS0EW01.OS0EWP24 == 1) /* if pf24 pressed once*/
+        converseLib.validationFailed(551); /* press pf24 to confirm delete*/
+        OS0EW01.OS0EWEMF = "Y"; /* turn on error/msg flag*/
+      else
+        if (OS0EW01.OS0EWP24 == 2) /* if pf24 pressed twice*/
+          OS0ES2J(); /* delete request from database*/
+          if (SQLCA.VAGen_SQLCODE == 0
+           || SQLCA.VAGen_SQLCODE == 100)
+            OS0EM020.CAMSG = "REQUEST HAS BEEN DELETED";
+            OS0EW01.OS0EWEMF = "Y"; /* reconverse flag*/
+            OS0EM020.OS0EMSEL[OS0EWIX] = "*";
+            set OS0EM020.OS0EMSEL[OS0EWIX] skip;
+            OS0EW01.OS0EWP24 = 0; /* reset counter*/
+          end
+        end
+      end
+    else
+      set OS0EM020.OS0EMSEL[OS0EWIX] cursor, bold;
+      OS0EM020.VAGen_EZEMSG = "ENTER D TO DELETE";
+      OS0EW01.OS0EWP24 = 0; /* reset counter*/
+      OS0EW01.OS0EWEMF = "Y"; /* turn on error/msg flag*/
+    end
+  end
+end // end OS0ES2G
+
+// m020 ck array select/delete
+Function OS0ES2H()
+  ;
+  if (OS0EW01.OS0EWCNT < 2) /* number of selections on map*/
+    if (OS0EM020.OS0EMSEL[OS0EW2MX] == "S"
+     || OS0EM020.OS0EMSEL[OS0EW2MX] == "D")
+      OS0EW01.OS0EWCNT = OS0EW01.OS0EWCNT + 1;
+      OS0EW01.OSHRQTID = OS0EM020.OSHRQTID[OS0EW2MX]; /* save req id*/
+      OS0EW01.OS0EWSEL = OS0EM020.OS0EMSEL[OS0EW2MX]; /* save the action*/
+      OS0EW01.OS0EWIX = OS0EW01.OS0EW2MX; /* save subscript-temporary*/
+    else
+      if (OS0EM020.OS0EMSEL[OS0EW2MX] != " "
+       && OS0EM020.OS0EMSEL[OS0EW2MX] != "*")
+        converseLib.validationFailed(272); /* selection code not valid*/
+        set OS0EM020.OS0EMSEL[OS0EW2MX] cursor, bold;
+        OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+        OS0EW01.OS0EWP24 = 0; /* reset counter*/
+      end
+    end
+  else
+    set OS0EM020.OS0EMSEL[OS0EWIX] cursor, bold;
+    converseLib.validationFailed(552); /* only one request allowed*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+    OS0EW01.OS0EWP24 = 0; /* reset counter*/
+  end
+  ;
+end // end OS0ES2H
+
+// m020 delete req from database
+Function OS0ES2J()
+  ;
+   /* **************************************************/
+    /* set up call to delete all rows for the request*/
+   /* **************************************************/
+  ;
+  OSHREC.OSHRQTID = OS0EW01.OSHRQTID;
+  OSHREC.XGPCD = "**";
+  OSHREC.SY1STNBR = "******";
+  OSHREC.SY2CLRID = "**";
+  OSHREC.XDMCD = "**";
+  ;
+  call "IO4780" ("D ", SQLCA, OSHREC) {isNoRefresh = yes, isExternal = yes}; /* fetch next record*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == 100)
+     /* next sentence*/
+  else
+    OS0ES4A(); /* purge temp storage*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "D       ";
+    TA1REC.TA1LOCAT[2] = "OS0ES2J ";
+    TA1REC.TA1LOCAT[3] = "IO4780  ";
+    TA1REC.TA1LOCAT[4] = "OSHREC  ";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VADBUY01";
+    TA1REC.TA1TBLKE = OS0EW01.OSHRQTID;
+    if (OS0EW01.OS0EWOPT == "1") /* directory delete*/
+      TA1REC.TA1MAP = "OS0EM020";
+    else /* option 3*/
+      TA1REC.TA1MAP = "OS0EM030";
+    end
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    XSPF4();
+    exit program;
+  end
+  ;
+end // end OS0ES2J
+
+// m030 set header fields defined
+Function OS0ES3A()
+  ;
+  set OS0EM030.OSHRQTID initialAttributes;
+  set OS0EM030.XGPCD initialAttributes;
+  set OS0EM030.OS0EMBDT initialAttributes;
+  set OS0EM030.OS0EMEDT initialAttributes;
+end // end OS0ES3A
+
+// m030 set array fields defined
+Function OS0ES3B()
+  ;
+  OS0EW01.OS0EW3IX = 1; /* init map subscript*/
+  ;
+  while (OS0EW01.OS0EW3IX <= 56) /* while not end of map*/
+    set OS0EM030.SY1STNBR[OS0EW3IX] initialAttributes;
+    set OS0EM030.SY2CLRID[OS0EW3IX] initialAttributes;
+    set OS0EM030.XDMCD[OS0EW3IX] initialAttributes;
+    OS0EW01.OS0EW3IX = OS0EW01.OS0EW3IX + 1;
+  end
+end // end OS0ES3B
+
+// m030 process action key
+Function OS0ES3C()
+  ;
+  if (converseVar.eventKey is enter
+   || converseVar.eventKey is pf12) /* edit only*/
+    OS0ES3D(); /* validate screen*/
+  else
+    if (converseVar.eventKey is pf19) /* refresh screen*/
+      OS0EW01.OS0EWP19 = "Y"; /* trigger to kick out*/
+    else
+      if (converseVar.eventKey is pf3) /* exit to op menu*/
+        OS0EW01.OS0EWOPT = "0"; /* return to menu*/
+      else
+        if (converseVar.eventKey is pf4) /* exit to master menu*/
+          COMMAREA.CAUSERA = " "; /* clear user commarea*/
+          XSPF4(); /* invoke master menu request*/
+        else
+          converseLib.validationFailed(002); /* invalid pf key*/
+          OS0EW01.OS0EWEMF = "Y";
+        end
+      end
+    end
+  end
+  ;
+end // end OS0ES3C
+
+// m030 validate screen
+Function OS0ES3D()
+  ;
+   /* *********************************************************/
+   /* if database hasn't been updated yet, edit header stuff*/
+   /* when option is 'add request' (review--fields are protected)*/
+     /* if header has no errors, continue to style array,*/
+     /* otherwise fall out so don't do unnecessary style calls*/
+   /* else just edit style array (header fields are protected).*/
+   /* *********************************************************/
+  ;
+  if (OS0EW01.OS0EWUPF == "N" /* no update done yet*/
+   && OS0EW01.OS0EWOPT == "2") /* add new request*/
+    OS0ES3E(); /* edit ending need date*/
+    OS0ES3G(); /* edit beginning need date*/
+    OS0ES3H(); /* edit gpc*/
+    OS0ES3J(); /* edit request id*/
+    ;
+    if (OS0EW01.OS0EWEMF == "N") /* if no errors*/
+      OS0ES3K(); /* edit style array*/
+    end
+    ;
+  else
+    ;
+    OS0ES3K(); /* edit style array only*/
+    ;
+  end
+  ;
+  ;
+   /* *********************************************************/
+   /* if there were no problems, update the database.*/
+   /* do not edit for duplicate style/color/dimension--let*/
+     /* it insert.  user's responsibility to detect.*/
+   /* *********************************************************/
+  ;
+  if (OS0EW01.OS0EWEMF == "N"
+   && converseVar.eventKey is enter)
+    OS0ES3P(); /* update the database*/
+    OS0EW01.OS0EWUPF = "Y"; /* turn on update flag*/
+    OS0EW01.OS0EWUPT = "PRODUCTS ENTERED FOR REQUEST ID";
+    OS0EM030.CAMSG = OS0EW01.OS0EWUPM; /* group field*/
+    set OS0EM030.OSHRQTID skip;
+    set OS0EM030.XGPCD skip;
+    set OS0EM030.OS0EMBDT skip;
+    set OS0EM030.OS0EMEDT skip;
+    OS0ES3U(); /* refresh style body*/
+  end
+end // end OS0ES3D
+
+// m030 edit ending need date
+Function OS0ES3E()
+  ;
+  OS0EW01.OPJCNDTX = 0; /* init--holds final format*/
+  ;
+  if (OS0EM030.OS0EMEDT == " ")
+    converseLib.validationFailed(246); /* ending need date not valid*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+    set OS0EM030.OS0EMEDT cursor, bold;
+  else
+    OS0EW01.OS0EWDT2 = OS0EM030.OS0EMEDT; /* mmddyy*/
+    OS0ESAC(); /* ta0040 date routine*/
+    if (TA2REC.TA2RTNCD == 0)
+      OS0EW01.OPJCNDTX = OS0EW01.OS0EWDT1; /* save ccyymmdd format*/
+      OS0EW01.OS0EWEDT = OS0EW01.OS0EWDT2; /* save mmddyy format*/
+    else
+      set OS0EM030.OS0EMEDT cursor, bold;
+      OS0EW01.OS0EWEMF = "Y";
+      converseLib.validationFailed(246); /* ending need date not valid*/
+    end
+  end
+  ;
+end // end OS0ES3E
+
+// m030 edit beginning need date
+Function OS0ES3G()
+  ;
+  OS0EW01.OPJCNDTB = 0; /* init--holds final format*/
+  ;
+  if (OS0EM030.OS0EMBDT == " ")
+    converseLib.validationFailed(247); /* beginning need date not valid*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+    set OS0EM030.OS0EMBDT cursor, bold;
+  else
+    OS0EW01.OS0EWDT2 = OS0EM030.OS0EMBDT; /* mmddyy*/
+    OS0ESAC(); /* ta0040 date routine*/
+    if (TA2REC.TA2RTNCD == 0)
+      OS0EW01.OPJCNDTB = OS0EW01.OS0EWDT1; /* save ccyymmdd format*/
+      OS0EW01.OS0EWBDT = OS0EW01.OS0EWDT2; /* save mmddyy format*/
+    else
+      converseLib.validationFailed(247); /* beginning need date not valid*/
+      set OS0EM030.OS0EMBDT cursor, bold;
+      OS0EW01.OS0EWEMF = "Y";
+    end
+  end
+  ;
+   /* ****************************************************/
+   /* compare beginning to ending date*/
+   /* ****************************************************/
+  ;
+  if (OS0EW01.OPJCNDTB == 0
+   || OS0EW01.OPJCNDTX == 0)
+     /* next sentence--skip this because already date errors*/
+  else
+    if (OS0EW01.OPJCNDTB <= OS0EW01.OPJCNDTX)
+       /* next sentence--dates are good*/
+    else
+      OS0EW01.OS0EWEMF = "Y";
+      converseLib.validationFailed(255); /* begin need date must be before end need dt*/
+      set OS0EM030.OS0EMBDT cursor, bold;
+      set OS0EM030.OS0EMEDT bold;
+    end
+  end
+  ;
+end // end OS0ES3G
+
+// m030 edit gpc
+Function OS0ES3H()
+  ;
+  ;
+  if (OS0EM030.XGPCD in XGPTBL.XGPCD
+   && XGPTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    OS0EM030.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+  else
+    OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+    converseLib.validationFailed(138); /* gpc code is not valid*/
+    set OS0EM030.XGPCD cursor, bold;
+    OS0EM030.XGPABRV = " "; /* set field empty*/
+  end
+  ;
+  ;
+end // end OS0ES3H
+
+// m030 edit request id
+Function OS0ES3J()
+  ;
+  if (OS0EM030.OSHRQTID == " ")
+    converseLib.validationFailed(251); /* request id is a required field*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+    set OS0EM030.OSHRQTID cursor, bold;
+  else
+    OSHREC.OSHRQTID = OS0EM030.OSHRQTID;
+    OSHREC.XGPCD = "**";
+    OSHREC.SY1STNBR = "******";
+    ;
+    OS0ES1D(); /* validate request id, declare cursor adbuy01*/
+    OS0ES1E(); /* fetch a record*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0) /* ; return from 'n1' fetch*/
+      OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+      set OS0EM030.OSHRQTID cursor, bold;
+      converseLib.validationFailed(252); /* request id already exists*/
+    end
+    ;
+    OS0ES1F(); /* close cursor*/
+    ;
+  end
+end // end OS0ES3J
+
+// m030 edit style array new requ
+Function OS0ES3K()
+  ;
+  OS0EW01.OS0EWCNT = 0; /* init product counter*/
+  OS0EW01.OS0EW3IX = 56; /* init subscript*/
+  ;
+  while (OS0EW01.OS0EW3IX > 0)
+    if (OS0EM030.SY1STNBR[OS0EW3IX] > " ")
+      OS0EW01.OS0EWCNT = OS0EW01.OS0EWCNT + 1;
+      OS0ES3L(); /* do calls to validate styles*/
+    end
+    OS0EW01.OS0EW3IX = OS0EW01.OS0EW3IX - 1;
+  end
+  ;
+  if (OS0EW01.OS0EWCNT == 0)
+    converseLib.validationFailed(261); /* at least one product must be entered*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+    set OS0EM030.SY1STNBR[1] cursor, bold;
+  end
+end // end OS0ES3K
+
+// m030 style vs. aprl calls
+Function OS0ES3L()
+  ;
+   /* ********************************************************/
+   /* for initial verification, call the iomod that takes*/
+   /* the least power.  for footwear, call style01 if no*/
+   /* dimension entered.  for apparel, call style01 if no*/
+   /* color entered.  if color or dimension entered, need*/
+   /* to call color01.  later on when updating, color02 will*/
+   /* be used to get the 'all' colors option for apparel.*/
+   /* (color01 can't be used cuz iomod doesn't have the*/
+   /* wild card on color).*/
+   /* ********************************************************/
+  ;
+  set SY2REC empty;
+  ;
+  if (OS0EM030.XGPCD == "02") /* if footwear*/
+    OS0EM030.SY2CLRID[OS0EW3IX] = "00"; /* set default on map*/
+    ;
+    if (OS0EM030.XDMCD[OS0EW3IX] > " ")
+      SY2REC.XGPCD = "02";
+      SY2REC.SY1STNBR = OS0EM030.SY1STNBR[OS0EW3IX];
+      SY2REC.SY2CLRID = "00";
+      SY2REC.XDMCD = OS0EM030.XDMCD[OS0EW3IX];
+      OS0ES3M(); /* call color rec, select unique*/
+    else
+      OS0EM030.XDMCD[OS0EW3IX] = "00"; /* set default on map*/
+      SY1REC.XGPCD = "02";
+      SY1REC.SY1STNBR = OS0EM030.SY1STNBR[OS0EW3IX];
+      OS0ES3N(); /* call style rec*/
+    end
+    ;
+  else /* all other gpc's*/
+    OS0EM030.XDMCD[OS0EW3IX] = "00"; /* set default on map*/
+    ;
+    if (OS0EM030.SY2CLRID[OS0EW3IX] > " " /* call color rec, select unique*/
+     && OS0EM030.SY2CLRID[OS0EW3IX] != "ALL")
+      SY2REC.XGPCD = OS0EM030.XGPCD;
+      SY2REC.SY1STNBR = OS0EM030.SY1STNBR[OS0EW3IX];
+      SY2REC.SY2CLRID = OS0EM030.SY2CLRID[OS0EW3IX];
+      SY2REC.XDMCD = "00";
+      OS0ES3M(); /* call 's ' color rec, select unique*/
+    else
+      OS0EM030.SY2CLRID[OS0EW3IX] = "ALL"; /* indicate on map*/
+      SY1REC.XGPCD = OS0EM030.XGPCD;
+      SY1REC.SY1STNBR = OS0EM030.SY1STNBR[OS0EW3IX];
+      OS0ES3N(); /* call style rec*/
+    end
+  end
+end // end OS0ES3L
+
+// m030 select unique, color01
+Function OS0ES3M()
+  ;
+  call "IO0130" ("S ", SQLCA, SY2REC) {isNoRefresh = yes, isExternal = yes}; /* fetch next record*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* nothing found*/
+      set OS0EM030.SY1STNBR[OS0EW3IX] cursor, bold;
+      set OS0EM030.SY2CLRID[OS0EW3IX] bold;
+      set OS0EM030.XDMCD[OS0EW3IX] bold;
+      converseLib.validationFailed(257); /* product does not exist*/
+      OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+    else
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OS0E";
+      TA1REC.TA1LOCAT[1] = "S       ";
+      TA1REC.TA1LOCAT[2] = "OS0ES3M ";
+      TA1REC.TA1LOCAT[3] = "IO0130  ";
+      TA1REC.TA1LOCAT[4] = "SY2REC  ";
+      TA1REC.TA1MAP = "OS0EM030";
+      TA1REC.TA1DBASE = "DORDER  ";
+      TA1REC.TA1TBLVU = "VCOLOR01";
+      TA1REC.TA1TBLKE = OS0EM030.SY1STNBR[OS0EW3IX];
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      COMMAREA.CAUSERA = " "; /* on error clear ws*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      XSPF4();
+      exit program;
+    end
+  end
+  ;
+end // end OS0ES3M
+
+// m030 select unique, style01
+Function OS0ES3N()
+  ;
+  call "IO0120" ("S ", SQLCA, SY1REC) {isNoRefresh = yes, isExternal = yes}; /* fetch next record*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* returned set empty*/
+      set OS0EM030.SY1STNBR[OS0EW3IX] cursor, bold;
+      set OS0EM030.SY2CLRID[OS0EW3IX] bold;
+      set OS0EM030.XDMCD[OS0EW3IX] bold;
+      converseLib.validationFailed(257); /* product does not exist*/
+      OS0EW01.OS0EWEMF = "Y"; /* turn on error/message flag*/
+    else
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OS0E";
+      TA1REC.TA1LOCAT[1] = "S       ";
+      TA1REC.TA1LOCAT[2] = "OS0ES2N ";
+      TA1REC.TA1LOCAT[3] = "IO0130  ";
+      TA1REC.TA1LOCAT[4] = "SY1REC  ";
+      TA1REC.TA1MAP = "OS0EM030";
+      TA1REC.TA1DBASE = "DPROD   ";
+      TA1REC.TA1TBLVU = "VSTYLE01";
+      TA1REC.TA1TBLKE = OS0EM030.SY1STNBR[OS0EW3IX];
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      COMMAREA.CAUSERA = " "; /* on error clear ws*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      XSPF4();
+      exit program;
+    end
+  end
+  ;
+end // end OS0ES3N
+
+// m030 insert to database adbuy
+Function OS0ES3P()
+  ;
+  OS0EW01.OS0EW3IX = 1; /* init map subscript*/
+  ;
+  while (OS0EW01.OS0EW3IX <= 56)
+    ;
+    if (OS0EM030.SY1STNBR[OS0EW3IX] > " ")
+      if (OS0EM030.SY2CLRID[OS0EW3IX] == "ALL")
+        set SY2REC empty;
+        OS0ES3Q(); /* select set color02*/
+        while (SQLCA.VAGen_SQLCODE == 0)
+          OS0ES3R(); /* fetch color02*/
+          if (SQLCA.VAGen_SQLCODE == 0)
+            OS0ES3S(); /* insert to adbuy database*/
+            if (SQLCA.VAGen_SQLCODE == 0)
+              OS0EW01.OS0EWUPC = OS0EW01.OS0EWUPC + 1;
+            end
+          end
+        end
+        OS0ES3T(); /* close cursor color02*/
+      else
+        OS0ES3S(); /* insert to adbuy database*/
+        if (SQLCA.VAGen_SQLCODE == 0)
+          OS0EW01.OS0EWUPC = OS0EW01.OS0EWUPC + 1;
+        end
+      end
+    end
+    ;
+    OS0EW01.OS0EW3IX = OS0EW01.OS0EW3IX + 1;
+  end
+end // end OS0ES3P
+
+// m030 open cursor color02
+Function OS0ES3Q()
+  ;
+  if (OS0EW01.OS0EWOPT == "2") /* add new request*/
+    SY2REC.XGPCD = OS0EM030.XGPCD;
+    SY2REC.SY1STNBR = OS0EM030.SY1STNBR[OS0EW3IX];
+  else /* option 3; review--use temp storage*/
+                                   /* array*/
+    SY2REC.XGPCD = OS0EW02.XGPCD;
+    SY2REC.SY1STNBR = OS0EW02.SY1STNBR[OS0EW3IX];
+  end
+  ;
+  SY2REC.SY2CLRID = " ";
+  SY2REC.XDMCD = " ";
+  ;
+  call "IO0130" ("SS", SQLCA, SY2REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    OS0ES4A(); /* purge temp storage*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "SS OPEN ";
+    TA1REC.TA1LOCAT[2] = "OS0ES3Q ";
+    TA1REC.TA1LOCAT[3] = "SY2REC  ";
+    TA1REC.TA1LOCAT[4] = "IO0130  ";
+    TA1REC.TA1DBASE = "DPROD   ";
+    TA1REC.TA1TBLVU = "VCOLOR02";
+    TA1REC.TA1MAP = "OS0EM030";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    XSPF4();
+    exit program;
+  end
+  ;
+  ;
+end // end OS0ES3Q
+
+// m030 fetch color02
+Function OS0ES3R()
+  ;
+  call "IO0130" ("SN", SQLCA, SY2REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == 100)
+     /* next sentence*/
+  else
+    OS0ES4A(); /* purge temp storage*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "SN FETCH";
+    TA1REC.TA1LOCAT[2] = "OS0ES3R ";
+    TA1REC.TA1LOCAT[3] = "SY2REC  ";
+    TA1REC.TA1LOCAT[4] = "IO0130  ";
+    TA1REC.TA1DBASE = "DPROD   ";
+    TA1REC.TA1TBLVU = "VCOLOR02";
+    TA1REC.TA1TBLKE = OS0EM030.SY1STNBR;
+    TA1REC.TA1MAP = "OS0EM030";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    XSPF4();
+    exit program;
+  end
+  ;
+end // end OS0ES3R
+
+// m030 newreq:load rec for insrt
+Function OS0ES3S()
+  ;
+   /* **************************************************/
+    /* set up record for insert*/
+   /* **************************************************/
+  ;
+  OSHREC.OSHRQTID = OS0EM030.OSHRQTID;
+  OSHREC.XGPCD = OS0EM030.XGPCD;
+  OSHREC.OPJCNDTB = OS0EW01.OPJCNDTB;
+  OSHREC.OPJCNDTX = OS0EW01.OPJCNDTX;
+  OSHREC.ZZZSDT = OS0EW01.OS0EWZSD;
+  ;
+  OSHREC.SY1STNBR = OS0EM030.SY1STNBR[OS0EW3IX];
+  OSHREC.XDMCD = OS0EM030.XDMCD[OS0EW3IX];
+  ;
+  if (OS0EM030.SY2CLRID[OS0EW3IX] == "ALL")
+    OSHREC.SY2CLRID = SY2REC.SY2CLRID;
+  else
+    OSHREC.SY2CLRID = OS0EM030.SY2CLRID[OS0EW3IX];
+  end
+  ;
+  ;
+  OS0ES3W(); /* insert to adbuy01 database*/
+  ;
+end // end OS0ES3S
+
+// m030 close cursor color02
+Function OS0ES3T()
+  ;
+  call "IO0130" ("CS", SQLCA, SY2REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    OS0ES4A(); /* purge temp storage*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "CS CLOSE";
+    TA1REC.TA1LOCAT[2] = "OS0ES3T ";
+    TA1REC.TA1LOCAT[3] = "SY2REC  ";
+    TA1REC.TA1LOCAT[4] = "IO0130  ";
+    TA1REC.TA1DBASE = "DPROD   ";
+    TA1REC.TA1TBLVU = "VCOLOR02";
+    TA1REC.TA1MAP = "OS0EM030";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    XSPF4();
+    exit program;
+  end
+  ;
+  ;
+end // end OS0ES3T
+
+// m030 refresh map style array
+Function OS0ES3U()
+  ;
+  OS0EW01.OS0EW3IX = 1; /* init map subscript*/
+  ;
+  while (OS0EW01.OS0EW3IX <= 56) /* while not end of map*/
+    OS0EM030.OS0EMSEL[OS0EW3IX] = " ";
+    OS0EM030.SY1STNBR[OS0EW3IX] = " ";
+    OS0EM030.SY2CLRID[OS0EW3IX] = " ";
+    OS0EM030.XDMCD[OS0EW3IX] = " ";
+    OS0EW01.OS0EW3IX = OS0EW01.OS0EW3IX + 1;
+  end
+end // end OS0ES3U
+
+// m030 insert to adbuy01
+Function OS0ES3W()
+  ;
+  call "IO4780" ("A ", SQLCA, OSHREC) {isNoRefresh = yes, isExternal = yes}; /* fetch next record*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0
+   || SQLCA.VAGen_SQLCODE == 100)
+     /* next sentence*/
+  else
+    OS0ES4A(); /* purge temp storage*/
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "A       ";
+    TA1REC.TA1LOCAT[2] = "OS0ES3S ";
+    TA1REC.TA1LOCAT[3] = "IO4780  ";
+    TA1REC.TA1LOCAT[4] = "OSHREC  ";
+    TA1REC.TA1MAP = "OS0EM030";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VADBUY01";
+    TA1REC.TA1TBLKE = "INSERT  ";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    XSPF4();
+    exit program;
+  end
+  ;
+end // end OS0ES3W
+
+// purge temporary storage
+Function OS0ES4A()
+  ;
+  OS0EW01.OS0EWTSP = 0; /* reset current page nbr*/
+  OS0EW01.TA5TSQIX = 0; /* reset highest page nbr*/
+  ;
+  TA5REC.TA5APPID = "OS0E"; /* appl identification*/
+  TA5REC.TA5FNCCD = "P"; /* function code*/
+  ;
+  call "TA0050" (OS0EW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+  ;
+  if (TA5REC.TA5RTNCD == +0)
+    /* next sentence*/
+  else
+    TA1REC.TA1FUNC = "POST"; /* termination function*/
+    TA1REC.TA1TYPE = "APPL"; /* type of error*/
+    TA1REC.TA1PGMNM = "OS0E   ";
+    TA1REC.TA1MAP = "OS0EM030"; /* map name*/
+    TA1REC.TA1LOCAT[1] = "TA0050";
+    TA1REC.TA1LOCAT[2] = "OS0ES4A";
+    TAEREC.TAEDESC1 = "PURGE TEMP STORAGE FAILED";
+    TAEREC.TAEDESC2 = OS0EW01.OSHRQTID;
+    ;
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+    ;
+  end
+  ;
+end // end OS0ES4A
+
+// m030 format pages to temp stg
+Function OS0ES4B()
+  ;
+  OS0EW01.OS0EW3IX = 1; /* init subscript*/
+  ;
+  OSHREC.OSHRQTID = OS0EW01.OSHRQTID;
+  OSHREC.XGPCD = "**";
+  OSHREC.SY1STNBR = "******";
+  ;
+  OS0ES1D(); /* select set adbuy01*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    while (SQLCA.VAGen_SQLCODE == 0)
+      ;
+      /* *************************************************/
+       /* fetch and format the data into pages*/
+      /* *************************************************/
+      ;
+      OS0ES1E(); /* fetch adbuy01 record*/
+      ;
+      if (SQLCA.VAGen_SQLCODE == 0)
+        ;
+        if (OS0EW01.OS0EW3IX == 1) /* load header stuff only once*/
+          OS0ES4S(); /* load header stuff only once*/
+        end
+        ;
+        OS0EW02.SY1STNBR[OS0EW3IX] = OSHREC.SY1STNBR; /* style*/
+        OS0EW02.SY2CLRID[OS0EW3IX] = OSHREC.SY2CLRID; /* color*/
+        OS0EW02.XDMCD[OS0EW3IX] = OSHREC.XDMCD; /* dimension*/
+        ;
+        /* ***** if page is full, add page to storage queue*/
+        ;
+        if (OS0EW01.OS0EW3IX == 56) /* page is full*/
+          OS0ES4C(); /* add page to temporary stor*/
+          OS0EW01.OS0EW3IX = 0; /* init subscript*/
+        end
+        ;
+      else
+        if (SQLCA.VAGen_SQLCODE == 100 /* no more records*/
+         && OS0EW01.OS0EW3IX > 1)      /* ck for partially formatted page*/
+          OS0ES4C(); /* add page to temp storage*/
+          OS0EW01.OS0EW3IX = 0; /* init subscript*/
+        end
+        ;
+      end
+      OS0EW01.OS0EW3IX = OS0EW01.OS0EW3IX + 1;
+    end
+  end
+  ;
+  OS0ES1F(); /* close cursor*/
+end // end OS0ES4B
+
+// m030 add page to temp storage
+Function OS0ES4C()
+  ;
+  OS0EW02.OS0EWLEN = 690; /* temp storage length*/
+  TA5REC.TA5APPID = "OS0E"; /* appl identification*/
+  TA5REC.TA5FNCCD = "A"; /* function code*/
+  ;
+  ;
+  call "TA0050" (OS0EW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+  ;
+  if (TA5REC.TA5RTNCD == +0)
+    OS0EW01.TA5TSQIX = TA5REC.TA5TSQIX; /* highest page nbr*/
+    set OS0EW02 empty;
+  else
+    converseLib.validationFailed(10); /* database busy*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on error flag*/
+    TA1REC.TA1FUNC = "POST"; /* termination function*/
+    TA1REC.TA1TYPE = "APPL"; /* type of error*/
+    TA1REC.TA1PGMNM = "OS0E   ";
+    TA1REC.TA1LOCAT[1] = "OS0ES4C";
+    TA1REC.TA1LOCAT[2] = "TA0050";
+    TA1REC.TA1MAP = "OS0EM030"; /* map name*/
+    TAEREC.TAEDESC1 = TA5REC.TA5DATA;
+    TAEREC.TAEDESC2 = "ADD PAGE TO TEMPORARY STORAGE";
+    ;
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+    ;
+  end
+  ;
+end // end OS0ES4C
+
+// m030 process paging
+Function OS0ES4D()
+  ;
+  OS0EW01.OS0EWTSR = "N"; /* init ok to read flag*/
+  ;
+  if (converseVar.eventKey is enter /* specific page requested?*/
+   || converseVar.eventKey is pf12) /* specific page requested?*/
+    if (OS0EM030.OS0EMTSP != OS0EW01.OS0EWTSP) /* req page not saved page*/
+      OS0ES4I(); /* edit entered page*/
+    end
+  end
+  ;
+  if (converseVar.eventKey is pf7) /* if page backward*/
+    OS0ES4J(); /* page backward edit*/
+  end
+  ;
+  if (converseVar.eventKey is pf8) /* if page forward*/
+    OS0ES4K(); /* page forward edit*/
+  end
+  ;
+  if (OS0EW01.OS0EWTSR == "Y") /* need to read temp storage*/
+    OS0EW01.OS0EWTSP = OS0EM030.OS0EMTSP; /* save page requested*/
+    OS0ES4E(); /* read temp storage*/
+    OS0ES4F(); /* move working storage to map*/
+    OS0EW01.OS0EWEMF = "Y"; /* reconverse*/
+  end
+  ;
+end // end OS0ES4D
+
+// m030 read temp stg
+Function OS0ES4E()
+  ;
+  OS0EW02.OS0EWLEN = 690; /* temp storage length*/
+  TA5REC.TA5APPID = "OS0E"; /* appl identification*/
+  TA5REC.TA5FNCCD = "R"; /* function code*/
+  TA5REC.TA5TSQIX = OS0EW01.OS0EWTSP; /* page nbr*/
+  ;
+  ;
+  call "TA0050" (OS0EW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+  ;
+  if (TA5REC.TA5RTNCD == +0)
+     /* next sentence*/
+  else
+    converseLib.validationFailed(10); /* database busy*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on error flag*/
+    TA1REC.TA1FUNC = "POST"; /* termination function*/
+    TA1REC.TA1TYPE = "APPL"; /* type of error*/
+    TA1REC.TA1PGMNM = "OS0E   ";
+    TA1REC.TA1MAP = "OS0EM030"; /* map name*/
+    TA1REC.TA1LOCAT[1] = "TA0050";
+    TA1REC.TA1LOCAT[2] = "OS0ES4E";
+    TAEREC.TAEDESC1 = "READ PAGE TO TEMP STORAGE";
+    TAEREC.TAEDESC2 = OS0EW01.OSHRQTID;
+    ;
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+    ;
+  end
+  ;
+end // end OS0ES4E
+
+// m030 move working stg to map
+Function OS0ES4F()
+  ;
+   /* the dates are always moved from w01 to capture and apply*/
+   /* the most recent date change to all pages*/
+  ;
+  OS0EM030.OS0EMBDT = OS0EW01.OS0EWBDT;
+  OS0EM030.OS0EMEDT = OS0EW01.OS0EWEDT;
+  ;
+  OS0EW01.OS0EW3IX = 1;
+  ;
+  while (OS0EW01.OS0EW3IX <= 56) /* ; total possible for map*/
+    ;
+    OS0EM030.OS0EMSEL[OS0EW3IX] = OS0EW02.OS0EWSEL[OS0EW3IX];
+    OS0EM030.SY1STNBR[OS0EW3IX] = OS0EW02.SY1STNBR[OS0EW3IX];
+    OS0EM030.SY2CLRID[OS0EW3IX] = OS0EW02.SY2CLRID[OS0EW3IX];
+    OS0EM030.XDMCD[OS0EW3IX] = OS0EW02.XDMCD[OS0EW3IX];
+    OS0EW01.OS0EW3IX = OS0EW01.OS0EW3IX + 1; /* increment counter*/
+    ;
+  end
+  ;
+end // end OS0ES4F
+
+// m030 set fields defined
+Function OS0ES4G()
+  ;
+  set OS0EM030.OS0EMTSP initialAttributes;
+  set OS0EM030.OS0EMBDT initialAttributes;
+  set OS0EM030.OS0EMEDT initialAttributes;
+  ;
+  OS0EW01.OS0EW3IX = 1; /* init*/
+  ;
+  while (OS0EW01.OS0EW3IX <= 56) /* total for map*/
+    set OS0EM030.SY1STNBR[OS0EW3IX] initialAttributes;
+    set OS0EM030.SY2CLRID[OS0EW3IX] initialAttributes;
+    set OS0EM030.XDMCD[OS0EW3IX] initialAttributes;
+    OS0EW01.OS0EW3IX = OS0EW01.OS0EW3IX + 1;
+  end
+  ;
+end // end OS0ES4G
+
+// m030 revw req proc action key
+Function OS0ES4H()
+  ;
+  if (converseVar.eventKey is enter
+   || converseVar.eventKey is pf12 /* edit only*/
+   || converseVar.eventKey is pf7  /* page back*/
+   || converseVar.eventKey is pf8) /* page back*/
+    OS0ES4D(); /* process paging*/
+  else
+    if (converseVar.eventKey is pf13) /* delete and insert*/
+      OS0EW01.OS0EWP13 = OS0EW01.OS0EWP13 + 1; /* delete/insert counter*/
+      OS0EM030.OS0EMTSP = OS0EW01.OS0EWTSP; /* ignore page nbr chg*/
+       /* on map, if any--safeguard for insert/deleting later*/
+    else
+      if (converseVar.eventKey is pf9) /* show a fresh screen for adding prods*/
+        OS0ES4M(); /* prepare for new page*/
+      else
+        if (converseVar.eventKey is pf3) /* exit to op menu*/
+          OS0ES4A(); /* purge temp storage*/
+          OS0EW01.OS0EWEMF = "Y"; /* turn on flag to trigger out*/
+          if (OS0EW01.OS0EWSEL == "S") /* selection off directory*/
+            OS0EW01.OS0EWOPT = "1"; /* return to directory*/
+          else
+            OS0EW01.OS0EWOPT = "0"; /* return to menu*/
+          end
+        else
+          if (converseVar.eventKey is pf4) /* exit to master menu*/
+            OS0ES4A(); /* purge temp storage*/
+            COMMAREA.CAUSERA = " "; /* clear user commarea*/
+            XSPF4(); /* invoke master menu request*/
+          else
+            converseLib.validationFailed(002); /* invalid pf key*/
+            OS0EW01.OS0EWEMF = "Y";
+          end
+        end
+      end
+    end
+  end
+  ;
+end // end OS0ES4H
+
+// m030 edit map page number
+Function OS0ES4I()
+  ;
+  if (OS0EM030.OS0EMTSP >= 1
+   && OS0EM030.OS0EMTSP < OS0EW01.TA5TSQIX) /* page req < last page*/
+    OS0EW01.OS0EWTSR = "Y"; /* ok, turn on read flag*/
+  else
+    if (OS0EM030.OS0EMTSP > OS0EW01.TA5TSQIX)
+      converseLib.validationFailed(003); /* page requested exceeds total pages*/
+      OS0EW01.OS0EWEMF = "Y"; /* turn on error/msg flag*/
+      set OS0EM030.OS0EMTSP cursor, bold;
+    else
+      if (OS0EM030.OS0EMTSP == OS0EW01.TA5TSQIX)
+        converseLib.validationFailed(215); /* display last page message*/
+        OS0EW01.OS0EWTSR = "Y"; /* turn on read flag*/
+      else /* garbage entered*/
+        OS0EM030.OS0EMTSP = OS0EW01.OS0EWTSP; /* reset and fall out*/
+        OS0EW01.OS0EWEMF = "Y"; /* trigger to reconverse*/
+      end
+    end
+  end
+end // end OS0ES4I
+
+// m030 page backward pf7
+Function OS0ES4J()
+  ;
+  if (OS0EW01.OS0EWTSP > 1) /* if not already on page 1*/
+    OS0EW01.OS0EWTSP = OS0EW01.OS0EWTSP - 1;
+    OS0EM030.OS0EMTSP = OS0EW01.OS0EWTSP; /* used for below*/
+    OS0EW01.OS0EWTSR = "Y"; /* read page*/
+    if (OS0EM030.OS0EMTSP == 1) /* if now it's page 1*/
+      converseLib.validationFailed(192); /* give message; end of pg back*/
+    end
+  else
+    converseLib.validationFailed(192); /* end of page backward*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+  end
+  ;
+end // end OS0ES4J
+
+// m030 page forward
+Function OS0ES4K()
+  ;
+  if (OS0EW01.OS0EWTSP < OS0EW01.TA5TSQIX) /* if not already on last page*/
+    OS0EW01.OS0EWTSP = OS0EW01.OS0EWTSP + 1;
+    OS0EM030.OS0EMTSP = OS0EW01.OS0EWTSP; /* used for below*/
+    OS0EW01.OS0EWTSR = "Y"; /* read page*/
+    if (OS0EM030.OS0EMTSP == OS0EW01.TA5TSQIX) /* if now last page*/
+      converseLib.validationFailed(215); /* give message; last page*/
+    end
+  else
+    converseLib.validationFailed(215); /* last page*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on flag*/
+  end
+  ;
+end // end OS0ES4K
+
+// m030 validate style array
+Function OS0ES4L()
+  ;
+  OS0EW01.OS0EW3IX = 56; /* init subscript*/
+  ;
+  while (OS0EW01.OS0EW3IX >= 1)
+    ;
+    if (OS0EM030.SY1STNBR[OS0EW3IX] != OS0EW02.SY1STNBR[OS0EW3IX])
+      if (OS0EM030.SY1STNBR[OS0EW3IX] == " ")
+        if (OS0EW02.SY2CLRID[OS0EW3IX] > " "
+         || OS0EW02.XDMCD[OS0EW3IX] > " ") /* wants it deleted*/
+          OS0EM030.OS0EMSEL[OS0EW3IX] = "D"; /* tag map*/
+          OS0EW02.OS0EWSEL[OS0EW3IX] = "D"; /* tag w.s.*/
+        end
+      else
+        OS0ES3L(); /* verify newly added style*/
+        if (SQLCA.VAGen_SQLCODE == 0) /* if good hit*/
+          OS0EM030.OS0EMSEL[OS0EW3IX] = "A"; /* tag map*/
+          OS0EW02.OS0EWSEL[OS0EW3IX] = "A"; /* tag w.s.*/
+        end
+      end
+    else
+      if (OS0EM030.SY1STNBR[OS0EW3IX] > " ")
+        if (OS0EM030.SY2CLRID[OS0EW3IX] != OS0EW02.SY2CLRID[OS0EW3IX]
+         || OS0EM030.XDMCD[OS0EW3IX] != OS0EW02.XDMCD[OS0EW3IX])
+          OS0ES3L(); /* verify color/dim vs. gpc*/
+          if (SQLCA.VAGen_SQLCODE == 0) /* if good hit*/
+            OS0EM030.OS0EMSEL[OS0EW3IX] = "C"; /* tag map*/
+            OS0EW02.OS0EWSEL[OS0EW3IX] = "C"; /* tag w.s.*/
+          end
+        end
+      end
+    end
+    ;
+    if (OS0EW01.OS0EWEMF == "N") /* if no errors*/
+      if (OS0EW02.OS0EWSEL[OS0EW3IX] == "A" /* if adds*/
+       || OS0EW02.OS0EWSEL[OS0EW3IX] == "C" /* or changes*/
+       || OS0EW02.OS0EWSEL[OS0EW3IX] == "D") /* or deletes*/
+        OS0EW01.OS0EWTSU = "Y"; /* update temp storage flag*/
+      end
+    else
+      OS0EW01.OS0EWP13 = 0; /* reset update counter*/
+      OS0EW01.OS0EWTSU = "N"; /* don't update temp storage*/
+    end
+    OS0EW01.OS0EW3IX = OS0EW01.OS0EW3IX - 1;
+  end
+end // end OS0ES4L
+
+// m030 review req: pf9 new page
+Function OS0ES4M()
+   /* *********************************************************/
+   /* this statement group handles everything necessary to*/
+   /* prepare for an 'empty' map for adding more products.*/
+   /* refreshed.  page numbers are then adjusted upwards*/
+   /* and the partial map is added to temp storage.  doesn't*/
+   /* hurt anything if user doesn't do anything with it.*/
+   /* code is set to bypass it if no products are on it.*/
+   /* *********************************************************/
+  ;
+  set OS0EW02 empty;
+  ;
+  OS0EW02.OSHRQTID = OS0EW01.OSHRQTID;
+  OS0EW02.XGPCD = OS0EW01.XGPCD;
+  OS0EW02.OPJCNDTB = OS0EW01.OPJCNDTB;
+  OS0EW02.OPJCNDTX = OS0EW01.OPJCNDTX;
+  OS0EM030.OS0EMBDT = OS0EW01.OS0EWBDT;
+  OS0EM030.OS0EMEDT = OS0EW01.OS0EWEDT;
+  ;
+  OS0ES3U(); /* refresh map style array*/
+  ;
+  OS0EW01.OS0EWEMF = "Y"; /* trigger to reconverse*/
+  ;
+  OS0EW01.OS0EWTSP = OS0EW01.TA5TSQIX + 1; /* recalc current page nbr*/
+  OS0EW01.TA5TSQIX = OS0EW01.TA5TSQIX + 1; /* up max count + 1*/
+  OS0EM030.OS0EMTSP = OS0EW01.OS0EWTSP; /* show on map*/
+  OS0EM030.TA5TSQIX = OS0EW01.TA5TSQIX; /* show on map*/
+  ;
+  OS0ES4C(); /* add page to temp storage*/
+  ;
+end // end OS0ES4M
+
+// m030 move map to temp stg w02
+Function OS0ES4P()
+  OS0EW02.OSHRQTID = OS0EM030.OSHRQTID;
+  OS0EW02.XGPCD = OS0EM030.XGPCD;
+  OS0EW02.OPJCNDTB = OS0EW01.OPJCNDTB;
+  OS0EW02.OPJCNDTX = OS0EW01.OPJCNDTX;
+  ;
+  OS0EW01.OS0EW3IX = 1;
+  ;
+  while (OS0EW01.OS0EW3IX <= 56)
+    OS0EW02.OS0EWSEL[OS0EW3IX] = OS0EM030.OS0EMSEL[OS0EW3IX];
+    OS0EW02.SY1STNBR[OS0EW3IX] = OS0EM030.SY1STNBR[OS0EW3IX];
+    OS0EW02.SY2CLRID[OS0EW3IX] = OS0EM030.SY2CLRID[OS0EW3IX];
+    OS0EW02.XDMCD[OS0EW3IX] = OS0EM030.XDMCD[OS0EW3IX];
+    OS0EW01.OS0EW3IX = OS0EW01.OS0EW3IX + 1;
+  end
+  ;
+end // end OS0ES4P
+
+// m030 update temp storage
+Function OS0ES4Q()
+  ;
+  OS0EW02.OS0EWLEN = 690; /* temp storage length*/
+  TA5REC.TA5APPID = "OS0E"; /* appl identification*/
+  TA5REC.TA5FNCCD = "U"; /* function code*/
+  TA5REC.TA5TSQIX = OS0EW01.OS0EWTSP;
+  ;
+  call "TA0050" (OS0EW02, TA5REC) {isNoRefresh = yes, isExternal = yes}; /* temp storage subroutine*/
+  ;
+  if (TA5REC.TA5RTNCD == +0)
+     /* next sentence*/
+  else
+    converseLib.validationFailed(10); /* database busy*/
+    OS0EW01.OS0EWEMF = "Y"; /* turn on error flag*/
+    TA1REC.TA1FUNC = "POST"; /* termination function*/
+    TA1REC.TA1TYPE = "APPL"; /* type of error*/
+    TA1REC.TA1PGMNM = "OS0E   ";
+    TA1REC.TA1LOCAT[1] = "OS0ES4Q";
+    TA1REC.TA1LOCAT[2] = TA5REC.TA5RTNCD;
+    TA1REC.TA1MAP = "OS0EM030"; /* map name*/
+    TAEREC.TAEDESC1 = "UPDATE TO TEMP STORAGE FAILED";
+    TAEDESC2 = OS0EW02.OSHRQTID;
+    ;
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* error diag routine*/
+    ;
+  end
+  ;
+end // end OS0ES4Q
+
+// m030 load header to map & w.s.
+Function OS0ES4S()
+  ;
+  OS0EW02.OSHRQTID = OSHREC.OSHRQTID;
+  OS0EM030.OSHRQTID = OSHREC.OSHRQTID;
+  ;
+  OS0EW02.XGPCD = OSHREC.XGPCD;
+  OS0EW01.XGPCD = OSHREC.XGPCD;
+  OS0EM030.XGPCD = OSHREC.XGPCD;
+  ;
+  if (OSHREC.XGPCD in XGPTBL.XGPCD)
+    OS0EM030.XGPABRV = XGPTBL.XGPABRV[sysVar.arrayIndex];
+  else
+    OS0EM030.XGPABRV = "UNKNWN";
+  end
+  ;
+  ;
+  OS0EW02.OPJCNDTB = OSHREC.OPJCNDTB;
+  OS0EW01.OPJCNDTB = OSHREC.OPJCNDTB;
+  OS0EW01.OS0EWDT1 = OSHREC.OPJCNDTB;
+  OS0ESAB(); /* convert date to mmddyy*/
+  OS0EM030.OS0EMBDT = OS0EW01.OS0EWDT2;
+  OS0EW01.OS0EWBDT = OS0EW01.OS0EWDT2;
+  ;
+  OS0EW02.OPJCNDTX = OSHREC.OPJCNDTX;
+  OS0EW01.OPJCNDTX = OSHREC.OPJCNDTX;
+  OS0EW01.OS0EWDT1 = OSHREC.OPJCNDTX;
+  OS0ESAB(); /* convert date to mmddyy*/
+  OS0EM030.OS0EMEDT = OS0EW01.OS0EWDT2;
+  OS0EW01.OS0EWEDT = OS0EW01.OS0EWDT2;
+end // end OS0ES4S
+
+// m030 delete/insert processing
+Function OS0ES4W()
+  ;
+   /* *************************************************************/
+   /* if the adbuy table has already been deleted and something*/
+   /* goes wrong with the style/color calls and inserting,*/
+   /* the adbuy table is restored back to its original form*/
+   /* through the call reset on the abend processing.*/
+   /* *************************************************************/
+  ;
+  OS0ES2J(); /* delete request from database*/
+  ;
+  if (OS0EW01.OS0EWEMF == "N")
+    OS0EW01.OS0EWTSP = 1; /* start with page 1*/
+    ;
+    while (OS0EW01.OS0EWTSP <= OS0EW01.TA5TSQIX /* while pages to insert*/
+     && OS0EW01.OS0EWEMF == "N") /* and no problems*/
+      OS0ES4E(); /* read page in from temp storage*/
+      OS0ES4Y(); /* process the array and insert*/
+      OS0EW01.OS0EWTSP = OS0EW01.OS0EWTSP + 1;
+    end
+  end
+end // end OS0ES4W
+
+// m030 process array for insert
+Function OS0ES4Y()
+  ;
+  OS0EW01.OS0EW3IX = 1; /* init map subscript*/
+  ;
+  while (OS0EW01.OS0EW3IX <= 56)
+    ;
+    if (OS0EW02.SY1STNBR[OS0EW3IX] > " "
+     && OS0EW02.OS0EWSEL[OS0EW3IX] != "D")
+      if (OS0EW02.SY2CLRID[OS0EW3IX] == "ALL")
+        set SY2REC empty;
+        OS0ES3Q(); /* select set color02*/
+        while (SQLCA.VAGen_SQLCODE == 0)
+          OS0ES3R(); /* fetch color02*/
+          if (SQLCA.VAGen_SQLCODE == 0)
+            OS0ES4Z(); /* load oshrec*/
+            OS0ES3W(); /* insert to adbuy database*/
+          end
+        end
+        OS0ES3T(); /* close cursor color02*/
+      else
+        OS0ES4Z(); /* load oshrec*/
+        OS0ES3W(); /* insert to adbuy database*/
+      end
+    end
+    ;
+    OS0EW01.OS0EW3IX = OS0EW01.OS0EW3IX + 1;
+  end
+end // end OS0ES4Y
+
+// m030 rvwreq:load rec for insrt
+Function OS0ES4Z()
+  ;
+  OSHREC.OSHRQTID = OS0EW01.OSHRQTID;
+  OSHREC.XGPCD = OS0EW01.XGPCD;
+  OSHREC.OPJCNDTB = OS0EW01.OPJCNDTB;
+  OSHREC.OPJCNDTX = OS0EW01.OPJCNDTX;
+  OSHREC.ZZZSDT = OS0EW01.OS0EWZSD;
+  ;
+  OSHREC.SY1STNBR = OS0EW02.SY1STNBR[OS0EW3IX];
+  OSHREC.XDMCD = OS0EW02.XDMCD[OS0EW3IX];
+  ;
+  if (OS0EW02.SY2CLRID[OS0EW3IX] == "ALL")
+    OSHREC.SY2CLRID = SY2REC.SY2CLRID;
+  else
+    OSHREC.SY2CLRID = OS0EW02.SY2CLRID[OS0EW3IX];
+  end
+  ;
+  ;
+end // end OS0ES4Z
+
+// format today's date for zzzsdt
+Function OS0ESAA()
+  ;
+  TA2REC.TA2GRGE = VGVar.currentShortGregorianDate; /* format today's date for zzzsdt later*/
+  ;
+  TA2REC.TA2DTOPT = "GREGGREG"; /* functional request*/
+  TA2REC.TA2GRTYP = "E"; /* format is yymmdd*/
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date module*/
+  ;
+  if (TA2REC.TA2RTNCD == 0)
+    OS0EW01.OS0EWZSD = TA2REC.TA2GRGGN; /* save setup date*/
+  else
+    OS0EW01.OS0EWZSD = 99999999;
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "POST";
+    TA1REC.TA1PGMNM = "OS0E";
+    TA1REC.TA1LOCAT[1] = "OS0ESAA ";
+    TA1REC.TA1LOCAT[2] = "TA0040  ";
+    TA1REC.TA1LOCAT[3] = "TA2REC  ";
+    TA1REC.TA1LOCAT[4] = "        ";
+    TAEREC.TAEDESC1 = "PROBLEM WITH SETUP DATE FOR VADBUY01 RECS";
+    TAEREC.TAEDESC2 = VGVar.currentShortGregorianDate;
+    try
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes};
+    end
+  end
+  ;
+  ;
+end // end OS0ESAA
+
+// format date ccyymmdd to mmddyy
+Function OS0ESAB()
+  TA2REC.TA2GRGGN = OS0EW01.OS0EWDT1; /* ccyymmdd to mmddyy*/
+  ;
+  TA2REC.TA2DTOPT = "GREGGREG"; /* functional request*/
+  TA2REC.TA2GRTYP = "G"; /* format is mmddyy*/
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date module*/
+  ;
+  if (TA2REC.TA2RTNCD == 0)
+    OS0EW01.OS0EWDT2 = TA2REC.TA2GRGA;
+  else
+    OS0EW01.OS0EWDT2 = "999999";
+  end
+  ;
+  ;
+end // end OS0ESAB
+
+// format mmddyy to ccyymmdd
+Function OS0ESAC()
+  ;
+  TA2REC.TA2GRGA = OS0EW01.OS0EWDT2; /* mmddyy to ccyymmdd*/
+  ;
+  TA2REC.TA2DTOPT = "GREGGREG"; /* functional request*/
+  TA2REC.TA2GRTYP = "A"; /* format is mmddyy*/
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date module*/
+  ;
+  if (TA2REC.TA2RTNCD == 0)
+    OS0EW01.OS0EWDT1 = TA2REC.TA2GRGGN;
+  else
+    OS0EW01.OS0EWDT1 = 99999999;
+  end
+  ;
+  ;
+end // end OS0ESAC
+
+// m030 new req: set pf keys
+Function OS0ESBA()
+  ;
+  set OS0EM030.OSHRQTID initialAttributes;
+  set OS0EM030.XGPCD initialAttributes;
+  set OS0EM030.OS0EMBDT initialAttributes;
+  set OS0EM030.OS0EMEDT initialAttributes;
+  OS0EM030.OS0EMP12 = "12: EDIT";
+  OS0EM030.OS0EMP19 = "19: REFRESH";
+  set OS0EM030.OS0EMP19 initialAttributes;
+  ;
+   /* ************************************************************/
+   /* these fields are not used when adding a new request*/
+   /* ************************************************************/
+  ;
+  set OS0EM030.OS0EMPF7 skip, invisible; /* page back*/
+  set OS0EM030.OS0EMPF8 skip, invisible; /* page forward*/
+  set OS0EM030.OS0EMPF9 skip, invisible; /* add new page*/
+  set OS0EM030.OS0EMP13 skip, invisible; /* update*/
+  set OS0EM030.OS0EMPGL skip, invisible; /* page label*/
+  set OS0EM030.OS0EMTSP skip, invisible; /* current page nbr*/
+  set OS0EM030.OS0EMOF skip, invisible; /* 'of' label*/
+  set OS0EM030.TA5TSQIX skip, invisible; /* total pages*/
+  ;
+end // end OS0ESBA
+
+// m030 revwreq: set pf keys
+Function OS0ESBB()
+  ;
+  set OS0EM030.OSHRQTID initialAttributes;
+  set OS0EM030.XGPCD initialAttributes;
+  set OS0EM030.OS0EMBDT initialAttributes;
+  set OS0EM030.OS0EMEDT initialAttributes;
+  OS0EM030.OS0EMPF7 = "7: SCROLL BKWD"; /* page back*/
+  OS0EM030.OS0EMPF8 = "8: SCROLL FWRD"; /* page forward*/
+  OS0EM030.OS0EMPF9 = "9: ADD PAGE"; /* add new page*/
+  OS0EM030.OS0EMP13 = "13: UPDATE"; /* update*/
+  OS0EM030.OS0EMPGL = "PAGE"; /* page label*/
+  OS0EM030.OS0EMOF = "OF"; /* 'of' label*/
+  ;
+  set OS0EM030.OS0EMPF7 initialAttributes; /* page back*/
+  set OS0EM030.OS0EMPF8 initialAttributes; /* page forward*/
+  set OS0EM030.OS0EMPF9 initialAttributes; /* add new page*/
+  set OS0EM030.OS0EMP13 initialAttributes; /* update*/
+  set OS0EM030.OS0EMPGL initialAttributes; /* page label*/
+  set OS0EM030.OS0EMTSP initialAttributes; /* current page nbr*/
+  set OS0EM030.OS0EMOF initialAttributes; /* 'of' label*/
+  set OS0EM030.TA5TSQIX initialAttributes; /* total pages*/
+  ;
+  set OS0EM030.OS0EMP19 skip, invisible;
+                                   /* refresh not used for review req*/
+  ;
+end // end OS0ESBB
+
+//*** RECORD=OS0EW01 ****
+// this record is used for general working storage purposes.
+// ***********************
+Record OS0EW01 type basicRecord
+  10 OS0EWZSD OS0EWZSD ; 
+  10 OS0EWDT1 OS0EWDT1 ; 
+  10 OS0EWDT2 OS0EWDT2 ; 
+  10 OS0EWBDT OS0EWBDT ; 
+  10 OS0EWEDT OS0EWEDT ; 
+  10 OS0EWEMF OS0EWEMF ; 
+  10 OS0EWOPT OS0EWOPT ; 
+  10 OS0EWSEL OS0EWSEL ; 
+  10 OS0EWP24 OS0EWP24 ; 
+  10 OS0EWP13 OS0EWP13 ; 
+  10 OS0EWP19 OS0EWP19 ; 
+  10 OS0EWPF9 OS0EWPF9 ; 
+  10 OS0EWCNT OS0EWCNT ; 
+  10 OSHRQTID OSHRQTID ; 
+  10 XGPCD XGPCD ; 
+  10 OPJCNDTB OPJCNDTB ; 
+  10 OPJCNDTX OPJCNDTX ; 
+  10 OS0EWIX OS0EWIX ; 
+  10 OS0EW2MX OS0EW2MX ; 
+  10 OS0EW3IX OS0EW3IX ; 
+  10 OS0EWUPF OS0EWUPF ; 
+  10 OS0EWUPM OS0EWUPM ; 
+    15 OS0EWUPC OS0EWUPC ; 
+      20 OS0EWUPA OS0EWUPA ; 
+    15 OS0EWUPE OS0EWUPE ; 
+    15 OS0EWUPT OS0EWUPT ; 
+  10 OS0EWTSU OS0EWTSU ; 
+  10 OS0EWTSR OS0EWTSR ; 
+  10 OS0EWTSP OS0EWTSP ; 
+  10 TA5TSQIX TA5TSQIX ; 
+end // end OS0EW01
+
+//*** RECORD=OS0EW02 ****
+// this record is used for temporary storage purposes.  it is
+// used in adding, reading and updating temp storage.  later
+// in the application it is used for inserting records to the
+// dorder.vadbuy01 database.
+// ***********************
+Record OS0EW02 type basicRecord
+  10 OS0EWLEN OS0EWLEN ; 
+  10 OS0EW2G OS0EW2G ; 
+    15 OSHRQTID OSHRQTID ; 
+    15 XGPCD XGPCD ; 
+    15 OPJCNDTB OPJCNDTB ; 
+    15 OPJCNDTX OPJCNDTX ; 
+    15 ZZZSDT ZZZSDT ; 
+    15 OS0EWGRP OS0EWGRP [56] ; 
+      20 OS0EWSEL OS0EWSEL ; 
+      20 SY1STNBR SY1STNBR ; 
+      20 SY2CLRID SY2CLRID ; 
+      20 XDMCD XDMCD ; 
+end // end OS0EW02
+
+//*** RECORD=OSHREC ****
+// ***********************  ITEM TABLE  ***********************
+// 
+// DB2 TABLE:           DORDER.Vadbuy01
+// 
+// COPYLIB MEMBER:      dcl00764
+// 
+// I/O MOD:             io4780
+// 
+// KEY TO DB2 TABLE:    request id  - not an index
+// 
+// DATE CREATED:        12/12/89
+// 
+// ***      products for additional production buys record ***
+// 
+// MAINTENANCE LOG:
+// 
+//   DATE    INIT.      COMMENT
+// --------  -----      ---------------------------------------
+// 12-12-89   lcr       INITIAL RECORD CREATION
+// 01/11/91  CHYDE      Incl db2 nm for opshrqtid data itm desc
+// 
+// **********************
+Record OSHREC type basicRecord
+  10 OSHRQTID OSHRQTID ; 
+  10 XGPCD XGPCD ; 
+  10 SY1STNBR SY1STNBR ; 
+  10 SY2CLRID SY2CLRID ; 
+  10 XDMCD XDMCD ; 
+  10 OPJCNDTB OPJCNDTB ; 
+  10 OPJCNDTX OPJCNDTX ; 
+  10 ZZZSDT ZZZSDT ; 
+end // end OSHREC
+
+// group level for oshrec
+DataItem OS0EW2G char(690)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// m020 map subscript
+DataItem OS0EW2MX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// m030 subscript
+DataItem OS0EW3IX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// mmddyy begin date
+DataItem OS0EWBDT char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// general purpose counter
+DataItem OS0EWCNT num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// date ccyymmdd
+DataItem OS0EWDT1 num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// date mmddyy
+DataItem OS0EWDT2 char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// mmddyy ending date
+DataItem OS0EWEDT char(6)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error flag
+DataItem OS0EWEMF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// array group level
+DataItem OS0EWGRP char(12)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// general purpose subscript
+DataItem OS0EWIX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// temp stg length
+DataItem OS0EWLEN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// option number
+DataItem OS0EWOPT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// m030 pf13 delete/insert countr
+DataItem OS0EWP13 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// m020 refresh flag
+DataItem OS0EWP19 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// m010 pf24 delete counter
+DataItem OS0EWP24 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// m030 add new page flag
+DataItem OS0EWPF9 char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// action indicator
+DataItem OS0EWSEL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// current temp stg page
+DataItem OS0EWTSP num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// read temp stg? flag
+DataItem OS0EWTSR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// update temp stg? flag
+DataItem OS0EWTSU char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// update count alpha
+DataItem OS0EWUPA char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// update count numeric
+DataItem OS0EWUPC num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// one space filler
+DataItem OS0EWUPE char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// one space filler
+DataItem OS0EWUPF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// update count message
+DataItem OS0EWUPM char(60)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// update message text
+DataItem OS0EWUPT char(55)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// saved ccyymmdd for zzsdt later
+DataItem OS0EWZSD int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// OP_ADBUY_RQT_ID
+DataItem OSHRQTID char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+
