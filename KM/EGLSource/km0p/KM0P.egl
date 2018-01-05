@@ -1,0 +1,945 @@
+package km0p;
+
+import corpcom2.XX0XW01;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSPF1;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom4.XX0XS01;
+import corpcom5.*;
+import corpcom6.SQLCA;
+import kl.common.KIZTBL;
+import ku.common.KUKREC;
+import ku.common.KUZREC;
+import ta.common.TA1REC;
+//*** PROGRAM=KM0P ****
+// ------------ km0p - company parent maintenence -------------
+// 
+// overview:  this application will perform maintence on the
+//            parent company table.
+// 
+// date written:  4/86
+// author:        dave ply - cap gemini america
+// 
+// 
+// processing:
+//   1. check aid byte for valid entry key. valid keys are:
+//        pa1 - reset menu
+//        pa2 - exit application
+//        pf3 - return to customer master menu (ku0m)
+//        pf4 - return to systems master menu  (mn0m)
+//        enter - continue processing.
+//   2. compare parent id against work parent id.
+//      a. different - read and format parent screen with
+//         new id.  set work id to current id. redisplay.
+//      b. same - edit fields.  continue.
+//   3. check edit results
+//      a. errors - flag flds, set msg, redisplay.
+//      b. no errors - first time, set verify message,
+//         redisplay.  second time, continue.
+//   4. update processing.
+//      a. read parent record. check if interim change.
+//         1) interim change - set msg, redisplay.
+//         2) no interim change - continue.
+//      b. reformat parent record from screen fields.
+//      c. update parent record.
+//      d. set changed message, redisplay.
+// ************************************************************
+//               maintenance history log
+// ------------------------------------------------------------
+//   date     int    description
+// --------   ---   -------------------------------------------
+// 05/20/87   clt   sent correct userid to audit record
+// 11/17/88   jbw   added noncsp opt to calls
+// 11/17/88   jbw   added xssegtr logic
+// 05/16/89   clt   fixed fastpath
+// 09/10/90 dsalzw  added kiztbl for audit trail
+// 05/16/91 dsalzw  changed pf3 to use from appl
+// 05/28/91 dsalzw  removed inquiry security
+// 28 june 1993   dlegg     Add check for numeric value before
+//                          move in km0p001.
+// 12-july-1993          dlegg     Change call to TA0020 with
+//                                 ABND to RETN. KM0P015,020,
+//                                 025.
+// 15-july-1993          dlegg     Add sgrp to initialize
+//                                 records used by appl.
+// 10/01/93 CHELLM  CSP 4.1 Conversion.
+// *Y2KFIX   12/05/97  DKENNY  Y2K MODIFICATIONS MADE TO:
+// *                   KM0PM010, KM0PS03, KM0PS04, KM0PS05
+// *                   and KM0PW01
+// *********************
+Program KM0P type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "CU00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  KM0PW01 KM0PW01; // record
+  KUKREC KUKREC; // record
+  KUZREC KUZREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use KIZTBL {deleteAfterUse = yes}; // table
+  use KM0PM.KM0PM010 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    KM0P001: KM0P001();
+     /* ------------  km0p001 flow ---------------------*/
+    ;
+    ;
+    goto KM0P005; /* to converse parent change map*/
+    KM0P005: KM0P005();
+    ;
+     /* ------------  km0p005 flow ---------------------*/
+    ;
+    if (KM0PW01.KM0PWKEY != 0) /* company entered from menu/fastpath?*/
+      KM0PM010.KUKPCOID = KM0PW01.KM0PWKEY;
+      goto KM0P015;
+    end
+    ;
+    goto KM0P010; /* to converse parent change map*/
+    KM0P010: KM0P010();
+     /* -----------  km0p010 flow -------------------------*/
+    ;
+    if (converseVar.eventKey is pa2)
+      goto KM0P005; /* reset parent screen*/
+    end
+    ;
+     /* check for errors or messages*/
+    if (KM0PM010.VAGen_EZEMSG != " "
+     || KM0PM010.KM0PMMSG != " "
+     || converseVar.validationMsgNum != 0)
+      goto KM0P010; /* errors/msg - redisplay*/
+    end
+    ;
+    if (KM0PW01.KM0PWNR == "X")
+      goto KM0P015; /* new request*/
+    end
+    ;
+    if (converseVar.eventKey is pf12)
+      goto KM0P020; /* update request*/
+    else
+      set KM0PM010.KUKPCOID cursor;
+      KM0PM010.KM0PMMSG = "ENTER PF12 TO CONFIRM UPDATE";
+      goto KM0P010; /* errors/msg - redisplay*/
+    end
+    ;
+    KM0P015: KM0P015();
+     /* ------------  km0p015 flow ---------------------*/
+    ;
+    goto KM0P010; /* to converse parent change map*/
+    KM0P020: KM0P020();
+     /* ------------  km0p020 flow ---------------------*/
+    ;
+    if (KM0PM010.KM0PMMSG != " ") /* error condition exists*/
+      goto KM0P010; /* to converse parent change map*/
+    else
+      goto KM0P025;
+    end
+    ;
+    KM0P025: KM0P025();
+    ;
+     /* ------------  km0p025 flow ---------------------*/
+    ;
+    goto KM0P010; /* to converse parent change map*/
+  end // end main
+end // end KM0P
+
+// init for application
+Function KM0P001()
+    /* -------------  execute process km0p001  --------------*/
+  ;
+  ;
+  XSENTRY(); /* appl entry security*/
+  ;
+  XSSEGTR(); /* set segmented trans id*/
+  ;
+  KM0PS-INIT-RECS();
+  ;
+  KM0PW01.KM0PWUSR = COMMAREA.CAUSERA; /* key from chg menu*/
+  if (COMMAREA.CAITEM != " ")
+    KM0PW01.KM0PWHLD = COMMAREA.CAITEM; /* key from fastpath*/
+    if (KM0PW01.KM0PWHLD is numeric)
+      KM0PW01.KM0PWCID = KM0PW01.KM0PWKEY; /* key from add menu*/
+      /* next sentence*/
+    else
+      KM0PW01.KM0PWHLD = 0;
+    end
+    COMMAREA.CAITEM = " ";
+  else
+    if (KM0PW01.KM0PWCID-CHAR is numeric)
+      KM0PW01.KM0PWKEY = KM0PW01.KM0PWCID; /* key from add menu*/
+    else
+      KM0PW01.KM0PWKEY = 0;
+      KM0PW01.KM0PWCID = 0;
+    end
+  end
+   /* -------------  end process km0p005  --------------------*/
+  ;
+end // end KM0P001
+
+// init for parent
+Function KM0P005()
+    /* -------------  execute process km0p005  --------------*/
+  ;
+  ;
+     /* set map id's, date*/
+  ;
+  set KM0PM010 initial;
+  KM0PM010.KM0PMDT = VGVar.currentShortGregorianDate; /* system date*/
+  ;
+   /* -------------  end process km0p005  --------------------*/
+  ;
+end // end KM0P005
+
+// parent view/upt screen
+Function KM0P010()
+  ;
+   /* ---------------------------------------------------------*/
+    /* before stage: set field security                      **/
+   /* ---------------------------------------------------------*/
+  ;
+    /* secure for change/inquiry*/
+  if (CACLVL[1] == "N")
+    set KM0PM010.KM0PMRMM skip; /* report date*/
+    set KM0PM010.KM0PMRYY skip;
+    set KM0PM010.KM0PMRCM skip; /* callup date*/
+    set KM0PM010.KM0PMRCY skip;
+    set KM0PM010.KUKPCRLN skip; /* credit line*/
+    set KM0PM010.KUKPDAB skip; /* duns number*/
+  end
+  ;
+    /* secure for inquiry*/
+  if (CACLVL[2] == "N")
+    set KM0PM010.KUKPCONM skip; /* parent name*/
+    set KM0PM010.KUKGPNM skip; /* grandparent name*/
+  end
+  ;
+  converse KM0PM010 ;
+  ;
+   /* ---------------------------------------------------------*/
+    /* after stage:  check aid byte, process accordingly     **/
+   /* ---------------------------------------------------------*/
+  ;
+   /* ------------- clear message flds ------------------*/
+  ;
+  KM0PM010.VAGen_EZEMSG = " ";
+  KM0PM010.KM0PMMSG = " ";
+  ;
+   /* --------------- check aid byte ---------------------*/
+  ;
+  ;
+  KM0PS01(); /* check standard entry keys*/
+  ;
+  if (converseVar.validationMsgNum != 0
+   || KM0PM010.VAGen_EZEMSG != " ")
+    exit stack; /* invalid pf*/
+  end
+  ;
+  if (converseVar.eventKey is pf12 /* pf12 - drop thru for upt*/
+   && KM0PW01.KM0PWGED == "X")    
+    exit stack;
+  else
+    if (converseVar.eventKey is pf12) /* pf12 - upt request invalid*/
+      KM0PM010.KM0PMMSG = "YOU MUST PASS THE EDIT BEFORE UPDATE";
+      exit stack;
+    end
+  end
+  ;
+   /* --------   check for fastpath  --------------*/
+  ;
+  if (KM0PM010.KM0PMOPT > " ") /* fastpath request*/
+    if (converseVar.eventKey is enter)
+      COMMAREA.CATOAP = KM0PM010.KM0PMOPT;
+      COMMAREA.CAITEM = KM0PM010.KM0PMITM;
+      XSEXIT(); /* check security/xfer*/
+      KM0PM010.KM0PMMSG = COMMAREA.CAMSG; /* security failed*/
+      COMMAREA.CATOAP = " ";
+      exit stack;
+    else
+      converseLib.validationFailed(90); /* must key enter with fastpath*/
+      exit stack;
+    end
+  end
+  ;
+   /* ---------  check if new id request  --------------*/
+  ;
+  if (KM0PM010.KUKPCOID == 0)
+    KM0PM010.KM0PMMSG = "MUST ENTER VALID PARENT ID";
+    set KM0PM010.KUKPCOID cursor, modified, bold;
+    exit stack;
+  end
+  if (KM0PM010.KUKPCOID == KM0PW01.KM0PWCID)
+    KM0PW01.KM0PWNR = " ";
+  else
+    KM0PW01.KM0PWNR = "X"; /* new request*/
+    exit stack;
+  end
+  ;
+    /* ----------------- edit --------------------------*/
+  ;
+   /* ------- edit fields from upt parent company map ------*/
+  ;
+  ;
+   /* parent company name - input required*/
+  if (KM0PM010.KUKPCONM > " ")
+     /* next sentence*/
+  else
+    KM0PM010.KM0PMMSG = "PARENT COMPANY NAME REQUIRED";
+    set KM0PM010.KUKPCONM cursor, bold;
+  end
+  ;
+  ;
+   /* no input or edit required for:*/
+     /* parent company grandparent name*/
+     /* parent company dunn & bradstreet*/
+  ;
+  KM0PS04(); /* edit call date*/
+  ;
+  KM0PS05(); /* edit rpt date*/
+  ;
+  ;
+     /* ---------------   end of edit  ---------------------*/
+  ;
+     /* ----------  check for clean edit    ------------*/
+  ;
+  if (KM0PM010.KM0PMMSG == " "
+   && converseVar.validationMsgNum == 0
+   && KM0PW01.KM0PWGED == " ")
+    set KM0PM010.KUKPCOID cursor;
+    KM0PW01.KM0PWGED = "X"; /* set good edit flag*/
+    KM0PM010.KM0PMMSG = "GOOD EDIT - PRESS PF12 TO CONFIRM UPDATE";
+  end
+  ;
+    /* -----------   end of process km0p010  ------------*/
+  ;
+end // end KM0P010
+
+// read/fmt parent
+Function KM0P015()
+    /* -------------  execute process km0p015  --------------*/
+  ;
+  KM0PW01.KM0PWGED = " ";
+  ;
+    /* read and format parent data for subsequent update*/
+  ;
+  KUKREC.KUKPCOID = KM0PM010.KUKPCOID; /* set key*/
+  call "IO0030" ("S ", SQLCA, KUKREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 0)
+    set KM0PM010.KUKPCOID initialAttributes;
+    KM0PW01.KM0PWKEY = KM0PM010.KUKPCOID;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      KM0PM010.KM0PMMSG = "PARENT NOT FOUND";
+      set KM0PM010.KUKPCOID cursor, modified, bold;
+      exit stack;
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DCUST";
+      TA1REC.TA1TBLVU = "VPARNT01";
+      TA1REC.TA1MAP = " ";
+      KM0PW01.KM0PWKEY = KUKREC.KUKPCOID;
+      TA1REC.TA1TBLKE = KM0PW01.KM0PWKEY;
+      TA1REC.TA1PGMNM = "KM0P015";
+      TA1REC.TA1LOC = "READING DB2 DCUST.VPARNT01";
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4(); /* return to main menu*/
+    end
+  end
+  ;
+  KM0PS02(); /* format from csp record*/
+  ;
+  KM0PW01.KM0PWCID = KM0PM010.KUKPCOID; /* save current id*/
+  COMMAREA.CAUSERA = KM0PW01.KM0PWUSR;
+  ;
+   /* -------------  end process km0p015  --------------------*/
+  ;
+end // end KM0P015
+
+// read/fmt/before audit
+Function KM0P020()
+    /* -------------  execute process km0p020  --------------*/
+  ;
+    /* convert csp time/date*/
+  XX0XS01();
+  ;
+    /* format for before audit*/
+  ;
+  set KUZREC empty;
+  KUZREC.KUZTYPE = "C"; /* a-add,c-change,d-delete,i-inactivate*/
+  KUZREC.KUZBFCD = "B"; /* blank-add, b-before, a-after*/
+  KUZREC.XXXTBLNM = "VPARNT01";
+  KUZREC.XXXUSER = COMMAREA.CAUSERID;
+  KUZREC.KUCCOID = KUKREC.KUKPCOID;
+  KUZREC.ZZZSDT = XX0XW01.XX0XWDAT;
+  KUZREC.ZZHHMMSS = XX0XW01.XX0XWHMS;
+  KUZREC.KUZDATA = KUKREC.KUKGRP;
+  ;
+  ;
+  if (KUZREC.XXXTBLNM in KIZTBL.XXXTBLNM)
+    KUZREC.KUZSSEQ = KIZTBL.KUZSSEQ[sysVar.arrayIndex];
+    KUZREC.KUZLEN = KIZTBL.KUZLEN[sysVar.arrayIndex];
+  else
+    KUZREC.KUZSSEQ = 0;
+    KUZREC.KUZLEN = 0;
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "POST";
+    TA1REC.TA1PGMNM = "KM0P   ";
+    TA1REC.TA1LOCAT[1] = "KM0P020  ";
+    TA1REC.TA1LOCAT[2] = "KIZTBL   ";
+    TA1REC.TA1LOCAT[3] = "VPARNT01 ";
+    TA1REC.TA1MAP = "KM0PM000";
+    TA1REC.TA1DBASE = "DCUST.";
+    TA1REC.TA1TBLVU = "VPARNT01";
+    TA1TBLKE = "TABLE NOT FOUND";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+  ;
+    /* write before audit*/
+  call "IO0500" ("A ", SQLCA, KUZREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCUAUD01";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1PGMNM = "KM0P020";
+    TA1REC.TA1LOC = "WRITE DB2 DCUST.VCUAUD01";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    XSPF4(); /* return to main menu*/
+  end
+   /* -------------  end process km0p020  --------------------*/
+  ;
+end // end KM0P020
+
+// upt parent/aft audit
+Function KM0P025()
+    /* -------------  execute process km0p025  --------------*/
+  ;
+    /* format change to parent, update parent, write after*/
+     /* audit image.*/
+  ;
+  KM0PS03(); /* format change/after audit*/
+  ;
+    /* update parent*/
+  call "IO0030" ("U ", SQLCA, KUKREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE == 0)
+    KM0PM010.KM0PMMSG = "PARENT UPDATED";
+    KM0PW01.KM0PWGED = " ";
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      converseLib.validationFailed(95); /* parent upt since last ref*/
+      exit stack;
+    else
+      KM0PW01.KM0PWSQL = SQLCA.SQLCAREC; /* hold error sqlca*/
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+       /* syncpoint rollback*/
+      SQLCA.SQLCAREC = KM0PW01.KM0PWSQL;
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1DBASE = "DCUST";
+      TA1REC.TA1TBLVU = "VPARNT01";
+      TA1REC.TA1MAP = " ";
+      KM0PW01.KM0PWKEY = KUKREC.KUKPCOID;
+      TA1REC.TA1TBLKE = KM0PW01.KM0PWKEY;
+      TA1REC.TA1PGMNM = "KM0P025";
+      TA1REC.TA1LOC = "UPDATE DB2 DCUST.VPARNT01";
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4(); /* return to main menu*/
+    end
+  end
+  ;
+    /* write after audit image*/
+  call "IO0500" ("A ", SQLCA, KUZREC) {isNoRefresh = yes, isExternal = yes};
+  if (SQLCA.VAGen_SQLCODE != 0)
+    KM0PW01.KM0PWSQL = SQLCA.SQLCAREC; /* hold error sqlca*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+     /* syncpoint rollback*/
+    SQLCA.SQLCAREC = KM0PW01.KM0PWSQL;
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCUAUD01";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1PGMNM = "KM0P025";
+    TA1REC.TA1LOC = "WRITE DB2 DCUST.VCUAUD01";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    XSPF4(); /* return to main menu*/
+  end
+   /* -------------  end process km0p020  --------------------*/
+  ;
+end // end KM0P025
+
+// Init records
+Function KM0PS-INIT-RECS()
+  /* ************************************************************/
+  /* *            Initialize records used by KM0P*/
+  /* ************************************************************/
+  ;
+  set KUKREC empty;
+  set KUZREC empty;
+  set KM0PW01 empty;
+  set XX0XW01 empty;
+  set SQLCA empty;
+  set TA1REC empty;
+  KM0PW01.KM0PWCID = 0;
+  KM0PW01.KM0PWKEY = 0;
+end // end KM0PS-INIT-RECS
+
+// check standard entry keys
+Function KM0PS01()
+  ;
+    /* ---------- start stmt grp km0ps01 -----------------*/
+  ;
+    /* statement group km0ps01 - check valid entry key,*/
+       /* do menu transfers if requested*/
+  ;
+  ;
+  if (converseVar.eventKey is enter) /* enter - return to process*/
+    return;
+  else
+    if (converseVar.eventKey is pa2) /* pa2 - refresh screen*/
+      exit stack;
+    else
+      if (converseVar.eventKey is pf1) /* pf1 - help (not yet active)*/
+        XSPF1();
+        VAGen_EZEMSG = COMMAREA.CAMSG;
+        return;
+      else
+        if (converseVar.eventKey is pf12) /* pf12 - confirm upt*/
+          return;
+        else
+          if (converseVar.eventKey is pf3) /* pf3 - return to customer menu*/
+            COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+            XSEXIT(); /* verify application and transfer*/
+            COMMAREA.CATOAP = " "; /* ka0m not valid - reset*/
+            VAGen_EZEMSG = COMMAREA.CAMSG;
+            exit stack;
+          else
+            if (converseVar.eventKey is pf4) /* pf4 - return to main menu*/
+              XSPF4();
+              VAGen_EZEMSG = COMMAREA.CAMSG;
+              COMMAREA.CATOAP = " "; /* menu appl invalid*/
+              exit stack;
+            else
+              converseLib.validationFailed(3); /* invalid pf key*/
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+    /* -----------   end of stmt grp km0ps01  ------------*/
+  ;
+  ;
+end // end KM0PS01
+
+// format parent map from kukrec
+Function KM0PS02()
+  ;
+    /* ------  start stmt grp km0ps02  -----------------------*/
+  ;
+    /* format map from kukrec*/
+  KM0PM010.KUKPCOID = KUKREC.KUKPCOID;
+  KM0PM010.KUKPCONM = KUKREC.KUKPCONM;
+  KM0PM010.KUKPCRLN = KUKREC.KUKPCRLN;
+  KM0PM010.KUKPDAB = KUKREC.KUKPDAB;
+  KM0PM010.KUKGPNM = KUKREC.KUKGPNM;
+  KM0PW01.KM0PWDAT = KUKREC.KUKARRDT;
+  KM0PM010.KM0PMRYY = KM0PW01.KM0PWYY;
+  KM0PM010.KM0PMRMM = KM0PW01.KM0PWMM;
+  KM0PW01.KM0PWDAT = KUKREC.KUKCALDT;
+  KM0PM010.KM0PMRCY = KM0PW01.KM0PWYY;
+  KM0PM010.KM0PMRCM = KM0PW01.KM0PWMM;
+  ;
+    /* ------  end stmt grp km0ps02  -----------------------*/
+  ;
+end // end KM0PS02
+
+// fmt kukrec from map/aft audit
+Function KM0PS03()
+    /* ------------- start stmt grp km0ps03  --------------*/
+  ;
+    /* format kukrec from map*/
+  KUKREC.KUKPCONM = KM0PM010.KUKPCONM;
+  KUKREC.KUKPCRLN = KM0PM010.KUKPCRLN;
+  KUKREC.KUKPDAB = KM0PM010.KUKPDAB;
+  KUKREC.KUKGPNM = KM0PM010.KUKGPNM;
+  ;
+  /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+  /*  */
+  /* MOVE 19 TO KM0PW01.KM0PW19;*/
+  /*  */
+  /* ------------------------  Y2K OUT END  -------------------------*/
+  ;
+  /* -----------------------  Y2K IN BEGIN  -------------------------*/
+  /*  */
+  if (KM0PM010.KM0PMRMM > 0)
+    if (KM0PM010.KM0PMRYY > 60)
+      KM0PW01.KM0PW19 = 19;
+    else
+      KM0PW01.KM0PW19 = 20;
+    end
+  else
+    KM0PW01.KM0PW19 = 0;
+  end
+  /*  */
+  /* ------------------------  Y2K IN END  --------------------------*/
+  ;
+  KM0PW01.KM0PWDD = 00;
+  KM0PW01.KM0PWYY = KM0PM010.KM0PMRYY;
+  KM0PW01.KM0PWMM = KM0PM010.KM0PMRMM;
+  KUKREC.KUKARRDT = KM0PW01.KM0PWDAT;
+  ;
+  /* -----------------------  Y2K IN BEGIN  -------------------------*/
+  /*  */
+  if (KM0PM010.KM0PMRCM > 0)
+    if (KM0PM010.KM0PMRCY > 60)
+      KM0PW01.KM0PW19 = 19;
+    else
+      KM0PW01.KM0PW19 = 20;
+    end
+  else
+    KM0PW01.KM0PW19 = 0;
+  end
+  /*  */
+  /* ------------------------  Y2K IN END  --------------------------*/
+  ;
+  KM0PW01.KM0PWYY = KM0PM010.KM0PMRCY;
+  KM0PW01.KM0PWMM = KM0PM010.KM0PMRCM;
+  KUKREC.KUKCALDT = KM0PW01.KM0PWDAT;
+  KUKREC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  KUKREC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+  ;
+  ;
+    /* format audit recorD - after*/
+  ;
+  set KUZREC empty;
+  KUZREC.KUZTYPE = "C"; /* a-add,c-change,d-delete,i-inactivate*/
+  KUZREC.KUZBFCD = "A"; /* blank-add, b-before, a-after*/
+  KUZREC.XXXTBLNM = "VPARNT01";
+  KUZREC.XXXUSER = COMMAREA.CAUSERID;
+  KUZREC.KUCCOID = KUKREC.KUKPCOID;
+  KUZREC.ZZZSDT = XX0XW01.XX0XWDAT;
+  KUZREC.ZZHHMMSS = XX0XW01.XX0XWHMS;
+  KUZREC.KUZDATA = KUKREC.KUKGRP;
+  ;
+  ;
+  if (KUZREC.XXXTBLNM in KIZTBL.XXXTBLNM)
+    KUZREC.KUZSSEQ = KIZTBL.KUZSSEQ[sysVar.arrayIndex];
+    KUZREC.KUZLEN = KIZTBL.KUZLEN[sysVar.arrayIndex];
+  else
+    KUZREC.KUZSSEQ = 0;
+    KUZREC.KUZLEN = 0;
+    TA1REC.TA1TYPE = "APPL";
+    TA1REC.TA1FUNC = "POST";
+    TA1REC.TA1PGMNM = "KM0P   ";
+    TA1REC.TA1LOCAT[1] = "KM0PS03  ";
+    TA1REC.TA1LOCAT[2] = "KIZTBL   ";
+    TA1REC.TA1LOCAT[3] = "VPARNT01 ";
+    TA1REC.TA1MAP = "KM0PM000";
+    TA1REC.TA1DBASE = "DCUST.";
+    TA1REC.TA1TBLVU = "VPARNT01";
+    TA1TBLKE = "TABLE NOT FOUND";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+   /* -------------  end stmt grp km0ps03  --------------------*/
+  ;
+end // end KM0PS03
+
+// edit call date
+Function KM0PS04()
+    /* ---------- start stmt grp km0ps04 -----------------*/
+  ;
+   /* check rpt call date*/
+  set KM0PM010.KM0PMRCY initialAttributes;
+  set KM0PM010.KM0PMRCM initialAttributes;
+  if (KM0PM010.KM0PMRCM > 0
+  )
+  /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+  /*  */
+  /* OR KM0PM010.KM0PMRCY GT 0;*/
+  /* ;*/
+  /* IF KM0PM010.KM0PMRCY GT 0;*/
+  /* ;/* next sentence*/
+  /* ELSE;*/
+  /* MOVE 'CALLUP YEAR REQUIRED' TO KM0PM010.KM0PMMSG;*/
+  /* SET KM0PM010.KM0PMRCY CURSOR,MODIFIED,BRIGHT;*/
+  /* END;*/
+  /*  */
+  /* ------------------------  Y2K OUT END  -------------------------*/
+    ;
+    if (KM0PM010.KM0PMRCM >= 1
+     && KM0PM010.KM0PMRCM <= 12)
+      /* next sentence*/
+    else
+      KM0PM010.KM0PMMSG = "CALLUP MONTH OUT OF RANGE";
+      set KM0PM010.KM0PMRCM cursor, modified, bold;
+    end
+  end
+  ;
+  ;
+    /* -----------   end of stmt grp km0ps04  ------------*/
+end // end KM0PS04
+
+// edit rpt date
+Function KM0PS05()
+    /* ---------- start stmt grp km0ps05 -----------------*/
+  ;
+   /* parent rpt month*/
+      /* not required, must be 1-12 if present*/
+  set KM0PM010.KM0PMRYY initialAttributes;
+  set KM0PM010.KM0PMRMM initialAttributes;
+  if (KM0PM010.KM0PMRMM > 0
+  )
+  /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+  /*  */
+  /* OR KM0PM010.KM0PMRYY GT 0;*/
+  /* ;*/
+  /* IF KM0PM010.KM0PMRYY GT 0;*/
+  /* ;/* next sentence*/
+  /* ELSE;*/
+  /* MOVE 'REPORT YEAR REQUIRED' TO KM0PM010.KM0PMMSG;*/
+  /* SET KM0PM010.KM0PMRYY CURSOR,MODIFIED,BRIGHT;*/
+  /* END;*/
+  /*  */
+  /* ------------------------  Y2K OUT END  -------------------------*/
+    ;
+    if (KM0PM010.KM0PMRMM >= 1
+     && KM0PM010.KM0PMRMM <= 12)
+      /* next sentence*/
+    else
+      KM0PM010.KM0PMMSG = "REPORT MONTH OUT OF RANGE";
+      set KM0PM010.KM0PMRMM cursor, modified, bold;
+    end
+    ;
+    if (KM0PM010.KM0PMMSG != " ")
+      return;
+    end
+    ;
+  /* -----------------------  Y2K OUT BEGIN  ------------------------*/
+  /*  */
+  /* IF KM0PM010.KM0PMRYY GT KM0PM010.KM0PMRCY;*/
+  /* MOVE 'REPORT DATE MUST BE < CALL DATE' TO KM0PM010.KM0PMMSG;*/
+  /* SET KM0PM010.KM0PMRYY MODIFIED,BRIGHT;*/
+  /* SET KM0PM010.KM0PMRMM CURSOR,MODIFIED,BRIGHT;*/
+  /* ELSE;*/
+  /* IF KM0PM010.KM0PMRYY EQ KM0PM010.KM0PMRCY*/
+  /* AND KM0PM010.KM0PMRMM GE KM0PM010.KM0PMRCM;*/
+  /* MOVE 'REPORT DATE MUST BE < CALL DATE' TO KM0PM010.KM0PMMSG;*/
+  /* SET KM0PM010.KM0PMRYY MODIFIED,BRIGHT;*/
+  /* SET KM0PM010.KM0PMRMM CURSOR,MODIFIED,BRIGHT;*/
+  /* END;*/
+  /*  */
+  /* ------------------------  Y2K OUT END  -------------------------*/
+    ;
+  /* -----------------------  Y2K IN BEGIN  -------------------------*/
+  /*  */
+    if (KM0PM010.KM0PMRCM > 0)
+      KM0PW01.KM0PWYY = KM0PM010.KM0PMRYY;
+      KM0PW01.KM0PWMM = KM0PM010.KM0PMRMM;
+      KM0PW01.KM0PWDD = 0;
+      if (KM0PM010.KM0PMRYY > 60)
+        KM0PW01.KM0PW19 = 19;
+      else
+        KM0PW01.KM0PW19 = 20;
+      end
+      KM0PW01.KM0PW-RPT-DATE = KM0PW01.KM0PWDAT;
+      KM0PW01.KM0PWYY = KM0PM010.KM0PMRCY;
+      KM0PW01.KM0PWMM = KM0PM010.KM0PMRCM;
+      if (KM0PM010.KM0PMRCY > 60)
+        KM0PW01.KM0PW19 = 19;
+      else
+        KM0PW01.KM0PW19 = 20;
+      end
+      KM0PW01.KM0PW-RPT-CALUP-DATE = KM0PW01.KM0PWDAT;
+      if (KM0PW01.KM0PW-RPT-DATE >= KM0PW01.KM0PW-RPT-CALUP-DATE)
+        KM0PM010.KM0PMMSG = "REPORT DATE MUST BE < CALL DATE";
+        set KM0PM010.KM0PMRYY modified, bold;
+        set KM0PM010.KM0PMRMM cursor, modified, bold;
+      end
+  /*  */
+  /* ------------------------  Y2K IN END  --------------------------*/
+      ;
+    end
+    ;
+  end
+  ;
+    /* -----------   end of stmt grp km0ps05  ------------*/
+end // end KM0PS05
+
+//*** RECORD=KM0PW01 ****
+// this is a work record, used entirely within km0p.
+// ************************************************************
+// *              Maintenance Log
+// ***********************************************************
+// *
+// *  28 june 1993      dlegg   Add redefintion of numeric
+// *                            fields to avoid data exception
+// *                            in CSP v.4.
+// *Y2KFIX   12/05/97  DKENNY  Y2K MODIFICATIONS MADE:
+// *                   Added elements KM0PW-RPT-DATE and
+// *                   KM0PW-RPT-CALUP-DATE for date editing.
+// ***********************
+Record KM0PW01 type basicRecord
+  10 KM0PWGED KM0PWGED ; 
+  10 KM0PWCNT KM0PWCNT ; 
+  10 KM0PWNR KM0PWNR ; 
+  10 KM0PWDAT KM0PWDAT ; 
+    15 * num(1) ; 
+    15 KM0PW19 KM0PW19 ; 
+    15 KM0PWYY KM0PWYY ; 
+    15 KM0PWMM KM0PWMM ; 
+    15 KM0PWDD KM0PWDD ; 
+  10 KM0PWHLD KM0PWHLD ; 
+    15 KM0PWKEY KM0PWKEY ; 
+  10 KM0PWSQL KM0PWSQL ; 
+  10 KM0PWUSR KM0PWUSR ; 
+    15 KM0PWCID KM0PWCID ; 
+      20 KM0PWCID-CHAR KM0PWCID-CHAR ; 
+    15 * char(8) ; 
+  10 KM0PW-RPT-DATE KM0PW-RPT-DATE ; 
+  10 KM0PW-RPT-CALUP-DATE KM0PW-RPT-CALUP-DATE ; 
+end // end KM0PW01
+
+// report callup date
+DataItem KM0PW-RPT-CALUP-DATE num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// report date
+DataItem KM0PW-RPT-DATE num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   century
+DataItem KM0PW19 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   company
+DataItem KM0PWCID num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   company redefined
+DataItem KM0PWCID-CHAR char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work change count
+DataItem KM0PWCNT num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work date field
+DataItem KM0PWDAT num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   day
+DataItem KM0PWDD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work good edit flag
+DataItem KM0PWGED char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hold key
+DataItem KM0PWHLD char(7)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// work key field
+DataItem KM0PWKEY num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   month
+DataItem KM0PWMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// work new request flag
+DataItem KM0PWNR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hold area for sqlca
+DataItem KM0PWSQL char(136)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// reformat for causera
+DataItem KM0PWUSR char(15)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   year
+DataItem KM0PWYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

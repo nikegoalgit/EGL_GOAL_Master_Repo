@@ -1,0 +1,663 @@
+package oc0f;
+
+import corpcom3.XS0ASDP;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import ku.common.KUMREC;
+import ob.common.OB1REC;
+import ob.common.OB8REC;
+import ob.common.OBFREC;
+import oc.common.*;
+import op.common.OP1PARTN;
+import op.common.OP1REC;
+import ta.common.TA1REC;
+import ta.common.TAEREC;
+//*** PROGRAM=OC0F ****
+// APPLICATION OVERVIEW:
+// 
+//      Called CSP module to update the OCWREC with passed
+//      order information.  This module is called when the
+//      order number is changed on the screen.
+// 
+//   ** If any fields are added to the ocwrec, be sure to
+//      initialize them in OC0FS01
+// 
+// **********************************************************
+//              M A I N T E N A N C E   L O G
+// **********************************************************
+//   DATE      NAME    DESCRIPTION OF CHANGE
+// --------   ------   ----------------------------------------
+// 04/30/91   skott    Created
+// 09/11/91   schase   added check for airspeed batch edit
+//                     running that would make dordb.vobhdr01
+//                     unavailable. added s05, modified s20.
+// 01/03/92   trober   Re-key enhancement.  Pick up XDVCD,
+//                     XBDCD, and OP-SND-CNFM-FL from order.
+//                     s01, s30, s32.
+// 02/09/92   bbake2   log#820 - sort of an emergency fix to
+//                     store division and gpc for shipped ords
+//                     in ocwrec, which prevents oc5150 from
+//                     blowing up when it goes to look for a
+//                     product when searching for a buyer.
+//                     This is kind of hokey, since we should
+//                     not even have any unsent letters on
+//                     a shipped order, but it is the fastest
+//                     thing I can think of. s11
+// 08/31/93   clenni   csp 4.1 conversion, initialized ocwcoid
+//                     ocwstrid, and ocwxnxcd to zeroes in the
+//                     ocwrec working storage area.
+// 01/24/94   gcalki   log#1002 - added code to handle orders
+//                     with a canceled status. s11, s30 ocwrec.
+// 
+// *********************
+Program OC0F type textUIProgram //VAGen Info - called text program
+  (
+   OCWREC OCWREC // record
+  )
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OC00"
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA { initialized = yes }; // record
+  ERRSQLCA ERRSQLCA; // record
+  KUMREC KUMREC; // record
+  OB1REC OB1REC; // record
+  OB8REC OB8REC; // record
+  OBFREC OBFREC; // record
+  OC0FW01 OC0FW01; // record
+  OP1REC OP1REC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TAEREC TAEREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  //  use  OC0MM // VAGen Info - unused formGroup    {
+  //    pfKeyEquate = no
+  //  };
+  
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OC0F000: OC0F000();
+    exit program; /* terminate OC0F, return to calling*/
+                                     /* prgm*/
+  end // end main
+end // end OC0F
+
+// ORDER NUMBER CHANGE SUBPGM
+Function OC0F000()
+     /* Security has been checked in calling program*/
+  ;
+  ;
+     /* initialize application - init records, OCWREC fields*/
+  OC0FS01();
+  ;
+     /* look for order information on OP*/
+  OC0FS10();
+  ;
+     /* look for order information on OB*/
+  if (OCWREC.OCWRTNCD == "01") /* still ok*/
+    OC0FS05(); /* check if batch edit is running*/
+    if (OCWREC.OCWRTNCD == "01") /* still ok*/
+      OC0FS20(); /* check 'ob' database*/
+    end
+  end
+  ;
+     /* format order number for ocwrec for all cases*/
+  OC0FS22();
+  ;
+  ;
+     /* load OCWREC with new order data*/
+  if (OCWREC.OCWRTNCD == "01") /* still ok*/
+    if (OCWREC.OCWSYSID == "OP" /* order was found on OP*/
+     || OCWREC.OCWSYSID == "PL") /* found on OP and OB*/
+      OC0FS30(); /* load OCWREC from OP*/
+    else
+      if (OCWREC.OCWSYSID == "OB") /* order was found on Ob*/
+        OC0FS32(); /* load OCWREC from OB*/
+      else
+        OCWREC.OCWRTNCD = "02"; /* tell calling prgm*/
+      end
+    end
+  end
+  ;
+end // end OC0F000
+// initialize
+Function OC0FS01()
+  ;
+    /* SET RECORDS EMPTY*/
+  ;
+  set OB1REC empty;
+  set OB8REC empty;
+  set OBFREC empty;
+  set OP1REC empty;
+  set KUMREC empty;
+  set ERRSQLCA empty;
+  set SQLCA empty;
+  set TAEREC empty;
+  set TA1REC empty;
+  set OC0FW01 empty;
+  ;
+  ;
+    /* init OCWREC fields for order information*/
+  OCWREC.OP1PARTN = " "; /* part char*/
+  OCWREC.OP1CUPO = " "; /* po nbr*/
+  OCWREC.KUMSTRNM = " "; /* store name*/
+  OCWREC.XGPCD = " "; /* gpc*/
+  OCWREC.OCWCUST = " "; /* formatted customer nbr*/
+  OCWREC.XOTCD = " "; /* system order type*/
+  OCWREC.OP1ORDBY = " "; /* ordered by*/
+  OCWREC.SM1AGYID = " "; /* agency*/
+  OCWREC.XDTCD = " "; /* discrepancy code*/
+  OCWREC.OCWINIFL = " "; /* initial mailing flag*/
+  OCWREC.XSOCD = " "; /* sales office*/
+  OCWREC.XDVCD = " "; /* init division code*/
+  OCWREC.XBDCD = " "; /* init bulk draw code*/
+  OCWREC.OP-SND-CNFM-FL = " "; /* init send cnfm flag*/
+  ;
+  OCWREC.OP1CUOID = 0; /* customer order number*/
+  OCWREC.OCWCOID = 0; /* current company*/
+  OCWREC.OCWSTRID = 0; /* current store*/
+  OCWREC.OCWXNXCD = 0; /* current department*/
+  OCWREC.OP1ENTDT = 0; /* entered dt*/
+  OCWREC.OC1SNDDT = 0; /* sched send dt*/
+  OCWREC.SM4REPID = 0; /* rep id*/
+  OCWREC.OP1CUNDT = 0; /* need date*/
+  OCWREC.OCWOVALU = 0; /* order value - all subs*/
+  OCWREC.OCWOTUNT = 0; /* order total units - all subs*/
+  OCWREC.OCWCULTR = 0; /* current letter number*/
+  OCWREC.OCWCPG = 0; /* current page for oc0b*/
+  ;
+  OC0FW01.OC0FWSUB = 1;
+  while (OC0FW01.OC0FWSUB <= 15)
+    OCWREC.OCWSELCD[OC0FWSUB] = " "; /* select code*/
+    OCWREC.OC1LTRNB[OC0FWSUB] = 0; /* letter number*/
+    OCWREC.OC4DSCPN[OC0FWSUB] = 0; /* dscrp  number*/
+    OC0FW01.OC0FWSUB = OC0FW01.OC0FWSUB + 1;
+  end
+  ;
+  OCWREC.OCWSYSID = "NO"; /* init to 'order not found'*/
+  ;
+  OCWREC.OCWRTNCD = "01"; /* show that we made it to OC0F*/
+  ;
+  OC0FW01.OC0FWOID = OCWREC.OCWCUOID; /* get part char*/
+  ;
+end // end OC0FS01
+
+// see if batch edit is running
+Function OC0FS05()
+  ;
+   /* see if batch edit program is running*/
+   /* if it is then issue message and DXFR to OC0A*/
+  ;
+  ;
+  set OB8REC empty;
+  set SQLCA empty;
+  ;
+  OB8REC.XXXPGMNO = "OB1050";
+  ;
+  call "IO5220" ("S ", SQLCA, OB8REC) {isNoRefresh = yes, isExternal = yes}; /* i/o mod-select scan*/
+  ;
+   /* check db2 return code*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* check for good rc*/
+    if (OB8REC.OP1PARTN == "Y")
+      OCWREC.OCWRTNCD = "05"; /* *//* database is busy return code*/
+    else
+       /* everything is ok*/
+    end
+  else
+    TA1REC.TA1LOCAT[1] = "OC0FS05"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO5220"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "S "; /* transaction*/
+    TA1REC.TA1TBLKE = OB8REC.XXXPGMNO; /* table key*/
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VOBPGM01"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      XS0ASDP();
+      OCWREC.OCWRTNCD = "03"; /* passed return code to calling appl*/
+    else
+      OC0FS90(); /* abort routine - no reset done*/
+    end
+  end
+  ;
+  ;
+end // end OC0FS05
+
+// select OP database records
+Function OC0FS10()
+     /* ****   SELECT HDR on OP DATABASE              ******/
+  ;
+  OP1REC.OP1CUOID = OCWREC.OCWCUOID; /* op-cust-ord-id*/
+  OP1REC.OP1PARTN = OC0FW01.OP1PARTN; /* op-ord-part-char*/
+  ;
+  call "IO0430" ("SS", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0FS10"; /* transaction*/
+    TA1REC.TA1LOCAT[2] = "IO0430"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "SS"; /* stmt group*/
+    TA1REC.TA1LOCAT[4] = OC0FW01.OP1PARTN; /* part char*/
+    TA1REC.TA1TBLKE = OCWREC.OCWCUOID; /* order nbr*/
+    TA1REC.TA1DBASE = "DORDER"; /* database name*/
+    TA1REC.TA1TBLVU = "VORHDR01"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      XS0ASDP();
+      OCWREC.OCWRTNCD = "03"; /* passed return code*/
+    else /* all other codes - abort*/
+      OC0FS90();
+    end
+    return;
+  end
+  ;
+  ;
+  while (SQLCA.VAGen_SQLCODE == 0 /* while return code is good*/
+   && OCWREC.OCWSYSID == "NO") /* stop when good header found*/
+    OC0FS11(); /* fetch headers*/
+  end
+  ;
+          /* close set*/
+  OC0FS13();
+  ;
+end // end OC0FS10
+
+// fetch header records on op
+Function OC0FS11()
+     /* ****   SELECT HDR on OP DATABASE              ******/
+  ;
+  ;
+  call "IO0430" ("SN", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* header not found on OP*/
+      return; /* try for OB header*/
+    else
+      TA1REC.TA1LOCAT[1] = "OC0FS11"; /* stmt group*/
+      TA1REC.TA1LOCAT[2] = "IO0430"; /* i/o mod*/
+      TA1REC.TA1LOCAT[3] = "SN"; /* transaction*/
+      TA1REC.TA1LOCAT[4] = OC0FW01.OP1PARTN; /* part char*/
+      TA1REC.TA1TBLKE = OCWREC.OCWCUOID; /* order nbr*/
+      TA1REC.TA1DBASE = "DORDER"; /* database name*/
+      TA1REC.TA1TBLVU = "VORHDR01"; /* database view name*/
+      if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+        XS0ASDP();
+        OCWREC.OCWRTNCD = "03"; /* passed return to calling*/
+      else /* all other codes - abort*/
+        OC0FS90();
+      end
+      return;
+    end
+  end
+  ;
+  ;
+  if (OP1REC.XOSCD == "SH" /* shipped status*/
+   || OP1REC.XOSCD == "IP") /* in process status*/
+    OCWREC.XGPCD = OP1REC.XGPCD; /* this prevents buyer find from*/
+    OCWREC.XDVCD = OP1REC.XDVCD; /* blowing up on unsent letters for*/
+                                      /* shipped orders*/
+  else
+    OCWREC.OCWSYSID = "OP";
+  end
+  ;
+end // end OC0FS11
+
+// close OP selection set
+Function OC0FS13()
+     /* ****   CLOSE OP SELECTION SET                 ******/
+  ;
+  call "IO0430" ("CS", SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0FS13"; /* transaction*/
+    TA1REC.TA1LOCAT[2] = "IO0430"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "CS"; /* stmt group*/
+    TA1REC.TA1LOCAT[4] = OC0FW01.OP1PARTN; /* part char*/
+    TA1REC.TA1TBLKE = OCWREC.OCWCUOID; /* order nbr*/
+    TA1REC.TA1DBASE = "DORDER"; /* database name*/
+    TA1REC.TA1TBLVU = "VORHDR01"; /* database view name*/
+    XS0ASDP();
+  end
+  ;
+end // end OC0FS13
+
+// select OB records
+Function OC0FS20()
+     /* ****   SELECT HDR on OB DATABASE              ******/
+  ;
+  OB1REC.OP1CUOID = OCWREC.OCWCUOID; /* op-cust-ord-id*/
+  OB1REC.OP1PARTN = OC0FW01.OP1PARTN; /* op-ord-part-char*/
+  ;
+  OBFREC.OBFTASK = "S5";
+  ;
+  call "IO5160" (OBFREC, SQLCA, OB1REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0FS20"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO5160"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "S5"; /* transaction*/
+    TA1REC.TA1LOCAT[4] = OC0FW01.OP1PARTN; /* part char*/
+    TA1REC.TA1TBLKE = OCWREC.OCWCUOID; /* order nbr*/
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VOBHDR01"; /* database view name*/
+    if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+      XS0ASDP();
+      OCWREC.OCWRTNCD = "03"; /* passed return code to calling appl*/
+    else /* all other codes - abort*/
+      OC0FS90();
+    end
+    return;
+  end
+  ;
+  ;
+  while (SQLCA.VAGen_SQLCODE == 0 /* while return code is good*/
+   && OCWREC.OCWSYSID != "PL"  /* stop when good header found*/
+   && OCWREC.OCWSYSID != "OB") /* stop when good header found*/
+    OC0FS21(); /* fetch headers*/
+  end
+  ;
+      /* close cursor*/
+  OC0FS23();
+  ;
+end // end OC0FS20
+
+// fetch OB records
+Function OC0FS21()
+     /* ****   SELECT HDR on OB DATABASE              ******/
+  ;
+  OBFREC.OBFTASK = "N5";
+  ;
+  call "IO5160" (OBFREC, SQLCA, OB1REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      return;
+    else
+      TA1REC.TA1LOCAT[1] = "OC0FS21"; /* stmt group*/
+      TA1REC.TA1LOCAT[2] = "IO5160"; /* i/o mod*/
+      TA1REC.TA1LOCAT[3] = "N5"; /* transaction*/
+      TA1REC.TA1LOCAT[4] = OC0FW01.OP1PARTN; /* part char*/
+      TA1REC.TA1TBLKE = OCWREC.OCWCUOID; /* order nbr*/
+      TA1REC.TA1DBASE = "DORDB"; /* database name*/
+      TA1REC.TA1TBLVU = "VOBHDR01"; /* database view name*/
+      if (SQLCA.VAGen_SQLCODE == -911) /* timed out*/
+        XS0ASDP();
+        OCWREC.OCWRTNCD = "03"; /* passed to calling appl*/
+      else /* all other codes - abort*/
+        OC0FS90();
+      end
+      return;
+    end
+  end
+  ;
+  ;
+  ;
+  if (OB1REC.YOBCD == "DL" /* delete status*/
+   || OB1REC.YOBCD == "XL") /* cancelled*/
+    /* next sentence   ; try another suborder*/
+  else
+    if (OCWREC.OCWSYSID == "OP") /* if on OP*/
+      OCWREC.OCWSYSID = "PL"; /* partially loaded*/
+    else
+      OCWREC.OCWSYSID = "OB"; /* OB database only*/
+    end
+  end
+  ;
+end // end OC0FS21
+
+// format order number
+Function OC0FS22()
+  ;
+  OCWREC.OP1CUOID = OCWREC.OCWCUOID;
+                                   /* move order number to bin field*/
+  OCWREC.OP1PARTN = OC0FW01.OP1PARTN; /* part char*/
+  ;
+  OC0FW01.OC0FWFLD = OCWREC.OCWCUOID;
+                                   /* move order number to work fld*/
+  ;
+     /* remove leading zeros from order number to display*/
+  OC0FS25();
+  ;
+  OCWREC.OCWCUOID = OC0FW01.OC0FWFLD; /* move work fld to ord*/
+  ;
+end // end OC0FS22
+
+// close  OB records
+Function OC0FS23()
+     /* ****   CLOSE OB SELECTION SET                 ******/
+  ;
+  OBFREC.OBFTASK = "C5"; /* close*/
+  ;
+  call "IO5160" (OBFREC, SQLCA, OP1REC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1LOCAT[1] = "OC0FS23"; /* stmt group*/
+    TA1REC.TA1LOCAT[2] = "IO5160"; /* i/o mod*/
+    TA1REC.TA1LOCAT[3] = "C5"; /* transaction*/
+    TA1REC.TA1LOCAT[4] = OC0FW01.OP1PARTN; /* part char*/
+    TA1REC.TA1TBLKE = OCWREC.OCWCUOID; /* order nbr*/
+    TA1REC.TA1DBASE = "DORDB"; /* database name*/
+    TA1REC.TA1TBLVU = "VOBHDR01"; /* database view name*/
+    XS0ASDP();
+  end
+  ;
+end // end OC0FS23
+
+// remove leading zeroes
+Function OC0FS25()
+  ;
+   /* ** remove leading zeroes from order number and customer nbr*/
+  ;
+  OC0FW01.OC0FWSUB = 1; /* init sub*/
+  ;
+  while (OC0FW01.OC0FWSUB <= 16 /* end of nbr*/
+   && OC0FW01.OC0FWDGT[OC0FWSUB] == "0") /* digits still = 0*/
+    if (OC0FW01.OC0FWDGT[OC0FWSUB] == "0")
+      OC0FW01.OC0FWDGT[OC0FWSUB] = " "; /* suppress 0*/
+    end
+    OC0FW01.OC0FWSUB = OC0FW01.OC0FWSUB + 1;
+  end
+  ;
+  ;
+end // end OC0FS25
+// load OCWREC from op
+Function OC0FS30()
+               /* ****  load OCWREC from OP1REC    ******/
+  ;
+  OCWREC.OP1CUPO = OP1REC.OP1CUPO; /* po nbr*/
+  OCWREC.XGPCD = OP1REC.XGPCD; /* gpc*/
+  OCWREC.XOTCD = OP1REC.XOTCD; /* system order type*/
+  OCWREC.OP1ENTDT = OP1REC.OP1ENTDT; /* entered dt*/
+  OCWREC.OP1ORDBY = OP1REC.OP1ORDBY; /* ordered by*/
+  OCWREC.SM1AGYID = OP1REC.SM1AGYID; /* agency*/
+  OCWREC.SM4REPID = OP1REC.SM4REPID; /* rep*/
+  OCWREC.OP1CUNDT = OP1REC.OP1CUNDT; /* need date*/
+  ;
+  OCWREC.OCWCOID = OP1REC.KUCCOID; /* company*/
+  OCWREC.OCWSTRID = OP1REC.KUMSTRID; /* store id*/
+  OCWREC.OCWXNXCD = OP1REC.XNXCD; /* dept cd*/
+  OCWREC.XSOCD = OP1REC.XSOCD; /* sales office id*/
+  OCWREC.XDVCD = OP1REC.XDVCD; /* divison code*/
+  OCWREC.XBDCD = OP1REC.XBDCD; /* bulk draw code*/
+  OCWREC.XOSCD = OP1REC.XOSCD; /* order status code*/
+  OCWREC.OP-SND-CNFM-FL = OP1REC.OP-SND-CNFM-FL; /* send cnfm flag*/
+  OCWREC.OCWFILL2 = ".";
+  OCWREC.OCWFILL3 = ".";
+  ;
+  OC0FW01.OC0FWFLD = OCWREC.OCWCUST; /* move cust for reformatting*/
+  OC0FS25(); /* remove leading zeroes*/
+  OCWREC.OCWCUST = OC0FW01.OC0FWFLD; /* formatted cust number*/
+  ;
+  KUMREC.KUCCOID = OP1REC.KUCCOID; /* company*/
+  KUMREC.KUMSTRID = OP1REC.KUMSTRID; /* store id*/
+  ;
+  OC0FS31(); /* get store name*/
+  ;
+  ;
+end // end OC0FS30
+
+// get store name
+Function OC0FS31()
+               /* ****  read cust DB for store name  *****/
+  ;
+  ;
+  call "IO0340" ("S ", SQLCA, KUMREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* call was good*/
+    OCWREC.KUMSTRNM = KUMREC.KUMSTRNM; /* store name*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* cust not found*/
+      OCWREC.KUMSTRNM = "UNKNOWN";
+    else
+      OCWREC.KUMSTRNM = "UNDETERMINED";
+    end
+  end
+  ;
+  ;
+  ;
+end // end OC0FS31
+// load OCWREC from OB
+Function OC0FS32()
+           /* ****   load ocwrec from OB1REC   ****/
+  ;
+  ;
+  OCWREC.OP1CUPO = OB1REC.OP1CUPO; /* po nbr*/
+  OCWREC.XGPCD = OB1REC.XGPCD; /* gpc*/
+  OCWREC.XOTCD = OB1REC.XOTCD; /* system order type*/
+  OCWREC.OP1ENTDT = OB1REC.OP1ENTDT; /* entered dt*/
+  OCWREC.OP1ORDBY = OB1REC.OP1ORDBY; /* ordered by*/
+  OCWREC.SM1AGYID = OB1REC.SM1AGYID; /* agency*/
+  OCWREC.SM4REPID = OB1REC.SM4REPID; /* rep*/
+  OCWREC.OP1CUNDT = OB1REC.OP1CUNDT; /* need date*/
+  ;
+  OCWREC.OCWCOID = OB1REC.KUCCOID; /* company*/
+  OCWREC.OCWSTRID = OB1REC.KUMSTRID; /* store id*/
+  OCWREC.OCWXNXCD = OB1REC.XNXCD; /* dept cd*/
+  OCWREC.XSOCD = OB1REC.XSOCD; /* sales office id*/
+  OCWREC.XDVCD = OB1REC.XDVCD; /* division code*/
+  OCWREC.XBDCD = OB1REC.XBDCD; /* bulk draw code*/
+  OCWREC.OP-SND-CNFM-FL = " "; /* send cnfm flag does not*/
+                                     /* exist on vobhdr01*/
+  OCWREC.OCWFILL2 = ".";
+  OCWREC.OCWFILL3 = ".";
+  ;
+  OC0FW01.OC0FWFLD = OCWREC.OCWCUST; /* move cust for reformatting*/
+  OC0FS25(); /* remove leading zeroes*/
+  OCWREC.OCWCUST = OC0FW01.OC0FWFLD; /* formatted cust number*/
+  ;
+  KUMREC.KUCCOID = OB1REC.KUCCOID; /* company*/
+  KUMREC.KUMSTRID = OB1REC.KUMSTRID; /* store id*/
+  ;
+  OC0FS31(); /* get store name*/
+  ;
+  ;
+  ;
+end // end OC0FS32
+
+// abort routine
+Function OC0FS90()
+    /* DB2 return no rollback - will return to calling program*/
+       /* This is a clone of xsocedc.  Calling programs can't*/
+       /* DXFER so this statement group was created*/
+  ;
+    /* This stmt grp will NOT rollback any updates since the last*/
+    /* commit, converse or dxfr/xfer.*/
+  ;
+   /* the following fields will be filled in by the*/
+   /* calling stmt group before entering this routine*/
+     /* ta1tblke    = key to table that was being accessed*/
+     /* ta1locat(1) = calling stmt group name*/
+     /* ta1locat(2) = i/o mod name*/
+     /* ta1locat(3) = transaction type  ie: 'ss' 'sn'*/
+     /* ta1locat(4) = programmers option(extra key data)*/
+     /* ta1rec.ta1dbase = data base name (DOINFO, etc..)*/
+     /* ta1rec.ta1tblvu = data base view (VDSCRP01, etc..)*/
+     /* ta1map = appl's mapname and should be initialized*/
+              /* in the programs init process.*/
+  ;
+  ;
+  ;
+  set ERRSQLCA empty;
+  move SQLCA to ERRSQLCA withV60Compat;
+  TA1REC.TA1TYPE = "DB2"; /* db2 type*/
+  TA1REC.TA1FUNC = "RETN"; /* return (abend with diags)*/
+  TA1PGMNM = "OC0F"; /* current application*/
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.commit(); /* to close cursors*/
+  try
+    call "TA0020" (TA1REC, ERRSQLCA) {isExternal = yes};
+  end
+  OCWREC.OCWRTNCD = "04"; /* pass bad rtn code to calling pgm*/
+  ;
+  ;
+end // end OC0FS90
+
+//*** RECORD=OC0FW01 ****
+// 04/26/91  skott   created
+// ***********************
+Record OC0FW01 type basicRecord
+  10 OC0FWOID OC0FWOID ; 
+    15 OC0FWONB OC0FWONB ; 
+    15 OP1PARTN OP1PARTN ; 
+  10 OC0FWSUB OC0FWSUB ; 
+  10 OC0FWFLD OC0FWFLD ; 
+    15 OC0FWDGT OC0FWDGT [16] ; 
+end // end OC0FW01
+
+// digits
+DataItem OC0FWDGT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// format to suppress 0's
+DataItem OC0FWFLD char(16)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// cust ord id
+DataItem OC0FWOID num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// numeric portion
+DataItem OC0FWONB num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// subscript
+DataItem OC0FWSUB num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

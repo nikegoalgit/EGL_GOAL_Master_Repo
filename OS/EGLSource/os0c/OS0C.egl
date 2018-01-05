@@ -1,0 +1,531 @@
+package os0c;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSPF4;
+import corpcom5.COMMAREA;
+import corpcom6.SQLCA;
+import op.common.*;
+import sy.common.SYCREC;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+import xx.common.*;
+import xx01.*;
+import xx01.XBKTBL;
+import xx02.*;
+import xx02.XGATBL;
+import xx04.*;
+import xx04.XOTTBL;
+import xx04.XPCTBL;
+//*** PROGRAM=OS0C ****
+// ;--------------------------------------------
+// ;                   OS0C
+// ;--------------------------------------------
+// ;     order entry deadline inquiry
+// ;
+// ;
+// ;
+// ;                maintenance log
+// ;
+// ; 06/20/88 - dwalke   program created
+// ; 10/18/88 - dwalke   increase os0cwtix lngth 3 bytes
+// ; 01/09/89 - dwalke   add segmented transaction id to appl.
+// ; 03/17/89 - jwood    added noncsp option to calls
+// ; 04/06/89 - gwells   remove xtvcd from prod appl - replaced
+// ;                     xtvcd with xgpcd - sfd.
+// ; 05/10/89 - jbecke   database changes to os0cw01.
+// ; 02/15/91 - dmeier   regen for database changes.
+// ; 05/15/92 - DLEGG    Changes to OS0CSIO for booking season
+// ;                     (SR #774).
+// ; 04/06/94 - schase   Changed os0cspf to interface with OP0X
+// ;                     Appl.
+// ; 03/08/00 - nkathi   Field name DEADLINE is changed to
+// ; TT#4727             ORDER ENTRY CUT-OFF DATE in the
+// ;                     screen OS0CM010.
+// ;
+// *********************
+Program OS0C type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  OPJREC OPJREC; // record
+  OPLREC OPLREC; // record
+  OS0CW01 OS0CW01; // record
+  SQLCA SQLCA; // record
+  SYCREC SYCREC; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XOTTBL {deleteAfterUse = yes}; // table
+  use XPCTBL {deleteAfterUse = yes}; // table
+  use XGATBL {deleteAfterUse = yes}; // table
+  use XBKTBL; // table
+  use OS0CM.OS0CM010 // form
+   {
+    pfKeyEquate = yes
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OS0C000: OS0C000();
+    ;
+    ;
+    goto OS0C010; /* mainline process*/
+    ;
+    ;
+    ;
+    OS0C010: OS0C010();
+    goto OS0C010; /* main process loop*/
+  end // end main
+end // end OS0C
+
+// program initialization
+Function OS0C000()
+  ;
+  ;
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+  
+  XSENTRY(); /* application entry validation*/
+  ;
+  ;
+   /* ****************************************************/
+   /* *** set segmented trans id                      ****/
+   /* ****************************************************/
+  ;
+  COMMAREA.CAEZSAP = sysVar.transactionID;
+  COMMAREA.CAEZSG12 = "OS";
+  COMMAREA.CAEZSG4 = "C";
+  sysVar.transactionID = COMMAREA.CAEZSAP;
+  ;
+   /* *************************************************************/
+  ;
+  set OS0CW01 empty; /* initialize working storage*/
+  ;
+  OS0CSIN(); /* initalize map*/
+  ;
+  ;
+   /* *************************************************************/
+end // end OS0C000
+
+// parameter screen
+Function OS0C010()
+  ;
+  converseVar.segmentedMode = 1; /* force segmentation*/
+  ;
+  converse OS0CM010 ;
+  ;
+  ;
+  converseLib.validationFailed(0); /* intialize error message flag*/
+  OS0CSPF();
+                                   /* process statement group - pf key edit*/
+  if (converseVar.validationMsgNum != 0) /* check for error*/
+    exit stack; /* return to flow*/
+  end
+  ;
+  OS0CSFD(); /* process statement group - field edit*/
+  if (converseVar.validationMsgNum != 0) /* check for error*/
+    exit stack; /* return to flow*/
+  end
+  ;
+  OS0CSIO(); /* process statement group - deadline date*/
+  ;
+end // end OS0C010
+
+// field edits
+Function OS0CSFD()
+  ;
+  ;
+   /* *************************************************************/
+   /* *   oi0dsfd - individual field edit checks                 **/
+   /* *************************************************************/
+  ;
+  ;
+  ;
+                /* ********* order type edits **************/
+  ;
+  if (OS0CM010.XOTCD == "  ") /* order type required entry check*/
+    converseLib.validationFailed(345);
+    set OS0CM010.XOTCD cursor, bold;
+    exit stack;
+  else
+    if (OS0CM010.XOTCD in XOTTBL.XOTCD /* check order type*/
+     && XOTTBL.XOTFUTRF[sysVar.arrayIndex] == "Y") /* is it a future?*/
+      OS0CM010.XOTDESC = XOTTBL.XOTDESC[sysVar.arrayIndex]; /* whats it called*/
+      SYCREC.XGPCD = XOTTBL.XGPCD[sysVar.arrayIndex];
+      set OS0CM010.XOTCD initialAttributes;
+    else
+      converseLib.validationFailed(345);
+      OS0CM010.XOTDESC = " ";
+      set OS0CM010.XOTCD cursor, bold;
+      return;
+    end
+  end
+  ;
+  ;
+                     /* ******** need date edits *********/
+  ;
+  converseLib.validationFailed(0);
+  if (OS0CM010.OPJCNDTB == "  ") /* need date required entry check*/
+    converseLib.validationFailed(346); /* enter a valid need date - mmddyy*/
+    set OS0CM010.OPJCNDTB cursor, bold;
+    exit stack;
+  else
+    if (OS0CM010.OPJCNDTB != "   ") /* date edit*/
+      set TA2REC empty; /* initialize working storage rec 2*/
+      TA2REC.TA2RTNCD = 0; /* initalize return code*/
+      TA2REC.TA2DTOPT = "GREGGREG"; /* functional request*/
+      TA2REC.TA2GRTYP = "A"; /* format is mmddyy*/
+      TA2REC.TA2GRGAN = OS0CM010.OPJCNDTB; /* set date arguement*/
+      call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call data module*/
+      if (TA2REC.TA2RTNCD != 0) /* check for invalid date*/
+        converseLib.validationFailed(346); /* invalid date format*/
+        set OS0CM010.OPJCNDTB cursor, bold;
+        return;
+      else
+        set OS0CM010.OPJCNDTB initialAttributes;
+      end
+    end
+  end
+  ;
+                     /* ***** color/style edits ******/
+  ;
+  set SQLCA empty;
+  ;
+  if (OS0CM010.SY2CLRID == "   ") /* if color is blank make it 00*/
+    SYCREC.SY2CLRID = "00 ";
+  else
+    SYCREC.SY2CLRID = OS0CM010.SY2CLRID;
+  end
+  ;
+  if (OS0CM010.SY1STNBR == "  ") /* style number required entry check*/
+    converseLib.validationFailed(410); /* enter a valid style/color*/
+    set OS0CM010.SY1STNBR cursor, bold;
+    set OS0CM010.SY2CLRID bold;
+    exit stack;
+  else
+    SYCREC.SY1STNBR = OS0CM010.SY1STNBR;
+    SYCREC.XDMCD = "00"; /* move 00 to dimension cd*/
+    SQLCA.VAGen_SQLCODE = 0;
+    ;
+    call "IO0560" ("S ", SQLCA, SYCREC) {isNoRefresh = yes, isExternal = yes}; /* style/color check*/
+    ;
+    if (SQLCA.VAGen_SQLCODE != 0)
+      converseLib.validationFailed(131); /* style/color invalid*/
+      OS0CM010.SY1STYNM = " "; /* clear display field*/
+      OS0CM010.SY2CLRDS = " "; /* clear display field*/
+      set OS0CM010.SY1STNBR cursor, bold;
+      set OS0CM010.SY2CLRID bold;
+      return;
+    else
+      set OS0CM010.SY1STNBR initialAttributes;
+      set OS0CM010.SY2CLRID initialAttributes;
+    end
+  end
+  ;
+                          /* ****** map moves *************/
+  ;
+  OS0CM010.XPCCD = SYCREC.XPCCD;
+  OS0CM010.XGACD = SYCREC.XGACD;
+  OS0CM010.SY1STYNM = SYCREC.SY1STYNM;
+  OS0CM010.SY2CLRDS = SYCREC.SY2CLRDS;
+  ;
+                          /* ******* prod cat description *******/
+  ;
+  OS0CW01.OS0CWTIX = 1; /* table index*/
+  OS0CW01.OS0CWCAT = "N"; /* pc not found flag*/
+  ;
+  ;
+  while (XPCTBL.XPCCD[OS0CWTIX] != "99" /* end of file and*/
+   && OS0CW01.OS0CWCAT == "N") /* pc not found*/
+    ;
+    if (OS0CM010.XPCCD == XPCTBL.XPCCD[OS0CWTIX] /* if pc is equal*/
+     && SYCREC.XGPCD == XPCTBL.XGPCD[OS0CWTIX]   /* & gpc values equal*/
+     && XPCTBL.XXXSTAT[OS0CWTIX] == "A")         /* is an active pc*/
+      OS0CM010.XPCDESC = XPCTBL.XPCDESC[OS0CWTIX];
+      OS0CW01.OS0CWCAT = "Y"; /* pc found*/
+    else
+      OS0CM010.XPCDESC = " "; /* clear description*/
+    end
+    OS0CW01.OS0CWTIX = OS0CW01.OS0CWTIX + 1;
+  end
+  set OS0CM010.XPCCD initialAttributes;
+  ;
+                          /* ***** gender age description ********/
+  ;
+  if (OS0CM010.XGACD in XGATBL.XGACD)
+    OS0CM010.XGADESC = XGATBL.XGADESC[sysVar.arrayIndex];
+    set OS0CM010.XGACD initialAttributes;
+  else
+    OS0CM010.XGADESC = " ";
+  end
+  ;
+end // end OS0CSFD
+
+// init of map
+Function OS0CSIN()
+  ;
+   /* *************************************************************/
+   /* *                    map initalization                     **/
+   /* *************************************************************/
+  ;
+  ;
+  set OS0CM010 initial; /* initialize map*/
+   /* SET OS0CM010 EMPTY              ; initialize map*/
+  ;
+  OS0CM010.OS0CMDTE = VGVar.currentShortGregorianDate; /* todays date to map*/
+  OS0CM010.OS0CMRVN = "00"; /* revision num to map*/
+  ;
+  ;
+   /* *************************************************************/
+end // end OS0CSIN
+
+// i/o call of io2560
+Function OS0CSIO()
+  ;
+   /* *************************************************************/
+   /* * io02560 db2 call for deadline date dorder.vcutof01       **/
+   /* *************************************************************/
+  ;
+  ;
+  set SQLCA empty;
+  set OPLREC empty;
+  set OPJREC empty;
+  ;
+  SQLCA.VAGen_SQLCODE = 0; /* prepare*/
+  OPJREC.XOTCD = OS0CM010.XOTCD;
+  OPJREC.SY1STNBR = OS0CM010.SY1STNBR; /* records*/
+  OPJREC.SY2CLRID = OS0CM010.SY2CLRID;
+  OPJREC.XPCCD = SYCREC.XPCCD; /* for*/
+  OPJREC.XGACD = SYCREC.XGACD;
+  OPLREC.OPJCNDTB = TA2REC.TA2GRGGN; /* i/o*/
+  OPLREC.OPLSOP = "SF"; /* call*/
+  ;
+  call "IO2560" (OPLREC, SQLCA, OPJREC) {isNoRefresh = yes, isExternal = yes}; /* deadline date*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* Continue*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* if not found error message*/
+      converseLib.validationFailed(411); /* no defined deadline date available*/
+      OS0CM010.OPJCUTDT = "        ";
+      return;
+    else
+      set TA1REC empty; /* db2 error routine*/
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OS0C"; /* ta0020*/
+      TA1REC.TA1LOCAT[1] = "SF      ";
+      TA1REC.TA1LOCAT[2] = "OS0CSIO ";
+      TA1REC.TA1LOCAT[3] = "I02560 ";
+      TA1REC.TA1LOCAT[4] = "        ";
+      TA1REC.TA1MAP = "OS0CM010";
+      TA1REC.TA1DBASE = "DORDER. ";
+      TA1REC.TA1TBLVU = "VCUTOF01";
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      XSPF4();
+      exit program;
+    end
+  end
+  ;
+   /* The 'select first' option identified the keys of the desired*/
+   /* row. Call IO2560 one more time to retrieve all fields on this*/
+   /* unique record. (The two calls are necessary because the 'SF'*/
+   /* option cannot be changed to retrieve all fields)*/
+  ;
+  set SQLCA empty;
+  set OPLREC empty;
+  ;
+  SQLCA.VAGen_SQLCODE = 0; /* prepare*/
+  OPLREC.OPLSOP = "S "; /* call*/
+  ;
+   /* OPJREC already set up (after previous call) with key for*/
+   /* select unique call*/
+  ;
+  call "IO2560" (OPLREC, SQLCA, OPJREC) {isNoRefresh = yes, isExternal = yes}; /* deadline date*/
+  ;
+  set OS0CM010.XOTCD cursor;
+  if (SQLCA.VAGen_SQLCODE == 0) /* if found cursor to xotcd*/
+     /* next sentence*/
+  else
+    set TA1REC empty; /* db2 error routine*/
+    TA1REC.TA1TYPE = "DB2 "; /* 'not found' is bad cc here since*/
+    TA1REC.TA1FUNC = "RETN"; /* this call is just to get all the*/
+                                   /* fields in a previously id'd row*/
+    TA1REC.TA1PGMNM = "OS0C"; /* ta0020*/
+    TA1REC.TA1LOCAT[1] = "S       ";
+    TA1REC.TA1LOCAT[2] = "OS0CSIO ";
+    TA1REC.TA1LOCAT[3] = "I02560 ";
+    TA1REC.TA1LOCAT[4] = "        ";
+    TA1REC.TA1MAP = "OS0CM010";
+    TA1REC.TA1DBASE = "DORDER. ";
+    TA1REC.TA1TBLVU = "VCUTOF01";
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    XSPF4();
+    exit program;
+  end
+  ;
+  OS0CM010.XPCCD = SYCREC.XPCCD;
+  OS0CM010.XGACD = SYCREC.XGACD;
+  ;
+  set TA2REC empty; /* initialize working storage rec 2*/
+  ;
+  TA2REC.TA2RTNCD = 0; /* initalize return code*/
+  TA2REC.TA2DTOPT = "GREGGREG"; /* functional request*/
+  TA2REC.TA2GRTYP = "G"; /* format is mmddyy*/
+  TA2REC.TA2GRGGN = OPJREC.OPJCUTDT; /* set date arguement*/
+  ;
+  call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes}; /* call date module*/
+  ;
+  if (TA2REC.TA2RTNCD != 0)
+    converseLib.validationFailed(411); /* NO DEFINED DEADLINE DATE AVAILABLE*/
+    OS0CM010.OPJCUTDT = " ";
+    set OS0CM010.XOTCD cursor;
+    OS0CM010.OPJCUTDT = "        ";
+    return;
+  else
+    OS0CM010.OPJCUTDT = TA2REC.TA2GRGB; /* correct date format*/
+  end
+  ;
+   /* Move other booking season fields to map*/
+  ;
+  OS0CM010.XBK-BK-SESN-CD = OPJREC.XBK-BK-SESN-CD;
+  if (OPJREC.OP-BK-YR != 0)
+    OS0CW-OP-BK-CCYY = OPJREC.OP-BK-YR;
+    OS0CM010.OS0CM-OP-BK-YY = OS0CW-OP-BK-YY;
+  else
+    OS0CM010.OS0CM-OP-BK-YY = "  ";
+  end
+  ;
+          /* ***** booking season description ******/
+  ;
+  if (OS0CM010.XBK-BK-SESN-CD != " ")
+    if (OS0CM010.XBK-BK-SESN-CD in XBKTBL.XBK-BK-SESN-CD)
+      if (XBKTBL.XXXSTAT[sysVar.arrayIndex] == "A") /* Active sesn code*/
+        OS0CM010.XBK-BK-SESN-DESC = XBKTBL.XBK-BK-SESN-DESC[sysVar.arrayIndex];
+      else
+        OS0CM010.XBK-BK-SESN-DESC = "UNKNOWN SEASON";
+      end
+    else
+      OS0CM010.XBK-BK-SESN-DESC = "UNKNOWN SEASON";
+    end
+  else
+    OS0CM010.XBK-BK-SESN-DESC = " ";
+  end
+  ;
+end // end OS0CSIO
+
+// edit pf keys
+Function OS0CSPF()
+  ;
+   /* *************************************************************/
+    /* checking pf keys*/
+   /* *************************************************************/
+  ;
+  if (converseVar.eventKey is enter)
+     /* next sentence*/
+  else
+    if (converseVar.eventKey is pf3) /* exit to op menu*/
+      COMMAREA.CAUSERA = " "; /* clear user commarea*/
+      COMMAREA.CATOAP = "OP0X"; /* clear application*/
+      XSEXIT(); /* transfer to exit routine*/
+      OS0CM010.VAGen_EZEMSG = COMMAREA.CAMSG; /* move error msg*/
+      COMMAREA.CATOAP = " "; /* clear application*/
+    else
+      if (converseVar.eventKey is pf4)
+        COMMAREA.CAUSERA = " "; /* clear user commarea*/
+        COMMAREA.CATOAP = "OP0X"; /* clear application*/
+        XSPF4(); /* invoke master menu request*/
+        OS0CM010.VAGen_EZEMSG = COMMAREA.CAMSG; /* move error msg*/
+        COMMAREA.CATOAP = " "; /* clear application*/
+      else
+        if (converseVar.eventKey is pf19)
+          OS0CSIN();
+          exit stack;
+        else
+          converseLib.validationFailed(008); /* invalid pf key*/
+        end
+      end
+    end
+  end
+  ;
+end // end OS0CSPF
+
+//*** RECORD=OS0CW01 ****
+// ;    070788 dwalke      new working storage table
+// ;    101888 dwalke      increased to 3 bytes - os0cwtix
+// ;    051592 DLEGG       Added OS0CWBKF - booking season
+// ;                       desc found flag
+// ;
+// ***********************
+Record OS0CW01 type basicRecord
+  10 OS0CWERF OS0CWERF ; 
+  10 OS0CWTIX OS0CWTIX ; 
+  10 OS0CWCAT OS0CWCAT ; 
+  10 OS0CW-SESN-DESC-FL OS0CW-SESN-DESC-FL ; 
+  10 OS0CW-OP-BK-CCYY OS0CW-OP-BK-CCYY ; 
+    15 OS0CW-OP-BK-CC OS0CW-OP-BK-CC ; 
+    15 OS0CW-OP-BK-YY OS0CW-OP-BK-YY ; 
+end // end OS0CW01
+
+// Booking date CC
+DataItem OS0CW-OP-BK-CC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Booking date CCYY
+DataItem OS0CW-OP-BK-CCYY num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Booking date YY
+DataItem OS0CW-OP-BK-YY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Season description found flag
+DataItem OS0CW-SESN-DESC-FL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// pc table found flag
+DataItem OS0CWCAT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error has occurred flag
+DataItem OS0CWERF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// table index
+DataItem OS0CWTIX num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

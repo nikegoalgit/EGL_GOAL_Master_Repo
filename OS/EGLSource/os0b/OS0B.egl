@@ -1,0 +1,1313 @@
+package os0b;
+import corpcom2.XX0XW02;
+import corpcom3.XPXOP01;
+import corpcom3.XPXX001;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSOPS02;
+import corpcom4.XSPF4;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import op.common.*;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+import xx.common.*;
+import xx.common.XBCCD;
+import xx.common.XOTCD;
+import xx01.*;
+import xx01.XBCABRV;
+import xx01.XBCTBL;
+import xx02.*;
+import xx02.XGPTBL;
+import xx04.*;
+import xx04.XOPCD;
+import xx04.XOPDESC;
+import xx04.XOPTBL;
+import xx04.XOTABRV;
+import xx04.XOTTBL;
+//*** PROGRAM=OS0B ****
+//      os0b (order support - order type profile).
+// 
+// system security controls who can maintain/inquire this
+// application.  if authorized for inquiry only, the edit
+// and refresh pfkeys are set dark and the screen body is
+// protected.  if authorized for change, all pfkeys are
+// displayed and the screen body is unprotected.
+// 
+// a pop-up window can be used to display existing profile
+// id codes.  type ? in the profile id field and press enter,
+// one of the codes must be selected before the window goes
+// away.  whatever is selected is moved into the profile id
+// field.  (if simply reviewing existing codes and none were
+// wanted, select one anyway and then type over it after
+// the window goes away).  everyone is authorized to use
+// the pop-up window.
+// 
+// the application is coded as such:  a profile id is
+// 1.  a profile id is entered
+// 2.  the database is read to see if the profile exists
+// 3.  if one exists, it is loaded to working storage
+// 4.  working storage is moved to the map
+// 5.  map is displayed
+// 6.  map fields can be added, changed or deleted.  deletes
+//     take place by blanking out the order type.
+// 7.  updates take place from the map.  editing is controlled
+//     by comparing the map data to the working storage data
+//     from step 3.
+// 8.  if a previously existing profile id has modifications,
+//     all the records are first deleted from the database.
+//     all map data is then moved to the database and added.
+// 9.  as data will probably be entered in random order type
+//     order, the map is then redisplayed with the updated
+//     and in-order info from the new adds to the database.
+// 
+// 
+// -----------------------------------------------------------
+//                      maintenance history
+// -----------------------------------------------------------
+// obecke  04-14-88     created application.
+// obecke  04-19-88     stripped effective dates out of appl.
+// obecke  05-03-88     added gpc validation to map & program.
+// dwalke  05-06-88     changed application from om0e to os0b.
+// dwalke  01-09-89     add segmented transaction id to appl.
+// jwood   03-17-89     added noncsp option to calls
+// mgatre  06-12-90     database changes - s70
+// dharri  11-20-90     log # 400 - add brand code & pgm ind
+//                      to the screen and logic to add to the
+//                      database.
+// dmeier  02-15-91     regen for database changes
+// craine  04-10-91     added code to edit map when anything
+//                      changes, not just the xotcd. os0bs35
+// schase  04-06-94     Changed os0bm010 and os0bs10 to inter-
+//                      face with OP0Y Appl.
+// rmcali  04-10-96     add addit'l valid pgm ind to os0bs45
+// satyam  04-15-97     added code to not allow duplicate row
+//                      addition to dorder.vvalot01. only one
+//                      row allowed for each profile id, brand
+//                      code and pgm ind when pgm ind ne 'm'.
+// vsanka  03-23-98     incorporated scrolling logic (pf8) in
+//                      os0bm010 screen.
+//                      Elements changed for this task are:
+//                      Map: OS0B010; Statement grps: S10, S15,
+//                      S25,S27,S35,S45,S50, and S55
+//                      PROCs: OS0B000,OS0B010 and OS0B020
+//                      RECD : OS0BW01.
+// vsanka  05-25-98    included code to allow adding of rows on
+//                     the screen and to update the associated
+//                     tables. Statement groups changed :
+//                     S10,S25,S35,S45,S65.
+//                     Procs changed : OS0B020
+//                     Recd : OS0BW01
+// sgopal  01-25-99    corrected the validation of order type
+//                     profiles in OS0B010.
+// sgopal  05-12-99    Corrected OS0BS65 to have proper
+//                     indexing while adding 25th row .
+// agooll  09-04-00    allowing the user to go and enter order
+//                     type in the next screen when it is full.
+//                     find TT#7776 for changes.
+// *********************
+Program OS0B type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "OP00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  OPKREC OPKREC; // record
+  OS0BW01 OS0BW01; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+  XX0XW02 XX0XW02; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XGPTBL {deleteAfterUse = yes}; // table
+  use XOTTBL {deleteAfterUse = yes}; // table
+  use XOPTBL {deleteAfterUse = yes}; // table
+  use XBCTBL; // table
+  use OS0BM.OS0BM010, // form
+  		OS0BM.XX0XM001
+   {
+    pfKeyEquate = yes
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    OS0B000: OS0B000();
+    ;
+    ;
+    if (OS0BW01.OS0BWERR == "Y" /* if error from fast path*/
+     || OS0BM010.XOPCD == " ")  /* if fast path not used*/
+      goto OS0B010; /* do normal routine*/
+    else
+      goto OS0B020; /* validate and build screen*/
+    end
+    ;
+    ;
+    ;
+    OS0B010: OS0B010();
+    if (converseVar.eventKey is pf19
+     || converseVar.eventKey is pf12
+     || OS0BW01.OS0BWERR == "Y"
+     || converseVar.validationMsgNum > 0)
+      goto OS0B010;
+    else
+      goto OS0B020;
+    end
+    OS0B020: OS0B020();
+    goto OS0B010;
+  end // end main
+end // end OS0B
+
+// program initialization
+Function OS0B000()
+  ;
+  ;
+  XSENTRY(); /* application entry validati*/
+   /* GET ORDER*/
+  ;
+   /* ****************************************************/
+   /* *** set segmented trans id                      ****/
+   /* ****************************************************/
+  ;
+  COMMAREA.CAEZSAP = sysVar.transactionID;
+  COMMAREA.CAEZSG12 = "OS";
+  COMMAREA.CAEZSG4 = "B";
+  sysVar.transactionID = COMMAREA.CAEZSAP;
+  ;
+   /* *************************************************************/
+  ;
+  set OS0BW01 empty;
+  set OPKREC empty;
+  set SQLCA empty;
+  set ERRSQLCA empty;
+  set TA1REC empty;
+  set TA2REC empty;
+  ;
+  OS0BW01.OS0BWERR = "N";
+  ;
+   /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+  ;
+  OS0BW01.OS0BWTCT = 1;
+  OS0BW01.OS0BWTSP = 0;
+  OS0BW01.OS0BWTXT = 1;
+  ;
+   /* ***** TCS INCLUDE END -03/23/1998*******/
+  ;
+   /* ***********************************************************/
+   /* process fast path that used a profile id*/
+   /* ***********************************************************/
+  ;
+  sysVar.arrayIndex = 1;
+  ;
+  if (COMMAREA.CAITEM != " ")
+    OS0BW01.XOPCD = COMMAREA.CAITEM;
+    OS0BM010.XOPCD = COMMAREA.CAITEM;
+    if (COMMAREA.CAITEM in XOPTBL.XOPCD
+     && XOPTBL.XXXSTAT == "A")
+      OS0BM010.XOPDESC = XOPTBL.XOPDESC[sysVar.arrayIndex];
+      if (XOPTBL.XGPCD[sysVar.arrayIndex] in XGPTBL.XGPCD
+       && XGPTBL.XXXSTAT == "A")
+        OS0BM010.XGPCD = XOPTBL.XGPCD[sysVar.arrayIndex];
+        OS0BM010.XGPDESC = XGPTBL.XGPDESC[sysVar.arrayIndex];
+      else
+        OS0BM010.XGPCD = XOPTBL.XGPCD[sysVar.arrayIndex];
+        OS0BM010.XGPDESC = "INACTIVE";
+      end
+    else
+      OS0BM010.OS0BMMSG = "INVALID PROFILE ID";
+      set OS0BM010.XOPCD cursor, bold;
+      OS0BW01.OS0BWERR = "Y";
+    end
+    COMMAREA.CAITEM = " ";
+    COMMAREA.CATOAP = " ";
+  else
+     /* next sentence*/
+  end
+  ;
+  ;
+   /* ***********************************************************/
+   /* check authority level--maintenance or inquiry?*/
+   /* ***********************************************************/
+  ;
+  if (COMMAREA.CACHGFL == "N") /* if inquiry authority only*/
+    OS0BS05(); /* protect fields*/
+  else /* maintenance authority*/
+    /* ***************************************************/
+     /* get today's date to use for zzzsdt setup date*/
+    /* ***************************************************/
+    set TA2REC empty;
+    TA2REC.TA2DTOPT = "GETDATE";
+    call "TA0040" (TA2REC) {isNoRefresh = yes, isExternal = yes};
+    ;
+    if (TA2REC.TA2RTNCD != 0)
+      TA1REC.TA1DBASE = " ";
+      TA1REC.TA1TBLVU = " ";
+      TA1REC.TA1TBLKE = " ";
+      TA1REC.TA1LOCAT[3] = "OS0B000";
+      TA1REC.TA1LOCAT[4] = "TA0040";
+      TA1REC.TA1LOCAT[1] = "GETDATE";
+      set SQLCA empty;
+      XSOPS02(); /* abort program.*/
+    else
+      OS0BW01.OS0BWSDT = TA2REC.TA2GRGGN; /* save date for zzzsdt*/
+    end
+  end
+  ;
+  ;
+  converseLib.validationFailed(406); /* type ? in profile id field for codes*/
+  if (OS0BW01.OS0BWERR == "N")
+    set OS0BM010.XOPCD cursor;
+  end
+  ;
+  ;
+  ;
+end // end OS0B000
+
+// converse the map
+Function OS0B010()
+  ;
+  ;
+  OS0BM010.OS0BMRVN = "00";
+  OS0BM010.OS0BMDTE = VGVar.currentShortGregorianDate;
+  ;
+  if (OS0BM010.XOPCD > " "
+   && OS0BW01.OS0BWERR == "N"
+   && COMMAREA.CACHGFL != "N")
+    set OS0BM010.XOTCD[1] cursor, initialAttributes;
+  end
+  ;
+  ;
+  converse OS0BM010 ;
+  ;
+  ;
+  converseLib.validationFailed(0);
+  VAGen_EZEMSG = " ";
+  OS0BM010.OS0BMMSG = " ";
+  OS0BW01.OS0BWERR = "N"; /* turn off error flag*/
+  OS0BW01.OS0BWUPF = "N"; /* turn off update flag*/
+  ;
+   /* ;/****** TCS INCLUDE BEGIN -03/23/1998********/
+  ;
+  if (OS0BM010.XOPCD != OS0BW01.XOPCD)
+    OS0BW01.OS0BWTCT = 1;
+    OS0BW01.OS0BWTSP = 0;
+  end
+  ;
+   /* ***** TCS INCLUDE END -03/23/1998**********/
+  ;
+  OS0BS10(); /* determine action from key pressed*/
+  ;
+  OS0BS15(); /* set fields defined*/
+  ;
+  if (OS0BM010.XOPCD == "?") /* if pop-up window table display*/
+    OS0BSXX(); /* desired, process pop-up window*/
+    set OS0BM010.XOPCD initialAttributes;
+    exit stack;
+  end
+  ;
+   /* ********************************************/
+           /* validate profile id*/
+   /* ********************************************/
+  ;
+  if (OS0BM010.XOPCD in XOPTBL.XOPCD
+   && XOPTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    set OS0BM010.XOPCD initialAttributes;
+    OS0BM010.XOPDESC = XOPTBL.XOPDESC[sysVar.arrayIndex];
+    OS0BM010.XGPCD = XOPTBL.XGPCD[sysVar.arrayIndex];
+    if (OS0BM010.XGPCD in XGPTBL.XGPCD
+     && XGPTBL.XXXSTAT == "A")
+      OS0BM010.XGPDESC = XGPTBL.XGPDESC[sysVar.arrayIndex];
+    else
+      OS0BM010.XGPDESC = "INACTIVE";
+    end
+  else
+    converseLib.validationFailed(407); /* invalid profile id*/
+    OS0BW01.OS0BWERR = "Y";
+    set OS0BM010.XOPCD cursor, bold;
+    exit stack;
+  end
+  ;
+  if (OS0BM010.XOPCD == OS0BW01.XOPCD) /* if profile id hasn't changed*/
+    OS0BS35(); /* start editing process*/
+  end
+  ;
+  ;
+  ;
+end // end OS0B010
+
+// call profile io2550
+Function OS0B020()
+  ;
+  ;
+  ;
+  if (OS0BW01.OS0BWUPF == "N") /* update flag = no*/
+    ;
+   /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+    ;
+    if (converseVar.eventKey is enter)
+      ;
+   /* ***** TCS INCLUDE END -03/23/1998**********/
+      ;
+      OS0BS50(); /* get existing profile*/
+    end
+  else
+    OS0BS65(); /* delete database records*/
+    OS0BS70(); /* add new database records*/
+    OS0BS50(); /* get the profile--now*/
+                                   /* arranged in order*/
+   /* ***** TCS INCLUDE BEGIN -05/25/1998 ********/
+    ;
+    OS0BW01.OS0BWTCT = 1;
+    OS0BW01.OS0BWTSP = 1;
+    ;
+   /* ***** TCS INCLUDE END - 05/25/1998  *********/
+    ;
+  end
+  ;
+   /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+  ;
+  if (converseVar.eventKey is pf8)
+    set OS0BM010 empty;
+  end
+  ;
+   /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+  ;
+  OS0BS25(); /* build the map*/
+  ;
+  ;
+end // end OS0B020
+
+// protect map array
+Function OS0BS05()
+  ;
+  ;
+  ;
+  sysVar.arrayIndex = 1;
+  ;
+  while (sysVar.arrayIndex < 27)
+    set OS0BM010.XOTCD[sysVar.arrayIndex] skip;
+    set OS0BM010.XBCCD[sysVar.arrayIndex] skip;
+    set OS0BM010.OPKOTPGI[sysVar.arrayIndex] skip;
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+  ;
+  set OS0BM010.OS0BMP12 skip, invisible;
+  set OS0BM010.OS0BMP19 skip, invisible;
+  ;
+  ;
+end // end OS0BS05
+
+// check pf keys
+Function OS0BS10()
+  ;
+  ;
+  ;
+  if (OS0BM010.CATOAP != " ") /* check for fast path*/
+    if (converseVar.eventKey is enter)
+      COMMAREA.CATOAP = OS0BM010.CATOAP;
+      COMMAREA.CAITEM = OS0BM010.CAITEM;
+      XSEXIT();
+      set OS0BM010.CATOAP cursor, bold;
+      OS0BM010.VAGen_EZEMSG = COMMAREA.CAMSG;
+      OS0BW01.OS0BWERR = "Y";
+      COMMAREA.CATOAP = " ";
+      exit stack;
+    end
+  end
+  ;
+  set OS0BM010.CATOAP initialAttributes;
+  set OS0BM010.CAITEM initialAttributes;
+  ;
+  if (converseVar.eventKey is pa1
+   || converseVar.eventKey is pa2)
+    converseLib.validationFailed(2);
+    OS0BW01.OS0BWERR = "Y";
+    exit stack;
+  else
+    if (converseVar.eventKey is enter
+     || converseVar.eventKey is pf12)
+      ;
+      /* ********* TCS INCLUDE BEGIN - 05/25/98 **************/
+      ;
+      if (OS0BWTXT > 26)
+        OS0BWTXT = 26;
+      end
+
+      if (OS0BM010.XOTCD[OS0BWTXT] is modified
+       || OS0BM010.XBCCD[OS0BWTXT] is modified
+       || OS0BM010.OPKOTPGI[OS0BWTXT] is modified)
+        OS0BWTXT = OS0BWTXT + 1;
+      end
+      ;
+      sysVar.arrayIndex = 1;
+      while (sysVar.arrayIndex < OS0BWTXT
+       && OS0BM010.XOPCD == OS0BW01.XOPCD)
+        if (OS0BM010.XOTCD[sysVar.arrayIndex] == " ")
+          OS0BW01.OS0BWERR = "N";
+          sysVar.arrayIndex = OS0BWTXT;
+        else
+          if (OS0BM010.XOTCD[sysVar.arrayIndex] != OS0BW01.XOTCD[sysVar.arrayIndex])
+            OS0BW01.OS0BWERR = "N";
+            sysVar.arrayIndex = OS0BWTXT;
+          else
+            ;
+            sysVar.arrayIndex = sysVar.arrayIndex + 1;
+            OS0BW01.OS0BWERR = "Y";
+          end
+        end
+      end
+      sysVar.arrayIndex = sysVar.arrayIndex - 1;
+      if (OS0BW01.OS0BWERR == "Y")
+        if (OS0BM010.XOTCD[sysVar.arrayIndex] != OS0BW01.XOTCD[sysVar.arrayIndex]
+         || OS0BM010.XBCCD[sysVar.arrayIndex] != OS0BW01.XBCCD[sysVar.arrayIndex]
+         || OS0BM010.OPKOTPGI[sysVar.arrayIndex] != OS0BW01.OPKOTPGI[sysVar.arrayIndex])
+          /* next sentence*/
+        else
+          exit stack;
+        end
+      end
+      ;
+      /* ***************** TCS INCLUDE END -05/25/1998 *********88*/
+      ;
+    else
+      if (converseVar.eventKey is pf19)
+
+        /* ***** TCS INCLUDE BEGIN -03/23/1998******/
+        ;
+        ;
+        if (OS0BW01.OS0BWTSP == 1)
+          converseLib.validationFailed(643);
+          ;
+          /* ***** TCS INCLUDE END -03/23/1998********/
+          ;
+          exit stack;
+        end
+        ;
+        /* ***** TCS INCLUDE BEGIN -03/23/1998******/
+        ;
+        OS0BW01.OS0BWTCT = 1;
+        ;
+        /* ***** TCS INCLUDE END -03/23/1998********/
+        ;
+        ;
+        OS0BS15(); /* set fields defined*/
+        OS0BS20(); /* clear map*/
+        ;
+        /* ***** TCS INCLUDE BEGIN -03/23/1998******/
+        ;
+        OS0BS27(); /* build map from working storage*/
+        ;
+        /* ***** TCS INCLUDE END -03/23/1998********/
+        ;
+        exit stack;
+      else
+        if (converseVar.eventKey is pf3) /* check for order processing menu*/
+          COMMAREA.CAUSERA = " "; /* clear user commarea*/
+          COMMAREA.CATOAP = "OP0Y";
+          XSEXIT();
+          OS0BW01.OS0BWERR = "Y";
+          OS0BM010.VAGen_EZEMSG = COMMAREA.CAMSG;
+          COMMAREA.CATOAP = " ";
+          exit stack;
+        else
+          if (converseVar.eventKey is pf4)
+            COMMAREA.CAUSERA = " ";
+            XSPF4();
+            OS0BM010.VAGen_EZEMSG = COMMAREA.CAMSG;
+            OS0BW01.OS0BWERR = "Y";
+            COMMAREA.CATOAP = " ";
+            exit stack;
+          else
+            ;
+            /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+            ;
+            if (converseVar.eventKey is pf8)
+              if (OS0BW01.OS0BWTSP == 3)
+                ;
+                /* ***** WIPRO CHANGES BEGIN TT#7776 *********/
+                /* commented the line to allow user to enter xot*/
+                /* in the next screen*/
+                /* OR OS0BW01.XOTCD(OS0BWTCT) EQ ' ';*/
+                ;
+                /* ***** WIPRO CHANGES END   TT#7776 *********/
+                ;
+                converseLib.validationFailed(644);
+                exit stack;
+              else
+                return;
+              end
+              ;
+              /* ***** TCS INCLUDE END -03/23/1998**********/
+              ;
+
+            else
+              converseLib.validationFailed(2);
+              OS0BW01.OS0BWERR = "Y";
+              exit stack;
+            end
+          end
+        end
+      end
+    end
+  end
+end // end OS0BS10
+
+// set fields defined
+Function OS0BS15()
+  ;
+  ;
+  ;
+  set OS0BM010.XOPCD initialAttributes;
+  ;
+  sysVar.arrayIndex = 1;
+  ;
+  while (sysVar.arrayIndex < 27)
+    set OS0BM010.XOTCD[sysVar.arrayIndex] initialAttributes;
+    set OS0BM010.XBCCD[sysVar.arrayIndex] initialAttributes;
+    set OS0BM010.OPKOTPGI[sysVar.arrayIndex] initialAttributes;
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+  ;
+  set OS0BM010.OS0BMP19 initialAttributes;
+  set OS0BM010.OS0BMP12 initialAttributes;
+  ;
+  ;
+end // end OS0BS15
+
+// clear map array
+Function OS0BS20()
+  ;
+  ;
+  ;
+  sysVar.arrayIndex = 1;
+  ;
+  while (sysVar.arrayIndex < 27)
+    OS0BM010.XOTCD[sysVar.arrayIndex] = " ";
+    OS0BM010.XOTABRV[sysVar.arrayIndex] = " ";
+    OS0BM010.XBCCD[sysVar.arrayIndex] = " ";
+    OS0BM010.XBCABRV[sysVar.arrayIndex] = " ";
+    OS0BM010.OPKOTPGI[sysVar.arrayIndex] = " ";
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+  ;
+  ;
+  ;
+end // end OS0BS20
+
+// build map from working storage
+Function OS0BS25()
+  ;
+  ;
+  sysVar.arrayIndex = 1;
+  OS0BM010.XOPCD = OS0BW01.XOPCD;
+  OS0BM010.XOPDESC = OS0BW01.XOPDESC;
+  ;
+   /* *********TCS INCLUDE BEGIN 03/23/1998***********/
+  ;
+  sysVar.arrayIndex = OS0BW01.OS0BWTCT;
+  OS0BW01.OS0BWINX = 1;
+  while (OS0BWINX < 27
+   && OS0BW01.XOTCD[sysVar.arrayIndex] > " ")
+    ;
+    /* ***** TCS INCLUDE END -03/23/1998**********/
+    ;
+    OS0BM010.XOTCD[OS0BWINX] = OS0BW01.XOTCD[sysVar.arrayIndex];
+    OS0BM010.XOTABRV[OS0BWINX] = OS0BW01.XOTABRV[sysVar.arrayIndex];
+    OS0BM010.XBCCD[OS0BWINX] = OS0BW01.XBCCD[sysVar.arrayIndex];
+    OS0BM010.XBCABRV[OS0BWINX] = OS0BW01.XBCABRV[sysVar.arrayIndex];
+    OS0BM010.OPKOTPGI[OS0BWINX] = OS0BW01.OPKOTPGI[sysVar.arrayIndex];
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+    ;
+    /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+    ;
+    OS0BWINX = OS0BWINX + 1;
+    ;
+    /* ***** TCS INCLUDE END -03/23/1998**********/
+    ;
+  end
+  ;
+   /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+  ;
+  OS0BW01.OS0BWTCT = sysVar.arrayIndex;
+  OS0BWTSP = OS0BWTSP + 1;
+  ;
+   /* ************** TCS INCLUDE BEGIN - 05/25/1998 *********/
+  ;
+  if (sysVar.arrayIndex > 27
+   && sysVar.arrayIndex < 54)
+    OS0BW01.OS0BWTXT = sysVar.arrayIndex - 26;
+  else
+    if (sysVar.arrayIndex > 54)
+      OS0BW01.OS0BWTXT = sysVar.arrayIndex - 53;
+    else
+      OS0BW01.OS0BWTXT = sysVar.arrayIndex;
+    end
+    ;
+    /* ************* TCS INCLUDE END -05/25/1998 **************/
+    ;
+  end
+  ;
+   /* ***** TCS INCLUDE END -03/23/1998**********/
+  ;
+  if (COMMAREA.CACHGFL == "N") /* if inquiry authority only*/
+    OS0BS05(); /* set fields protected*/
+  end
+  ;
+   /* *********TCS INCLUDE BEGIN 03/23/1998********/
+   /* *********WIPRO CHANGES BEGIN TT#7776*/
+   /* IF OS0BWINX EQ 1*/
+   /* AND EZEAID IS PF8;*/
+   /* MOVE 644 TO EZEMNO;*/
+   /* EZEFLO;*/
+   /* END;*/
+   /* ***************END CHANGES TT#7776*/
+   /* *********TCS INCLUDE END 03/23/1998**********/
+  ;
+end // end OS0BS25
+
+// build map from working storage
+Function OS0BS27()
+  ;
+  ;
+  sysVar.arrayIndex = 1;
+  OS0BM010.XOPCD = OS0BW01.XOPCD;
+  OS0BM010.XOPDESC = OS0BW01.XOPDESC;
+  while (sysVar.arrayIndex < 27
+   && OS0BW01.XOTCD[sysVar.arrayIndex] > " ")
+    OS0BM010.XOTCD[sysVar.arrayIndex] = OS0BW01.XOTCD[sysVar.arrayIndex];
+    OS0BM010.XOTABRV[sysVar.arrayIndex] = OS0BW01.XOTABRV[sysVar.arrayIndex];
+    OS0BM010.XBCCD[sysVar.arrayIndex] = OS0BW01.XBCCD[sysVar.arrayIndex];
+    OS0BM010.XBCABRV[sysVar.arrayIndex] = OS0BW01.XBCABRV[sysVar.arrayIndex];
+    OS0BM010.OPKOTPGI[sysVar.arrayIndex] = OS0BW01.OPKOTPGI[sysVar.arrayIndex];
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+  ;
+   /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+  ;
+  OS0BW01.OS0BWTCT = sysVar.arrayIndex;
+  OS0BW01.OS0BWTXT = sysVar.arrayIndex;
+  OS0BW01.OS0BWTSP = OS0BW01.OS0BWTSP - 1;
+  ;
+   /* ***** TCS INCLUDE END -03/23/1998***********/
+  ;
+  if (COMMAREA.CACHGFL == "N") /* if inquiry authority only*/
+    OS0BS05(); /* set fields protected*/
+  end
+  ;
+end // end OS0BS27
+
+// start the editing process
+Function OS0BS35()
+  ;
+   /* *************************************************************/
+   /* part 1.  this part deals with deleting an order type*/
+   /* from the database. it recognizes the delete by comparing*/
+   /* the empty map field to the database load from working strg*/
+   /* *************************************************************/
+   /* part 2.  this part deals with editing the order type and*/
+            /* the brand code.*/
+   /* *************************************************************/
+  ;
+   /* ;/****** TCS INCLUDE BEGIN -05/25/1998********/
+  ;
+
+  OS0BW01.OS0BWSB3 = OS0BW01.OS0BWTXT;
+  if (OS0BWTXT == 27)
+    OS0BW01.OS0BWTXT = OS0BW01.OS0BWTXT - 1;
+  end
+  ;
+   /* ***** WIPRO CHANGES BEGIN TT#7776 *********/
+  ;
+  if (OS0BM010.XOTCD[OS0BWTXT] == " "
+   && converseVar.eventKey is pf8)
+    converseLib.validationFailed(644);
+    exit stack;
+  end
+  ;
+   /* ***** WIPRO CHANGES END   TT#7776 *********/
+  ;
+  ;
+   /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+  ;
+  while (OS0BW01.OS0BWTXT > 0)
+    if (OS0BM010.XOTCD[OS0BWTXT] == " " /* see part 1.*/
+     && OS0BW01.XOTCD[OS0BWTXT] > " ") 
+      OS0BW01.OS0BWDEL[OS0BWTXT] = "D";
+      OS0BW01.OS0BWUPF = "Y";
+    else
+      if (OS0BM010.XOTCD[OS0BWTXT] != OS0BW01.XOTCD[OS0BWTXT]
+       || OS0BM010.XBCCD[OS0BWTXT] != OS0BW01.XBCCD[OS0BWTXT]
+       || OS0BM010.OPKOTPGI[OS0BWTXT] != OS0BW01.OPKOTPGI[OS0BWTXT])
+        if (OS0BW01.OS0BWDEL[OS0BWTXT] == " ") /* see part 2 - not a delete*/
+          OS0BW01.OS0BWUPF = "Y"; /* turn on update flag*/
+          OS0BS45(); /* validate xotcd, xobcd, and profile*/
+                                   /* ind*/
+        end
+      end
+    end
+    OS0BWTXT = OS0BWTXT - 1;
+  end
+  ;
+   /* *************** TCS INCLUDE BEGIN -05/25/1998 *********/
+  ;
+  OS0BW01.OS0BWTXT = OS0BW01.OS0BWSB3;
+  ;
+   /* *********** TCS INCLUDE END -05/25/1998 ***************/
+  ;
+  if (OS0BW01.OS0BWERR == "Y") /* if an error*/
+    OS0BW01.OS0BWUPF = "N"; /* turn off update flag*/
+  end
+  ;
+end // end OS0BS35
+
+// edit xotcd/ xbccd/ opkotpgi
+Function OS0BS45()
+  ;
+  ;
+  ;
+   /* *************************************************/
+       /* valid program indicator?*/
+   /* *************************************************/
+  ;
+  if (OS0BM010.OPKOTPGI[OS0BWTXT] == "A"
+   || OS0BM010.OPKOTPGI[OS0BWTXT] == "P"
+   || OS0BM010.OPKOTPGI[OS0BWTXT] == "F"
+   || OS0BM010.OPKOTPGI[OS0BWTXT] == "M"
+   || OS0BM010.OPKOTPGI[OS0BWTXT] == "W"
+   || OS0BM010.OPKOTPGI[OS0BWTXT] == "X"
+   || OS0BM010.OPKOTPGI[OS0BWTXT] == "Y")
+      /* next sentence*/
+  else
+    converseLib.validationFailed(611); /* program indicator*/
+    OS0BW01.OS0BWERR = "Y";
+    set OS0BM010.OPKOTPGI[OS0BWTXT] cursor, bold;
+    exit stack;
+  end
+  ;
+  ;
+  ;
+   /* *************************************************/
+       /* brand code in table?*/
+   /* *************************************************/
+  ;
+  if (OS0BM010.XBCCD[OS0BWTXT] in XBCTBL.XBCCD
+   && XBCTBL.XXXSTAT == "A")
+    OS0BM010.XBCABRV[OS0BWTXT] = XBCTBL.XBCABRV[sysVar.arrayIndex];
+  else
+    converseLib.validationFailed(610); /* invalid brand code*/
+    OS0BW01.OS0BWERR = "Y";
+    set OS0BM010.XBCCD[OS0BWTXT] cursor, bold;
+    exit stack;
+  end
+  ;
+  ;
+  ;
+  ;
+   /* *************************************************/
+       /* order type in table and active?*/
+   /* *************************************************/
+  ;
+  if (OS0BM010.XOTCD[OS0BWTXT] in XOTTBL.XOTCD
+   && OS0BM010.XGPCD == XOTTBL.XGPCD[sysVar.arrayIndex]
+   && XOTTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+    OS0BM010.XOTABRV[OS0BWTXT] = XOTTBL.XOTABRV[sysVar.arrayIndex];
+  else
+    converseLib.validationFailed(017); /* invalid order type*/
+    OS0BW01.OS0BWERR = "Y";
+    set OS0BM010.XOTCD[OS0BWTXT] cursor, bold;
+    exit stack;
+  end
+  ;
+  ;
+  ;
+   /* *************************************************/
+       /* duplicate order types not allowed*/
+   /* *************************************************/
+  ;
+  OS0BW01.OS0BWSB2 = 1;
+  ;
+   /* ******* TCS INCLUDE BEGIN -05/25/1998 ***********/
+  ;
+  while (OS0BWSB2 < OS0BWTXT)
+    ;
+   /* ********* TCS INCLUDE END -05/25/1998 ********/
+    ;
+    if (OS0BWTXT == OS0BWSB2)
+       /* next sentence*/
+    else
+      if (OS0BM010.XOTCD[OS0BWTXT] > " "
+       && OS0BM010.XOTCD[OS0BWTXT] == OS0BM010.XOTCD[OS0BWSB2])
+        OS0BW01.OS0BWERR = "Y";
+        converseLib.validationFailed(408); /* DUPLICATE ORDER TYPE*/
+        set OS0BM010.XOTCD[OS0BWTXT] cursor, bold;
+        set OS0BM010.XOTCD[OS0BWSB2] bold;
+      else
+        if (OS0BM010.XOTCD[OS0BWTXT] > " " /* DUPLICATE XBCCD & OPKOTPGI*/
+         && OS0BM010.OPKOTPGI[OS0BWTXT] != "M"
+         && OS0BM010.XBCCD[OS0BWTXT] == OS0BM010.XBCCD[OS0BWSB2]
+         && OS0BM010.OPKOTPGI[OS0BWTXT] == OS0BM010.OPKOTPGI[OS0BWSB2])
+          OS0BW01.OS0BWERR = "Y";
+          converseLib.validationFailed(936);
+          set OS0BM010.XOTCD[OS0BWTXT] cursor, bold;
+          set OS0BM010.XBCCD[OS0BWTXT] bold;
+          set OS0BM010.OPKOTPGI[OS0BWTXT] bold;
+          set OS0BM010.XOTCD[OS0BWSB2] bold;
+          set OS0BM010.XBCCD[OS0BWSB2] bold;
+          set OS0BM010.OPKOTPGI[OS0BWSB2] bold;
+        end
+      end
+    end
+    OS0BWSB2 = OS0BWSB2 + 1;
+  end
+  ;
+  ;
+end // end OS0BS45
+
+// select set 'ss' io2550 opkrec
+Function OS0BS50()
+  ;
+  ;
+  ;
+   /* ********************************************/
+           /* select set opkrec io2550 'ss'*/
+   /* ********************************************/
+  ;
+  OS0BW01.OS0BWSB1 = 1;
+  set OPKREC empty;
+  ;
+  OPKREC.XOPCD = OS0BM010.XOPCD;
+  OPKREC.XOTCD = " ";
+  ;
+  call "IO2550" ("SS", SQLCA, OPKREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    OS0BS55(); /* clear working storage array*/
+    OS0BW01.XOPCD = OS0BM010.XOPCD;
+    OS0BW01.XOPDESC = OS0BM010.XOPDESC;
+    OS0BS20(); /* clear map array*/
+    OS0BS60(); /* fetch 'next' profile array*/
+    if (SQLCA.VAGen_SQLCODE == 0)
+      ;
+   /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+      ;
+      while (SQLCA.VAGen_SQLCODE == 0)
+        if (OS0BWSB1 < 81) /* TCS CHANGE*/
+          ;
+   /* ***** TCS INCLUDE END -03/23/1998**********/
+          ;
+          OS0BS60(); /* fetch 'next' profile array*/
+        end
+      end
+      return;
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        converseLib.validationFailed(409); /* this is a new profile*/
+      end
+    end
+    call "IO2550" ("CS", SQLCA, OPKREC) {isNoRefresh = yes, isExternal = yes};
+  else
+    TA1REC.TA1TYPE = "DB2 ";
+    TA1REC.TA1FUNC = "RETN";
+    TA1REC.TA1PGMNM = "OS0B";
+    TA1REC.TA1LOCAT[1] = "SS      ";
+    TA1REC.TA1LOCAT[2] = "OS0BS50 ";
+    TA1REC.TA1LOCAT[3] = "IO2550  ";
+    TA1REC.TA1LOCAT[4] = "        ";
+    TA1REC.TA1MAP = "        ";
+    TA1REC.TA1DBASE = "DORDER  ";
+    TA1REC.TA1TBLVU = "VVALOT01";
+    TA1REC.TA1TBLKE = OPKREC.OPKGRP;
+    try
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+    COMMAREA.CAUSERA = " "; /* on error clear ws*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.rollback();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    XSPF4();
+    exit program;
+  end
+  ;
+  ;
+  ;
+  call "IO2550" ("CS", SQLCA, OPKREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  ;
+  ;
+end // end OS0BS50
+
+// clear working storage record
+Function OS0BS55()
+  ;
+  ;
+  ;
+  sysVar.arrayIndex = 1;
+  ;
+   /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+  ;
+  while (sysVar.arrayIndex < 81)
+    ;
+   /* ***** TCS INCLUDE BEGIN -03/23/1998********/
+    ;
+    OS0BW01.XOTCD[sysVar.arrayIndex] = " ";
+    OS0BW01.XOTABRV[sysVar.arrayIndex] = " ";
+    OS0BW01.OS0BWDEL[sysVar.arrayIndex] = " ";
+    OS0BW01.XBCCD[sysVar.arrayIndex] = " ";
+    OS0BW01.XBCABRV[sysVar.arrayIndex] = " ";
+    OS0BW01.OPKOTPGI[sysVar.arrayIndex] = " ";
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+  ;
+  ;
+  ;
+end // end OS0BS55
+
+// fetch next 'sn' profile array
+Function OS0BS60()
+  ;
+  ;
+  ;
+  call "IO2550" ("SN", SQLCA, OPKREC) {isNoRefresh = yes, isExternal = yes}; /* fetch next order*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    ;
+    OS0BW01.XOTCD[OS0BWSB1] = OPKREC.XOTCD;
+    if (OPKREC.XOTCD in XOTTBL.XOTCD
+     && XOTTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      OS0BW01.XOTABRV[OS0BWSB1] = XOTTBL.XOTABRV[sysVar.arrayIndex];
+    else
+      OS0BW01.XOTABRV[OS0BWSB1] = "INACTIVE";
+    end
+    ;
+    OS0BW01.XBCCD[OS0BWSB1] = OPKREC.XBCCD;
+    if (OPKREC.XBCCD in XBCTBL.XBCCD
+     && XBCTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      OS0BW01.XBCABRV[OS0BWSB1] = XBCTBL.XBCABRV[sysVar.arrayIndex];
+    else
+      OS0BW01.XBCABRV[OS0BWSB1] = "INACTIVE";
+    end
+    ;
+    OS0BW01.OPKOTPGI[OS0BWSB1] = OPKREC.OPKOTPGI;
+    ;
+    OS0BWSB1 = OS0BWSB1 + 1;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* end of array*/
+       /* next sentence*/
+    else
+      TA1REC.TA1TYPE = "DB2 ";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OS0B";
+      TA1REC.TA1LOCAT[1] = "SN      ";
+      TA1REC.TA1LOCAT[2] = "OS0BS60 ";
+      TA1REC.TA1LOCAT[3] = "IO2550  ";
+      TA1REC.TA1LOCAT[4] = "        ";
+      TA1REC.TA1MAP = "        ";
+      TA1REC.TA1DBASE = "DORDER  ";
+      TA1REC.TA1TBLVU = "VVALOT01";
+      TA1REC.TA1TBLKE = OPKREC.OPKGRP;
+      try
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      end
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      XSPF4();
+      exit program;
+    end
+  end
+  ;
+  ;
+  ;
+  ;
+end // end OS0BS60
+
+// delete profile io2550 opkrec
+Function OS0BS65()
+  ;
+  ;
+  ;
+  sysVar.arrayIndex = 1;
+  ;
+  set SQLCA empty;
+  set ERRSQLCA empty;
+  ;
+   /* ********* TCS INCLUDE BEGIN -05/25/1998*************/
+  ;
+  if (OS0BWTXT <= 27
+   && OS0BWSB1 > OS0BWTXT)
+    sysVar.arrayIndex = 27;
+  else
+    OS0BWSB1 = 26;
+  end
+  ;
+   /* *********** TCS INCLUDE END -05/25/1998 *********8*/
+  ;
+  OS0BWSB1 = OS0BWSB1 + 1;
+  while (sysVar.arrayIndex < OS0BWSB1
+   && OS0BW01.XOTCD[sysVar.arrayIndex] > " ")
+    ;
+    OPKREC.XOPCD = OS0BW01.XOPCD;
+    OPKREC.XOTCD = OS0BW01.XOTCD[sysVar.arrayIndex];
+    OPKREC.OPKOTEDT = 0;
+    ;
+    ;
+    call "IO2550" ("D ", SQLCA, OPKREC) {isNoRefresh = yes, isExternal = yes};
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0)
+      /* next sentence*/
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "RETN";
+      TA1REC.TA1PGMNM = "OS0B";
+      TA1REC.TA1LOCAT[1] = "D B     ";
+      TA1REC.TA1LOCAT[2] = "OS0BS65";
+      TA1REC.TA1LOCAT[3] = "IO2550";
+      TA1REC.TA1LOCAT[4] = "      ";
+      TA1REC.TA1MAP = "      ";
+      TA1REC.TA1DBASE = "DORDER";
+      TA1REC.TA1TBLVU = "VVALOT01";
+      TA1REC.TA1TBLKE = OPKREC.OPKGRP;
+      try
+        call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+      end
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.rollback();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      XSPF4();
+      exit program;
+    end
+    ;
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+  ;
+  ;
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+  
+  ;
+  ;
+end // end OS0BS65
+
+// add profile io2550 opkrec
+Function OS0BS70()
+  ;
+  ;
+  OS0BW01.OS0BWSB1 = 1;
+  ;
+  set OPKREC empty;
+  ;
+  while (OS0BWSB1 < 27)
+    if (OS0BM010.XOTCD[OS0BWSB1] > " ")
+      OPKREC.XOPCD = OS0BM010.XOPCD;
+      OPKREC.XOTCD = OS0BM010.XOTCD[OS0BWSB1];
+      OPKREC.OPKOTEDT = 0;
+      OPKREC.XBCCD = OS0BM010.XBCCD[OS0BWSB1];
+      OPKREC.OPKOTPGI = OS0BM010.OPKOTPGI[OS0BWSB1];
+      OPKREC.ZZZSDT = OS0BW01.OS0BWSDT;
+      ;
+      set SQLCA empty;
+      set ERRSQLCA empty;
+      ;
+      call "IO2550" ("A ", SQLCA, OPKREC) {isNoRefresh = yes, isExternal = yes};
+      ;
+      if (SQLCA.VAGen_SQLCODE == 0)
+         /* next sentence*/
+      else
+        TA1REC.TA1TYPE = "DB2 ";
+        TA1REC.TA1FUNC = "RETN";
+        TA1REC.TA1PGMNM = "OS0B";
+        TA1REC.TA1LOCAT[1] = "ADD     ";
+        TA1REC.TA1LOCAT[2] = "OS0BS70 ";
+        TA1REC.TA1LOCAT[3] = "IO2550  ";
+        TA1REC.TA1LOCAT[4] = "        ";
+        TA1REC.TA1MAP = "        ";
+        TA1REC.TA1DBASE = "DORDER  ";
+        TA1REC.TA1TBLVU = "VVALOT01";
+        TA1REC.TA1TBLKE = OPKREC.OPKGRP;
+        try
+          call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+        end
+        VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+        VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+        sysLib.rollback();
+        VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+        
+        XSPF4();
+        exit program;
+      end
+    end
+    ;
+    OS0BWSB1 = OS0BWSB1 + 1;
+  end
+  ;
+  ;
+  ;
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+  
+  ;
+  ;
+  ;
+end // end OS0BS70
+
+// pop-up window for xoptbl
+Function OS0BSXX()
+  XPXX001();
+  XX0XW02.XX0XWHDR = "  ORDER TYPE PROFILES    "; /* heading*/
+  ;
+  while (XX0XW02.XX0XWEND == "N")
+    XPXOP01();
+    ;
+    if (XX0XW02.XX0XWPIX > +0)
+      OS0BM010.XOPCD = XOPTBL.XOPCD[XX0XWPIX];
+      OS0BM010.XOPDESC = XOPTBL.XOPDESC[XX0XWPIX];
+      OS0BM010.XGPCD = XOPTBL.XGPCD[XX0XWPIX];
+      if (XOPTBL.XGPCD[XX0XWPIX] in XGPTBL.XGPCD
+       && XGPTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+        OS0BM010.XGPDESC = XGPTBL.XGPDESC[sysVar.arrayIndex];
+      else
+        OS0BM010.XGPDESC = "INACTIVE";
+      end
+    else
+      OS0BM010.XOPCD = " ";
+      OS0BM010.XOPDESC = " ";
+    end
+  end
+  ;
+  converseLib.clearScreen();
+  
+  ;
+  ;
+  ;
+end // end OS0BSXX
+
+//*** RECORD=OS0BW01 ****
+// 11-29-90   dlh   changed array from 39 to 26 occurances and
+//                  added 3 new fields
+// ***********************
+Record OS0BW01 type basicRecord
+  10 OS0BWERR OS0BWERR ; 
+  10 OS0BWUPF OS0BWUPF ; 
+  10 OS0BWSB1 OS0BWSB1 ; 
+  10 OS0BWSB2 OS0BWSB2 ; 
+  10 OS0BWSB3 OS0BWSB3 ; 
+  10 OS0BWTCT OS0BWTCT ; 
+  10 OS0BWTSP OS0BWTSP ; 
+  10 OS0BWINX OS0BWINX ; 
+  10 OS0BWTXT OS0BWTXT ; 
+  10 OS0BWSDT OS0BWSDT ; 
+  10 * char(3) ; 
+  10 XOPCD XOPCD ; 
+  10 XOPDESC XOPDESC ; 
+  10 OS0BWARY OS0BWARY [81] ; 
+    15 XOTCD XOTCD ; 
+    15 XOTABRV XOTABRV ; 
+    15 OS0BWDEL OS0BWDEL ; 
+    15 XBCCD XBCCD ; 
+    15 XBCABRV XBCABRV ; 
+    15 OPKOTPGI OPKOTPGI ; 
+end // end OS0BW01
+
+DataItem OS0BWARY char(18)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// delete flag
+DataItem OS0BWDEL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// error flag
+DataItem OS0BWERR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// INCREMENT
+DataItem OS0BWINX num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// SUBSCRIPT1
+DataItem OS0BWSB1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// SUBSCRIPT2
+DataItem OS0BWSB2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// subscript  three
+DataItem OS0BWSB3 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// today's dt used for zzzsdt
+DataItem OS0BWSDT int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// subscript5
+DataItem OS0BWTCT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// SUBSCRIPT3
+DataItem OS0BWTSP num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// subscript61
+DataItem OS0BWTXT num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// update flag
+DataItem OS0BWUPF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+

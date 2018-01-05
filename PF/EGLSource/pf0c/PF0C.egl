@@ -1,0 +1,2320 @@
+package pf0c;
+import corpcom3.XPPF002;
+import corpcom3.XPPF010;
+import corpcom3.XPPF030;
+import corpcom3.XPPF200;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSPF1;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import corpcom7.ZZNBRROW;
+import pf.common.*;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+import xx.common.*;
+import xx.common.XXXUSRID;
+import xx.common.YISCD;
+import xx.common.ZZZCHGCT;
+import xx.common.ZZZCHGDT;
+import xx.common.ZZZCHGTM;
+import xx.common.ZZZSDT;
+//*** PROGRAM=PF0C ****
+// PF0C: Summary View Directory application for the
+//       Profitablity Reporting System.
+// 
+// 
+// Overview:
+//       This application lists the Sumaries that exist in the
+//       system.  It allows the user to select a summary and
+//       then bridge to other Profitability applications to
+//       see the detail for the summary.  It also allows a
+//       summary to be deleted before or held after the
+//       automatic delete date for the summary.
+// 
+// 
+// Programming Notes:
+//       This application loads the entire Summary Attribute
+//       file into a CSP table when the application is
+//       initialized.  The screen pages are created from this
+//       CSP table rather than directly from the database.
+//       The rows of this CSP table, PF0CW02, must exactly
+//       match the rows of the DPROFT.VSUMAT01 database table.
+//       PFEREC is used for I/O from the database table.  If
+//       database table and PFEREC are changed, the CSP table
+//       must be changed also.
+// 
+//       Four main indexes control the table and screen
+//       positioning:
+// 
+//         PF1REC.PF1TBLX gives the position within the CSP
+//       table of the first summary displayed on the screen.
+//       If page 1 is displayed, PF1TBLX = 1.  If page 2 is
+//       displayed, PF1TBLX = 15 (there are 14 lines per page).
+//         PF1REC.PF1IDX gives the position of the summary
+//       selected on the screen.  If the third summary is
+//       selected, PF1IDX = 3.
+//         These two PF1REC indexes are used to store these
+//       positions throughout execution of the application
+//       and also are used when bridging out to another PF
+//       application and back.  They store the information
+//       to return the screen to it's original state upon
+//       returning.
+// 
+//         PFWREC.PFWTBLX and PFWREC.PFWIDX are temporary
+//       data items to store the table and screen positions.
+//       They are used to control WHILE loops.  They are reset
+//       before each loop and they are not used to store
+//       information outside of those loops.
+// 
+//       Partial last pages:  Note that when the last page of
+//       summaries is not completely full (less than 14), the
+//       indexes still reference 14 rows of data.
+//         PFWTBLX will go beyond the end of the data
+//       (PFWREC.PFWLIMIT) loaded into the CSP table, into the
+//       area that was initialized to zeros and spaces.
+//         PFWIDX will go beyond the last summary on the
+//       beyond the last summary on the screen into the area
+//       that is dark and is initialized to zeros and spaces.
+//         In some WHILE loops these two initialized areas
+//       are compared against each other.
+// 
+// 
+// Maintenance History:
+//   Date      By            Description of Change
+// --------  ------  ------------------------------------------
+//  1-26-89  DCassi  Original transfer to production.
+//  3-14-89  DCassi  Change status editing (added PF0C121),
+//                   make priority editable, display '1' or
+//                   '2' instead of 'I' or 'O' for priority,
+//                   set map page for PA2, force re-entry of
+//                   'D' for delete confirmation, reverse the
+//                   'CONTRIB' and 'CONTRIB%' sequencing
+//                   element descriptions, change edit before
+//                   PF17 to check PFECRTDT = 0.
+//  3-15-89  DCassi  Change requirement to actually delete
+//                   the sumat row from PFESTIND = ' ' to
+//                   PFECRTDT = 0, in PF0C152.
+//  3-21-89  DCassi  When deleting a sum attr for a sum that
+//                   is not yet created, delete all rptpm's for
+//                   the sum, delete all sums that have that
+//                   sum as thier source sum, and delete all
+//                   rptpm's for these sums.
+// 12-15-89  TGriff  Define super-user (no status editing)
+//                   and restrict status changes to users with
+//                   security level 1 abilities. (pf0c123)
+// 01-17-90  dbrock  Modified PF0C921,PF0C922,PF0C923
+//                   to use the new IO mod codes.  these were
+//                   changed when we added a new select set
+//                   to IO2880.
+// 04-01-90  cvo     Added two new processing cycles: 'W'eekly,
+//                   and 'Q'uarterly. Deleted all closes cycle.
+//                   Renamed cycles 'S'econd close to 'b'illing
+//                   cutoff and 'T'hird close to 'P' final (pf)
+//                   close.
+// 01-23-92  wes     Added two defaults to pferec: sum seq num,
+//                   and logical page count.
+// *********************
+Program PF0C type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "PF00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  PF0CW01 PF0CW01; // record
+  PF0CW02 PF0CW02; // record
+  PF1REC PF1REC; // record
+  PFBREC PFBREC; // record
+  PFCREC PFCREC; // record
+  PFDREC PFDREC; // record
+  PFEREC PFEREC; // record
+  PFFREC PFFREC; // record
+  PFWREC PFWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use PF0CM.PF0CM001 // form
+   {
+    helpKey = pf1,
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    PF0C000: PF0C000();
+  end // end main
+end // end PF0C
+
+// Summary Directory Mainline
+Function PF0C000()
+  PF0C010(); /* initialization*/
+  ;
+  PFWREC.PFWEXT = "N";
+  while (PFWREC.PFWEXT == "N")
+    ;
+    PF0C100(); /* converse summary directory*/
+    ;
+  end
+  ;
+  XPPF002(); /* pf common exit routine*/
+  ;
+  COMMAREA.CATOAP = "PF0A"; /* if standard exit not successful,*/
+  XSEXIT(); /* go to profit menu*/
+  ;
+  exit program;
+end // end PF0C000
+
+// Initialization
+Function PF0C010()
+  XSENTRY(); /* security routine*/
+  ;
+  XSSEGTR(); /* set cics start tran id*/
+  ;
+  set PF0CM001 initial; /* initialize map*/
+  set PFWREC empty; /* initialize general working storage*/
+  set PF0CW01 empty; /* initialize pf0c working storage*/
+  set PF0CW02 empty; /* initialize pf0c ws vsumat01 table*/
+  set PF1REC empty; /* initialize bridge record*/
+  ;
+  PF0CW01.PF0CWDCF = "N"; /* set delete confirm msg issued flag*/
+  PFWREC.PFWDTE = VGVar.currentShortGregorianDate; /* set map date to current system date*/
+  ;
+  PF0C911(); /* vsumat01 select entire table*/
+  ;
+  if (PFWREC.PFWRECF == "Y") /* if all db records found*/
+    ;
+    PF0C011(); /* pf key xfer index restore*/
+    ;
+    PF0C810(); /* move 14 rows from table to screen*/
+    ;
+  end
+end // end PF0C010
+
+// pf key xfer index restore
+Function PF0C011()
+   /* -----------------------------------------------------------;*/
+     /* this process is used to restore the table indexes       ;*/
+     /* when transfering back in with pf keys.  the indexes     ;*/
+     /* are restored to the same values as they were when       ;*/
+     /* the user originally transfered out of this              ;*/
+     /* application.                                            ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF1REC.PF1PASS = COMMAREA.CAUSERA;
+  ;
+  COMMAREA.CAUSERA = " "; /* clear the commarea*/
+  if (PF1REC.PF1XFERF == "Y") /* if entered via pf key*/
+    if (PF1REC.PF1ORIG != "PF0C" /* if the originating prog*/
+     && PF1REC.PF1ORIG != "PF0G" /* is not valid*/
+     && PF1REC.PF1ORIG != "PF0H")
+      converseLib.validationFailed(001); /* invalid pf key pressed - retry*/
+      PF1REC.PF1TBLX = 001; /* set table index to look at row 1*/
+      PF1REC.PF1IDX = 001; /* set screen index to row 1*/
+      return;
+    else
+      if (PF1REC.PF1TBLX >= 1 /* if passed table index value valid*/
+       && PF1REC.PF1TBLX <= PFWREC.PFWLIMIT
+       && PF1REC.PF1IDX >= 1  
+       /* and passed screen index value valid*/
+       && PF1REC.PF1IDX <= 14 
+       && PF1REC.PF1IDX <= PFWREC.PFWLIMIT)
+         /* this is ok - indexes are set at values before bridge*/
+      else /* bad index sent*/
+        PF1REC.PF1TBLX = 001; /* set table index to 1st pos.*/
+        PF1REC.PF1IDX = 001; /* set the screen index to row 1*/
+      end
+    end
+  else
+    PF1REC.PF1TBLX = 001; /* set the table index to 1st pos.*/
+    PF1REC.PF1IDX = 001; /* set the screen index to row 1*/
+  end
+end // end PF0C011
+
+// Converse Summary Directory
+Function PF0C100()
+  if (PFWREC.PFWMSG != " ") /* display incoming message*/
+    PF0CM001.VAGen_EZEMSG = PFWREC.PFWMSG;
+  end
+  ;
+  converse PF0CM001 ;
+  ;
+  PFWREC.PFWMSG = " "; /* clear message line*/
+  PF0CM001.VAGen_EZEMSG = " ";
+  ;
+  if (PFWREC.PFWRECF == "N") /* if not all records found in init*/
+    if (converseVar.eventKey is enter
+     || converseVar.eventKey is pa2)
+      ;
+      PF0C010(); /* *** force initialization again ****/
+      ;
+      PFWREC.PFWEXT = "N"; /* reset exit flag cleared in init*/
+      return;
+    else
+      if (converseVar.eventKey is pf1 /* if help pf key pushed*/
+       || converseVar.eventKey is pf3 /* or exit to profit menu pf key*/
+       || converseVar.eventKey is pf4) /* or exit to main menu pf key*/
+         /* do nothing - exiting in PF0C110 anyway*/
+      else
+        converseLib.validationFailed(1); /* invalid pf key pressed - retry*/
+        return;
+      end
+    end
+  end
+  ;
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    PF0CW01.PF0CWDCF = "N"; /* reset delete confirm msg issued flag*/
+  end
+  PFWREC.PFWERRF = "N"; /* reset error flag*/
+  ;
+  ;
+  PF0C110(); /* process fastpath, pf1,3,4, & pa2*/
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    return;
+  end
+  ;
+  ;
+  PF0C120(); /* edit screen fields*/
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    return;
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8)
+    ;
+    PF0C130(); /* process pf7 and pf8 scrolling*/
+    ;
+    return;
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf14
+   || converseVar.eventKey is pf15
+   || converseVar.eventKey is pf16
+   || converseVar.eventKey is pf17)
+    ;
+    PF0C140(); /* process pf14 - 17 appl bridge*/
+    ;
+    if (PFWREC.PFWERRF == "Y")
+      return;
+    end
+  end
+  ;
+  ;
+  if (PF0CW01.PF0CWSTC > 0 /* if status field chg count gt 0*/
+   || PF0CW01.PF0CWPRC > 0 /* or priority field chg count gt 0*/
+   || PF0CW01.PF0CWCYC > 0) /* or cycle field chg count gt 0*/
+    ;
+    PF0C150(); /* process status,priority,cycle*/
+    ;
+  else
+    PF0CW01.PF0CWDCF = "N"; /* reset delete confirm msg issued flag*/
+  end
+end // end PF0C100
+
+// process fastpath,pf1,3,4,& pa2
+Function PF0C110()
+   /* -----------------------------------------------------------;*/
+     /* This process performs the following functions:          ;*/
+        /* FASTPATH  Transfer to the specified application.     ;*/
+        /* PA2  Reset the values of the Selection & Summary     ;*/
+             /* Flag fields to their original values.           ;*/
+        /* PF1  Transfer to the Help Application.               ;*/
+        /* PF3  Transfer to the Profitability Menu.             ;*/
+        /* PF4  Transfer to the Main Menu.                      ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  ;
+      /* FASTPATH transfer OUT*/
+  ;
+  if (PF0CM001.CATOAP != " " /* If FASTPATH*/
+   || PF0CM001.CAITEM != " ")
+    ;
+    ;
+     /* flag any changed fields on screen except fastpath fields*/
+    ;
+    PFWREC.PFWIDX = 14; /* start scrn index at bot of scrn*/
+    PFWREC.PFWTBLX = PF1REC.PF1TBLX + 13; /* start tbl index at bot*/
+    while (PFWREC.PFWIDX >= 1)
+      if (PFWREC.PFWTBLX <= PFWREC.PFWLIMIT) /* leave unused rows dark*/
+        if (PF0CW02.PFESUMNM[PFWTBLX] == "*DELETED*"
+         && PF0CW02.PFGSUMN[PFWTBLX] == 0)
+           /* next sentence - leave deleted rows dark*/
+        else
+          set PF0CM001.PFECYCIN[PFWIDX] normal;
+          set PF0CM001.PFEPRIND[PFWIDX] normal;
+          set PF0CM001.PFESTIND[PFWIDX] normal;
+          set PF0CM001.PF0CMSEL[PFWIDX] normal;
+        end
+      end
+      if (PF0CM001.PFECYCIN[PFWIDX] != PF0CW02.PFECYCIN[PFWTBLX]
+       || PF0CM001.PFECYCIN[PFWIDX] is modified)
+        PF0CM001.PFECYCIN[PFWIDX] = PF0CW02.PFECYCIN[PFWTBLX];
+        set PF0CM001.PFECYCIN[PFWIDX] cursor, bold;
+        converseLib.validationFailed(2); /* do not enter data if using fastpath option*/
+        PFWREC.PFWERRF = "Y";
+      end
+      if (PF0CM001.PFEPRIND[PFWIDX] != PF0CW02.PFEPRIND[PFWTBLX]
+       || PF0CM001.PFEPRIND[PFWIDX] is modified)
+        PF0CM001.PFEPRIND[PFWIDX] = PF0CW02.PFEPRIND[PFWTBLX];
+        set PF0CM001.PFEPRIND[PFWIDX] cursor, bold;
+        converseLib.validationFailed(2); /* do not enter data if using fastpath option*/
+        PFWREC.PFWERRF = "Y";
+      end
+      if (PF0CM001.PFESTIND[PFWIDX] != PF0CW02.PFESTIND[PFWTBLX]
+       || PF0CM001.PFESTIND[PFWIDX] is modified)
+        PF0CM001.PFESTIND[PFWIDX] = PF0CW02.PFESTIND[PFWTBLX];
+        set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+        converseLib.validationFailed(2); /* do not enter data if using fastpath option*/
+        PFWREC.PFWERRF = "Y";
+      end
+      if (PF0CM001.PF0CMSEL[PFWIDX] != " "
+       || PF0CM001.PF0CMSEL[PFWIDX] is modified)
+        PF0CM001.PF0CMSEL[PFWIDX] = " ";
+        set PF0CM001.PF0CMSEL[PFWIDX] cursor, bold;
+        converseLib.validationFailed(2); /* do not enter data if using fastpath option*/
+        PFWREC.PFWERRF = "Y";
+      end
+      PFWREC.PFWIDX = PFWREC.PFWIDX - 1;
+      PFWREC.PFWTBLX = PFWREC.PFWTBLX - 1;
+    end
+    if (converseVar.eventKey not enter)
+      converseLib.validationFailed(190); /* must press enter when using fastpath*/
+      PFWREC.PFWERRF = "Y";
+    end
+    ;
+    if (PFWREC.PFWERRF == "Y") /* if any errors occured*/
+      return; /* return*/
+    else /* else*/
+      COMMAREA.CAFROMAP = "PF0C"; /* allow fastpath*/
+      COMMAREA.CATOAP = PF0CM001.CATOAP;
+      COMMAREA.CAITEM = PF0CM001.CAITEM;
+      ;
+      XPPF002(); /* pf common exit routine*/
+      ;
+      return;
+    end
+  end
+  ;
+  ;
+      /* PA2 Reset*/
+  ;
+  if (converseVar.eventKey is pa2)
+    ;
+    PF0C810();
+                                   /* move 14 rows from csp table to screen*/
+    ;
+    converseLib.clearScreen();
+    
+    set PF0CM001.PF0CMSEL[1] cursor;
+    converseLib.validationFailed(189); /* pa2 pressed; screen changes aborted*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+  ;
+  ;
+      /* Enter key*/
+  ;
+  if (converseVar.eventKey is enter)
+    return;
+  end
+  ;
+  ;
+      /* PF1 Help key transfer*/
+  ;
+  if (converseVar.eventKey is pf1) /* If the PF1 key is pressed*/
+    XSPF1(); /* perform the HELP statement group.*/
+    PF0CM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+    PFWREC.PFWERRF = "Y"; /* Handle a bad transfer*/
+    return;
+  end
+  ;
+  ;
+      /* PF3 key transfer to Profitability menu*/
+  ;
+  if (converseVar.eventKey is pf3) /* If the PF3 key is pressed*/
+    COMMAREA.CAFROMAP = "PF0C"; /* Set up*/
+    COMMAREA.CATOAP = "PF0A"; /* for transfer*/
+    XSEXIT(); /* Transfer to PF0A.*/
+    PF0CM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+    PFWREC.PFWERRF = "Y"; /* Handle bad transfer*/
+    return;
+  end
+  ;
+  ;
+      /* PF4 key transfer to main system menu*/
+  ;
+  if (converseVar.eventKey is pf4) /* If the PF4 key is pressed*/
+    COMMAREA.CAFROMAP = "PF0C";
+    XSPF4(); /* transfer to the MAIN MENU.*/
+    PF0CM001.VAGen_EZEMSG = COMMAREA.CAMSG;
+    PFWREC.PFWERRF = "Y"; /* handle a bad transfer*/
+    return;
+  end
+  ;
+  ;
+      /* Other valid pf keys*/
+  ;
+  if (converseVar.eventKey is pf7
+   || converseVar.eventKey is pf8
+   || converseVar.eventKey is pf14
+   || converseVar.eventKey is pf15
+   || converseVar.eventKey is pf16
+   || converseVar.eventKey is pf17)
+     /* handle later*/
+    return;
+  end
+  ;
+  ;
+      /* Fall through error - Invalid PF key pressed*/
+  ;
+  converseLib.validationFailed(001); /* Invalid PF key pressed - Retry*/
+  return;
+end // end PF0C110
+
+// edit screen fields
+Function PF0C120()
+   /* -----------------------------------------------------------;*/
+     /* This routine edits the entries made by the user on      ;*/
+     /* the screen.  Either a single selection may be made,     ;*/
+     /* or any number of status, priority, and/or cycle changes ;*/
+     /* may be made.                                            ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  set PF0CM001.CATOAP initialAttributes;
+  set PF0CM001.CAITEM initialAttributes;
+  ;
+  PF1REC.PF1IDX = 1; /* initialize screen index save area*/
+  ;
+  ;
+      /* Search the fields on the screen and*/
+      /* determine the number of entries made.*/
+  ;
+  PF0CW01.PF0CWSLC = 0; /* Initialize the selection field*/
+                                   /* counter*/
+  PF0CW01.PF0CWSTC = 0; /* Initialize the status field chg counter*/
+  PF0CW01.PF0CWPRC = 0; /* Initialize the priority field chg counter*/
+  PF0CW01.PF0CWCYC = 0; /* Initialize the Cycle field change counter*/
+  ;
+  PFWREC.PFWIDX = 14; /* Start scrn index at bot of scrn*/
+  PFWREC.PFWTBLX = PF1REC.PF1TBLX + 13; /* Start table index at bottom*/
+  while (PFWREC.PFWIDX >= 1)
+    if (PFWREC.PFWTBLX <= PFWREC.PFWLIMIT) /* leave unused rows dark*/
+      if (PF0CW02.PFESUMNM[PFWTBLX] == "*DELETED*"
+       && PF0CW02.PFGSUMN[PFWTBLX] == 0)
+         /* next sentence - leave deleted rows dark*/
+      else
+        set PF0CM001.PFECYCIN[PFWIDX] normal; /* Reset any previous*/
+        set PF0CM001.PFEPRIND[PFWIDX] normal; /* field attribute changes*/
+        set PF0CM001.PFESTIND[PFWIDX] normal;
+        set PF0CM001.PF0CMSEL[PFWIDX] normal;
+      end
+    end
+    if (PF0CM001.PFECYCIN[PFWIDX] != PF0CW02.PFECYCIN[PFWTBLX])
+      PF0CW01.PF0CWCYC = PF0CW01.PF0CWCYC + 1; /* increment cycle chg count*/
+    end
+    if (PF0CM001.PFEPRIND[PFWIDX] != PF0CW02.PFEPRIND[PFWTBLX])
+      PF0CW01.PF0CWPRC = PF0CW01.PF0CWPRC + 1;
+                                   /* increment priority chg cnt*/
+    end
+    if (PF0CM001.PFESTIND[PFWIDX] != PF0CW02.PFESTIND[PFWTBLX])
+      PF0CW01.PF0CWSTC = PF0CW01.PF0CWSTC + 1;
+                                   /* increment status chg count*/
+    end
+    if (PF0CM001.PF0CMSEL[PFWIDX] != " ")
+      PF0CW01.PF0CWSLC = PF0CW01.PF0CWSLC + 1; /* increment selection count*/
+    end
+    PFWREC.PFWIDX = PFWREC.PFWIDX - 1;
+    PFWREC.PFWTBLX = PFWREC.PFWTBLX - 1;
+  end
+  ;
+  ;
+      /* If both a selection and one or more status, priority,*/
+      /* or cycle changes have been made, flag the error.*/
+  ;
+  if (PF0CW01.PF0CWSLC > 0) /* if selection count gt 0*/
+    if (PF0CW01.PF0CWSTC > 0 /* if status chg count gt 0*/
+     || PF0CW01.PF0CWPRC > 0 /* or priority chg count gt 0*/
+     || PF0CW01.PF0CWCYC > 0) /* or cycle chg count gt 0*/
+      PFWREC.PFWIDX = 14; /* Start scrn index at bot of scrn*/
+      PFWREC.PFWTBLX = PF1REC.PF1TBLX + 13; /* Start table index at bottom*/
+      while (PFWREC.PFWIDX >= 1)
+        if (PF0CM001.PFECYCIN[PFWIDX] != PF0CW02.PFECYCIN[PFWTBLX])
+          PF0CM001.PFECYCIN[PFWIDX] = PF0CW02.PFECYCIN[PFWTBLX];
+          set PF0CM001.PFECYCIN[PFWIDX] cursor, bold;
+        end
+        if (PF0CM001.PFEPRIND[PFWIDX] != PF0CW02.PFEPRIND[PFWTBLX])
+          PF0CM001.PFEPRIND[PFWIDX] = PF0CW02.PFEPRIND[PFWTBLX];
+          set PF0CM001.PFEPRIND[PFWIDX] cursor, bold;
+        end
+        if (PF0CM001.PFESTIND[PFWIDX] != PF0CW02.PFESTIND[PFWTBLX])
+          PF0CM001.PFESTIND[PFWIDX] = PF0CW02.PFESTIND[PFWTBLX];
+          set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+        end
+        if (PF0CM001.PF0CMSEL[PFWIDX] != " ")
+          set PF0CM001.PF0CMSEL[PFWIDX] cursor, bold;
+        end
+        PFWREC.PFWIDX = PFWREC.PFWIDX - 1;
+        PFWREC.PFWTBLX = PFWREC.PFWTBLX - 1;
+      end
+      converseLib.validationFailed(064); /* if a selection is made, no other entries*/
+      PFWREC.PFWERRF = "Y"; /* may be made*/
+    end
+  end
+  ;
+  ;
+      /* If more than one selection has been made, flag the*/
+      /* error.*/
+  ;
+  if (PF0CW01.PF0CWSLC > 1) /* if selection count gt 1*/
+    PFWREC.PFWIDX = 14; /* Start scrn index at bot of scrn*/
+    while (PFWREC.PFWIDX >= 1)
+      if (PF0CM001.PF0CMSEL[PFWIDX] != " ")
+        PF0CM001.PF0CMSEL[PFWIDX] = " ";
+        set PF0CM001.PF0CMSEL[PFWIDX] cursor, bold;
+      end
+      PFWREC.PFWIDX = PFWREC.PFWIDX - 1;
+    end
+    converseLib.validationFailed(034); /* cannot process more than 1 selection at a time*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+  ;
+      /* If an error has occured, return.*/
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    return;
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+     /* At this point one of three conditions can exist: 1) No  ;*/
+     /* changes were made to the screen.  2) A single selection ;*/
+     /* field had an 'S' entry.  3) One or more status,         ;*/
+     /* priority, and/or cycle changes have been made.          ;*/
+     /* The valid statuses are blank, 'O', 'I', 'N', 'H', and   ;*/
+     /* 'D'.  The valid priorities are 1 (immediate) and        ;*/
+     /* 2 (overnight).  The valid cycles are 'o', 'b', 'f',     ;*/
+     /* 'p', 'w', and 'q'.                                      ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  ;
+      /* Search the entire screen for valid entries.*/
+      /* Flag those that are in error.*/
+  ;
+  PFWREC.PFWIDX = 14;
+  PFWREC.PFWTBLX = PF1REC.PF1TBLX + 13;
+  while (PFWREC.PFWIDX >= 1)
+    if (PF0CM001.PFECYCIN[PFWIDX] != PF0CW02.PFECYCIN[PFWTBLX])
+      ;
+      PF0C121(); /* edit cycle field*/
+      ;
+    end
+    if (PF0CM001.PFEPRIND[PFWIDX] != PF0CW02.PFEPRIND[PFWTBLX])
+      ;
+      PF0C122(); /* edit priority field*/
+      ;
+    end
+    if (PF0CM001.PFESTIND[PFWIDX] != PF0CW02.PFESTIND[PFWTBLX])
+      ;
+      PF0C123(); /* edit status field*/
+      ;
+    end
+    if (PF0CM001.PF0CMSEL[PFWIDX] == "S")
+      set PF0CM001.PF0CMSEL[PFWIDX] cursor, modified;
+      PF1REC.PF1IDX = PFWREC.PFWIDX; /* Save screen position*/
+      return; /* ok to exit because already determined this is only sel*/
+    else
+      if (PF0CM001.PF0CMSEL[PFWIDX] != " ")
+        set PF0CM001.PF0CMSEL[PFWIDX] cursor, bold;
+        converseLib.validationFailed(021); /* the letter 's' must be used to make a sel*/
+        PFWREC.PFWERRF = "Y";
+        PF1REC.PF1IDX = PFWREC.PFWIDX; /* Save screen position*/
+        return; /* ok to exit because already determined this is only sel*/
+      end
+    end
+    PFWREC.PFWIDX = PFWREC.PFWIDX - 1;
+    PFWREC.PFWTBLX = PFWREC.PFWTBLX - 1;
+  end
+end // end PF0C120
+
+// edit cycle field
+Function PF0C121()
+  if (PF0CW02.PFESTIND[PFWTBLX] == "O" /* if status is in-process*/
+   || PF0CW02.PFESTIND[PFWTBLX] == "I")
+    set PF0CM001.PFECYCIN[PFWIDX] cursor, bold;
+    converseLib.validationFailed(305); /* cycle can not be changed; status is in-process*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+  ;
+  if (PF0CM001.PFECYCIN[PFWIDX] == "O" /* on request*/
+   || PF0CM001.PFECYCIN[PFWIDX] == "B" /* billing cutoff*/
+   || PF0CM001.PFECYCIN[PFWIDX] == "F" /* first close*/
+   || PF0CM001.PFECYCIN[PFWIDX] == "P" /* final (pf) close*/
+   || PF0CM001.PFECYCIN[PFWIDX] == "W" /* weekly*/
+   || PF0CM001.PFECYCIN[PFWIDX] == "Q") /* quarterly*/
+     /* this is okay*/
+  else
+    set PF0CM001.PFECYCIN[PFWIDX] cursor, bold;
+    converseLib.validationFailed(238); /* invalid cycle entry;must be o, b, f, p, w, q*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+end // end PF0C121
+
+// edit priority field
+Function PF0C122()
+  if (PF0CW02.PFESTIND[PFWTBLX] == "O" /* if status is in-process*/
+   || PF0CW02.PFESTIND[PFWTBLX] == "I")
+    set PF0CM001.PFEPRIND[PFWIDX] cursor, bold;
+    converseLib.validationFailed(302); /* priority can not be chgd; stat is in-process*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+  ;
+  if (PF0CM001.PFECRTDT[PFWIDX] != 0 /* if summary is created*/
+   && PF0CW02.PFECYCIN[PFWTBLX] == "O") /* and cycle is 'on-request'*/
+    set PF0CM001.PFEPRIND[PFWIDX] cursor, bold;
+    converseLib.validationFailed(303); /* priority can not be chgd;cycle =*/
+                                   /* 0,sum is created*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+  ;
+  if (PF0CM001.PFEPRIND[PFWIDX] == "1" /* immediate*/
+   || PF0CM001.PFEPRIND[PFWIDX] == "2") /* overnight*/
+     /* this is okay*/
+  else
+    set PF0CM001.PFEPRIND[PFWIDX] cursor, bold;
+    converseLib.validationFailed(102); /* priority mst be '1'(immed) or '2' (ovrnght)*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+end // end PF0C122
+
+// edit status field
+Function PF0C123()
+  if (COMMAREA.CACLVL[2] == "Y") /* Omniscient user,*/
+    if (PF0CM001.PFESTIND[PFWIDX] == " ") /* and new status is ' '*/
+      PF0CW02.PFECRTDT[PFWTBLX] = 0;
+    end
+    return; /* No edits...*/
+  end
+  ;
+  if (PF0CW02.PFESTIND[PFWTBLX] == " ") /* if existing status is ' '*/
+     /* (PFECRTDT should be = 0)*/
+    if (PF0CM001.PFESTIND[PFWIDX] == "H" /* if new status is 'h'*/
+     || PF0CM001.PFESTIND[PFWIDX] == "D") /* or new status is 'd'*/
+      ;
+      if (COMMAREA.CACLVL[1] == "Y" /* Security OK or*/
+       || PF0CW02.XXXUSRID[PFWTBLX] == COMMAREA.CAUSERID) /* Same user*/
+         /* this is okay*/
+      else
+        set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+        converseLib.validationFailed(119);
+        PFWREC.PFWERRF = "Y";
+      end
+    else
+      set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+      converseLib.validationFailed(065); /* status ' ' can be changed only to 'H' or 'D'*/
+      PFWREC.PFWERRF = "Y";
+    end
+    return;
+  end
+  ;
+  if (PF0CW02.PFESTIND[PFWTBLX] == "O") /* if existing status is 'o'*/
+     /* we know the new status is not 'o' because this process*/
+     /* is only performed when the status has changed.*/
+    set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+    converseLib.validationFailed(296); /* status 'o' (initial in process) can not be changed*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+  ;
+  if (PF0CW02.PFESTIND[PFWTBLX] == "I") /* if existing status is 'i'*/
+     /* we know the new status is not 'i' because this process*/
+     /* is only performed when the status has changed.*/
+    set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+    converseLib.validationFailed(301); /* status 'i' (in process) can not be changed*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+  ;
+  if (PF0CW02.PFESTIND[PFWTBLX] == "N") /* if existing status is 'n'*/
+     /* (PFECRTDT should NOT be = 0)*/
+    if (PF0CM001.PFESTIND[PFWIDX] == "H" /* if new status is 'h'*/
+     || PF0CM001.PFESTIND[PFWIDX] == "D") /* or new status is 'd'*/
+      if (COMMAREA.CACLVL[1] == "Y" /* Security OK or*/
+       || PF0CW02.XXXUSRID[PFWTBLX] == COMMAREA.CAUSERID) /* Same user*/
+         /* this is okay*/
+      else
+        set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+        converseLib.validationFailed(119);
+        PFWREC.PFWERRF = "Y";
+      end
+    else
+      set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+      converseLib.validationFailed(297); /* status 'N' can be changed only to 'H' or 'D'*/
+      PFWREC.PFWERRF = "Y";
+    end
+    return;
+  end
+  ;
+  if (PF0CW02.PFESTIND[PFWTBLX] == "H") /* if existing status is 'h'*/
+    if (PF0CM001.PFECRTDT[PFWIDX] == 0) /* if not created yet*/
+      if (PF0CM001.PFESTIND[PFWIDX] == " " /* if new status is ' '*/
+       || PF0CM001.PFESTIND[PFWIDX] == "D") /* or new status is 'd'*/
+        if (COMMAREA.CACLVL[1] == "Y" /* Security OK or*/
+         || PF0CW02.XXXUSRID[PFWTBLX] == COMMAREA.CAUSERID) /* Same user*/
+           /* this is okay*/
+          if (PF0CM001.PFESTIND[PFWIDX] == " ")
+            PF0CW02.PFECRTDT[PFWTBLX] = 0;
+          end
+        else
+          set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+          converseLib.validationFailed(119);
+          PFWREC.PFWERRF = "Y";
+        end
+      else
+        set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+        converseLib.validationFailed(298); /* status 'h' can change only to ' ' or*/
+        PFWREC.PFWERRF = "Y"; /* 'd'; create date = 0*/
+      end
+    else /* else, summary is created*/
+      if (PF0CM001.PFESTIND[PFWIDX] == "N" /* if new status is 'n'*/
+       || PF0CM001.PFESTIND[PFWIDX] == "D") /* or new status is 'd'*/
+        if (COMMAREA.CACLVL[1] == "Y" /* Security OK or*/
+         || PF0CW02.XXXUSRID[PFWTBLX] == COMMAREA.CAUSERID) /* Same user*/
+           /* this is okay*/
+        else
+          set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+          converseLib.validationFailed(119);
+          PFWREC.PFWERRF = "Y";
+        end
+         /* this is okay*/
+      else
+        set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+        converseLib.validationFailed(299); /* status 'h' can change only to 'n' or*/
+        PFWREC.PFWERRF = "Y"; /* 'd'; create date not 0*/
+      end
+    end
+    return;
+  end
+  ;
+  if (PF0CW02.PFESTIND[PFWTBLX] == "D") /* if existing status is 'd'*/
+     /* (PFECRTDT should NOT be = 0, because if it was, when the*/
+      /* 'd' status was entered the SUMAT row would be deleted.)*/
+    if (PF0CM001.PFESTIND[PFWIDX] == "N" /* normal*/
+     || PF0CM001.PFESTIND[PFWIDX] == "H" /* hold*/
+     || PF0CM001.PFESTIND[PFWIDX] == " ") /* or new status is ' '*/
+       /* this is okay*/
+      if (PF0CM001.PFESTIND[PFWIDX] == " ")
+        PF0CW02.PFECRTDT[PFWTBLX] = 0;
+      end
+    else
+      set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+      converseLib.validationFailed(300); /* status 'd' can be changed only to 'n' or 'h'*/
+      PFWREC.PFWERRF = "Y";
+    end
+    return;
+  end
+end // end PF0C123
+
+// process pf7 and pf8 scrolling
+Function PF0C130()
+  if (PF0CW01.PF0CWSLC > 0 /* if selection count gt 0*/
+   || PF0CW01.PF0CWSTC > 0 /* or status chg count gt 0*/
+   || PF0CW01.PF0CWPRC > 0 /* or priority chg count gt 0*/
+   || PF0CW01.PF0CWCYC > 0) /* or cycle chg count gt 0*/
+    PFWREC.PFWIDX = 14; /* Start scrn index at bot of scrn*/
+    PFWREC.PFWTBLX = PF1REC.PF1TBLX + 13; /* Start table index at bottom*/
+    while (PFWREC.PFWIDX >= 1)
+      if (PF0CM001.PFECYCIN[PFWIDX] != PF0CW02.PFECYCIN[PFWTBLX])
+        PF0CM001.PFECYCIN[PFWIDX] = PF0CW02.PFECYCIN[PFWTBLX];
+        set PF0CM001.PFECYCIN[PFWIDX] cursor, bold;
+      end
+      if (PF0CM001.PFEPRIND[PFWIDX] != PF0CW02.PFEPRIND[PFWTBLX])
+        PF0CM001.PFEPRIND[PFWIDX] = PF0CW02.PFEPRIND[PFWTBLX];
+        set PF0CM001.PFEPRIND[PFWIDX] cursor, bold;
+      end
+      if (PF0CM001.PFESTIND[PFWIDX] != PF0CW02.PFESTIND[PFWTBLX])
+        PF0CM001.PFESTIND[PFWIDX] = PF0CW02.PFESTIND[PFWTBLX];
+        set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+      end
+      if (PF0CM001.PF0CMSEL[PFWIDX] != " ")
+        PF0CM001.PF0CMSEL[PFWIDX] = " ";
+        set PF0CM001.PF0CMSEL[PFWIDX] cursor, bold;
+      end
+      PFWREC.PFWIDX = PFWREC.PFWIDX - 1;
+      PFWREC.PFWTBLX = PFWREC.PFWTBLX - 1;
+    end
+    converseLib.validationFailed(68); /* cannot enter data while scrolling*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf7) /* scroll backward pf key*/
+    if (PF1REC.PF1TBLX <= 14)
+      converseLib.validationFailed(195); /* beginning of data reached; cannot scroll up*/
+      PF1REC.PF1TBLX = 1;
+    else
+      PF1REC.PF1TBLX = PF1REC.PF1TBLX - 14;
+    end
+    ;
+    PF0C810();
+                                   /* move 14 rows from csp table to screen*/
+    ;
+    set PF0CM001.PF0CMSEL[1] cursor;
+    return;
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf8) /* scroll forward pf key*/
+    PFWREC.PFWSUB = PF1REC.PF1TBLX + 14; /* compute temp value for comparison*/
+    if (PFWREC.PFWSUB > PFWREC.PFWLIMIT) /* compare temp value and table size*/
+      converseLib.validationFailed(32); /* end of data reached; cannot scroll down*/
+    else
+      PF1REC.PF1TBLX = PF1REC.PF1TBLX + 14;
+    end
+    ;
+    PF0C810();
+                                   /* move 14 rows from csp table to screen*/
+    ;
+    set PF0CM001.PF0CMSEL[1] cursor;
+    return;
+  end
+end // end PF0C130
+
+// process pf14 - 17 appl bridge
+Function PF0C140()
+   /* -----------------------------------------------------------;*/
+     /* This routine sets up the data to be passed and then     ;*/
+     /* bridges to another Profitablity application:            ;*/
+        /* PF 14 goes to PF0E and back (Format)                 ;*/
+        /* PF 15 goes to PF0F and back (Report Attribute)       ;*/
+        /* PF 16 goes to PF0D and back (I/S Group)              ;*/
+        /* PF 17 goes to PF0B and back (Summary View)           ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  if (PF0CW01.PF0CWSLC != 1)
+                                   /* if selection count ne 1 (no sel made)*/
+    set PF0CM001.PF0CMSEL[1] cursor;
+    converseLib.validationFailed(67); /* must select a summary for this pf function*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+  ;
+  ;
+     /* If this point is reached, we know PF1REC.PF1TBLX and*/
+     /* PF1REC.PF1IDX have already been set by the PF0C edit*/
+     /* routine.*/
+  ;
+  if (converseVar.eventKey is pf17 /* bridge to pf0b - summary view*/
+   && PF0CM001.PFECRTDT[PF1IDX] == 0)
+                                   /* sum has not been created in batch*/
+    set PF0CM001.PF0CMSEL[PF1IDX] cursor, bold;
+    converseLib.validationFailed(199); /* summary has not been created yet*/
+    PFWREC.PFWERRF = "Y";
+    return;
+  end
+  ;
+  ;
+     /* Move the Summary data from the screen to the PF1REC area*/
+     /* to be passed to another application.*/
+  ;
+  PF1REC.PF1XFERF = "Y"; /* Transfer via PF key flag*/
+  PF1REC.PF1PDEFF = "Y"; /* Predefined format flag*/
+  PF1REC.PF1NAM = PF0CM001.PFESUMNM[PF1IDX]; /* Summary Name*/
+  PF1REC.PF1FMT = PF0CM001.PFCREF[PF1IDX]; /* Format #*/
+  PF1REC.PF1ISG = PF0CM001.PFBREF[PF1IDX]; /* I/S Group #*/
+  PF1REC.PF1ATT = PF0CM001.PFDREF[PF1IDX]; /* Attribute #*/
+  PF1REC.PF1ELE = " "; /* Element*/
+  PF1REC.PF1SEQ = PF0CM001.PFESEIND[PF1IDX]; /* Sort Sequence*/
+  PF1REC.PF1BMM = PF0CM001.PFABSPRM[PF1IDX];
+  PF1REC.PF1BYY = PF0CM001.PFABSPRY[PF1IDX];
+  PF1REC.PF1ORIG = "PF0C"; /* Originating Appl.*/
+  PF1REC.PF1CURR = "PF0C"; /* Current Appl.*/
+  ;
+  XPPF200(); /* Bridge Routine*/
+  ;
+  if (PFWREC.PFWERRF == "Y") /* If xfer fails*/
+    PF0CM001.VAGen_EZEMSG = COMMAREA.CAMSG; /* handle bad transfer*/
+    set PF0CM001.PF0CMSEL[PF1IDX] cursor;
+    return;
+  end
+end // end PF0C140
+
+// process status,priority,cycle
+Function PF0C150()
+   /* -----------------------------------------------------------;*/
+     /* Process changes to the status, priority, & cycle fields.;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  ;
+  PF0C151(); /* check stat, prty, & cycl secur*/
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    return;
+  end
+  ;
+  ;
+      /* Do the following unless there was a delete requested*/
+      /* and this is the second time through for it.*/
+      /* Brighten each status, priority, or cycle field changed.*/
+      /* If a delete is requested, generate a delete*/
+      /* confirmation needed message, set the delete*/
+      /* confirmation message issued flag to yes, and return*/
+      /* after processing the whole screen.  Also, if a delete is*/
+      /* requested, leave the cursor on the upper-most 'D'*/
+      /* entered on the screen.*/
+  ;
+  if (PF0CW01.PF0CWDCF == "N") /* delete confirm msg issued flag*/
+    PFWREC.PFWIDX = 14;
+    PFWREC.PFWTBLX = PF1REC.PF1TBLX + 13;
+    while (PFWREC.PFWIDX >= 1)
+      if (PF0CM001.PFECYCIN[PFWIDX] != PF0CW02.PFECYCIN[PFWTBLX])
+        if (PF0CW01.PF0CWDCF == "Y") /* if found a 'd' already*/
+          set PF0CM001.PFECYCIN[PFWIDX] bold; /* don't move cursor*/
+        else
+          set PF0CM001.PFECYCIN[PFWIDX] cursor, bold;
+        end
+      end
+      if (PF0CM001.PFEPRIND[PFWIDX] != PF0CW02.PFEPRIND[PFWTBLX])
+        if (PF0CW01.PF0CWDCF == "Y") /* if found a 'd' already*/
+          set PF0CM001.PFEPRIND[PFWIDX] bold; /* don't move cursor*/
+        else
+          set PF0CM001.PFEPRIND[PFWIDX] cursor, bold;
+        end
+      end
+      if (PF0CM001.PFESTIND[PFWIDX] != PF0CW02.PFESTIND[PFWTBLX])
+        if (PF0CM001.PFESTIND[PFWIDX] == "D")
+          PF0CM001.PFESTIND[PFWIDX] = PF0CW02.PFESTIND[PFWTBLX];
+          set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+          converseLib.validationFailed(304); /* del requested; re-enter 'd' stat to confirm*/
+          PF0CW01.PF0CWDCF = "Y";
+                                   /* delete confirm msg issued flag*/
+        else
+          if (PF0CW01.PF0CWDCF == "Y") /* if found a 'd' already*/
+            set PF0CM001.PFESTIND[PFWIDX] bold; /* don't move cursor*/
+          else
+            set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+          end
+        end
+      end
+      PFWREC.PFWIDX = PFWREC.PFWIDX - 1;
+      PFWREC.PFWTBLX = PFWREC.PFWTBLX - 1;
+    end
+     /* Note that when a delete is requested, if other changes*/
+     /* are made on the screen, these other changes are not*/
+     /* saved in the database until the delete is confirmed.*/
+    if (PF0CW01.PF0CWDCF == "Y") /* delete confirm msg issued flag*/
+      return;
+    end
+  end
+  ;
+  ;
+      /* If this IS the second time through on a delete,*/
+      /* (the delete confirmation message issued flag is yes),*/
+      /* check that no fields on the screen have been modified,*/
+      /* except for re-entering the 'D' to confirm the delete.*/
+      /* If any are modified, brighten them, give an error*/
+      /* message, reset the delete confirmation message issued*/
+      /* flag, and return after processing the whole screen.*/
+  ;
+  if (PF0CW01.PF0CWDCF == "Y") /* delete confirm msg issued flag*/
+    PFWREC.PFWIDX = 14;
+    PFWREC.PFWTBLX = PF1REC.PF1TBLX + 13;
+    while (PFWREC.PFWIDX >= 1)
+      if (PF0CM001.PFECYCIN[PFWIDX] is modified)
+        PF0CM001.PFECYCIN[PFWIDX] = PF0CW02.PFECYCIN[PFWTBLX];
+        set PF0CM001.PFECYCIN[PFWIDX] cursor, bold;
+        converseLib.validationFailed(196); /* cannot change data before confirming delete.*/
+        PF0CW01.PF0CWDCF = "N"; /* reset dlt confirm msg issued flag*/
+        PFWREC.PFWERRF = "Y";
+      end
+      if (PF0CM001.PFEPRIND[PFWIDX] is modified)
+        PF0CM001.PFEPRIND[PFWIDX] = PF0CW02.PFEPRIND[PFWTBLX];
+        set PF0CM001.PFEPRIND[PFWIDX] cursor, bold;
+        converseLib.validationFailed(196); /* cannot change data before confirming delete*/
+        PF0CW01.PF0CWDCF = "N"; /* reset dlt confirm msg issued flag*/
+        PFWREC.PFWERRF = "Y";
+      end
+      if (PF0CM001.PFESTIND[PFWIDX] is modified
+       && PF0CM001.PFESTIND[PFWIDX] != "D") /* and not confirming delete*/
+        PF0CM001.PFESTIND[PFWIDX] = PF0CW02.PFESTIND[PFWTBLX];
+        set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+        converseLib.validationFailed(196); /* cannot change data before confirming delete*/
+        PF0CW01.PF0CWDCF = "N"; /* reset dlt confirm msg issued flag*/
+        PFWREC.PFWERRF = "Y";
+      end
+      if (PF0CM001.PF0CMSEL[PFWIDX] is modified)
+        PF0CM001.PF0CMSEL[PFWIDX] = " ";
+        set PF0CM001.PF0CMSEL[PFWIDX] cursor, bold;
+        converseLib.validationFailed(196); /* cannot change data before confirming delete*/
+        PF0CW01.PF0CWDCF = "N"; /* reset dlt confirm msg issued flag*/
+        PFWREC.PFWERRF = "Y";
+      end
+      PFWREC.PFWIDX = PFWREC.PFWIDX - 1;
+      PFWREC.PFWTBLX = PFWREC.PFWTBLX - 1;
+    end
+    if (PFWREC.PFWERRF == "Y")
+      return;
+    end
+  end
+  ;
+  ;
+      /* Update summary attribute row in CSP table and*/
+      /* database table for each summary with a status,*/
+      /* priority, or cycle change.*/
+  ;
+  PFWREC.PFWIDX = 14;
+  PFWREC.PFWTBLX = PF1REC.PF1TBLX + 13;
+  while (PFWREC.PFWIDX >= 1
+   && PFWREC.PFWERRF == "N")
+    if (PF0CM001.PFESTIND[PFWIDX] != PF0CW02.PFESTIND[PFWTBLX]) /* stat chgd*/
+      ;
+      PF0C152(); /* perform status change*/
+      ;
+    end
+     /* If status is changed, then any priority or cycle changes*/
+       /* are processed above with the status change and the*/
+       /* following is skipped.*/
+     /* If status is not changed, but the priority or cycle IS*/
+       /* changed, then these changes are processed in the*/
+       /* following.*/
+    if (PF0CM001.PFESTIND[PFWIDX] == PF0CW02.PFESTIND[PFWTBLX]) /* no st chg*/
+      if (PF0CM001.PFEPRIND[PFWIDX] != PF0CW02.PFEPRIND[PFWTBLX] /* pry chg*/
+       || PF0CM001.PFECYCIN[PFWIDX] != PF0CW02.PFECYCIN[PFWTBLX])
+                                   /* cy chg*/
+        PF0CW02.PFEPRIND[PFWTBLX] = PF0CM001.PFEPRIND[PFWIDX];
+        PF0CW02.PFECYCIN[PFWTBLX] = PF0CM001.PFECYCIN[PFWIDX];
+        ;
+        PF0C915(); /* vsumat01 table update*/
+        ;
+      end
+    end
+    PFWREC.PFWIDX = PFWREC.PFWIDX - 1;
+    PFWREC.PFWTBLX = PFWREC.PFWTBLX - 1;
+  end
+  ;
+  PF0CW01.PF0CWDCF = "N"; /* reset dlt confirm msg issued flag*/
+end // end PF0C150
+
+// check stat, prty, & cycl secur
+Function PF0C151()
+   /* -----------------------------------------------------------;*/
+      /* Check security for each status, priority, or cycle     ;*/
+      /* changed.  Note that 'Change' security rather than      ;*/
+      /* 'delete' security is checked.                          ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PFWREC.PFWIDX = 14;
+  PFWREC.PFWTBLX = PF1REC.PF1TBLX + 13;
+  while (PFWREC.PFWIDX >= 1)
+    ;
+    if (PF0CM001.PFECYCIN[PFWIDX] is modified
+     || PF0CM001.PFECYCIN[PFWIDX] != PF0CW02.PFECYCIN[PFWTBLX])
+      if (COMMAREA.CACHGFL == "Y") /* check change security*/
+        if (COMMAREA.CAUSERID == PF0CW02.XXXUSRID[PFWTBLX]
+         || COMMAREA.CACLVL[1] == "Y") /* check change security*/
+           /* this is okay*/
+        else
+                                   /* cannot change this particular summary*/
+          PF0CM001.PFECYCIN[PFWIDX] = PF0CW02.PFECYCIN[PFWTBLX];
+          set PF0CM001.PFECYCIN[PFWIDX] cursor, bold;
+          converseLib.validationFailed(119); /* userid not authorized to update this rec*/
+          PFWREC.PFWERRF = "Y";
+        end
+      else /* cannot change any summary*/
+        PF0CM001.PFECYCIN[PFWIDX] = PF0CW02.PFECYCIN[PFWTBLX];
+        set PF0CM001.PFECYCIN[PFWIDX] cursor, bold;
+        converseLib.validationFailed(71); /* user not authorized for this action*/
+        PFWREC.PFWERRF = "Y";
+      end
+    end
+    ;
+    if (PF0CM001.PFEPRIND[PFWIDX] is modified
+     || PF0CM001.PFEPRIND[PFWIDX] != PF0CW02.PFEPRIND[PFWTBLX])
+      if (COMMAREA.CACHGFL == "Y") /* check change security*/
+        if (COMMAREA.CAUSERID == PF0CW02.XXXUSRID[PFWTBLX]
+         || COMMAREA.CACLVL[1] == "Y") /* check change security*/
+           /* this is okay*/
+        else
+                                   /* cannot change this particular summary*/
+          PF0CM001.PFEPRIND[PFWIDX] = PF0CW02.PFEPRIND[PFWTBLX];
+          set PF0CM001.PFEPRIND[PFWIDX] cursor, bold;
+          converseLib.validationFailed(119); /* userid not authorized to update this rec*/
+          PFWREC.PFWERRF = "Y";
+        end
+      else /* cannot change any summary*/
+        PF0CM001.PFEPRIND[PFWIDX] = PF0CW02.PFEPRIND[PFWTBLX];
+        set PF0CM001.PFEPRIND[PFWIDX] cursor, bold;
+        converseLib.validationFailed(71); /* user not authorized for this action*/
+        PFWREC.PFWERRF = "Y";
+      end
+    end
+    ;
+    if (PF0CM001.PFESTIND[PFWIDX] is modified
+     || PF0CM001.PFESTIND[PFWIDX] != PF0CW02.PFESTIND[PFWTBLX])
+      if (COMMAREA.CACHGFL == "Y") /* check change security*/
+        if (COMMAREA.CAUSERID == PF0CW02.XXXUSRID[PFWTBLX]
+         || COMMAREA.CACLVL[1] == "Y") /* check change security*/
+           /* this is okay*/
+        else
+                                   /* cannot change this particular summary*/
+          PF0CM001.PFESTIND[PFWIDX] = PF0CW02.PFESTIND[PFWTBLX];
+          set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+          converseLib.validationFailed(119); /* userid not authorized to update this rec*/
+          PFWREC.PFWERRF = "Y";
+        end
+      else /* cannot change any summary*/
+        PF0CM001.PFESTIND[PFWIDX] = PF0CW02.PFESTIND[PFWTBLX];
+        set PF0CM001.PFESTIND[PFWIDX] cursor, bold;
+        converseLib.validationFailed(71); /* user not authorized for this action*/
+        PFWREC.PFWERRF = "Y";
+      end
+    end
+    PFWREC.PFWIDX = PFWREC.PFWIDX - 1;
+    PFWREC.PFWTBLX = PFWREC.PFWTBLX - 1;
+  end
+end // end PF0C151
+
+// perform status change
+Function PF0C152()
+  if (PF0CM001.PFESTIND[PFWIDX] == "D") /* if the change is TO delete*/
+    if (PF0CW01.PF0CWDCF == "Y") /* delete confirm msg issued flag*/
+      if (PF0CW02.PFECRTDT[PFWTBLX] == 0)
+                                   /* actual summary not created yet*/
+        ;
+        PF0C153(); /* delete summary*/
+        ;
+      else /* change status on the row to 'd'*/
+        PF0CW02.PFESTIND[PFWTBLX] = PF0CM001.PFESTIND[PFWIDX];
+        /* priority & cycle are saved because they may have changed too*/
+        PF0CW02.PFEPRIND[PFWTBLX] = PF0CM001.PFEPRIND[PFWIDX];
+        PF0CW02.PFECYCIN[PFWTBLX] = PF0CM001.PFECYCIN[PFWIDX];
+        ;
+        PF0C915(); /* vsumat01 table update*/
+        ;
+      end
+    end
+     /* The dlt confirmation msg should have been issued if this*/
+     /* process is performed. If it has not then do nothing.*/
+  else /* status changed, but not to delete*/
+    PF0CW02.PFESTIND[PFWTBLX] = PF0CM001.PFESTIND[PFWIDX];
+    /* priority & cycle are saved because they may have changed too*/
+    PF0CW02.PFEPRIND[PFWTBLX] = PF0CM001.PFEPRIND[PFWIDX];
+    PF0CW02.PFECYCIN[PFWTBLX] = PF0CM001.PFECYCIN[PFWIDX];
+    ;
+    PF0C915(); /* vsumat01 table update*/
+    ;
+  end
+end // end PF0C152
+
+// delete summary
+Function PF0C153()
+   /* -----------------------------------------------------------;*/
+     /* Open the summary attr table cursor selecting all        ;*/
+     /* summaries with this source summary.  Delete these       ;*/
+     /* summaries and delete all report parameters for these    ;*/
+     /* summaries.                                              ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  set PFEREC empty;
+  PFEREC.PFESRCNM = PF0CM001.PFESUMNM[PFWIDX];
+  PFEREC.PFECRTDT = 0;
+  ;
+  PF0C154(); /* delete sums with this src sum*/
+  ;
+  if (PFWREC.PFWERRF == "Y") /* if db2 access unsuccessful*/
+    return;
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+     /* Open the report parameter table cursor selecting all    ;*/
+     /* parameters for this summary.  Delete these parameters.  ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  set PFFREC empty;
+  PFFREC.PFESUMNM = PF0CM001.PFESUMNM[PFWIDX];
+  PFFREC.PFANXTNO = -1; /* select 'all' params for this sum*/
+  ;
+  PF0C820(); /* delete rptpm's for this sum*/
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    return;
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+     /* Delete the summary.                                     ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  set PFEREC empty;
+  PFEREC.PFESUMNM = PF0CM001.PFESUMNM[PFWIDX];
+  ;
+  PF0C916(); /* vsumat01 delete*/
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    return;
+  end
+  ;
+  converseLib.validationFailed(260); /* summary parameter has been deleted*/
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+     /* Mark the screen row as '*DELETED*', clear the remainder ;*/
+     /* of the row, and protect the input fields.               ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0CM001.PF0CMSEL[PFWIDX] = " ";
+  PF0CM001.PFESTIND[PFWIDX] = " ";
+  PF0CM001.PFEPRIND[PFWIDX] = " ";
+  PF0CM001.PFECYCIN[PFWIDX] = " ";
+  PF0CM001.PFESUMNM[PFWIDX] = "*DELETED*";
+  PF0CM001.PFECRTDT[PFWIDX] = 0;
+  PF0CM001.XXXUSRID[PFWIDX] = " ";
+  PF0CM001.PFCREF[PFWIDX] = 0;
+  PF0CM001.PFBREF[PFWIDX] = 0;
+  PF0CM001.PFDREF[PFWIDX] = 0;
+  PF0CM001.PFABSPRM[PFWIDX] = 0;
+  PF0CM001.PFABSPRY[PFWIDX] = 0;
+  PF0CM001.PFESQCOL[PFWIDX] = " ";
+  PF0CM001.PF0CMELE[PFWIDX] = " ";
+  PF0CM001.PFESEIND[PFWIDX] = " ";
+  ;
+  set PF0CM001.PFECYCIN[PFWIDX] skip, invisible;
+  set PF0CM001.PFEPRIND[PFWIDX] skip, invisible;
+  set PF0CM001.PFESTIND[PFWIDX] skip, invisible;
+  set PF0CM001.PF0CMSEL[PFWIDX] skip, invisible;
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+     /* Mark the PF0CW02 working storage table row as           ;*/
+     /* '*DELETED*' and clear the remainder of the row.         ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0CW02.PFESUMNM[PFWTBLX] = "*DELETED*";
+  PF0CW02.PFESRCNM[PFWTBLX] = " ";
+  PF0CW02.PFESUMDE[PFWTBLX] = " ";
+  PF0CW02.PFGSUMN[PFWTBLX] = 0;
+  PF0CW02.PFCREF[PFWTBLX] = 0;
+  PF0CW02.PFBREF[PFWTBLX] = 0;
+  PF0CW02.PFDREF[PFWTBLX] = 0;
+  PF0CW02.PFABSPRM[PFWTBLX] = 0;
+  PF0CW02.PFABSPRY[PFWTBLX] = 0;
+  PF0CW02.PFEPRIND[PFWTBLX] = " ";
+  PF0CW02.PFESRTEL[PFWTBLX] = " ";
+  PF0CW02.YISCD[PFWTBLX] = 0;
+  PF0CW02.PFBISGRP[PFWTBLX] = 0;
+  PF0CW02.PFESEIND[PFWTBLX] = " ";
+  PF0CW02.PFESQCOL[PFWTBLX] = 0;
+  PF0CW02.PFECRTDT[PFWTBLX] = 0;
+  PF0CW02.PFECYCIN[PFWTBLX] = " ";
+  PF0CW02.XXXUSRID[PFWTBLX] = " ";
+  PF0CW02.PFESTIND[PFWTBLX] = " ";
+  PF0CW02.ZZZSDT[PFWTBLX] = 0;
+  PF0CW02.ZZZCHGDT[PFWTBLX] = 0;
+  PF0CW02.ZZZCHGTM[PFWTBLX] = 0;
+  PF0CW02.ZZZCHGCT[PFWTBLX] = 0;
+end // end PF0C153
+
+// delete sums with this src sum
+Function PF0C154()
+   /* -----------------------------------------------------------;*/
+     /* Open the summary attr table cursor selecting all        ;*/
+     /* summaries with this source summary.                     ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+   /* key built in calling process*/
+  ;
+  PF0C912(); /* vsumat01 select scan 4*/
+  ;
+  if (PFWREC.PFWERRF == "Y") /* if db2 access unsuccessful*/
+    return;
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+     /* For each summary in the cursor delete the parameters    ;*/
+     /* for the summary, delete the summary itself, and mark    ;*/
+     /* the summary as deleted on the screen.                   ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0CW01.PF0CWSAF = "N"; /* init vsumat01 select complete flag*/
+  while (PF0CW01.PF0CWSAF == "N" /* vsumat01 select complete flag*/
+   && PFWREC.PFWERRF == "N")
+    ;
+    PF0C913(); /* vsumat01 select next 4*/
+    ;
+    if (PF0CW01.PF0CWSAF == "N" /* vsumat01 select complete flag*/
+     && PFWREC.PFWERRF == "N") 
+      if (PFEREC.PFESTIND == " " /* if sum status is 'not created'*/
+       || PFEREC.PFESTIND == "H") /* or sum status is 'hold'*/
+        set PFFREC empty;
+        PFFREC.PFESUMNM = PFEREC.PFESUMNM;
+        PFFREC.PFANXTNO = -1;
+                                   /* select all params for this sum*/
+        ;
+        PF0C820(); /* delete rptpm's for this sum*/
+        ;
+        if (PFWREC.PFWERRF == "N") /* if no errors*/
+          ;
+          PF0C155(); /* dlt sumat, chg scrn & ws table*/
+          ;
+        end
+      end
+    end
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+     /* Close the cursor.                                       ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0C914(); /* vsumat01 close scan 4*/
+end // end PF0C154
+
+// dlt sumat, chg scrn & ws table
+Function PF0C155()
+   /* -----------------------------------------------------------;*/
+     /* Delete the summary.                                     ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0C916(); /* vsumat01 delete*/
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    return;
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+     /* Check if the summary being deleted is on the page of    ;*/
+     /* summaries that is currently being displayed on the      ;*/
+     /* screen.  If it is, then use it's subscript to mark      ;*/
+     /* the screen row as '*DELETED*', clear the remainder      ;*/
+     /* of the row, and protect the input fields.               ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PFWREC.PFWSUB = 1;
+  while (PF0CM001.PFESUMNM[PFWSUB] != PFEREC.PFESUMNM
+   && PFWREC.PFWSUB <= 13)
+    PFWREC.PFWSUB = PFWREC.PFWSUB + 1;
+  end
+  ;
+   /* The following is only true if the sum happens to be on*/
+   /* the page of summaries currently on the screen.*/
+  if (PF0CM001.PFESUMNM[PFWSUB] == PFEREC.PFESUMNM)
+    PF0CM001.PF0CMSEL[PFWSUB] = " ";
+    PF0CM001.PFESTIND[PFWSUB] = " ";
+    PF0CM001.PFEPRIND[PFWSUB] = " ";
+    PF0CM001.PFECYCIN[PFWSUB] = " ";
+    PF0CM001.PFESUMNM[PFWSUB] = "*DELETED*";
+    PF0CM001.PFECRTDT[PFWSUB] = 0;
+    PF0CM001.XXXUSRID[PFWSUB] = " ";
+    PF0CM001.PFCREF[PFWSUB] = 0;
+    PF0CM001.PFBREF[PFWSUB] = 0;
+    PF0CM001.PFDREF[PFWSUB] = 0;
+    PF0CM001.PFABSPRM[PFWSUB] = 0;
+    PF0CM001.PFABSPRY[PFWSUB] = 0;
+    PF0CM001.PFESQCOL[PFWSUB] = " ";
+    PF0CM001.PF0CMELE[PFWSUB] = " ";
+    PF0CM001.PFESEIND[PFWSUB] = " ";
+    set PF0CM001.PFECYCIN[PFWSUB] skip, invisible;
+    set PF0CM001.PFEPRIND[PFWSUB] skip, invisible;
+    set PF0CM001.PFESTIND[PFWSUB] skip, invisible;
+    set PF0CM001.PF0CMSEL[PFWSUB] skip, invisible;
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+     /* Find the subscript in the PF0CW02 working storage table ;*/
+     /* for the summary currently being deleted.  Mark the row  ;*/
+     /* as '*DELETED*' and clear the remainder of the row.      ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PFWREC.PFWSUB = 1;
+  while (PF0CW02.PFESUMNM[PFWSUB] != PFEREC.PFESUMNM
+   && PFWREC.PFWSUB <= PFWREC.PFWLIMIT) /* table maximum*/
+    PFWREC.PFWSUB = PFWREC.PFWSUB + 1;
+  end
+  ;
+   /* The following should always be true.*/
+  if (PFWREC.PFWSUB <= PFWREC.PFWLIMIT)
+    PF0CW02.PFESUMNM[PFWSUB] = "*DELETED*";
+    PF0CW02.PFESRCNM[PFWSUB] = " ";
+    PF0CW02.PFESUMDE[PFWSUB] = " ";
+    PF0CW02.PFGSUMN[PFWSUB] = 0;
+    PF0CW02.PFCREF[PFWSUB] = 0;
+    PF0CW02.PFBREF[PFWSUB] = 0;
+    PF0CW02.PFDREF[PFWSUB] = 0;
+    PF0CW02.PFABSPRM[PFWSUB] = 0;
+    PF0CW02.PFABSPRY[PFWSUB] = 0;
+    PF0CW02.PFEPRIND[PFWSUB] = " ";
+    PF0CW02.PFESRTEL[PFWSUB] = " ";
+    PF0CW02.YISCD[PFWSUB] = 0;
+    PF0CW02.PFBISGRP[PFWSUB] = 0;
+    PF0CW02.PFESEIND[PFWSUB] = " ";
+    PF0CW02.PFESQCOL[PFWSUB] = 0;
+    PF0CW02.PFECRTDT[PFWSUB] = 0;
+    PF0CW02.PFECYCIN[PFWSUB] = " ";
+    PF0CW02.XXXUSRID[PFWSUB] = " ";
+    PF0CW02.PFESTIND[PFWSUB] = " ";
+    PF0CW02.ZZZSDT[PFWSUB] = 0;
+    PF0CW02.ZZZCHGDT[PFWSUB] = 0;
+    PF0CW02.ZZZCHGTM[PFWSUB] = 0;
+    PF0CW02.ZZZCHGCT[PFWSUB] = 0;
+  end
+end // end PF0C155
+
+// move 14 rows from tbl to scrn
+Function PF0C810()
+   /* -----------------------------------------------------------;*/
+     /* this process moves 14 rows of data from the csp table   ;*/
+     /* containing the whole summary attribute db2 table, to    ;*/
+     /* the csp screen.  It uses PF1REC.PF1TBLX as the starting ;*/
+     /* point in the csp table to determine which 14 rows       ;*/
+     /* are displayed on the screen.                            ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0CW01.PF0CWDCF = "N"; /* reset delete confirm msg issued flag*/
+  ;
+  set PF0CM001 initial; /* clear the screen*/
+  PF0CM001.XXXCURDT = PFWREC.PFWDTE; /* Set the System Date*/
+  ;
+  if (PF1REC.PF1XFERF == "Y") /* If appl was entered from a pf xfer*/
+    PF1REC.PF1XFERF = "N"; /* reset pf xfer flag*/
+    if (PF1REC.PF1IDX >= 1 /* if screen index is valid*/
+     && PF1REC.PF1IDX <= 14
+     && PF1REC.PF1IDX <= PFWREC.PFWLIMIT)
+      set PF0CM001.PF0CMSEL[PF1IDX] cursor; /* set cursor to prev position*/
+    end
+  end
+  ;
+  ;
+      /* Fill the screen with 14 rows of the data table starting*/
+      /* from the saved table index (PF1TBLX) position*/
+  ;
+  PFWREC.PFWIDX = 1; /* Initialize screen index*/
+  PFWREC.PFWTBLX = PF1REC.PF1TBLX; /* Initialize table index*/
+  while (PFWREC.PFWIDX <= 14)
+    if (PFWREC.PFWTBLX <= PFWREC.PFWLIMIT)
+      ;
+      PF0C811(); /* decode one row of table*/
+      ;
+      PFWREC.PFWTBLX = PFWREC.PFWTBLX + 1; /* increment table index*/
+    else
+      set PF0CM001.PF0CMSEL[PFWIDX] skip, invisible;
+      set PF0CM001.PFESTIND[PFWIDX] skip, invisible;
+      set PF0CM001.PFEPRIND[PFWIDX] skip, invisible;
+      set PF0CM001.PFECYCIN[PFWIDX] skip, invisible;
+    end
+    PFWREC.PFWIDX = PFWREC.PFWIDX + 1; /* increment screen index*/
+  end
+  ;
+  ;
+      /* Compute page numbers*/
+  ;
+  PFWREC.PFWCPG = PF1REC.PF1TBLX / 14; /* gives number of whole pages*/
+  PF0CW01.PF0CWREM = PF1REC.PF1TBLX % 14;
+                                   /* remainder gives # of partial pgs*/
+  if (PF0CW01.PF0CWREM > 0)
+    PFWREC.PFWCPG = PFWREC.PFWCPG + 1;
+  end
+  PF0CM001.PF0CMCPG = PFWREC.PFWCPG; /* Set current page number*/
+  ;
+  PF0CM001.PF0CMTPG = PFWREC.PFWTPG; /* Set total number of pages*/
+end // end PF0C810
+
+// decode one row of table
+Function PF0C811()
+   /* -----------------------------------------------------------;*/
+     /* This process generates a line of screen data from a     ;*/
+     /* row of the csp summary attribute table.  It uses        ;*/
+     /* PFWTBLX as the index into the CSP table and PFWIDX as   ;*/
+     /* the index for the screen.                               ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  if (PF0CW02.PFESUMNM[PFWTBLX] == "*DELETED*"
+   && PF0CW02.PFGSUMN[PFWTBLX] == 0)
+    set PF0CM001.PF0CMSEL[PFWIDX] skip, invisible;
+    set PF0CM001.PFESTIND[PFWIDX] skip, invisible;
+    set PF0CM001.PFEPRIND[PFWIDX] skip, invisible;
+    set PF0CM001.PFECYCIN[PFWIDX] skip, invisible;
+  end
+  ;
+  PF0CM001.PFESTIND[PFWIDX] = PF0CW02.PFESTIND[PFWTBLX];
+  PF0CM001.PFEPRIND[PFWIDX] = PF0CW02.PFEPRIND[PFWTBLX];
+  PF0CM001.PFECYCIN[PFWIDX] = PF0CW02.PFECYCIN[PFWTBLX];
+  PF0CM001.PFESUMNM[PFWIDX] = PF0CW02.PFESUMNM[PFWTBLX];
+  ;
+  PF0CW01.PF0CWYM1 = PF0CW02.PFECRTDT[PFWTBLX];
+  PF0CW01.PF0CWY2 = PF0CW01.PF0CWY1;
+  PF0CW01.PF0CWM2 = PF0CW01.PF0CWM1;
+  PF0CW01.PF0CWD2 = PF0CW01.PF0CWD1;
+  PF0CM001.PFECRTDT[PFWIDX] = PF0CW01.PF0CWMY2;
+  ;
+  PF0CM001.XXXUSRID[PFWIDX] = PF0CW02.XXXUSRID[PFWTBLX];
+  PF0CM001.PFCREF[PFWIDX] = PF0CW02.PFCREF[PFWTBLX];
+  PF0CM001.PFBREF[PFWIDX] = PF0CW02.PFBREF[PFWTBLX];
+  PF0CM001.PFDREF[PFWIDX] = PF0CW02.PFDREF[PFWTBLX];
+  PF0CM001.PFABSPRM[PFWIDX] = PF0CW02.PFABSPRM[PFWTBLX];
+  PF0CM001.PFABSPRY[PFWIDX] = PF0CW02.PFABSPRY[PFWTBLX];
+  PF0CM001.PFESQCOL[PFWIDX] = PF0CW02.PFESQCOL[PFWTBLX];
+  ;
+  if (PF0CW02.PFESRTEL[PFWTBLX] == "01")
+    PF0CM001.PF0CMELE[PFWIDX] = "GR MRGN%";
+  else
+    if (PF0CW02.PFESRTEL[PFWTBLX] == "02")
+      PF0CM001.PF0CMELE[PFWIDX] = "GR MRGN";
+    else
+      if (PF0CW02.PFESRTEL[PFWTBLX] == "03")
+        PF0CM001.PF0CMELE[PFWIDX] = "REVENUE";
+      else
+        if (PF0CW02.PFESRTEL[PFWTBLX] == "04")
+          PF0CM001.PF0CMELE[PFWIDX] = "CONTRIB%";
+        else
+          if (PF0CW02.PFESRTEL[PFWTBLX] == "05")
+            PF0CM001.PF0CMELE[PFWIDX] = "CONTRIB";
+          else
+            if (PF0CW02.PFESRTEL[PFWTBLX] == "06")
+              PF0CM001.PF0CMELE[PFWIDX] = "SHP UNTS";
+            else
+              if (PF0CW02.PFESRTEL[PFWTBLX] == "07")
+                PF0CM001.PF0CMELE[PFWIDX] = "REV UNTS";
+              else
+                if (PF0CW02.PFESRTEL[PFWTBLX] == "08")
+                  PF0CM001.PF0CMELE[PFWIDX] = "SEQUENTL";
+                else
+                  if (PF0CW02.PFESRTEL[PFWTBLX] == "09")
+                    PF0CW01.PF0CWISL = "I/S ";
+                    PF0CW01.PF0CWIS = PF0CW02.YISCD[PFWTBLX];
+                    PF0CM001.PF0CMELE[PFWIDX] = PF0CW01.PF0CWISD;
+                  else
+                    if (PF0CW02.PFESRTEL[PFWTBLX] == "10")
+                      PF0CW01.PF0CWISL = "I/S ";
+                      PF0CW01.PF0CWIS = PF0CW02.PFBISGRP[PFWTBLX];
+                      PF0CM001.PF0CMELE[PFWIDX] = PF0CW01.PF0CWISD;
+                    else
+                      PF0CM001.PF0CMELE[PFWIDX] = PF0CW02.PFESRTEL[PFWTBLX];
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  PF0CM001.PFESEIND[PFWIDX] = PF0CW02.PFESEIND[PFWTBLX];
+end // end PF0C811
+
+// delete rptpm's for this sum
+Function PF0C820()
+   /* -----------------------------------------------------------;*/
+     /* Open the parameter table cursor selecting all           ;*/
+     /* parameters for this summary.                            ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+   /* key built in calling processes*/
+  ;
+  PF0C921(); /* vrptpm01 select scan*/
+  ;
+  if (PFWREC.PFWERRF == "Y") /* if db2 access unsuccessful*/
+    return;
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+     /* Select and delete each parameter in the cursor.         ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0CW01.PF0CWRPF = "N"; /* init vrptpm01 select complete flag*/
+  while (PF0CW01.PF0CWRPF == "N" /* vrptpm01 select complete flag*/
+   && PFWREC.PFWERRF == "N")
+    ;
+    PF0C922(); /* vrptpm01 select next*/
+    ;
+    if (PF0CW01.PF0CWRPF == "N" /* vrptpm01 select complete flag*/
+     && PFWREC.PFWERRF == "N") 
+      ;
+      PF0C924(); /* vrptpm01 delete*/
+      ;
+    end
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+     /* Close the cursor.                                       ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0C923(); /* vrptpm01 close scan*/
+end // end PF0C820
+
+// vsumat01 select entire table
+Function PF0C911()
+   /* -----------------------------------------------------------;*/
+     /* This process selects the whole summary attribute table  ;*/
+     /* from DB2 and loads it into a CSP table.  It opens a     ;*/
+     /* cursor, selects the entire table, and closes the cursor.;*/
+     /* If any table pages are busy, it stops the loading       ;*/
+     /* process and sets a flag which forces re-initialization  ;*/
+     /* of the application.                                     ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PFWREC.PFWRECF = "Y"; /* set all records found flag*/
+  ;
+  ;
+      /* Open cursor*/
+  ;
+  set PFEREC empty;
+  PFEREC.PFESUMNM = " ";
+  ;
+  call "IO2770" ("S1", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* table select scan*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if table action successful*/
+     /* this is okay*/
+  else /* fatal db2 error, transfer to ta*/
+    TA1REC.TA1LOCAT[2] = " ";
+    PFWREC.PFWHKEY = " ";
+    PFWREC.PFWCPROC = "PF0C911A"; /* pass calling process*/
+    TA1REC.TA1LOCAT[4] = "IO2770"; /* pass i/o module name*/
+    TA1REC.TA1DBASE = "DPROFT";
+    TA1REC.TA1TBLVU = "VSUMAT01";
+    XPPF010(); /* abend routine*/
+  end
+  ;
+  ;
+      /* Select next through entire database table*/
+  ;
+  SQLCA.VAGen_SQLCODE = 0;
+  PFWREC.PFWTBLX = 0;
+  while (SQLCA.VAGen_SQLCODE == 0
+   && PFWREC.PFWTBLX < 500)
+    ;
+    call "IO2770" ("N1", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* table select next*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == +0) /* if table action successful*/
+      PFWREC.PFWTBLX = PFWREC.PFWTBLX + 1;
+      ;
+      /* ***** note: PF0CW02 must exactly match PFEREC*/
+      PF0CW02.PF0CWTBL[PFWTBLX] = PFEREC.PFEGRP; /* move group levels*/
+      /* ******/
+      ;
+    else
+      if (SQLCA.VAGen_SQLCODE == +100) /* if row not found*/
+         /* do nothing - end of table*/
+      else
+        if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+          ;
+           /* Force re-initialization of the application*/
+          ;
+          PFWREC.PFWRECF = "N"; /* set all records found flag to 'n',*/
+                  /* it forces re-initialization in process PF0C100.*/
+          set PF0CW01 empty; /* clear out working storage*/
+          set PF0CW02 empty; /* clear out data already selected*/
+          converseLib.validationFailed(114); /* data base was busy, please retry*/
+           /* Create a blank screen to be displayed*/
+          PF0CM001.XXXCURDT = PFWREC.PFWDTE;
+          PFWREC.PFWIDX = 1;
+          while (PFWREC.PFWIDX <= 14)
+            set PF0CM001.PF0CMSEL[PFWIDX] skip, invisible;
+            set PF0CM001.PFESTIND[PFWIDX] skip, invisible;
+            set PF0CM001.PFEPRIND[PFWIDX] skip, invisible;
+            set PF0CM001.PFECYCIN[PFWIDX] skip, invisible;
+            PFWREC.PFWIDX = PFWREC.PFWIDX + 1;
+          end
+          PF0CM001.PF0CMCPG = 1;
+          PF0CM001.PF0CMTPG = 1;
+          set PF0CM001.CATOAP cursor;
+          PFWREC.PFWERRF = "Y";
+        else /* fatal db2 error, transfer to ta*/
+          TA1REC.TA1LOCAT[2] = " ";
+          PFWREC.PFWHKEY = " ";
+          PFWREC.PFWCPROC = "PF0C911B"; /* pass calling process*/
+          TA1REC.TA1LOCAT[4] = "IO2770"; /* pass i/o module name*/
+          TA1REC.TA1DBASE = "DPROFT";
+          TA1REC.TA1TBLVU = "VSUMAT01";
+          XPPF010(); /* abend routine*/
+        end
+      end
+    end
+  end
+  ;
+  if (PFWREC.PFWTBLX >= 500) /* table overflow abend*/
+    PFWREC.PFWCPROC = "PF0C911C"; /* pass calling process*/
+    PFWREC.PFWHKEY = "CSP TABLE OVERFLOW";
+    TA1REC.TA1LOCAT[4] = "PF0CW02"; /* pass table name*/
+    TA1REC.TA1DBASE = " ";
+    TA1REC.TA1TBLVU = " ";
+    XPPF010(); /* abend routine*/
+  end
+  ;
+  ;
+      /* Compute total number of pages*/
+  ;
+  PFWREC.PFWLIMIT = PFWREC.PFWTBLX; /* save csp table maximum*/
+  ;
+  PFWREC.PFWTPG = PFWREC.PFWLIMIT / 14; /* compute # of whole pages*/
+  PF0CW01.PF0CWREM = PFWREC.PFWLIMIT % 14;
+                                   /* compute remainder for partial*/
+  if (PF0CW01.PF0CWREM > 0) /* pages*/
+    PFWREC.PFWTPG = PFWREC.PFWTPG + 1;
+  end
+  ;
+  ;
+      /* Close cursor*/
+  ;
+  call "IO2770" ("C1", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* table close scan*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if table action successful*/
+     /* this is okay*/
+  else /* fatal db2 error, transfer to ta*/
+    TA1REC.TA1LOCAT[2] = " ";
+    PFWREC.PFWHKEY = " ";
+    PFWREC.PFWCPROC = "PF0C911D"; /* pass calling process*/
+    TA1REC.TA1LOCAT[4] = "IO2770"; /* pass i/o module name*/
+    TA1REC.TA1DBASE = "DPROFT";
+    TA1REC.TA1TBLVU = "VSUMAT01";
+    XPPF010(); /* abend routine*/
+  end
+end // end PF0C911
+
+// vsumat01 select scan 4
+Function PF0C912()
+  call "IO2770" ("S4", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* vsumat01 select scan*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if select successful*/
+     /* this is okay - handle in calling process*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+      converseLib.validationFailed(114); /* data base was busy, please retry*/
+      PFWREC.PFWERRF = "Y";
+    else /* fatal db2 error, transfer to ta*/
+      TA1REC.TA1LOCAT[2] = " ";
+      PF0CW01.PF0CWKEY = " "; /* clear key redefinition area*/
+      PF0CW01.PF0CWKC1 = PFEREC.PFESUMNM; /* move to key char 1 area*/
+      PF0CW01.PF0CWKC2 = PFEREC.PFESRCNM; /* move to key char 2 area*/
+      PFWREC.PFWHKEY = PF0CW01.PF0CWKEY; /* move key to hold key area*/
+      PFWREC.PFWCPROC = "PF0C912"; /* pass calling process*/
+      TA1REC.TA1LOCAT[4] = "IO2770"; /* pass i/o module name*/
+      TA1REC.TA1DBASE = "DPROFT";
+      TA1REC.TA1TBLVU = "VSUMAT01";
+      XPPF010(); /* abend routine*/
+    end
+  end
+end // end PF0C912
+
+// vsumat01 select next 4
+Function PF0C913()
+  call "IO2770" ("N4", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* vsumat01 select next*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if row found*/
+     /* this is okay - handle in calling process*/
+  else
+    if (SQLCA.VAGen_SQLCODE == +100) /* if row not found*/
+      PF0CW01.PF0CWSAF = "Y"; /* set vsumat01 select complete flag*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+        converseLib.validationFailed(114); /* data base was busy, please retry*/
+        PFWREC.PFWERRF = "Y";
+      else /* fatal db2 error, transfer to ta*/
+        TA1REC.TA1LOCAT[2] = " ";
+        PF0CW01.PF0CWKEY = " "; /* clear key redefinition area*/
+        PF0CW01.PF0CWKC1 = PFEREC.PFESUMNM; /* key char 1 area*/
+        PF0CW01.PF0CWKC2 = PFEREC.PFESRCNM; /* key char 2 area*/
+        PFWREC.PFWHKEY = PF0CW01.PF0CWKEY;
+                                   /* move key to hold key area*/
+        PFWREC.PFWCPROC = "PF0C913"; /* pass calling process*/
+        TA1REC.TA1LOCAT[4] = "IO2770"; /* pass i/o module name*/
+        TA1REC.TA1DBASE = "DPROFT";
+        TA1REC.TA1TBLVU = "VSUMAT01";
+        XPPF010(); /* abend routine*/
+      end
+    end
+  end
+end // end PF0C913
+
+// vsumat01 close scan 4
+Function PF0C914()
+  call "IO2770" ("C4", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* vsumat01 close scan*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if close successful*/
+     /* this is okay - do nothing*/
+  else
+    TA1REC.TA1LOCAT[2] = " ";
+    PF0CW01.PF0CWKEY = " "; /* clear key redefinition area*/
+    PF0CW01.PF0CWKC1 = PFEREC.PFESUMNM; /* key char 1 area*/
+    PF0CW01.PF0CWKC2 = PFEREC.PFESRCNM; /* key char 2 area*/
+    PFWREC.PFWHKEY = PF0CW01.PF0CWKEY; /* move key to hold key area*/
+    PFWREC.PFWCPROC = "PF0C914"; /* pass calling process*/
+    TA1REC.TA1LOCAT[4] = "IO2770"; /* pass i/o module name*/
+    TA1REC.TA1DBASE = "DPROFT";
+    TA1REC.TA1TBLVU = "VSUMAT01";
+    XPPF010(); /* abend routine*/
+  end
+end // end PF0C914
+
+// vsumat01 table update
+Function PF0C915()
+   /* -----------------------------------------------------------;*/
+     /* This process moves one row of the CSP table to the      ;*/
+     /* corresponding fields of PFEREC and updates the data     ;*/
+     /* base with that single row.                              ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  set PFEREC empty;
+   /* ***** note: PF0CW02 must exactly match PFEREC*/
+  PFEREC.PFEGRP = PF0CW02.PF0CWTBL[PFWTBLX]; /* move group level*/
+   /* ******/
+  ;
+  XPPF030(); /* ta0040 date/time call routine*/
+  ;
+  PFEREC.ZZZCHGDT = TA2REC.TA2GRGGN; /* move system date*/
+  PFEREC.ZZZCHGTM = TA2REC.TA2TIMHM; /* move system time*/
+  ;
+  if (PFEREC.PFESTIND == " ")
+    PFEREC.PFGSUMN = 0; /* pf_sum_seq_nbr*/
+    PFEREC.PFELGCPG = 0; /* pf_logl_page_cnt*/
+    PFEREC.ZZNBRROW = 0; /* Active when new col defined*/
+  end
+  ;
+  ;
+  call "IO2770" ("U ", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* table update*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if table i/o successful*/
+    converseLib.validationFailed(15); /* changes have been entered*/
+    set PF0CM001.PFECYCIN[PFWIDX] initialAttributes; /* reset to normal intensity*/
+    set PF0CM001.PFEPRIND[PFWIDX] initialAttributes; /* reset to normal intensity*/
+    set PF0CM001.PFESTIND[PFWIDX] initialAttributes; /* reset to normal intensity*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+      converseLib.validationFailed(114); /* data base was busy, please retry*/
+      PFWREC.PFWERRF = "Y";
+    else /* fatal db2 error, transfer to ta*/
+      TA1REC.TA1LOCAT[2] = " ";
+      PFWREC.PFWHKEY = PF0CW02.PFESUMNM;
+      PFWREC.PFWCPROC = "PF0C915"; /* pass calling process*/
+      TA1REC.TA1LOCAT[4] = "IO2770"; /* pass i/o module name*/
+      TA1REC.TA1DBASE = "DPROFT";
+      TA1REC.TA1TBLVU = "VSUMAT01";
+      XPPF010(); /* abend routine*/
+    end
+  end
+end // end PF0C915
+
+// vsumat01 delete
+Function PF0C916()
+  call "IO2770" ("D ", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* vsumat01 delete*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if call ok*/
+     /* this is okay - handle in calling process*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+      converseLib.validationFailed(114); /* data base was busy; please retry*/
+      PFWREC.PFWERRF = "Y";
+    else /* fatal db2 error, transfer to ta*/
+      TA1REC.TA1LOCAT[2] = " ";
+      PFWREC.PFWHKEY = PFEREC.PFESUMNM;
+      PFWREC.PFWCPROC = "PF0C916"; /* pass calling process*/
+      TA1REC.TA1LOCAT[4] = "IO2770"; /* pass i/o module name*/
+      TA1REC.TA1DBASE = "DPROFT";
+      TA1REC.TA1TBLVU = "VSUMAT01";
+      XPPF010(); /* abend routine*/
+    end
+  end
+end // end PF0C916
+
+// vrptpm01 select scan
+Function PF0C921()
+  call "IO2880" ("S1", SQLCA, PFFREC) {isNoRefresh = yes, isExternal = yes}; /* vrptpm01 select scan*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if select successful*/
+     /* this is okay - handle in calling process*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+      converseLib.validationFailed(114); /* data base was busy, please retry*/
+      PFWREC.PFWERRF = "Y";
+    else /* fatal db2 error, transfer to ta*/
+      TA1REC.TA1LOCAT[2] = " ";
+      PF0CW01.PF0CWKEY = " "; /* clear key redefinition area*/
+      PF0CW01.PF0CWKC1 = PFFREC.PFESUMNM; /* move to key char 1 area*/
+      PF0CW01.PF0CWKB2 = PFFREC.PFANXTNO;
+                                   /* move to key binary 2 area*/
+      PFWREC.PFWHKEY = PF0CW01.PF0CWKEY; /* move key to hold key area*/
+      PFWREC.PFWCPROC = "PF0C921"; /* pass calling process*/
+      TA1REC.TA1LOCAT[4] = "IO2880"; /* pass i/o module name*/
+      TA1REC.TA1DBASE = "DPROFT";
+      TA1REC.TA1TBLVU = "VRPTPM01";
+      XPPF010(); /* abend routine*/
+    end
+  end
+end // end PF0C921
+
+// vrptpm01 select next
+Function PF0C922()
+  call "IO2880" ("N1", SQLCA, PFFREC) {isNoRefresh = yes, isExternal = yes}; /* vrptpm01 select next*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if row found*/
+     /* this is okay - handle in calling process*/
+  else
+    if (SQLCA.VAGen_SQLCODE == +100) /* if row not found*/
+      PF0CW01.PF0CWRPF = "Y"; /* set vrptpm01 select complete flag*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+        converseLib.validationFailed(114); /* data base was busy, please retry*/
+        PFWREC.PFWERRF = "Y";
+      else /* fatal db2 error, transfer to ta*/
+        TA1REC.TA1LOCAT[2] = " ";
+        PF0CW01.PF0CWKEY = " "; /* clear key redefinition area*/
+        PF0CW01.PF0CWKC1 = PFFREC.PFESUMNM; /* key char 1 area*/
+        PF0CW01.PF0CWKB2 = PFFREC.PFANXTNO; /* key binary 2 area*/
+        PFWREC.PFWHKEY = PF0CW01.PF0CWKEY;
+                                   /* move key to hold key area*/
+        PFWREC.PFWCPROC = "PF0C922"; /* pass calling process*/
+        TA1REC.TA1LOCAT[4] = "IO2880"; /* pass i/o module name*/
+        TA1REC.TA1DBASE = "DPROFT";
+        TA1REC.TA1TBLVU = "VRPTPM01";
+        XPPF010(); /* abend routine*/
+      end
+    end
+  end
+end // end PF0C922
+
+// vrptpm01 close scan
+Function PF0C923()
+  call "IO2880" ("C1", SQLCA, PFFREC) {isNoRefresh = yes, isExternal = yes}; /* vrptpm01 close scan*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if close successful*/
+     /* this is okay - do nothing*/
+  else
+    TA1REC.TA1LOCAT[2] = " ";
+    PF0CW01.PF0CWKEY = " "; /* clear key redefinition area*/
+    PF0CW01.PF0CWKC1 = PFFREC.PFESUMNM; /* key char 1 area*/
+    PF0CW01.PF0CWKB2 = PFFREC.PFANXTNO; /* key binary 2 area*/
+    PFWREC.PFWHKEY = PF0CW01.PF0CWKEY; /* move key to hold key area*/
+    PFWREC.PFWCPROC = "PF0C923"; /* pass calling process*/
+    TA1REC.TA1LOCAT[4] = "IO2880"; /* pass i/o module name*/
+    TA1REC.TA1DBASE = "DPROFT";
+    TA1REC.TA1TBLVU = "VRPTPM01";
+    XPPF010(); /* abend routine*/
+  end
+end // end PF0C923
+
+// vrptpm01 delete
+Function PF0C924()
+  call "IO2880" ("D ", SQLCA, PFFREC) {isNoRefresh = yes, isExternal = yes}; /* vrptpm01 delete*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if row found*/
+     /* this is okay - handle in calling process*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+      converseLib.validationFailed(114); /* data base was busy, please retry*/
+      PFWREC.PFWERRF = "Y";
+    else /* fatal db2 error, transfer to ta*/
+      TA1REC.TA1LOCAT[2] = " ";
+      PF0CW01.PF0CWKEY = " "; /* clear key redefinition area*/
+      PF0CW01.PF0CWKC1 = PFFREC.PFESUMNM; /* move to key char 1 area*/
+      PF0CW01.PF0CWKB2 = PFFREC.PFANXTNO;
+                                   /* move to key binary 2 area*/
+      PFWREC.PFWHKEY = PF0CW01.PF0CWKEY; /* move key to hold key area*/
+      PFWREC.PFWCPROC = "PF0C924"; /* pass calling process*/
+      TA1REC.TA1LOCAT[4] = "IO2880"; /* pass i/o module name*/
+      TA1REC.TA1DBASE = "DPROFT";
+      TA1REC.TA1TBLVU = "VRPTPM01";
+      XPPF010(); /* abend routine*/
+    end
+  end
+end // end PF0C924
+
+//*** RECORD=PF0CW01 ****
+//    This record contains the working storage fields that
+// are unique to the application PF0C - Summary Directory.
+// ***********************
+Record PF0CW01 type basicRecord
+  10 PF0CWSLC PF0CWSLC ; 
+  10 PF0CWSTC PF0CWSTC ; 
+  10 PF0CWPRC PF0CWPRC ; 
+  10 PF0CWCYC PF0CWCYC ; 
+  10 PF0CWDCF PF0CWDCF ; 
+  10 PF0CWYM1 PF0CWYM1 ; 
+    15 PF0CWC1 PF0CWC1 ; 
+    15 PF0CWY1 PF0CWY1 ; 
+    15 PF0CWM1 PF0CWM1 ; 
+    15 PF0CWD1 PF0CWD1 ; 
+  10 PF0CWMY2 PF0CWMY2 ; 
+    15 PF0CWM2 PF0CWM2 ; 
+    15 PF0CWD2 PF0CWD2 ; 
+    15 PF0CWY2 PF0CWY2 ; 
+  10 PF0CWISD PF0CWISD ; 
+    15 PF0CWISL PF0CWISL ; 
+    15 PF0CWIS PF0CWIS ; 
+  10 PF0CWREM PF0CWREM ; 
+  10 PF0CWSAF PF0CWSAF ; 
+  10 PF0CWRPF PF0CWRPF ; 
+  10 PF0CWKEY PF0CWKEY ; 
+    15 PF0CWKC1 PF0CWKC1 ; 
+      20 PF0CWKB1 PF0CWKB1 ; 
+      20 PF0CWKF1 PF0CWKF1 ; 
+    15 PF0CWKC2 PF0CWKC2 ; 
+      20 PF0CWKB2 PF0CWKB2 ; 
+      20 PF0CWKF2 PF0CWKF2 ; 
+end // end PF0CW01
+
+//*** RECORD=PF0CW02 ****
+//    This CSP table holds the DCORP.VSUMAT01 Database table
+// for application PF0C - Summary Directory.  It loads the
+// entire Database table into this CSP table durring
+// application initialization.  It then uses this CSP table
+// to display pages of summaries.
+// 
+//   Note: The rows of this CSP table must exactly match the
+// rows of the DPROFT.VSUMAT01 Database table.  CSP record
+// PFEREC is used for I/O from the Database table.  If the
+// Database and PFEREC are changed, the CSP table must be
+// changed also.
+// 
+// Maintenance log:
+// 
+//   Date    Init    Description
+// --------  ----  --------------------------------------------
+// 11/17/89  DLC   Added ZZNBRROW data item to match PFEREC.
+// ***********************
+Record PF0CW02 type basicRecord
+  10 PF0CWTBL PF0CWTBL [500] ; 
+    15 PFESUMNM PFESUMNM ; 
+    15 PFESRCNM PFESRCNM ; 
+    15 PFESUMDE PFESUMDE ; 
+    15 PFGSUMN PFGSUMN ; 
+    15 PFCREF PFCREF ; 
+    15 PFBREF PFBREF ; 
+    15 PFDREF PFDREF ; 
+    15 PFABSPRM PFABSPRM ; 
+    15 PFABSPRY PFABSPRY ; 
+    15 PFEPRIND PFEPRIND ; 
+    15 PFESRTEL PFESRTEL ; 
+    15 YISCD YISCD ; 
+    15 PFBISGRP PFBISGRP ; 
+    15 PFESEIND PFESEIND ; 
+    15 PFESQCOL PFESQCOL ; 
+    15 PFECRTDT PFECRTDT ; 
+    15 PFECYCIN PFECYCIN ; 
+    15 XXXUSRID XXXUSRID ; 
+    15 PFESTIND PFESTIND ; 
+    15 PFELGCPG PFELGCPG ; 
+    15 ZZNBRROW ZZNBRROW ; 
+    15 ZZZSDT ZZZSDT ; 
+    15 ZZZCHGDT ZZZCHGDT ; 
+    15 ZZZCHGTM ZZZCHGTM ; 
+    15 ZZZCHGCT ZZZCHGCT ; 
+end // end PF0CW02
+
+//   cccyymmdd century
+DataItem PF0CWC1 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// scrn cycle field chg counter
+DataItem PF0CWCYC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   cccyymmdd day
+DataItem PF0CWD1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   mmddyy day
+DataItem PF0CWD2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// delete confirm msg issued flag
+DataItem PF0CWDCF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   i/s group # or class code
+DataItem PF0CWIS num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// income statement description
+DataItem PF0CWISD char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   'I/S ' constant literal
+DataItem PF0CWISL char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//     key binary 1 (bytes 1-2)
+DataItem PF0CWKB1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//     key binary 2 (bytes 11-12)
+DataItem PF0CWKB2 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   key character 1 (bytes 1-10)
+DataItem PF0CWKC1 char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   key character 2 (byte 11-20)
+DataItem PF0CWKC2 char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// key redef. for abend reporting
+DataItem PF0CWKEY char(20)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//     key filler 1 (bytes 8-10)
+DataItem PF0CWKF1 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//     key filler 2 (bytes 13-20)
+DataItem PF0CWKF2 char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   cccyymmdd month
+DataItem PF0CWM1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   mmddyy month
+DataItem PF0CWM2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// month/day/year redefines
+DataItem PF0CWMY2 num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// scrn priority field chg countr
+DataItem PF0CWPRC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// remainder, used in page calc.
+DataItem PF0CWREM num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// vrptpm01 select complete flag
+DataItem PF0CWRPF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// vsumat01 select complete flag
+DataItem PF0CWSAF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// scrn selection field counter
+DataItem PF0CWSLC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// scrn status field chg counter
+DataItem PF0CWSTC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// csp table matching db2 pferec
+DataItem PF0CWTBL char(108)  {
+  align = right, fillCharacter = " ", inputRequired = no
+}
+end
+
+//   cccyymmdd year
+DataItem PF0CWY1 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   mmddyy year
+DataItem PF0CWY2 num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// cent/year/month/day redefines
+DataItem PF0CWYM1 num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

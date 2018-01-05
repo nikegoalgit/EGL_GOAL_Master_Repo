@@ -1,0 +1,2189 @@
+package pf0g;
+import corpcom3.XPPF002;
+import corpcom3.XPPF010;
+import corpcom3.XPPF030;
+import corpcom3.XPPF200;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSPF1;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom5.COMMAREA;
+import corpcom5.ERRSQLCA;
+import corpcom6.SQLCA;
+import pf.common.*;
+import ta.common.TA1REC;
+import ta.common.TA2REC;
+import xx.common.*;
+import xx08.*;
+import xx08.YISTBL;
+//*** PROGRAM=PF0G ****
+// PF0G:  Summary Request Screens for Profitability Reporting
+//        System
+// 
+// Overview:
+//        This application allows the user to create a prede-
+//        fined or custom-tailored profitability summary. In
+//        In order for the request to be acknowledged, certain
+//        categories of information are required:
+//           a name for the summary file to be created,
+//           a valid format reference number
+//           a valid attribute reference number
+//           a valid i/s group reference number
+//           a valid base month and year
+//           sort criteria
+// 
+//       The user can enter these fields one by one on the
+//       Summary Request screen, or can pick one of the
+//       summaries already existing, on the Predefined Summary
+//       screen.
+// 
+// 
+// Maintenance History:
+// 
+//   Date      By           Description of Changes
+// --------  ------   ------------------------------------
+//  1-03-89    mh     Original transfer to production.
+//  2-07-89    mh     Fix I/S verification routine - pf0g400.
+//  2-09-89    mh     Fix pf0g110 to not allow more than one
+//                    selection in the sort element section.
+//  2-28-89  dcassi   Initialize pferec.pfesrcnm to spaces
+//                    in pf0g450 and add pfkey descr to map 1.
+// 12-06-89  tgriff   Add an edit of PRIORITY LEVEL in pf0g110.
+//                    Correct passing of Gross margin and
+//                    Contribution elements.
+// 06-07-91  CVO      Increased yis entries on pf0gw01 from 200
+//                    to 500.  Changed PF0G400 to use the new
+//                    max yis tries.
+// 01-16-92   wes     initialized pferec.pfgsumn to 0 in
+//                    PFOG450.
+// 02-26-1998 TTHAN1  Y2KFIX - CHANGED: PF0GW01, PF0GM001
+//                    PF0G110,
+// *********************
+Program PF0G type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "PF00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  PF0GW01 PF0GW01; // record
+  PF1REC PF1REC; // record
+  PFAREC PFAREC; // record
+  PFBREC PFBREC; // record
+  PFCREC PFCREC; // record
+  PFDREC PFDREC; // record
+  PFEREC PFEREC; // record
+  PFWREC PFWREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TA2REC TA2REC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use PF0GT {deleteAfterUse = yes}; // table
+  use YISTBL {deleteAfterUse = yes}; // table
+  use PF0GM.PF0GM001,  // forms
+      PF0GM.PF0GM002
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    PF0G000: PF0G000();
+    ;
+    ;
+    exit program;
+    ;
+    ;
+  end // end main
+end // end PF0G
+
+// PF0G main logic
+Function PF0G000()
+   /* -----------------------------------------------------------;*/
+      /* Main logic for application PF0G                        ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0G001(); /* initialize maps, working storage*/
+  ;
+  while (PFWREC.PFWEOAF == "N") /* while application is active*/
+    ;
+    PF0G100(); /* converse PF0G screens*/
+    ;
+  end
+  ;
+  XPPF002(); /* exit*/
+  ;
+  COMMAREA.CATOAP = "PF0A"; /* transfer back to main PF menu*/
+  XSEXIT(); /* in case of bad exit*/
+end // end PF0G000
+
+// Initialization
+Function PF0G001()
+  ;
+  XSENTRY(); /* security checking*/
+  ;
+  XSSEGTR();
+  ;
+  set PF0GM001 initial; /* clear summary request screen*/
+  set PF0GM002 initial; /* clear predefined summary screen*/
+  set PFWREC empty; /* clear working storage*/
+  set PF1REC empty; /* clear area for passed record*/
+  ;
+  call "IO2670" ("S ", SQLCA, PFAREC) {isNoRefresh = yes, isExternal = yes}; /* control table select*/
+  if (SQLCA.VAGen_SQLCODE == +0) /* if table i/o successful*/
+     /* next sentence                 do nothing*/
+  else
+    if (SQLCA.VAGen_SQLCODE == -911) /* if table page busy*/
+      PFWERRF = "Y";
+      converseLib.validationFailed(114); /* data base was busy, please retry*/
+    else /* fatal db2 error, transfer to ta*/
+      TA1REC.TA1LOCAT[2] = " ";
+      PFWREC.PFWHKEY = " ";
+      PFWREC.PFWCPROC = "PF0G001"; /* pass calling process*/
+      TA1REC.TA1LOCAT[4] = "IO2670"; /* pass i/o module name*/
+      TA1REC.TA1DBASE = "DPROFT";
+      TA1REC.TA1TBLVU = "VPFCTL01";
+      XPPF010(); /* abend routine*/
+    end
+  end
+  ;
+  set PF0GM001.PF0GMNAM cursor; /* set cursor at first field*/
+  ;
+  PF1REC.PF1PASS = COMMAREA.CAUSERA; /* receive passed info*/
+  COMMAREA.CAUSERA = " "; /* clear user area*/
+  ;
+  if (PF1REC.PF1XFERF == "Y" /* if xfer via PF keys*/
+   && PF1REC.PF1ORIG == "PF0G") /* and returning on bridge*/
+    PF0G300(); /* reconstruct screen left behind*/
+  else /* else*/
+    PF0GM001.PF0GMBMM = PFAREC.PFABSPRM; /* set up default base month*/
+    PF0GM001.PF0GMBYY = PFAREC.PFABSPRY; /* set up default base year*/
+    PF0GM001.PF0GMPRI = 2; /* set up default job priority*/
+  end
+  ;
+  PFWREC.PFWEOAF = "N"; /* set end of appl flag*/
+  PFWREC.PFWERRF = "N"; /* set error flag*/
+  PFWREC.PFWEOSF = "N"; /* set end of screen flag*/
+  PF0GW01.PF0GWPSF = "Y"; /* set End Of Predef Summ Flag to  'y'*/
+  ;
+  PF0GM001.XXXCURDT = VGVar.currentShortGregorianDate;
+  PF0GM002.XXXCURDT = VGVar.currentShortGregorianDate;
+  ;
+end // end PF0G001
+
+// summary request screen
+Function PF0G100()
+   /* -----------------------------------------------------------;*/
+     /* PF0G100 - converse summary request screen               ;*/
+               /* or predefined summary screen                  ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  if (PF1REC.PF1XFERF == "Y" /* if returning from PF xfer*/
+   && PF1REC.PF1PDEFF == "Y") /* and we were in predef sum scrn*/
+    PF0GW01.PF0GWPSF = "N"; /* signal predef summ scrn active*/
+    while (PF0GW01.PF0GWPSF == "N") /* while predef summ active*/
+      PF0G200(); /* converse predef summ screen*/
+    end
+  end
+  ;
+  if (PFWREC.PFWMSG != " ")
+    PF0GM001.VAGen_EZEMSG = PFWREC.PFWMSG;
+  end
+  ;
+  PF0GM001.XXXCURDT = VGVar.currentShortGregorianDate;
+  ;
+  converse PF0GM001 ;
+  ;
+  PF0G105(); /* reset color on all map fields*/
+  ;
+  PFWREC.PFWERRF = "N"; /* reset error flag*/
+  PFWREC.PFWMSG = " "; /* clear message line*/
+  PF0GM001.VAGen_EZEMSG = " ";
+  set PF1REC empty; /* clear passing record*/
+  ;
+  PF0GS01(); /* check pf keys*/
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    return;
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Edit unprotected fields on screen.                       ;*/
+       /* All fields at top should be entered, and each column  ;*/
+       /* at bottom should have one choice indicated.  This     ;*/
+       /* totals 9 required fields.                             ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0G110();
+  ;
+  if (PFWREC.PFWERRF == "Y")
+    return;
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* PF12 is edit only, request is not processed              ;*/
+   /* -----------------------------------------------------------;*/
+  if (converseVar.eventKey is pf12)
+    converseLib.validationFailed(51);
+    return;
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Request will be processed and confirmation msg sent back ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0G450(); /* add summary to db2 table*/
+end // end PF0G100
+
+// reset color on PF0GM001 fields
+Function PF0G105()
+  ;
+  set PF0GM001.PF0GMNAM initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMDES initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMFMT initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMISG initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMATT initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMBMM initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMBYY initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMELE[1] initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMELE[2] initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMELE[3] initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMELE[4] initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMELE[5] initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMCLS initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMASC initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMDSC initialAttributes; /* reset color*/
+  set PF0GM001.PF0GMCOL initialAttributes; /* reset color*/
+  ;
+end // end PF0G105
+
+// Edit PF0GM001 required fields
+Function PF0G110()
+   /* -----------------------------------------------------------;*/
+    /* Check DATA/TIME COLUMN NUMBER entry.  Column number must ;*/
+    /* be valid for the type of format being used.  The format  ;*/
+    /* type was retrieved earlier when verifying PF0GMFMT.      ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0GW01.PF0GWCFL = "N"; /* initialize column validity flag*/
+  ;
+  PF0GW01.PF0GWRPN = PF0GM001.PF0GMATT; /* save screen ref #s*/
+  PF0GW01.PF0GWISN = PF0GM001.PF0GMISG;
+  PF0GW01.PF0GWFMN = PF0GM001.PF0GMFMT;
+  ;
+  PF0G400(); /* access db2 tables to verify reference*/
+                                   /* #s*/
+  ;
+  if (PF0GW01.PF0GWFMT == "Y") /* format ref # exists*/
+    PF0GW01.PF0GWTYP = PFCREC.PFCFMNBR; /* save format type*/
+  end
+  ;
+  if (PF0GW01.PF0GWTYP == 1)
+    if (PF0GM001.PF0GMELE[8] == " ")
+      if (PF0GM001.PF0GMCOL > 0
+       && PF0GM001.PF0GMCOL < 14)
+        PF0GW01.PF0GWCFL = "Y";
+         /* this is okay*/
+      else
+        converseLib.validationFailed(52);
+        PFWREC.PFWERRF = "Y";
+        set PF0GM001.PF0GMCOL cursor, bold;
+      end
+    end
+  end
+  ;
+  if (PF0GW01.PF0GWTYP == 2)
+    if (PF0GM001.PF0GMELE[8] == " ")
+      if (PF0GM001.PF0GMCOL > 0
+       && PF0GM001.PF0GMCOL < 13)
+        PF0GW01.PF0GWCFL = "Y";
+         /* this is okay*/
+      else
+        converseLib.validationFailed(53);
+        PFWREC.PFWERRF = "Y";
+        set PF0GM001.PF0GMCOL cursor, bold;
+      end
+    end
+  end
+  ;
+  if (PF0GW01.PF0GWTYP == 3)
+    if (PF0GM001.PF0GMELE[8] == " ")
+      if (PF0GM001.PF0GMCOL > 0
+       && PF0GM001.PF0GMCOL < 13)
+        PF0GW01.PF0GWCFL = "Y";
+         /* this is okay*/
+      else
+        converseLib.validationFailed(53);
+        PFWREC.PFWERRF = "Y";
+        set PF0GM001.PF0GMCOL cursor, bold;
+      end
+    end
+  end
+  ;
+  if (PF0GW01.PF0GWTYP == 4)
+    if (PF0GM001.PF0GMELE[8] == " ")
+      if (PF0GM001.PF0GMCOL > 0
+       && PF0GM001.PF0GMCOL < 13)
+        PF0GW01.PF0GWCFL = "Y";
+         /* this is okay*/
+      else
+        converseLib.validationFailed(53);
+        PFWREC.PFWERRF = "Y";
+        set PF0GM001.PF0GMCOL cursor, bold;
+      end
+    end
+  end
+  ;
+  if (PF0GW01.PF0GWTYP == 5)
+    if (PF0GM001.PF0GMELE[8] == " ")
+      if (PF0GM001.PF0GMCOL > 0
+       && PF0GM001.PF0GMCOL < 14)
+        PF0GW01.PF0GWCFL = "Y";
+         /* this is okay*/
+      else
+        converseLib.validationFailed(52);
+        PFWREC.PFWERRF = "Y";
+        set PF0GM001.PF0GMCOL cursor, bold;
+      end
+    end
+  end
+  ;
+  if (PF0GM001.PF0GMCOL == 0) /* if a sort col. wasn't entered and the*/
+                                   /* sort*/
+    if (PF0GM001.PF0GMELE[8] == "X") /* element is sequential, that's ok*/
+                       /* otherwise a sort column must be entered*/
+    else
+      PFWREC.PFWERRF = "Y";
+      converseLib.validationFailed(241);
+    end
+  end
+  ;
+  if (PF0GM001.PF0GMCOL > 0 /* if a sort col. was entered and the*/
+   /* sort*/
+   && PF0GM001.PF0GMELE[8] == "X") /* element is sequential, that's*/
+    PFWREC.PFWERRF = "Y"; /* an error*/
+    converseLib.validationFailed(242);
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check ORDER section. Must select ASC or DSC, not both.   ;*/
+   /* -----------------------------------------------------------;*/
+  if (PF0GM001.PF0GMASC != " ") /* if ascending chosen*/
+    if (PF0GM001.PF0GMDSC != " ") /* and descending also chosen*/
+      converseLib.validationFailed(44); /* should enter just one*/
+      PFWREC.PFWERRF = "Y";
+      set PF0GM001.PF0GMDSC cursor, bold;
+    else /* else (only ascending chosen)*/
+       /* this is okay*/
+    end
+  else /* else (ascending not chosen)*/
+    if (PF0GM001.PF0GMDSC != " ") /* if descending chosen*/
+       /* this is okay*/
+    else /* else (neither chosen)*/
+      converseLib.validationFailed(43); /* should enter at least one*/
+      PFWREC.PFWERRF = "Y";
+      set PF0GM001.PF0GMDSC cursor, bold;
+    end
+  end
+  ;
+  if (PF0GM001.PF0GMELE[8] == "X") /* if sequential element selected,*/
+    if (PF0GM001.PF0GMDSC != " ") /* descending sort not allowed*/
+      PFWREC.PFWERRF = "Y";
+      converseLib.validationFailed(243);
+      set PF0GM001.PF0GMDSC cursor, bold;
+    end
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check ELEMENT section for entries.  Allow only one       ;*/
+    /* choice.  If more than one, highlight second choice       ;*/
+    /* and reconverse screen.                                   ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PFWREC.PFWIDX = 1; /* set index*/
+  PF0GW01.PF0GWSEL = "N"; /* set selection flag*/
+  ;
+  while (PFWREC.PFWIDX < 9)
+    if (PF0GM001.PF0GMELE[PFWIDX] != " ") /* if ELEMENT selected*/
+      if (PF0GW01.PF0GWSEL == "N")
+                                   /* if no other selected*/
+        PF0GW01.PF0GWSEL = "Y"; /* signal selection*/
+      else /* else (other selection)*/
+        converseLib.validationFailed(44); /* cannot sel more than one entry*/
+        PFWREC.PFWERRF = "Y";
+        set PF0GM001.PF0GMELE[PFWIDX] cursor, bold;
+      end
+    end
+    PFWREC.PFWIDX = PFWREC.PFWIDX + 1; /* bump up index*/
+  end
+  ;
+  if (PF0GW01.PF0GWSEL == "Y") /* if an element was chosen*/
+    if (PF0GM001.PF0GMCLS > 0) /* and an i/s class was entered*/
+      converseLib.validationFailed(44); /* cannot sel more than one entry*/
+      PFWREC.PFWERRF = "Y";
+      set PF0GM001.PF0GMCLS cursor, bold;
+    end
+  end
+  ;
+  if (PF0GW01.PF0GWSEL == "N") /* if no element chosen*/
+    if (PF0GM001.PF0GMCLS == 0) /* and no i/s class entered*/
+      converseLib.validationFailed(43); /* select one enty from this column*/
+      PFWREC.PFWERRF = "Y";
+      set PF0GM001.PF0GMELE[1] cursor, bold;
+    else
+      PF0G410(); /* validate the i/s class entered*/
+    end
+  end
+   /* *******************************/
+   /* Edit the Priority Level given*/
+   /* *******************************/
+  ;
+  if (PF0GM001.PF0GMPRI == "1"
+   || PF0GM001.PF0GMPRI == "2")
+     /* next sentence*/
+  else
+    set PF0GM001.PF0GMPRI cursor, bold;
+    converseLib.validationFailed(310);
+    PFWREC.PFWERRF = "Y"; /* signal error*/
+    return;
+  end
+  ;
+  if (PF0GM001.PF0GMBMM == 0
+   || PF0GM001.PF0GMBMM < 1
+   || PF0GM001.PF0GMBMM > 12)
+    converseLib.validationFailed(40); /* must enter base period month 01-12*/
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMBMM cursor, bold;
+  end
+  ;
+  /* *****************Y2K IN BEGIN****************/
+  if (PF0GM001.PF0GMBMM == 0
+   || PF0GM001.PF0GMBMM < 1
+   || PF0GM001.PF0GMBMM > 12)
+  /* *****************Y2K IN END******************/
+    if (PF0GM001.PF0GMBYY == 0)
+      converseLib.validationFailed(41); /* must enter base period year*/
+      PFWREC.PFWERRF = "Y";
+      set PF0GM001.PF0GMBYY cursor, bold;
+    end
+  /* *****************Y2K IN BEGIN****************/
+  end
+  /* *****************Y2K IN END******************/
+  ;
+  PF0GW01.PF0GWCDT = VGVar.currentShortGregorianDate; /* save current date*/
+  /* *****************Y2K IN BEGIN****************/
+  if (PF0GW01.PF0GWCY > 60)
+    PF0GW01.PF0GWCC = 19;
+  else
+    PF0GW01.PF0GWCC = 20;
+  end
+  /* *****************Y2K IN END******************/
+  ;
+  PF0GW01.PF0GWBM = PF0GM001.PF0GMBMM; /* move scrn mm to w/s area*/
+  PF0GW01.PF0GWBY = PF0GM001.PF0GMBYY; /* move scrn yy to w/s area*/
+  /* *****************Y2K IN BEGIN****************/
+  if (PF0GW01.PF0GWBM > 0
+   && PF0GW01.PF0GWBM < 13)
+    if (PF0GW01.PF0GWBY > 60)
+      PF0GW01.PF0GWBC = 19;
+    else
+      PF0GW01.PF0GWBC = 20;
+    end
+  end
+  /* *****************Y2K IN END******************/
+  ;
+   /* FIGURE OUT VALID UPPER LIMIT = CURRENT DATE PLUS 1 MONTH*/
+  ;
+  if (PF0GW01.PF0GWCM == 12) /* if current month is DEC*/
+    PF0GW01.PF0GWUM = 1; /* bump up to JAN next year*/
+  /* *****************Y2K IN BEGIN****************/
+    if (PF0GW01.PF0GWCY == 99) /* IF LAST YEAR IN CENTURY*/
+      PF0GW01.PF0GWUY = 0; /* GO TO FIRST YEAR IN CC*/
+      PF0GW01.PF0GWUC = PF0GW01.PF0GWCC + 1; /* BUMP UP THE NEXT CC*/
+    else
+  /* *****************Y2K IN END******************/
+      PF0GW01.PF0GWUC = PF0GW01.PF0GWCC; /* SET CURR CC*/
+      PF0GW01.PF0GWUY = PF0GW01.PF0GWCY + 1; /* BUMP UP THE CURR YY*/
+  /* *****************Y2K IN BEGIN****************/
+    end
+  /* *****************Y2K IN END******************/
+  else /* else (any other month)*/
+    PF0GW01.PF0GWUM = PF0GW01.PF0GWCM + 1; /* bump up one month*/
+  /* *****************Y2K IN BEGIN****************/
+    PF0GW01.PF0GWUC = PF0GW01.PF0GWCC; /* SET CURR CC*/
+  /* *****************Y2K IN END******************/
+    PF0GW01.PF0GWUY = PF0GW01.PF0GWCY; /* SET CURR YY*/
+  end
+  ;
+    /* test entered base period against upper limit*/
+  ;
+  /* *****************Y2K OUT BEGIN***************/
+  /* IF PF0GW01.PF0GWBYM GT PF0GW01.PF0GWUYM;/*if base per over uppper*/
+  /* *****************Y2K OUT END*****************/
+  /* *****************Y2K IN BEGIN****************/
+  if (PF0GW01.PF0GWBCYM > PF0GW01.PF0GWUCYM) /* if base per over uppper limit*/
+  /* *****************Y2K IN END******************/
+    set PF0GM001.PF0GMBMM cursor, bold;
+    set PF0GM001.PF0GMBYY bold;
+    PF0GW01.PF0GWMSG = " "; /* clear msg area*/
+    PF0GW01.PF0GWMS1 = "--> BASE PERIOD CANNOT EXCEED ";
+    PF0GW01.PF0GWMSM = PF0GW01.PF0GWUM;
+    PF0GW01.PF0GWMSY = PF0GW01.PF0GWUY;
+    PF0GW01.PF0GWMS2 = " (MM YY)";
+    PFWREC.PFWMSG = PF0GW01.PF0GWMSG;
+    converseLib.validationFailed(0); /* reset ezemno so this error will*/
+                                   /* display*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+    /* figure out valid lower limit = june of previous fiscal yr*/
+  ;
+  PF0GW01.PF0GWLM = 6; /* set month to june*/
+  ;
+  if (PFAREC.PFAYREND == "O") /* if year end is 'open', subtract 1*/
+                                   /* from year*/
+  /* *****************Y2K IN BEGIN****************/
+    if (PF0GW01.PF0GWCY == 00)
+      PF0GW01.PF0GWLC = PF0GW01.PF0GWCC - 1;
+      PF0GW01.PF0GWLY = 99;
+    else
+      PF0GW01.PF0GWLC = PF0GW01.PF0GWCC;
+  /* *****************Y2K IN END******************/
+      PF0GW01.PF0GWLY = PF0GW01.PF0GWCY - 1; /* reduce year by 1*/
+  /* *****************Y2K IN BEGIN****************/
+    end
+  /* *****************Y2K IN END******************/
+  else
+    if (PF0GW01.PF0GWCM < 6) /* if current month is Jan-May*/
+  /* *****************Y2K IN BEGIN****************/
+      if (PF0GW01.PF0GWCY == 00)
+        PF0GW01.PF0GWLC = PF0GW01.PF0GWCC - 1;
+        PF0GW01.PF0GWLY = 99;
+      else
+        PF0GW01.PF0GWLC = PF0GW01.PF0GWCC;
+  /* *****************Y2K IN END******************/
+        PF0GW01.PF0GWLY = PF0GW01.PF0GWCY - 1; /* reduce year by 1*/
+  /* *****************Y2K IN BEGIN****************/
+      end
+  /* *****************Y2K IN END******************/
+    else /* else (June-Dec)*/
+  /* *****************Y2K IN BEGIN****************/
+      PF0GW01.PF0GWLC = PF0GW01.PF0GWCC;
+  /* *****************Y2K IN END******************/
+      PF0GW01.PF0GWLY = PF0GW01.PF0GWCY;
+    end
+  end
+  ;
+    /* test entered base period against lower limit*/
+  ;
+  /* *****************Y2K OUT BEGIN***************/
+  /* IF PF0GW01.PF0GWBYM LT PF0GW01.PF0GWLYM;/* if base per less than low*/
+  /* *****************Y2K OUT END*****************/
+  /* *****************Y2K IN BEGIN****************/
+  if (PF0GW01.PF0GWBCYM < PF0GW01.PF0GWLCYM) /* if base per less than low lim*/
+  /* *****************Y2K IN END******************/
+    set PF0GM001.PF0GMBMM cursor, bold;
+    set PF0GM001.PF0GMBYY bold;
+    PF0GW01.PF0GWMSG = " "; /* clear msg area*/
+    PF0GW01.PF0GWMS1 = "--> BASE PERIOD MUST BE AFTER ";
+    PF0GW01.PF0GWMSM = PF0GW01.PF0GWLM - 1; /* show lower limit*/
+    PF0GW01.PF0GWMSY = PF0GW01.PF0GWLY;
+    PF0GW01.PF0GWMS2 = " (MM YY)";
+    PFWREC.PFWMSG = PF0GW01.PF0GWMSG;
+    converseLib.validationFailed(0); /* reset ezemno so this error will*/
+                                   /* display*/
+    PFWREC.PFWERRF = "Y";
+  end
+  ;
+  ;
+  if (PF0GM001.PF0GMATT == 0)
+    converseLib.validationFailed(37); /* must enter attribute ref nbr*/
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMATT cursor, bold;
+  else
+    if (PF0GW01.PF0GWRPT == "Y") /* rept. attr. ref # valid*/
+       /* this is okay*/
+    else
+      converseLib.validationFailed(39); /* this attribute ref nbr is not valid*/
+      PFWREC.PFWERRF = "Y";
+      set PF0GM001.PF0GMATT cursor, bold;
+    end
+  end
+  ;
+  if (PF0GM001.PF0GMISG == 0)
+    converseLib.validationFailed(36);
+                                   /* must enter income stmt group ref nbr*/
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMISG cursor, bold;
+  else
+    if (PF0GW01.PF0GWISG == "Y") /* i/s group ref # exists*/
+       /* this is okay*/
+    else
+      converseLib.validationFailed(38); /* this inc stmt group ref nbr is not*/
+                                   /* valid*/
+      PFWREC.PFWERRF = "Y";
+      set PF0GM001.PF0GMISG cursor, bold;
+    end
+  end
+  ;
+  if (PF0GM001.PF0GMFMT == 0)
+    converseLib.validationFailed(13); /* must enter format ref number*/
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMFMT cursor, bold;
+  else
+    if (PF0GW01.PF0GWFMT == "N") /* format ref # doesn't exist*/
+      converseLib.validationFailed(45); /* this format ref nbr is not valid*/
+      PFWREC.PFWERRF = "Y";
+      set PF0GM001.PF0GMFMT cursor, bold;
+    end
+  end
+  ;
+  if (PF0GM001.PF0GMNAM == " ")
+    converseLib.validationFailed(35); /* must enter summary name*/
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMNAM cursor, bold;
+  end
+  ;
+  PFEREC.PFESUMNM = PF0GM001.PF0GMNAM; /* move entered summ. name*/
+                                  /* to db2 key*/
+  call "IO2770" ("S ", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* access db2*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if db2 row found, it's an error*/
+    PFWREC.PFWERRF = "Y";
+    converseLib.validationFailed(193);
+    set PF0GM001.PF0GMNAM cursor, bold;
+  else
+    if (SQLCA.VAGen_SQLCODE == +100) /* if record not found, that's great*/
+       /* next sentence*/
+    else
+      TA1REC.TA1DBASE = "DPROFT"; /* fatal db2 error*/
+      TA1REC.TA1TBLVU = "VSUMAT01";
+      TA1REC.TA1TBLKE = PF0GM001.PF0GMNAM;
+      TA1REC.TA1LOCAT[3] = "PF0G110";
+      TA1REC.TA1LOCAT[4] = "IO2770";
+      XPPF010();
+                                   /* perform profitability abend routine*/
+    end
+  end
+end // end PF0G110
+
+// build summ request scrn fields
+Function PF0G120()
+   /* ----------------------------------------------------------;*/
+    /* Move fields from PF1REC to screen PF0GM001              ;*/
+    /* Used if moving from predef screen to sum req screen     ;*/
+         /* or returning to sum req screen from other Profit   ;*/
+            /* application via PF keys                         ;*/
+   /* ----------------------------------------------------------;*/
+  ;
+  set PF0GM001 initial; /* clear summary req screen*/
+  set PF0GM001.PF0GMNAM cursor; /* move cursor to name field*/
+  ;
+  PFEREC.PFESUMNM = PF1REC.PF1NAM; /* move name to db2 key*/
+  ;
+  call "IO2770" ("S ", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* access db2*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if db2 row found,*/
+    PFWREC.PFWERRF = "Y"; /* set error flag*/
+    converseLib.validationFailed(194);
+    set PF0GM001.PF0GMNAM cursor, bold;
+  else
+    if (SQLCA.VAGen_SQLCODE == +100)
+                                   /* if db2 row not found, move predefined*/
+      PF0GM001.PF0GMNAM = PF1REC.PF1NAM; /* name to screen name*/
+    else
+      TA1REC.TA1DBASE = "DPROFT"; /* else, fatal db2 error*/
+      TA1REC.TA1TBLVU = "VSUMAT01";
+      TA1REC.TA1TBLKE = PF1REC.PF1NAM;
+      TA1REC.TA1LOCAT[3] = "PF0G120";
+      TA1REC.TA1LOCAT[4] = "IO2770";
+      XPPF010(); /* perform profitability abend routine*/
+    end
+  end
+  ;
+  PF0GM001.PF0GMDES = PF1REC.PF1DES; /* summary name*/
+  PF0GM001.PF0GMFMT = PF1REC.PF1FMT; /* format nbr*/
+  PF0GM001.PF0GMISG = PF1REC.PF1ISG; /* inc stmt grp nbr*/
+  PF0GM001.PF0GMATT = PF1REC.PF1ATT; /* attribute nbr*/
+  PF0GM001.PF0GMCOL = PF1REC.PF1COL; /* data/time sort col*/
+  ;
+   /* MOVE PFAREC.PFABSPRM TO PF0GM001.PF0GMBMM; use default base*/
+   /* MOVE PFAREC.PFABSPRY TO PF0GM001.PF0GMBYY; from vpfctl01 con*/
+  PF0GM001.PF0GMBMM = PF1REC.PF1BMM; /* Use date passed in*/
+  PF0GM001.PF0GMBYY = PF1REC.PF1BYY; /* Commarea*/
+  PF0GM001.PF0GMPRI = PF1REC.PF1GPRI;
+  ;
+   /* MOVE '2' TO PF0GM001.PF0GMPRI   ; set priority default*/
+  ;
+  if (PF1REC.PF1ELE == "GR MR %") /* element sort*/
+    PF0GM001.PF0GMELE[1] = "X";
+  else
+    if (PF1REC.PF1ELE == "GR MRGN")
+      PF0GM001.PF0GMELE[2] = "X";
+    else
+      if (PF1REC.PF1ELE == "REVENUE")
+        PF0GM001.PF0GMELE[3] = "X";
+      else
+        if (PF1REC.PF1ELE == "CONTR %")
+          PF0GM001.PF0GMELE[4] = "X";
+        else
+          if (PF1REC.PF1ELE == "CONTRIB")
+            PF0GM001.PF0GMELE[5] = "X";
+          else
+            if (PF1REC.PF1ELE == "SHP UNT")
+              PF0GM001.PF0GMELE[6] = "X";
+            else
+              if (PF1REC.PF1ELE == "REV UNT")
+                PF0GM001.PF0GMELE[7] = "X";
+              else
+                if (PF1REC.PF1ELE == "SEQUEN ")
+                  PF0GM001.PF0GMELE[8] = "X";
+                else
+                  if (PF1REC.PF1ICLS != " ")
+                    PF0GM001.PF0GMCLS = PF1REC.PF1ICLS;
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (PF1REC.PF1SEQ == "A") /* ascend/descend sort*/
+    PF0GM001.PF0GMASC = "X";
+  else
+    if (PF1REC.PF1SEQ == "D")
+      PF0GM001.PF0GMDSC = "X";
+    end
+  end
+  ;
+end // end PF0G120
+
+// save scrn flds before PF bridg
+Function PF0G150()
+   /* -----------------------------------------------------------;*/
+    /* Save scrn flds before PFkey bridge to other profit appl  ;*/
+   /* -----------------------------------------------------------;*/
+  if (converseVar.eventKey is pf14 /* if trying to bridge to format*/
+   && PF0GM001.PF0GMFMT == 0)      /* and no format entered*/
+    converseLib.validationFailed(94); /* format required*/
+    PFWREC.PFWERRF = "Y"; /* signal error*/
+    set PF0GM001.PF0GMFMT cursor, bold;
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf15 /* if trying to bridge to attributes*/
+   && PF0GM001.PF0GMISG == 0)      /* and no attr entered*/
+    converseLib.validationFailed(96); /* attr ref required*/
+    PFWREC.PFWERRF = "Y"; /* signal error*/
+    set PF0GM001.PF0GMATT cursor, bold;
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pf16 /* if trying to bridge to i/s group*/
+   && PF0GM001.PF0GMATT == 0)      /* and no i/s entered*/
+    converseLib.validationFailed(95); /* i/s ref required*/
+    PFWREC.PFWERRF = "Y"; /* signal error*/
+    set PF0GM001.PF0GMISG cursor, bold;
+    return;
+  end
+  ;
+  PF1REC.PF1NAM = PF0GM001.PF0GMNAM; /* save summary name*/
+  PF1REC.PF1DES = PF0GM001.PF0GMDES; /* save descriptione*/
+  PF1REC.PF1FMT = PF0GM001.PF0GMFMT; /* save FMT ref #*/
+  PF1REC.PF1ISG = PF0GM001.PF0GMISG; /* save I/S group ref #*/
+  PF1REC.PF1ATT = PF0GM001.PF0GMATT; /* save ATT ref #*/
+  PF0GW01.PF0GWBMM = PF0GM001.PF0GMBMM; /* save base month*/
+  PF0GW01.PF0GWBYY = PF0GM001.PF0GMBYY; /* save base year*/
+  PF1REC.PF1BMY = PF0GW01.PF0GWBMY; /* save base month/year*/
+  PF1REC.PF1GPRI = PF0GM001.PF0GMPRI; /* save priority level*/
+  ;
+   /* ----------------------------------------------------------;*/
+    /* Save values from summ req screen for fields data/time,  ;*/
+    /* element and sequence.                                   ;*/
+   /* ----------------------------------------------------------;*/
+  ;
+  if (PF0GM001.PF0GMELE[1] != " ") /* element sort*/
+    PF1REC.PF1ELE = "GR MR %";
+  else
+    if (PF0GM001.PF0GMELE[2] != " ")
+      PF1REC.PF1ELE = "GR MRGN";
+    else
+      if (PF0GM001.PF0GMELE[3] != " ")
+        PF1REC.PF1ELE = "REVENUE";
+      else
+        if (PF0GM001.PF0GMELE[4] != " ")
+          PF1REC.PF1ELE = "CONTR %";
+        else
+          if (PF0GM001.PF0GMELE[5] != " ")
+            PF1REC.PF1ELE = "CONTRIB";
+          else
+            if (PF0GM001.PF0GMELE[6] != " ")
+              PF1REC.PF1ELE = "SHP UNT";
+            else
+              if (PF0GM001.PF0GMELE[7] != " ")
+                PF1REC.PF1ELE = "REV UNT";
+              else
+                if (PF0GM001.PF0GMELE[8] != " ")
+                  PF1REC.PF1ELE = "SEQUEN ";
+                else
+                  PF1REC.PF1ICLS = PF0GM001.PF0GMCLS;
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  if (PF0GM001.PF0GMASC != " ") /* ascend/descend sort*/
+    PF1REC.PF1SEQ = "ASC";
+  else
+    if (PF0GM001.PF0GMDSC != " ")
+      PF1REC.PF1SEQ = "DES";
+    else
+      PF1REC.PF1SEQ = "?";
+    end
+  end
+  ;
+  PF1REC.PF1COL = PF0GM001.PF0GMCOL; /* data/time column number*/
+  ;
+end // end PF0G150
+
+// check pf0gm001 fields for data
+Function PF0G170()
+   /* -----------------------------------------------------------;*/
+    /* Check all fields for data entry. If any one has been     ;*/
+    /* modified, set error flag, highlight it and return.       ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  if (PF0GM001.PF0GMNAM is modified
+   && PF0GM001.PF0GMNAM != " ")
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMNAM cursor, bold;
+    return;
+  end
+  ;
+  if (PF0GM001.PF0GMFMT is modified
+   && PF0GM001.PF0GMFMT != " ")
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMFMT cursor, bold;
+    return;
+  end
+  ;
+  if (PF0GM001.PF0GMISG is modified
+   && PF0GM001.PF0GMISG != " ")
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMISG cursor, bold;
+    return;
+  end
+  ;
+  if (PF0GM001.PF0GMATT is modified
+   && PF0GM001.PF0GMATT != " ")
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMATT cursor, bold;
+    return;
+  end
+  ;
+  if (PF0GM001.PF0GMBMM is modified
+   && PF0GM001.PF0GMBMM != " ")
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMBMM cursor, bold;
+    return;
+  end
+  ;
+  if (PF0GM001.PF0GMBYY is modified
+   && PF0GM001.PF0GMBYY != " ")
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMBYY cursor, bold;
+    return;
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check DATA/TIME COLUMN field for entries.                ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  if (PF0GM001.PF0GMCOL is modified
+   && PF0GM001.PF0GMCOL != 0)
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMCOL cursor, bold;
+    return;
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check ELEMENT column for entries.                        ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PFWREC.PFWIDX = 1; /* set index*/
+  ;
+  while (PFWREC.PFWIDX < 9)
+    if (PF0GM001.PF0GMELE[PFWIDX] is modified
+     && PF0GM001.PF0GMELE[PFWIDX] != " ")
+      PFWREC.PFWERRF = "Y";
+      set PF0GM001.PF0GMELE[PFWIDX] cursor, bold;
+      return;
+    end
+    PFWREC.PFWIDX = PFWREC.PFWIDX + 1; /* bump up index*/
+  end
+  ;
+  if (PF0GM001.PF0GMCLS is modified)
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMCLS cursor, bold;
+    return;
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check ORDER fields for entries.                          ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  if (PF0GM001.PF0GMASC is modified
+   && PF0GM001.PF0GMASC != " ")
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMASC cursor, bold;
+    return;
+  end
+  ;
+  if (PF0GM001.PF0GMDSC is modified
+   && PF0GM001.PF0GMDSC != " ")
+    PFWREC.PFWERRF = "Y";
+    set PF0GM001.PF0GMDSC cursor, bold;
+    return;
+  end
+  ;
+end // end PF0G170
+
+// Predefined summary list
+Function PF0G200()
+   /* -----------------------------------------------------------;*/
+     /* PF0G200 - converse predefined summary screen            ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PFWREC.PFWIDX = 1; /* set screen index*/
+  ;
+  if (PF1REC.PF1XFERF == "Y") /* if xfer back via PF key 14*/
+     /* drop down to converse screen now*/
+  else /* else fill screen from table*/
+    while (PFWREC.PFWIDX < 13 /* while screen has room*/
+     && PF0GT.PFESUMNM[PFWTBLX] != "9999999999") /* and  still in table*/
+      PF0G210(); /* move table stuff to scr*/
+      PFWREC.PFWIDX = PFWREC.PFWIDX + 1;
+                                   /* bump up screen index*/
+      PFWREC.PFWTBLX = PFWREC.PFWTBLX + 1; /* bump up table index*/
+    end
+    ;
+    if (PF0GT.PFESUMNM[PFWTBLX] == "9999999999") /* if end of table*/
+      while (PFWREC.PFWIDX < 13) /* darken remaining SEL fields*/
+        if (PF0GM002.PF0GMNAM[PFWIDX] == " ")
+          set PF0GM002.PF0GMSEL[PFWIDX] skip, invisible;
+        end
+        PFWREC.PFWIDX = PFWREC.PFWIDX + 1; /* bump up screen index*/
+      end
+    end
+  end
+  ;
+  PF0GM002.XXXCURDT = VGVar.currentShortGregorianDate;
+  ;
+  converse PF0GM002 ;
+  ;
+  PFWREC.PFWIDX = 1; /* set screen index*/
+  while (PFWREC.PFWIDX < 13) /* reset color on SEL fields*/
+    set PF0GM002.PF0GMSEL[PFWIDX] initialAttributes;
+    PFWREC.PFWIDX = PFWREC.PFWIDX + 1;
+  end
+  ;
+  PFWREC.PFWERRF = "N"; /* reset error flag*/
+  PFWREC.PFWMSG = " "; /* reset error flag*/
+  PF0GM001.VAGen_EZEMSG = " "; /* clear msg field*/
+  set PF1REC empty; /* clear passing record*/
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check entry key.  If user pressed enter, reset table     ;*/
+    /* index to prevent scrolling.  Otherwise check PF/PA keys  ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  if (converseVar.eventKey is enter) /* if enter*/
+    if (PFWREC.PFWTBLX > 12) /* redisplay same screen*/
+      PFWREC.PFWTBLX = PFWREC.PFWTBLX - 12;
+    else
+      PFWREC.PFWTBLX = 1;
+    end
+  else /* else (not enter)*/
+    PF0G910(); /* check pfkeys*/
+    if (PFWREC.PFWERRF == "Y"       /* if error*/
+     || PFWREC.PFWEOAF == "Y"       /* or end application*/
+     || PF0GW01.PF0GWPSF == "Y"     /* or end predef screen*/
+     || converseVar.eventKey is pf7 /* or scroll back*/
+     || converseVar.eventKey is pf8) /* or scrol forward*/
+      return; /* go back*/
+    end
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check SEL column for entries.  Allow only one SEL entry  ;*/
+    /* at a time.  If more than one, highlight second SEL entry ;*/
+    /* and reconverse screen.                                   ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PFWREC.PFWIDX = 1; /* set index*/
+  PF0GW01.PF0GWELF = "N"; /* set selection modified flag*/
+  ;
+  while (PFWREC.PFWIDX < 13)
+    if (PF0GM002.PF0GMSEL[PFWIDX] != " ") /* if SEL entered*/
+      if (PF0GW01.PF0GWELF == "N") /* if no other SEL entered*/
+        PF0GW01.PF0GWELF = "Y"; /* signal entry*/
+        PFWREC.PFWSAVDX = PFWREC.PFWIDX; /* save index value*/
+      else /* else (other SEL ent)*/
+        converseLib.validationFailed(34); /* signal error*/
+        set PF0GM002.PF0GMSEL[PFWIDX] cursor, bold;
+        return;
+      end
+    end
+    PFWREC.PFWIDX = PFWREC.PFWIDX + 1; /* bump up index*/
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+   /* If a selection was made, save fields from that row.       ;*/
+   /* If PFkey 14-16 was entered, transfer via XPPF200,         ;*/
+   /* Otherwise move the saved fields to the Summary Request    ;*/
+   /* screen and signal an end to the Predefined Summary screen ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  if (PF0GW01.PF0GWELF == "Y") /* if selection made*/
+    PF0G220(); /* save flds from predef scrn*/
+    if (converseVar.eventKey is pf14 /* if PF key 14-16*/
+     || converseVar.eventKey is pf15 
+     || converseVar.eventKey is pf16)
+      PF1REC.PF1XFERF = "Y"; /* signal PF key xfer*/
+      PF1REC.PF1PDEFF = "Y"; /* signal predef scrn active*/
+      PF1REC.PF1ORIG = "PF0G"; /* originating appl*/
+      PF1REC.PF1CURR = "PF0G"; /* current appl*/
+      XPPF200(); /* xfer to other PF appl*/
+      if (PFWREC.PFWERRF == "Y") /* if bad xfer*/
+        return; /* return*/
+      end
+    else /* else (not PFkey 14-16)*/
+      PF0G120(); /* set up sum req fields*/
+      PF0GW01.PF0GWPSF = "Y"; /* signal end predef sel scrn*/
+      PF0GW01.PF0GWELF = "N";
+                                   /* reset selection flag*/
+    end
+  end
+  ;
+end // end PF0G200
+
+// set up predefined summ screen
+Function PF0G210()
+   /* -----------------------------------------------------------;*/
+    /* move fields from predefined table to PF0GM002 screen     ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF0GM002.PF0GMNAM[PFWIDX] = PF0GT.PFESUMNM[PFWTBLX]; /* summary name*/
+  PF0GM002.PF0GMDES[PFWIDX] = PF0GT.PFESUMDE[PFWTBLX]; /* summary desc.*/
+  PF0GM002.PF0GMFMT[PFWIDX] = PF0GT.PFCREF[PFWTBLX];
+                                   /* format ref #*/
+  PF0GM002.PF0GMISG[PFWIDX] = PF0GT.PFBREF[PFWTBLX]; /* i/s ref #*/
+  PF0GM002.PF0GMATT[PFWIDX] = PF0GT.PFDREF[PFWTBLX]; /* rpt attr ref #*/
+  if (PF0GT.PF0GTCOL[PFWTBLX] > 0)
+    PF0GM002.PF0GMCOL[PFWIDX] = PF0GT.PF0GTCOL[PFWTBLX];
+  end
+  ;
+  if (PF0GT.PFESRTEL[PFWTBLX] == "01")
+                                   /* move element desc. to predefined scr.*/
+    PF0GM002.PF0GMELE[PFWIDX] = "GR MRGN";
+  else
+    if (PF0GT.PFESRTEL[PFWTBLX] == "02")
+      PF0GM002.PF0GMELE[PFWIDX] = "GR MR %";
+    else
+      if (PF0GT.PFESRTEL[PFWTBLX] == "03")
+        PF0GM002.PF0GMELE[PFWIDX] = "REVENUE";
+      else
+        if (PF0GT.PFESRTEL[PFWTBLX] == "04")
+          PF0GM002.PF0GMELE[PFWIDX] = "CONTRIB";
+        else
+          if (PF0GT.PFESRTEL[PFWTBLX] == "05")
+            PF0GM002.PF0GMELE[PFWIDX] = "CONTR %";
+          else
+            if (PF0GT.PFESRTEL[PFWTBLX] == "06")
+              PF0GM002.PF0GMELE[PFWIDX] = "SHP UNT";
+            else
+              if (PF0GT.PFESRTEL[PFWTBLX] == "07")
+                PF0GM002.PF0GMELE[PFWIDX] = "REV UNT";
+              else
+                if (PF0GT.PFESRTEL[PFWTBLX] == "08")
+                  PF0GM002.PF0GMELE[PFWIDX] = "SEQUEN ";
+                else
+                  if (PF0GT.PFESRTEL[PFWTBLX] == "09")
+                    PF0GW01.PF0GWISL = "I/S "; /* move i/s class to screen*/
+                    PF0GW01.PF0GWISS = PF0GT.YISCD[PFWTBLX]; /* element*/
+                    PF0GM002.PF0GMELE[PFWIDX] = PF0GW01.PF0GWISH;
+                  else
+                    if (PF0GT.PFESRTEL[PFWTBLX] == "10")
+                      PF0GW01.PF0GWISL = "I/S "; /* move i/s group # to*/
+                      PF0GW01.PF0GWISS = PF0GT.PFBISGRP[PFWTBLX]; /* scr ele*/
+                      PF0GM002.PF0GMELE[PFWIDX] = PF0GW01.PF0GWISH;
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  PF0GM002.PF0GMSEQ[PFWIDX] = PF0GT.PFESEIND[PFWTBLX]; /* sort seq. ind.*/
+end // end PF0G210
+
+// move predef fields to PF1REC
+Function PF0G220()
+   /* -----------------------------------------------------------;*/
+    /* Save index values for screen and table, then move        ;*/
+    /* fields from predefined summary screen to PF1REC          ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  PF1REC.PF1IDX = PFWREC.PFWSAVDX; /* index pointing at selection*/
+  ;
+  if (PFWREC.PFWTBLX > 12) /* set tblx idx to top of scrn*/
+    PFWREC.PFWTBLX = PFWREC.PFWTBLX - 12;
+  else
+    PFWREC.PFWTBLX = 1;
+  end
+  PF1REC.PF1TBLX = PFWREC.PFWTBLX; /* save table index*/
+  ;
+  PF1REC.PF1NAM = PF0GM002.PF0GMNAM[PFWSAVDX]; /* name*/
+  PF1REC.PF1DES = PF0GM002.PF0GMDES[PFWSAVDX]; /* description*/
+  PF1REC.PF1FMT = PF0GM002.PF0GMFMT[PFWSAVDX]; /* format nbr*/
+  PF1REC.PF1ISG = PF0GM002.PF0GMISG[PFWSAVDX]; /* inc stmt grp nbr*/
+  PF1REC.PF1ATT = PF0GM002.PF0GMATT[PFWSAVDX]; /* attribute nbr*/
+  ;
+  PF1REC.PF1COL = PF0GM002.PF0GMCOL[PFWSAVDX]; /* data/time col*/
+  PF1REC.PF1ELE = PF0GM002.PF0GMELE[PFWSAVDX]; /* element sort*/
+  PF1REC.PF1SEQ = PF0GM002.PF0GMSEQ[PFWSAVDX]; /* asc/des sort*/
+end // end PF0G220
+
+// rebuild scrn after PF bridge
+Function PF0G300()
+   /* -----------------------------------------------------------;*/
+   /* Rebuild screen left behind when bridging to another       ;*/
+   /* Profitability application.  Take note that there are 4    ;*/
+   /* indexes at work here:                                     ;*/
+        /* pfwrec.pfwidx - screen index, bumped up 12 times     ;*/
+        /* pf1rec.pf1idx - passed index, points to 'S' entry    ;*/
+        /* pfwrec.pfwtblx - table index, bumped up 12 times     ;*/
+        /* pf1rec.pf1tblx - passed index, points to table row   ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  if (PF1REC.PF1PDEFF == "Y") /* if prefined sum scrn active*/
+    PFWREC.PFWIDX = 1; /* reset screen index*/
+    PFWREC.PFWTBLX = PF1REC.PF1TBLX; /* use passed tbl index*/
+    while (PFWREC.PFWIDX < 13 /* while screen has room*/
+     && PF0GT.PFESUMNM[PFWTBLX] != "9999999999") /* and still in tbl*/
+      PF0G210(); /* move tbl stuff to scrn*/
+      PFWREC.PFWIDX = PFWREC.PFWIDX + 1; /* bump up scrn index*/
+      PFWREC.PFWTBLX = PFWREC.PFWTBLX + 1; /* bump up tbl index*/
+    end
+    PF0GM002.PF0GMSEL[PF1IDX] = "S"; /* point to selected summ*/
+    set PF0GM002.PF0GMSEL[PF1IDX] cursor; /* point to selected summ*/
+  else /* else assume summ req screen active*/
+    PF0G120(); /* set up summ req scrn fields*/
+  end
+  ;
+end // end PF0G300
+
+// access db2 tables for verif.
+Function PF0G400()
+   /* *********************************************************/
+   /* *  this routine will be used to access the db2 tables  **/
+   /* *  to ensure that the entered format, i/s group and    **/
+   /* *  reporting attribute reference #s are valid. the     **/
+   /* *  db2 tables will be accessed in the following        **/
+   /* *  manner :                                            **/
+   /* *    i/o module     csp record      db2 view           **/
+   /* *    ----------     ----------      ----------------   **/
+   /* *      io2710         pfbrec        dproft.visgrp01    **/
+   /* *      io2730         pfcrec        dproft.vrptfm01    **/
+   /* *      io2740         pfdrec        dprfot.vrptat01    **/
+   /* *  record flags will be set as each reference # is     **/
+   /* *  to be valid. additionally, as io2710 is accessed    **/
+   /* *  the i/s groups will be saved in pf0fw01 w/s record  **/
+   /* *  for possible use in editing the sort element entry. **/
+   /* *********************************************************/
+  ;
+  PF0GW01.PF0GWISG = "N"; /* initialize record flags*/
+  PF0GW01.PF0GWRPT = "N";
+  PF0GW01.PF0GWFMT = "N";
+  PFWREC.PFWRECF = "N";
+  ;
+  PFWSUB1 = 1; /* initialize subscript*/
+  ;
+  while (PFWSUB1 < 501)
+    PF0GW01.PF0GWISC[PFWSUB1] = 0; /* initialize the i/s group w/s area*/
+    PFWSUB1 = PFWSUB1 + 1;
+  end
+  ;
+   /* **********************************************************/
+   /* *  see if entered attribute reference # is on file.     **/
+   /* *  set flag accordingly.                                **/
+   /* *  move is/groups to pf0fw01 w/s area.                  **/
+   /* **********************************************************/
+  ;
+  set PFBREC empty; /* clear record*/
+  ;
+  set SQLCA empty;
+  ;
+  PFBREC.PFBREF = PF0GW01.PF0GWISN;
+                                   /* move i/s group ref # to db2 key*/
+  ;
+  call "IO2710" ("SS", SQLCA, PFBREC) {isNoRefresh = yes, isExternal = yes}; /* open DB2 cursor*/
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0) /* if unsuccessful, abend the program*/
+    TA1REC.TA1DBASE = "DPROFT";
+    TA1REC.TA1TBLVU = "VISGRP01";
+    PF0GW01.PF0GWISN = PFBREC.PFBREF;
+    TA1REC.TA1TBLKE = PF0GW01.PF0GWISN;
+    TA1REC.TA1LOCAT[3] = "PF0D170";
+    TA1REC.TA1LOCAT[4] = "IO2710";
+    XPPF010();
+  end
+  ;
+  set SQLCA empty;
+  ;
+  call "IO2710" ("SN", SQLCA, PFBREC) {isNoRefresh = yes, isExternal = yes}; /* read first db2 row*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if successful and returned record*/
+    if (PF0GW01.PF0GWISN == PFBREC.PFBREF)
+                                   /* is the same as requested record*/
+      PF0GW01.PF0GWISG = "Y"; /* set record found flag*/
+      PFWREC.PFWRECF = "Y"; /* set the flags*/
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == +100) /* if record not found,*/
+       /* next sentence*/
+    else
+      if (SQLCA.VAGen_SQLCODE == -911) /* if data base busy, send user a*/
+                                   /* message*/
+        PFWREC.PFWERRF = "Y"; /* set error flag*/
+        converseLib.validationFailed(114); /* send busy signal*/
+        call "IO2710" ("CS", SQLCA, PFBREC) {isNoRefresh = yes, isExternal = yes}; /* close db2 cursor*/
+        if (SQLCA.VAGen_SQLCODE != +0) /* if cursor close errors, abend*/
+          TA1REC.TA1DBASE = "DPROFT";
+          TA1REC.TA1TBLVU = "VISGRP01";
+          PF0GW01.PF0GWISN = PFBREC.PFBREF;
+          TA1REC.TA1TBLKE = PF0GW01.PF0GWISN;
+          TA1REC.TA1LOCAT[3] = "PF0D170";
+          TA1REC.TA1LOCAT[4] = "IO2710";
+          XPPF010();
+        end
+        return;
+      else
+        TA1REC.TA1DBASE = "DPROFT"; /* fatal db2 error, abend prog*/
+        TA1REC.TA1TBLVU = "VISGRP01";
+        PF0GW01.PF0GWISN = PFBREC.PFBREF;
+        TA1REC.TA1TBLKE = PF0GW01.PF0GWISN;
+        TA1REC.TA1LOCAT[3] = "PF0D170";
+        TA1REC.TA1LOCAT[4] = "IO2710";
+        XPPF010();
+      end
+    end
+  end
+  ;
+  PFWSUB1 = 1;
+  ;
+  while (PFWREC.PFWRECF == "Y") /* ;if there are db2 rows, load the db2*/
+      /* i/s group #s to w/s record pf0fw01*/
+    PF0GW01.PF0GWGR = PFBREC.YISCD[2] + PFBREC.PFBISGRP;
+    PF0GW01.PF0GWISC[PFWSUB1] = PF0GW01.PF0GWGR;
+    PFWSUB1 = PFWSUB1 + 1;
+    set PFBREC empty; /* clear w/s record*/
+    call "IO2710" ("SN", SQLCA, PFBREC) {isNoRefresh = yes, isExternal = yes}; /* get next db2 record*/
+    if (SQLCA.VAGen_SQLCODE == +0)
+      if (PFBREC.PFBREF == PF0GW01.PF0GWISN) /* if the returned db2 row =*/
+        /* next sentence              to i/s grp # we want, ok.*/
+      else
+        PFWREC.PFWRECF = "N"; /* if not, set condition to*/
+      end /* terminate loop.*/
+    else
+      if (SQLCA.VAGen_SQLCODE == +100)
+        PFWREC.PFWRECF = "N"; /* if not, set condition to*/
+      else
+        TA1REC.TA1DBASE = "DPROF1";
+        TA1REC.TA1TBLVU = "VISGRP01";
+        PF0GW01.PF0GWISN = PFBREC.PFBREF;
+        TA1REC.TA1TBLKE = PF0GW01.PF0GWISN;
+        TA1REC.TA1LOCAT[3] = "PF0G400";
+        TA1REC.TA1LOCAT[4] = "IO2710";
+        XPPF010();
+      end
+    end
+  end
+  ;
+  set SQLCA empty;
+  ;
+  call "IO2710" ("CS", SQLCA, PFBREC) {isNoRefresh = yes, isExternal = yes}; /* close DB2 cursor*/
+  ;
+  if (SQLCA.VAGen_SQLCODE != 0) /* if unsuccessful, abend the program*/
+    TA1REC.TA1DBASE = "DPROFT";
+    TA1REC.TA1TBLVU = "VISGRP01";
+    PF0GW01.PF0GWISN = PFBREC.PFBREF;
+    TA1REC.TA1TBLKE = PF0GW01.PF0GWISN;
+    TA1REC.TA1LOCAT[3] = "PF0G400";
+    TA1REC.TA1LOCAT[4] = "IO2710";
+    XPPF010();
+  end
+  ;
+   /* **********************************************************/
+   /* *  see if entered attribute reference # is in data      **/
+   /* *  base. set flag accordingly.                          **/
+   /* **********************************************************/
+  ;
+  set PFDREC empty; /* clear w/s record*/
+  set SQLCA empty; /* clear sql record*/
+  ;
+  PFDREC.PFDREF = PF0GW01.PF0GWRPN; /* move entered info to db2 key*/
+  ;
+  call "IO2740" ("SS", SQLCA, PFDREC) {isNoRefresh = yes, isExternal = yes}; /* access data base*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if cursor open ok*/
+    /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DPROFT"; /* fatal db2 error, abend the prog.*/
+    TA1REC.TA1TBLVU = "VRPTAT01";
+    PF0GW01.PF0GWRPN = PFDREC.PFDREF;
+    TA1REC.TA1TBLKE = PF0GW01.PF0GWRPN;
+    TA1REC.TA1LOCAT[3] = "PF0G400";
+    TA1REC.TA1LOCAT[4] = "IO2740";
+    XPPF010();
+  end
+  ;
+  call "IO2740" ("SN", SQLCA, PFDREC) {isNoRefresh = yes, isExternal = yes}; /* access data base*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if requested record is in data base,*/
+    if (PF0GW01.PF0GWRPN == PFDREC.PFDREF)
+      PF0GW01.PF0GWRPT = "Y"; /* set flag to 'yes'*/
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == +100)
+                                   /* if requested record not in data base,*/
+       /* next sentence*/
+    else
+      TA1REC.TA1DBASE = "DPROFT"; /* fatal db2 error, abend the prog.*/
+      TA1REC.TA1TBLVU = "VRPTAT01";
+      PF0GW01.PF0GWRPN = PFDREC.PFDREF;
+      TA1REC.TA1TBLKE = PF0GW01.PF0GWRPN;
+      TA1REC.TA1LOCAT[3] = "PF0G400";
+      TA1REC.TA1LOCAT[4] = "IO2740";
+      XPPF010();
+    end
+  end
+  ;
+  call "IO2740" ("CS", SQLCA, PFDREC) {isNoRefresh = yes, isExternal = yes}; /* access data base*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if cursor close ok*/
+    /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DPROFT"; /* fatal db2 error, abend the prog.*/
+    TA1REC.TA1TBLVU = "VRPTAT01";
+    PF0GW01.PF0GWRPN = PFDREC.PFDREF;
+    TA1REC.TA1TBLKE = PF0GW01.PF0GWRPN;
+    TA1REC.TA1LOCAT[3] = "PF0G400";
+    TA1REC.TA1LOCAT[4] = "IO2740";
+    XPPF010();
+  end
+  ;
+   /* **********************************************************/
+   /* *  see if entered format reference # is in data         **/
+   /* *  base. set flag accordingly.                          **/
+   /* **********************************************************/
+  ;
+  set PFCREC empty; /* clear w/s record*/
+  set SQLCA empty; /* clear sql record*/
+  ;
+  PFCREC.PFCREF = PF0GW01.PF0GWFMN; /* move entered info to db2 key*/
+  ;
+  call "IO2730" ("SS", SQLCA, PFCREC) {isNoRefresh = yes, isExternal = yes}; /* access data base*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if cursor open ok*/
+    /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DPROFT"; /* fatal db2 error, abend the prog.*/
+    TA1REC.TA1TBLVU = "VRPTFM01";
+    PF0GW01.PF0GWFMN = PFCREC.PFCREF;
+    TA1REC.TA1TBLKE = PF0GW01.PF0GWFMN;
+    TA1REC.TA1LOCAT[3] = "PF0G400";
+    TA1REC.TA1LOCAT[4] = "IO2730";
+    XPPF010();
+  end
+  ;
+  call "IO2730" ("SN", SQLCA, PFCREC) {isNoRefresh = yes, isExternal = yes}; /* access data base*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if requested record is in data base,*/
+    if (PF0GW01.PF0GWFMN == PFCREC.PFCREF)
+      PF0GW01.PF0GWFMT = "Y"; /* set flag to 'yes'*/
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == +100)
+                                   /* if requested record not in data base,*/
+       /* next sentence*/
+    else
+      TA1REC.TA1DBASE = "DPROFT"; /* fatal db2 error, abend the prog.*/
+      TA1REC.TA1TBLVU = "VRPTFM01";
+      PF0GW01.PF0GWFMN = PFCREC.PFCREF;
+      TA1REC.TA1TBLKE = PF0GW01.PF0GWFMN;
+      TA1REC.TA1LOCAT[3] = "PF0G400";
+      TA1REC.TA1LOCAT[4] = "IO2730";
+      XPPF010();
+    end
+  end
+  ;
+  call "IO2730" ("CS", SQLCA, PFCREC) {isNoRefresh = yes}; /* access data base*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0) /* if cursor close ok*/
+    /* next sentence*/
+  else
+    TA1REC.TA1DBASE = "DPROFT"; /* fatal db2 error, abend the prog.*/
+    TA1REC.TA1TBLVU = "VRPTFM01";
+    PF0GW01.PF0GWFMN = PFCREC.PFCREF;
+    TA1REC.TA1TBLKE = PF0GW01.PF0GWFMN;
+    TA1REC.TA1LOCAT[3] = "PF0G400";
+    TA1REC.TA1LOCAT[4] = "IO2730";
+    XPPF010();
+  end
+  ;
+end // end PF0G400
+
+// verify i/s class
+Function PF0G410()
+   /* *******************************************************/
+   /* *   this routine will verify the i/s class entered.  **/
+   /* *   if the i/s class # ends in a '0', the yistbl csp **/
+   /* *   table will be scanned for validation. if the i/s **/
+   /* *   class # ending is > than '0', the i/s group #s   **/
+   /* *   saved when the i/s ref. # was accessed will be   **/
+   /* *   used to validate the i/s class #.                **/
+   /* *******************************************************/
+  ;
+  PF0GW01.PF0GWCLS = PF0GM001.PF0GMCLS; /* move i/s class to w/s*/
+  ;
+  if (PF0GW01.PF0GWCLS == 0) /* if an i/s class wasn't entered,*/
+    return; /* exit routine*/
+  end
+  ;
+  if (PF0GWCL2 == 0) /* if an i/s class was entered,  check the yistbl*/
+    if (PF0GW01.PF0GWCLS in YISTBL.YISCD)
+      return; /* if valid i/s class, exit routine ok,*/
+    else
+      PFWREC.PFWERRF = "Y"; /* send error message*/
+      converseLib.validationFailed(038);
+      set PF0GM001.PF0GMCLS cursor, bold;
+      return;
+    end
+  else
+    PFWSUB1 = 1;
+    while (PFWSUB1 < 201) /* scan i/s groups saved in w/s as a result of*/
+       /* verifying the i/s ref #*/
+      if (PF0GW01.PF0GWCLS == PF0GW01.PF0GWISC[PFWSUB1])
+        return; /* ; if the i/s group # is found, exit the routine*/
+      else
+        PFWSUB1 = PFWSUB1 + 1;
+      end
+    end
+  end
+  ;
+  PFWREC.PFWERRF = "Y"; /* if i/s group # not found, send error*/
+                                   /* message*/
+  converseLib.validationFailed(046);
+  set PF0GM001.PF0GMCLS cursor, bold;
+end // end PF0G410
+
+// add summary to db2 table
+Function PF0G450()
+   /* ***********************************************************/
+   /* *  summary data items will be moved from screen pf0gm001 **/
+   /* *  to pferec. i/o mod io2770 will then be called to add  **/
+   /* *  the row to the db2 table (dproft.vsumat01)            **/
+   /* ***********************************************************/
+  ;
+  PFEREC.PFESUMNM = PF0GM001.PF0GMNAM; /* summary name*/
+  PFEREC.PFESRCNM = " "; /* summary description*/
+  PFEREC.PFESUMDE = PF0GM001.PF0GMDES; /* summary description*/
+  PFEREC.PFGSUMN = 0; /* summary req number*/
+  PFEREC.PFCREF = PF0GM001.PF0GMFMT; /* format ref. #*/
+  PFEREC.PFBREF = PF0GM001.PF0GMISG; /* i/s group ref. #*/
+  PFEREC.PFDREF = PF0GM001.PF0GMATT; /* rept. attr. ref. #*/
+  PFEREC.PFABSPRM = PF0GM001.PF0GMBMM; /* base per. month*/
+  PFEREC.PFABSPRY = PF0GM001.PF0GMBYY; /* base per. year*/
+  PFEREC.PFEPRIND = PF0GM001.PF0GMPRI; /* priority indicator*/
+  if (PF0GM001.PF0GMCLS > 0) /* if an i/s class was entered,*/
+    if (PF0GW01.PF0GWCL2 > 0)
+                                   /* if it's an i/s group, move it to*/
+      PFEREC.PFBISGRP = PF0GM001.PF0GMCLS; /* the i/s group # to pferec*/
+      PFEREC.YISCD = 0;
+      PFEREC.PFESRTEL = "10";
+    else
+      PFEREC.YISCD = PF0GM001.PF0GMCLS; /* otherwise, move the i/s class*/
+      PFEREC.PFBISGRP = 0; /* to pferec;*/
+      PFEREC.PFESRTEL = "09";
+    end
+  else
+    PFEREC.PFBISGRP = 0;
+                                   /* if an i/s class wasn't entered, clear*/
+    PFEREC.YISCD = 0; /* both fields*/
+  end
+  ;
+  PFEREC.PFECYCIN = "O"; /* move default value to summary cycle ind.*/
+  ;
+  PFEREC.PFESTIND = " "; /* delete/hold flag*/
+  PFEREC.PFECRTDT = 0; /* creation date*/
+  PFEREC.PFELGCPG = 0; /* logical page count*/
+  ;
+  if (PF0GM001.PF0GMASC != " ") /* if ascending entered, move 'a'*/
+    PFEREC.PFESEIND = "A"; /* to sort seq. indicator*/
+  else
+    if (PF0GM001.PF0GMDSC != " ") /* if descending entered, move 'd'*/
+      PFEREC.PFESEIND = "D"; /* to sort seq. indicator*/
+    end
+  end
+  ;
+  if (PF0GM001.PF0GMELE[1] > " ") /* gross margin % was selected*/
+    PFEREC.PFESRTEL = "01";
+  else
+    if (PF0GM001.PF0GMELE[2] > " ") /* gross margin was selected*/
+      PFEREC.PFESRTEL = "02";
+    else
+      if (PF0GM001.PF0GMELE[3] > " ") /* revenue was selected*/
+        PFEREC.PFESRTEL = "03";
+      else
+        if (PF0GM001.PF0GMELE[4] > " ") /* contribution % was selected*/
+          PFEREC.PFESRTEL = "04";
+        else
+          if (PF0GM001.PF0GMELE[5] > " ") /* contribution was selected*/
+            PFEREC.PFESRTEL = "05";
+          else
+            if (PF0GM001.PF0GMELE[6] > " ") /* shipped units was selected*/
+              PFEREC.PFESRTEL = "06";
+            else
+              if (PF0GM001.PF0GMELE[7] > " ") /* revenue units was selected*/
+                PFEREC.PFESRTEL = "07";
+              else
+                if (PF0GM001.PF0GMELE[8] > " ") /* sequential was selected*/
+                  PFEREC.PFESRTEL = "08";
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  ;
+  ;
+  PFEREC.PFESQCOL = PF0GM001.PF0GMCOL;
+                                   /* move screen col. to data base*/
+  ;
+  PFEREC.XXXUSRID = COMMAREA.CAUSERID;
+  ;
+  XPPF030(); /* system time/date routine*/
+  ;
+  PFEREC.ZZZSDT = TA2REC.TA2GRGGN;
+  PFEREC.ZZZCHGDT = TA2REC.TA2GRGGN;
+  PFEREC.ZZZCHGTM = TA2REC.TA2TIMHM;
+  ;
+  PFEREC.ZZZCHGCT = 0;
+  PFEREC.ZZNBRROW = 0;
+  ;
+  call "IO2770" ("A ", SQLCA, PFEREC) {isNoRefresh = yes, isExternal = yes}; /* add record to db2 table*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == +0)
+                                   /* if add is ok, send message so stating*/
+    PFWREC.PFWMSG2 = PF0GM001.PF0GMNAM;
+    PFWREC.PFWMSG1 = "A SUMMARY REQUEST IS NOW ON FILE UNDER NAME: ";
+    set PF0GM001 initial;
+    PF0GM001.VAGen_EZEMSG = PFWREC.PFWMSG;
+    PF0GM001.PF0GMPRI = "2"; /* default priority and date on screen*/
+    PF0GM001.PF0GMBMM = PFAREC.PFABSPRM;
+    PF0GM001.PF0GMBYY = PFAREC.PFABSPRY;
+    set PF0GM001.PF0GMNAM cursor;
+  else
+    TA1REC.TA1DBASE = "DPROFT"; /* fatal db2 error*/
+    TA1REC.TA1TBLVU = "VSUMAT01";
+    TA1REC.TA1TBLKE = PF0GM001.PF0GMNAM;
+    TA1REC.TA1LOCAT[3] = "PF0G450";
+    TA1REC.TA1LOCAT[4] = "IO2770";
+    XPPF010();
+                                   /* perform profitability abend routine*/
+  end
+end // end PF0G450
+
+// Validate PF keys
+Function PF0G910()
+   /* --------------------------------------------------------;*/
+          /* Validate PF keys                                ;*/
+   /* --------------------------------------------------------;*/
+  ;
+  PFWREC.PFWCPROC = "PF0G910"; /* set current process name*/
+  ;
+  ;
+  if (converseVar.eventKey is pf1) /* help*/
+    XSPF1();
+    PFWREC.PFWMSG = COMMAREA.CAMSG; /* result of bad pass*/
+    PFWREC.PFWERRF = "Y"; /* set error flag*/
+    return;
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf3) /* if pf3 pressed*/
+    if (PF0GW01.PF0GWPSF == "N")
+                                   /* and prefined summary is active*/
+      PF0GW01.PF0GWPSF = "Y"; /* signal end of predef summ*/
+      return; /* go back*/
+    else /* else*/
+      COMMAREA.CATOAP = "PF0A"; /* return to main profit menu*/
+      converseLib.validationFailed(92); /* test msg*/
+      XSEXIT();
+      PFWREC.PFWMSG = COMMAREA.CAMSG; /* result of bad pass*/
+      PFWREC.PFWERRF = "Y"; /* set error flag*/
+      return;
+    end
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf4) /* return to main system menu*/
+    XSPF4();
+    converseLib.validationFailed(92); /* test msg*/
+    PFWREC.PFWMSG = COMMAREA.CAMSG; /* result of bad pass*/
+    PFWREC.PFWERRF = "Y"; /* set error flag*/
+    return;
+  end
+  ;
+  ;
+   /* --------------------------------------------------------;*/
+    /* This statement handles scrolling for PF0GM002, the    ;*/
+    /* predefined summary screen. Otherwise PF7/PF8 are      ;*/
+    /* not valid.                                            ;*/
+   /* --------------------------------------------------------;*/
+  if (PF0GW01.PF0GWPSF == "N") /* if predefined summ scrn active*/
+    if (converseVar.eventKey is pf8) /* if scroll forward*/
+      if (PF0GT.PFESUMNM[PFWTBLX] == "9999999999")
+        move PFWTBLX to PFWIDX withV60Compat;
+        converseLib.validationFailed(32);
+      else
+        set PF0GM002 initial; /* clear screen*/
+         /* keep table index value*/
+      end
+      return;
+    else
+      if (converseVar.eventKey is pf7) /* if scroll backward*/
+        set PF0GM002 initial; /* clear screen*/
+        if (PFWREC.PFWTBLX < 26)
+          PFWREC.PFWTBLX = 1;
+        else
+          PFWREC.PFWTBLX = PFWREC.PFWTBLX - PFWREC.PFWIDX - 1;
+        end
+        return;
+      end
+    end
+  end
+  ;
+  ;
+  if (converseVar.eventKey is pf12 /* edit only*/
+   || converseVar.eventKey is pf13 /* jump to predefined screen*/
+   || converseVar.eventKey is pf14 /* bridge to PF0E*/
+   || converseVar.eventKey is pf15 /* bridge to PF0F*/
+   || converseVar.eventKey is pf16) /* bridge to PF0D*/
+    return;
+  end
+  ;
+  if (converseVar.eventKey is pa1 /* escape route*/
+   || converseVar.eventKey is pa2) /* escape route*/
+    converseLib.clearScreen();
+    
+    converseLib.clearScreen();
+    
+    PFWREC.PFWERRF = "Y";
+    converseLib.validationFailed(189);
+    return;
+  end
+  ;
+  converseLib.validationFailed(1); /* fall through error - invalid pfkey*/
+  PFWREC.PFWERRF = "Y"; /* signal error*/
+  ;
+end // end PF0G910
+
+// check pf keys
+Function PF0GS01()
+   /* -----------------------------------------------------------;*/
+    /* Check for fast path exit request.  Do not allow if any   ;*/
+    /* data has been entered, besides OPTION and ITEM           ;*/
+   /* -----------------------------------------------------------;*/
+  ;
+  if (converseVar.eventKey is enter)
+    if (PF0GM001.CATOAP != " ")
+      PF0G170();
+      if (PFWREC.PFWERRF == "Y")
+        converseLib.validationFailed(2);
+      else
+        if (PF0GM001.CATOAP == "PF0G")
+          converseLib.validationFailed(10);
+          set PF0GM001.CATOAP cursor;
+        else
+          PFWREC.PFWEOAF = "Y";
+          COMMAREA.CATOAP = PF0GM001.CATOAP;
+          XPPF002(); /* exit routine*/
+        end
+      end
+      return;
+    end
+  end
+  ;
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Check PF/PA keys.                                        ;*/
+   /* -----------------------------------------------------------;*/
+  if (converseVar.eventKey is enter)
+     /* no action*/
+  else
+    PF0G910(); /* check PF keys*/
+    if (PFWREC.PFWERRF == "Y" /* if error found*/
+     || PFWREC.PFWEOAF == "Y") /* or end of application*/
+      return; /* go back*/
+    end
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Test for PF key 13                                       ;*/
+         /* It jumps from the Summary Request screen to a list  ;*/
+         /* on the Predefined Summary screen.                   ;*/
+   /* -----------------------------------------------------------;*/
+  if (converseVar.eventKey is pf13) /* if PF13 (Predefined Summary)*/
+    set PF0GM002 initial; /* clear predef screen fields*/
+    PF0GW01.PF0GWPSF = "N"; /* signal predef screen active*/
+    PFWREC.PFWTBLX = 1; /* set table index to 1*/
+    while (PF0GW01.PF0GWPSF == "N") /* while screen active*/
+      PF0G200(); /* converse PF0GM002*/
+    end
+    PFWREC.PFWERRF = "Y"; /* set error flag to so main converse*/
+     /* will terminate*/
+  end
+  ;
+   /* -----------------------------------------------------------;*/
+    /* Test for PF keys 14,15,16                                ;*/
+         /* They transfer us to one of 3 other Profitability    ;*/
+         /* applications.  Data is saved before the transfer,   ;*/
+         /* allowing us to return to the point we left from.    ;*/
+         /* The actual transfer occurs in routine XPPF200.      ;*/
+   /* -----------------------------------------------------------;*/
+  if (converseVar.eventKey is pf14
+   || converseVar.eventKey is pf15
+   || converseVar.eventKey is pf16)
+    PF0G150(); /* check & save screen fields*/
+    if (PFWREC.PFWERRF == "Y") /* if error found*/
+      return; /* return*/
+    end
+    PF1REC.PF1XFERF = "Y"; /* signal xfer via PF keys*/
+    PF1REC.PF1ORIG = "PF0G"; /* original application*/
+    PF1REC.PF1CURR = "PF0G"; /* current application*/
+    XPPF200(); /* xfer via PFkey bridge*/
+    if (PFWREC.PFWERRF == "Y") /* if bad xfer*/
+      if (converseVar.validationMsgNum == 38)
+        set PF0GM001.PF0GMISG cursor, bold;
+      else
+        if (converseVar.validationMsgNum == 39)
+          set PF0GM001.PF0GMATT cursor, bold;
+        else
+          if (converseVar.validationMsgNum == 48)
+            set PF0GM001.PF0GMNAM cursor, bold;
+          end
+        end
+      end
+      return; /* return*/
+    end
+  end
+end // end PF0GS01
+
+//*** RECORD=PF0GW01 ****
+// ;---> WORKING STORAGE FOR PROFITABILITY APPLICATION PF0G <--
+// ;
+// ; MAINTENANCE LOG:
+// ;
+// ;   DATE      INIT      COMMENTS
+// ; --------    ------    ------------------------------------
+// ; 06/07/91    CVO       INCREASED YIS TABLE SIZE FROM 200 TO
+// ;                       500.
+// ; 02/27/1998  TTHAN1    Y2KFIX - ADD CC TO DATE FIELDS
+// ;-----------------------------------------------------------
+// ***********************
+Record PF0GW01 type basicRecord
+  10 PF0GWCFL PF0GWCFL ; 
+  10 PF0GWPSF PF0GWPSF ; 
+  10 PF0GWELF PF0GWELF ; 
+  10 PF0GWBMY PF0GWBMY ; 
+    15 PF0GWBMM PF0GWBMM ; 
+    15 PF0GWBYY PF0GWBYY ; 
+  10 PF0GWISG PF0GWISG ; 
+  10 PF0GWRPT PF0GWRPT ; 
+  10 PF0GWFMT PF0GWFMT ; 
+  10 PF0GWISC PF0GWISC [500] ; 
+  10 PF0GWISN PF0GWISN ; 
+  10 PF0GWRPN PF0GWRPN ; 
+  10 PF0GWFMN PF0GWFMN ; 
+  10 PF0GWGR PF0GWGR ; 
+  10 PF0GWSEL PF0GWSEL ; 
+  10 PF0GWTYP PF0GWTYP ; 
+  10 PF0GWCLS PF0GWCLS ; 
+    15 PF0GWCL1 PF0GWCL1 ; 
+    15 PF0GWCL2 PF0GWCL2 ; 
+  10 PF0GWISH PF0GWISH ; 
+    15 PF0GWISL PF0GWISL ; 
+    15 PF0GWISS PF0GWISS ; 
+  10 PF0GWMSG PF0GWMSG ; 
+    15 PF0GWMS1 PF0GWMS1 ; 
+    15 PF0GWMSM PF0GWMSM ; 
+    15 PF0GWMSS PF0GWMSS ; 
+    15 PF0GWMSY PF0GWMSY ; 
+    15 PF0GWMS2 PF0GWMS2 ; 
+  10 PF0GWBCYM PF0GWBCYM ; 
+    15 PF0GWBC PF0GWBC ; 
+    15 PF0GWBY PF0GWBY ; 
+    15 PF0GWBM PF0GWBM ; 
+  10 PF0GWCCYMD PF0GWCCYMD ; 
+    15 PF0GWCC PF0GWCC ; 
+    15 PF0GWCDT PF0GWCDT ; 
+      20 PF0GWCY PF0GWCY ; 
+      20 PF0GWCM PF0GWCM ; 
+      20 PF0GWCD PF0GWCD ; 
+  10 PF0GWUCYM PF0GWUCYM ; 
+    15 PF0GWUC PF0GWUC ; 
+    15 PF0GWUY PF0GWUY ; 
+    15 PF0GWUM PF0GWUM ; 
+  10 PF0GWLCYM PF0GWLCYM ; 
+    15 PF0GWLC PF0GWLC ; 
+    15 PF0GWLY PF0GWLY ; 
+    15 PF0GWLM PF0GWLM ; 
+end // end PF0GW01
+
+// entered base period - yymm fmt
+DataItem PF0GWBC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//  - year
+DataItem PF0GWBCYM num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//  - month
+DataItem PF0GWBM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//      base month
+DataItem PF0GWBMM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// Base Period Month-Year
+DataItem PF0GWBMY num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//  - year
+DataItem PF0GWBY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//      base year
+DataItem PF0GWBYY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//  - year
+DataItem PF0GWCC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//  - year
+DataItem PF0GWCCYMD num(8)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//  - day (not used)
+DataItem PF0GWCD num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// current date
+DataItem PF0GWCDT num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// column validity flag
+DataItem PF0GWCFL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// i/s class 1st two
+DataItem PF0GWCL1 num(3)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// i/s class last one
+DataItem PF0GWCL2 num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// i/s class hold area
+DataItem PF0GWCLS num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//  - month
+DataItem PF0GWCM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//  - year
+DataItem PF0GWCY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// predef. selection flag
+DataItem PF0GWELF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// format ref. #
+DataItem PF0GWFMN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// format flag
+DataItem PF0GWFMT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// hold i/s group #
+DataItem PF0GWGR num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// i/s group #s
+DataItem PF0GWISC num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// i/s group flag
+DataItem PF0GWISG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// i/s hold literal
+DataItem PF0GWISH char(8)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// i/s literal value = 'i/s'
+DataItem PF0GWISL char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// i/s ref. #
+DataItem PF0GWISN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// i/s class/group #
+DataItem PF0GWISS num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// - year
+DataItem PF0GWLC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// lower date limit
+DataItem PF0GWLCYM num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// - month
+DataItem PF0GWLM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// - year
+DataItem PF0GWLY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//  - part 1
+DataItem PF0GWMS1 char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//  - part 2
+DataItem PF0GWMS2 char(45)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// base period error message
+DataItem PF0GWMSG char(80)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//  - month
+DataItem PF0GWMSM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//  - space
+DataItem PF0GWMSS char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// - year
+DataItem PF0GWMSY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// predef. selection end flag
+DataItem PF0GWPSF char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// rept. attr. ref. #
+DataItem PF0GWRPN num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// rept. att. flag
+DataItem PF0GWRPT char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// element selection flag
+DataItem PF0GWSEL char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// type hold area
+DataItem PF0GWTYP num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// - year
+DataItem PF0GWUC num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+DataItem PF0GWUCYM num(6)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// - month
+DataItem PF0GWUM num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// - year
+DataItem PF0GWUY num(2)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

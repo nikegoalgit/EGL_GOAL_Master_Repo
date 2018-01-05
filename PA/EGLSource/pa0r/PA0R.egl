@@ -1,0 +1,2058 @@
+package pa0r;
+
+import corpcom2.XX0XW01;
+import corpcom2.YSMREC;
+import corpcom4.XX0XS01;
+import corpcom5.COMMAREA;
+import corpcom6.SQLCA;
+import fb.common.FB9REC;
+import fb.common.FBHREC;
+import fb.common.FBKREC;
+import fb.common.FBMREC;
+import pa.common.*;
+import ta.common.TA1REC;
+import ta.common.TAEREC;
+//*** PROGRAM=PA0R ****
+// ;-----------------------------------------------------------
+// ; THE PURPOSE OF THIS APPLICATION IS TO COMBINE MANY
+// ;  ORDER ADJUSTMENTS INTO A SINGLE ORDER ADJUSTMENT.
+// ;  THE APPLICATION WILL CLEANUP ANY RECORDS ON THE ORDER
+// ;  ADJUSTMENT DATABASES, BY EITHER DELETION OR UPDATING
+// ;  OF THE RECORDS STATUS
+// ;-----------------------------------------------------------
+// ; CONTROL   DATE    NAME   DESCRIPTION OF CHANGE
+// ; -------  ------  ------  ---------------------------------
+// ;          030890  SCOCHR  CREATED
+// ;
+// ; 0000001  100590  MSMIT2  Application changed to reflect
+// ;                          the database changes.
+// ;
+// ; 0000022  111590  dhales  put userid into xxxpguid, update
+// ; and 023                  combined flag, status 98 records
+// ;                          into xref table, enters most
+// ;                          current submitted buy month into
+// ;                          the new o/a record
+// ; 0000000  021291  dhales  Application changed to reflect
+// ;                          the database changes init
+// ;                          pa1hldfl, pa1intfl, pa7xrfty
+// ; 0000003  061091  MSMIT2  DATABASE CHANGES:  PA7REC.
+// ; 0000004  031292  dhales  DATABASE CHANGES:  PA1REC.
+// ; 0000005  060992  dhales  DATABASE CHANGES:  PA1REC.
+// ; 0000006  101492  dhales  DATABASE CHANGES:  PA1REC.
+// ; 0000007  110992  dhales  fcty stat to 96 when stat 84
+// ;                          so retraction will print
+// ; PA0330   051993  MSMIT2  WHEN OR O/AS ARE COMBINED, NEW
+// ;                          O/A SHOULD BE OR.  SAME WITH
+// ;                          'NO' TYPES.
+// ; 0000008  061493  MSMIT2  DATABASE CHANGES TO PASREC.
+// ; 0000009  080993  MSMIT2  DATABASE CHANGES TO PA1REC.
+// ; PA9999   110993  MSMIT2  DATABASE CHANGES TO PA1REC.
+// ; FB322    120393  MSMIT2  IF CURRENT SO HAS BEEN MOVED TO
+// ;                          PRIOR PO AND THE STATUS IS BEING
+// ;                          CHANGED FROM AN ACTIVE BUY STATUS
+// ;                          , RESET BUY FLAGS.  USE DCORP.
+// ;                          VSUMCD01.
+// ; FB322    121693  MSMIT2  WHEN PR O/AS ARE COMBINED, NEW
+// ;                          O/A SHOW BE 'PR'.
+// ; PA9999   012194  MSMIT2  CHANGE PA0R-110 TO COMPARE
+// ;                          FBHREC.FB8BUYDT TO
+// ;                          PAWREC.PAWBUYDT.
+// ;pg-82   12/15/94  pmainw  Handle twenty product lines
+// ;                          on vfsctl01.
+// ; PA9999 07/25/95  MSMIT2  IF PRODUCT LINE INVALID FOR
+// ;                          SCHEDULER, SKIP FBMREC FLAG RESET
+// ; ------- -------- ------ ----------------------------------
+// ; Y2KFIX  01/07/98 CSAWKI MODIFICATIONS MADE TO: PA0RS03
+// ;
+// *********************
+Program PA0R type textUIProgram //VAGen Info - called text program
+  (
+   COMMAREA COMMAREA, // record
+   PAWREC PAWREC // record
+  )
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes
+  }
+
+  // Data Declarations
+  FB9REC FB9REC; // record
+  FBHREC FBHREC; // record
+  FBKREC FBKREC; // record
+  FBMREC FBMREC; // record
+  PA0RW01 PA0RW01; // record
+  PA1REC PA1REC; // record
+  PA2REC PA2REC; // record
+  PA4REC PA4REC; // record
+  PA5REC PA5REC; // record
+  PA7REC PA7REC; // record
+  PA8REC PA8REC; // record
+  PACREC PACREC; // record
+  PAEREC PAEREC; // record
+  PAIREC PAIREC; // record
+  PASREC PASREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  TAEREC TAEREC; // record
+  XX0XW01 XX0XW01; // record
+  YSMREC YSMREC; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  //  use  PA0RM // VAGen Info - unused formGroup    {
+  //    pfKeyEquate = yes
+  //  };
+  
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    PA0R001: PA0R001();
+    goto PA0R001;
+  end // end main
+end // end PA0R
+
+// CHECK FOR ACTIVE BUY STATUS
+Function PA0R-110()
+   /* ------------------------------------------------------------*/
+   /* FB322 - DOMESTIC SALES ORDERS FOR THE CURRENT BUY CAN BE*/
+   /* MOVED TO ANOTHER BUY MONTH.  THE BUY SYSTEM NEEDS TO KNOW*/
+   /* IF IT NEEDS TO BUY THESE SALES ORDERS.  IF THE O/A HAS AN*/
+   /* ACTIVE BUY STATUS, THE BUY SYSTEM WILL NOT BUY THESE SALES*/
+   /* ORDERS.  DCORP.VSUMCD01 IS USED TO DETERMINE IF THE O/A HAS*/
+   /* AN ACTIVE BUY STATUS.  THE O/A WILL HAVE TO BE COMPLETED.  IF*/
+   /* THE O/A STATUS IS CHANGED FROM/TO THIS GROUP, THE BUY SYSTEM*/
+   /* NEEDS TO KNOW THAT THEIR PICTURE HAS CHANGED.  IF IT IS BEFORE*/
+   /* THE BUY CUTOFF, RESET THE FLAGS FOR THE BUY SYSTEM. IF IT IS*/
+   /* AFTER THE CUTOFF, ERROR.*/
+   /* ------------------------------------------------------------*/
+  ;
+  set YSMREC empty;
+  ;
+  YSMREC.YSMTBLPF = "YES";
+  YSMREC.YSMSYSPF = "PA";
+  YSMREC.YSMSUMID = 6;
+  YSMREC.YSMSRCVL = PA1REC.YESCD;
+  ;
+  PA0RS-10-IO2640-S();
+  ;
+  if (SQLCA.VAGen_SQLCODE == 100)
+    return;
+  end
+  ;
+  PA0RW01.PA0RW-BUY-FLAGS-UPDATED = "N";
+  ;
+  PA0RS-01-IO4980-S1(); /* OPEN DPRODA.VPAITM01*/
+  ;
+  PA0RS-02-IO4980-N1(); /* FETCH DPRODA.VPAITM01*/
+  ;
+  while (SQLCA.VAGen_SQLCODE == 0
+   && PA0RW01.PA0RW-BUY-FLAGS-UPDATED == "N")
+    ;
+    if (PA2REC.OP1CUOID != 0)
+      ;
+      set FBHREC empty;
+      FBHREC.OP1PARTN = PA2REC.OP1PARTN;
+      FBHREC.OP1CUOID = PA2REC.OP1CUOID;
+      FBHREC.OP1NORID = PA2REC.OP1NORID;
+      FBHREC.PC2CUXID = PA2REC.PC2CUXID;
+      FBHREC.FB8BUYDT = PAWREC.PAWBUYDT;
+      FBHREC.SY1STNBR = PA2REC.SY1STNBR;
+      FBHREC.SY2CLRID = PA2REC.SY2CLRID;
+      FBHREC.XDMCD = PA2REC.XDMCD;
+      FBHREC.XQACD = PA2REC.XQACD;
+      FBHREC.XPGCD = PA2REC.XPGCD;
+      FBHREC.XUMCD = PA2REC.XUMCD;
+      ;
+      PA0RS-04-IO4640-SB(); /* GET DFBUY.VDNORD01*/
+      ;
+      if (SQLCA.VAGen_SQLCODE == 0)
+        if (FBHREC.XDVCD != "02")
+             /* RESET FLAGS ONLY WHEN SALES ORDER IS FROM THE CURRENT*/
+             /* BUY MONTH.*/
+          if (FBHREC.FB8BUYDT == PAWREC.PAWBUYDT)
+            PA0R-11001();
+          end
+        end
+      end
+      ;
+    end
+    ;
+    if (PAWREC.XXXMSGNO == 0)
+      PA0RS-02-IO4980-N1();
+    end
+    ;
+  end
+  ;
+  PA0RS-03-IO4980-C1(); /* CLOSE DPRODA.VPAITM01*/
+  ;
+  ;
+  ;
+end // end PA0R-110
+
+// CHECK FOR ACTIVE BUY STATUS
+Function PA0R-11001()
+   /* ------------------------------------------------------------*/
+   /* DETERMINE THE BUY CUTOFF DATE, IF THE BUY CUTOFF DATE IS*/
+   /* PAST, ERROR.  OTHERWISE, UPDATE FLAGS.*/
+   /* 01/25/94: JADKIN COMMENT OUT.*/
+   /* ------------------------------------------------------------*/
+  ;
+   /* IF XX0XW01.XX0XWDAT GT PAWREC.PAWCOFDT;*/
+     /* MOVE '515' TO PAWREC.XXXMODID;*/
+     /* MOVE 298 TO PAWREC.XXXMSGNO;*/
+     /* CALL EZEROLLB;*/
+     /* EZECLOS;*/
+   /* END;*/
+  ;
+   /* IF XX0XW01.XX0XWDAT EQ PAWREC.PAWCOFDT*/
+   /* AND XX0XW01.XX0XWTIM GE PAWREC.FB9COFTM;*/
+     /* MOVE '515' TO PAWREC.XXXMODID;*/
+     /* MOVE 298 TO PAWREC.XXXMSGNO;*/
+     /* CALL EZEROLLB;*/
+     /* EZECLOS;*/
+   /* END;*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* SET BUY FLAGS TO 'N'*/
+   /* ------------------------------------------------------------*/
+  ;
+  PA0RW01.PA0RW-BUY-FLAGS-UPDATED = "Y";
+  ;
+   /* UPDATE DFBUY.VDNORD01*/
+  ;
+  FBHREC.FBHDSAFL = "N"; /* FB-DIRSHP-ACPT-FL*/
+  FBHREC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  FBHREC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+  ;
+  PA0RS-05-IO4640-U(); /* UPDATE DFBUY.VDNORD01*/
+  ;
+   /* SELECT/UPDATE DFBUY.VFQTBS01*/
+  ;
+  set FBKREC empty;
+  FBKREC.SY1STNBR = PA2REC.SY1STNBR;
+  FBKREC.SY2CLRID = PA2REC.SY2CLRID;
+  FBKREC.XDMCD = PA2REC.XDMCD;
+  FBKREC.FB8RCTYP = "B";
+  FBKREC.FB8BUYDT = PAWREC.PAWBUYDT;
+  ;
+  PA0RS-06-IO4740-S(); /* SELECT DFBUY.VFQTBS01*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    FBKREC.FBKCAFL = "N"; /* FB-CALC-ACPT-FL*/
+    FBKREC.FBKFSAFL = "N"; /* FB-FCST-ACPT-FL*/
+    FBKREC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+    FBKREC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+    PA0RS-07-IO4740-U(); /* UPDATE DFBUY.VFQTBS01*/
+  end
+  ;
+   /* SELECT/UPDATE DFBUY.VFSCTL01*/
+  ;
+  set FBMREC empty;
+  FBMREC.PG1SC4CD = PA1REC.PG1SC4CD;
+  ;
+  PA0RS-08-IO4670-S(); /* SELECT DFBUY.VFSCTL01*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    ;
+     /* BASED ON THE PRODUCT LINE CODE, DETERMINE WHICH FLAG TO UPDATE*/
+    ;
+    PA0R-11002();
+    ;
+     /* 07/25/95: FBMREC FLAGS OCCUR 20 TIMES*/
+    ;
+    if (sysVar.arrayIndex > 0
+     && sysVar.arrayIndex < 21)
+      FBMREC.FBMCFFL = "N"; /* FB-CALC-FNSH-FL*/
+      FBMREC.FBMFINFL = "N"; /* FB-DIRSHP-FNSH-FL*/
+      FBMREC.FBMPAFL[sysVar.arrayIndex] = "N"; /* FB-PRODLN-ACPT-FL*/
+      FBMREC.FBMDSLNF[sysVar.arrayIndex] = "N"; /* FB-DRSLN-FNSH-FL*/
+      FBMREC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+      FBMREC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+      PA0RS-09-IO4670-U(); /* UPDATE DFBUY.VFSCTL01*/
+    end
+    ;
+  end
+  ;
+  ;
+  ;
+end // end PA0R-11001
+
+// DETERMINE WHICH VFSCTL01 FLAG
+Function PA0R-11002()
+   /* ------------------------------------------------------------*/
+   /* BASED ON THE PRODUCT LINE CODE, DETERMINE WHICH FLAG TO*/
+   /* SET.*/
+   /* ------------------------------------------------------------*/
+  sysVar.arrayIndex = 1;
+  while (sysVar.arrayIndex <= 20)
+    if (FBHREC.XPLCD == 
+    FBMREC.FBMPCD[sysVar.arrayIndex])
+      return;
+    end
+    sysVar.arrayIndex = sysVar.arrayIndex + 1;
+  end
+end // end PA0R-11002
+
+// MAIN PARAGRAPH FOR APPL
+Function PA0R001()
+   /* -----------------------------------------------------*/
+   /* THIS IS THE MAIN ENTRANCE TO PA0R*/
+   /* ----------------------------------------------------------*/
+     /* 1. LOOP THRU THE ORDER ADJUSTMENT NUMBERS PASSED*/
+        /* IN PAWREC AND DO THE FOLLOWING FOR EACH:*/
+        /* A. FETCH THE ORDER ADJUSTMENT HEADER.*/
+        /* B. ADD THE REQUESTED QUANTITY TO A WORKING HOLD AREA*/
+        /* C. CHANGE THE STATUS TO ? AND UPDATE THE OA HEADER*/
+        /* D. DELETE ALL ENTRIES FOR THE OA IN THE FOLLOWING:*/
+           /* DPRODA.VFRZIT01*/
+           /* DPRODA.VFRZSZ01*/
+           /* DPRODA.VPAWRK01*/
+           /* DPRODA.VBOTLN01*/
+        /* E. UPDATE THE FACTORY RECORDS FOR OA:*/
+           /* CHANGE 15,19,20 TO 96*/
+           /* CHANGE 00       TO 97*/
+   /* -----------------------------------------------------------*/
+     /* 2. CHECK THE QUANTITY IN WORKING STORAGE FROM STEP 1*/
+        /* A. IF NEGATIVE ADD A NEW OA HEADER WITH TYPE 'DR'.*/
+        /* B. IF POSITIVE ADD A NEW OA HEADER WITH TYPE 'DA'.*/
+        /* C. IF ZERO ADD A NEW OA HEADER WITH STATUS CANCELLED*/
+   /* ------------------------------------------------------------*/
+     /* 3. LOOP THRU THE OA NUMBERS IN PAWREC ONE MORE TIME*/
+        /* FOR EACH OA NUMBER ADD AN ENTRY TO COMBINED TABLE*/
+   /* ------------------------------------------------------------*/
+     /* 4. IF ANY ERRORS HAVE OCCURED PERFORM A ROLLBACK*/
+        /* OTHERWISE COMMIT ALL WORK*/
+   /* ------------------------------------------------------------*/
+     /* 5. PERFORM EZECLOS*/
+   /* ------------------------------------------------------------*/
+  ;
+  set PA0RW01 empty;
+  XX0XS01();
+  ;
+  ;
+  PA0RW01.PA0RWX1 = 1;
+  PA0RW01.PA1SBFMO = 0;
+  ;
+  while (PA0RW01.PA0RWX1 <= 24)
+    ;
+    PA0R100(); /* UPDATE SELECTED OA'S DATABASES*/
+    ;
+    PA0RW01.PA0RWX1 = PA0RW01.PA0RWX1 + 1;
+  end
+  ;
+  PA0R200(); /* WRITE NEW OA HEADER*/
+  ;
+  PA0RW01.PA0RWX1 = 1;
+  ;
+  while (PA0RW01.PA0RWX1 <= 24)
+    ;
+    PA0R300(); /* WRITE COMBINED RECORD*/
+    ;
+    PA0RW01.PA0RWX1 = PA0RW01.PA0RWX1 + 1;
+  end
+  ;
+  try
+    sysLib.commit();//sysLib.commit(SQLCA);
+  end
+  ;
+  PAWOANBR = PA1REC.PA1OANBR;
+  ;
+  exit program; /* RETURN TO CALLING APPLICATION*/
+  ;
+end // end PA0R001
+
+// UPDATE SELECTED OA DATABASES
+Function PA0R100()
+   /* ----------------------------------------------------------*/
+    /* THIS PROCESS WILL CHECK TO SEE IF THE SUBSCRIPTED*/
+    /* OA NUMBER IS GREATER THAN 0*/
+     /* IF YES THE FOLLOWING WILL BE PERFORMED*/
+        /* 1. FETCH THE HEADER*/
+        /* 2. ADD THE HEADER QUANTITY TO WORKING STORAGE*/
+        /* 3. DETERMINE AND SAVE MOST CURRENT SUBMITTED BUY MONTH*/
+        /* 4. PERFORM THE DELETES OF THE OA DATABASES*/
+        /* 5. UPDATE THE HEADER STATUS AND REWRITE*/
+   /* ----------------------------------------------------------*/
+  ;
+  if (PAWREC.PA1OANBR[PA0RWX1] > 0)
+    PA0RS01(); /* FETCH OA HEADER*/
+    ;
+    PA0RW01.PA0RW-OR-OA-FLAG = "N";
+    PA0RW01.PA0RW-PR-OA-FLAG = "N";
+    ;
+    if (PA1REC.YETCD == "OR")
+      PA0RW01.PA0RW-OR-OA-FLAG = "Y";
+    end
+    ;
+    if (PA1REC.YETCD == "PR")
+      PA0RW01.PA0RW-PR-OA-FLAG = "Y";
+    end
+    ;
+    PA0RWTSR = PA0RWTSR + PA1REC.PA1RQQTY;
+    if (PA1REC.PA1SBFMO > PA0RW01.PA1SBFMO) /* find most current forecast*/
+      PA0RW01.PA1SBFMO = PA1REC.PA1SBFMO; /* sub. buy month*/
+    end
+    PA0RS02(); /* DELETE WORK RECORDS*/
+    PA0RS03(); /* DELETE BOTTOM LINE RECORDS*/
+    PA0RS04(); /* DELETE FROZEN ITEM RECORDS*/
+    PA0RS05(); /* DELETE FROZEN SIZE RECORDS*/
+    ;
+    /* CHECK TO SEE IF THE BUY FLAGS SHOULD BE UPDATED*/
+    ;
+    if (PA1REC.YETCD != "OR"
+     && PA1REC.YETCD != "NO")
+      PA0R-110();
+    end
+    ;
+    PA0RS06(); /* UPDATE OA HEADER*/
+    PA0R101(); /* UPDATE FACTORY RECORDS*/
+  end
+  ;
+end // end PA0R100
+
+// UPDATE FACTORY RECORDS
+Function PA0R101()
+   /* ----------------------------------------------------*/
+   /* UPDATE FACTORY RECORDS*/
+   /* ----------------------------------------------------*/
+   /* 1. DO SELECT SET FROM CURRENT OA NUMBER*/
+   /* ----------------------------------------------------*/
+   /* 2. FETCH FIRST RECORD*/
+   /* ----------------------------------------------------*/
+   /* 3. DO LOOP UNTIL SQLCODE = 100*/
+      /* A. CHECK STATUS CODE FOR FACTORY*/
+      /* B. IF STATUS CODE DEEMS UPDATE FACTORY RECORD*/
+      /* C. FETCH NEXT RECORD*/
+   /* ----------------------------------------------------*/
+   /* 4. CLOSE FACTORY CURSOR*/
+   /* ----------------------------------------------------*/
+  ;
+  PA4REC.PA1OANBR = PAWREC.PA1OANBR[PA0RWX1];
+  PA4REC.YESCD = "*";
+  ;
+  PA0RS08(); /* SELECT SET FACTORY*/
+  ;
+  PA0RS09(); /* FETCH FACTORY RECORD*/
+  ;
+  while (VAGen_SQLCODE == 0)
+    ;
+    if (PA4REC.YESCD == "15"
+     || PA4REC.YESCD == "19"
+     || PA4REC.YESCD == "20"
+     || PA4REC.YESCD == "84")
+      PA4REC.YESCD = "96";
+      PA4REC.ZZZCHGDT = XX0XWDAT;
+      PA4REC.ZZZCHGTM = XX0XWTIM;
+      ;
+      PA0RS10(); /* UPDATE FACTORY RECORD*/
+      ;
+    else
+      if (PA4REC.YESCD == "00")
+        PA4REC.YESCD = "97";
+        PA4REC.ZZZCHGDT = XX0XWDAT;
+        PA4REC.ZZZCHGTM = XX0XWTIM;
+        ;
+        PA0RS10(); /* UPDATE FACTORY RECORD*/
+        ;
+      end
+    end
+    PA0RS09(); /* FETCH FACTORY RECORD*/
+  end
+  ;
+  PA0RS11(); /* CLOSE FACTORY CURSOR*/
+end // end PA0R101
+
+// WRITE NEW OA HEADER
+Function PA0R200()
+   /* ----------------------------------------------------------*/
+   /* 1. IF SUMMED QUANTITY FROM PA0R001 > WRITE FCST ADD*/
+   /* ----------------------------------------------------------*/
+   /* 2. IF SUMMED QUANTITY FROM PA0R001 < WRITE FCST REDUCTION*/
+   /* ----------------------------------------------------------*/
+   /* 3. IF SUMMED QUANTITY FROM PA0R001 = DO NOTHING*/
+   /* ----------------------------------------------------------*/
+  ;
+  if (PA0RW01.PA0RWTSR > 0)
+    PA0R201(); /* INSERT FORCAST ADD HEADER*/
+  else
+    if (PA0RW01.PA0RWTSR < 0)
+      PA0R202(); /* INSERT FORCAST REDUCTION HEADER*/
+    else
+      PA0R203(); /* INSERT FORCAST ADD HEADER*/
+    end /* ; SET STATUS TO CANCELLED*/
+  end
+  ;
+end // end PA0R200
+
+// INSERT FORCAST ADD HEADER
+Function PA0R201()
+   /* -----------------------------------------------*/
+   /* SETUP PA1REC TO FOR ADD TO DATABASE FOR*/
+   /* FORCAST ADD*/
+   /* ----------------------------------------------------*/
+  ;
+  PA0RS12(); /* GET NEXT OA NUMBER*/
+  ;
+  PA1REC.PA1OANBR = PA8REC.PA8NXTNB;
+   /* ----------------------------------------------------*/
+    /* IF THE RECORD WAS A NIL RECORD, AT THIS TIME*/
+    /* IT IS ASSUMED THAT THE CUSTOMER RELATED DATA*/
+    /* MUST BE THE SAME. SO THE CUSTOMER RELATED WILL*/
+   /* NOT BE INITIALIZED, BUT WHAT WAS IN THE LAST RECORD*/
+    /* PROCESSED WILL REMAIN INTACT.  THE SAME IS ASSUMED*/
+   /* TO BE TRUE THAT ALL NON NIL OA'S WILL HAVE NOTHING*/
+   /* IN THE CUSTOMER FIELDS*/
+   /* -----------------------------------------------------*/
+  PA1REC.PA1OATXT = COMMAREA.CAUSERID;
+  PA1REC.YESCD = "00";
+  PA1REC.PA1YESID = "PA0R";
+  PA1REC.PA1YESDT = 0;
+  ;
+  if (PA0RW01.PA0RW-OR-OA-FLAG == "Y")
+    PA1REC.YETCD = "OR";
+  else
+    if (PA0RW01.PA0RW-PR-OA-FLAG == "Y")
+      PA1REC.YETCD = "PR";
+    else
+      PA1REC.YETCD = "DA";
+    end
+  end
+  ;
+  PA1REC.PA1YETBY = COMMAREA.CAUSERID;
+  PA1REC.PC4ORTYP = "  ";
+  PA1REC.PA1YETDT = 0;
+  PA1REC.PA1RQQTY = PA0RWTSR;
+  PA1REC.PA1SBFMO = PA0RW01.PA1SBFMO; /* most current sub. buy month*/
+  PA1REC.PA1FCRFL = "N"; /* initialize PA_FCST_RLV_FL*/
+  PA1REC.PA1CMIND = "C"; /* set combined indicator to 'c'*/
+  PA1REC.FB-LATE-BK-FL-MDT = 0; /* INIT LATE BOOK FLAG DATE*/
+  PA1REC.FB-LATE-BK-FL = "N"; /* init LATE BOOK FLAG*/
+  PA1REC.PA-APPL-BUY-BTL-FL = "Y"; /* init buy bottom line flag*/
+  PA1REC.XXXPGUID = COMMAREA.CAUSERID;
+  PA1REC.ZZZSDT = XX0XWDAT;
+  PA1REC.ZZZSTM = XX0XWTIM;
+  PA1REC.PA1YETDT = XX0XWDAT;
+  PA1REC.PA1YESDT = XX0XWDAT;
+  PA1REC.ZZZCHGDT = 0;
+  PA1REC.ZZZCHGTM = 0;
+  PA1REC.ZZZCHGCT = 0;
+  ;
+  PA0RS13(); /* ADD ORDER ADJUSTMENT HEADER*/
+  ;
+end // end PA0R201
+
+// INSERT FORCAST REDUCTION HDR
+Function PA0R202()
+   /* -------------------------------------------------*/
+   /* SETUP PA1REC FOR FORCAST REDUCTION HEADER*/
+   /* -------------------------------------------------*/
+  ;
+  ;
+  PA0RS12(); /* GET NEXT OA NUMBER*/
+  ;
+  PA1REC.PA1OANBR = PA8REC.PA8NXTNB;
+   /* ----------------------------------------------------*/
+    /* IF THE RECORD WAS A NIL RECORD, AT THIS TIME*/
+    /* IT IS ASSUMED THAT THE CUSTOMER RELATED DATA*/
+    /* MUST BE THE SAME. SO THE CUSTOMER RELATED WILL*/
+   /* NOT BE INITIALIZED, BUT WHAT WAS IN THE LAST RECORD*/
+    /* PROCESSED WILL REMAIN INTACT.  THE SAME IS ASSUMED*/
+   /* TO BE TRUE THAT ALL NON NIL OA'S WILL HAVE NOTHING*/
+   /* IN THE CUSTOMER FIELDS*/
+   /* -----------------------------------------------------*/
+  PA1REC.PA1OATXT = COMMAREA.CAUSERID;
+  PA1REC.YESCD = "00";
+  PA1REC.PA1YESID = "PA0R";
+  PA1REC.PA1YESDT = 0;
+  ;
+  if (PA0RW01.PA0RW-OR-OA-FLAG == "Y")
+    PA1REC.YETCD = "OR";
+  else
+    if (PA0RW01.PA0RW-PR-OA-FLAG == "Y")
+      PA1REC.YETCD = "PR";
+    else
+      PA1REC.YETCD = "DR";
+    end
+  end
+  ;
+  PA1REC.PA1YETBY = COMMAREA.CAUSERID;
+  PA1REC.PC4ORTYP = "  ";
+  PA1REC.PA1YETDT = 0;
+  PA1REC.PA1RQQTY = PA0RWTSR;
+  PA1REC.PA1SBFMO = PA0RW01.PA1SBFMO; /* most current sub. buy month*/
+  PA1REC.PA1CMIND = "C"; /* set PA_COMB_IND to 'c' for combined*/
+  PA1REC.PA1FCRFL = "N"; /* initialize PA_FCST_RLV_FL*/
+  PA1REC.FB-LATE-BK-FL = "N"; /* initialize LATE BOOK FLAG*/
+  PA1REC.FB-LATE-BK-FL-MDT = 0; /* initialize LATE BOOK FLAG*/
+  PA1REC.PA-APPL-BUY-BTL-FL = "Y"; /* init buy bottom line flag*/
+  PA1REC.XXXPGUID = COMMAREA.CAUSERID;
+  PA1REC.ZZZSDT = XX0XWDAT;
+  PA1REC.ZZZSTM = XX0XWTIM;
+  PA1REC.PA1YETDT = XX0XWDAT;
+  PA1REC.PA1YESDT = XX0XWDAT;
+  PA1REC.ZZZCHGDT = 0;
+  PA1REC.ZZZCHGTM = 0;
+  PA1REC.ZZZCHGCT = 0;
+  ;
+  PA0RS13(); /* ADD ORDER ADJUSTMENT HEADER*/
+  ;
+end // end PA0R202
+
+// INSERT CANCELLED FORCAST ADD
+Function PA0R203()
+   /* -----------------------------------------------*/
+   /* SETUP PA1REC TO FOR ADD TO DATABASE FOR*/
+   /* CANCEL OF O/A*/
+   /* ----------------------------------------------------*/
+  ;
+  PA0RS12(); /* GET NEXT OA NUMBER*/
+  ;
+  PA1REC.PA1OANBR = PA8REC.PA8NXTNB;
+   /* ----------------------------------------------------*/
+    /* IF THE RECORD WAS A NIL RECORD, AT THIS TIME*/
+    /* IT IS ASSUMED THAT THE CUSTOMER RELATED DATA*/
+    /* MUST BE THE SAME. SO THE CUSTOMER RELATED WILL*/
+   /* NOT BE INITIALIZED, BUT WHAT WAS IN THE LAST RECORD*/
+    /* PROCESSED WILL REMAIN INTACT.  THE SAME IS ASSUMED*/
+   /* TO BE TRUE THAT ALL NON NIL OA'S WILL HAVE NOTHING*/
+   /* IN THE CUSTOMER FIELDS*/
+   /* -----------------------------------------------------*/
+  PA1REC.PA1OATXT = COMMAREA.CAUSERID;
+  PA1REC.YESCD = "98";
+  PA1REC.PA1YESID = "PA0R";
+  PA1REC.PA1YESDT = 0;
+  PA1REC.YETCD = "DX";
+  PA1REC.PA1YETBY = COMMAREA.CAUSERID;
+  PA1REC.PA1YETDT = 0;
+  PA1REC.PC4ORTYP = "  ";
+  PA1REC.PA1SBFMO = PA0RW01.PA1SBFMO; /* most current sub. buy month*/
+  PA1REC.PA1RQQTY = PA0RWTSR;
+  PA1REC.PA1CMIND = "C"; /* SET PA_COMB_IND TO 'c', combined*/
+  PA1REC.PA1FCRFL = "N"; /* initialize PA_FCST_RLV_FL*/
+  PA1REC.XXXPGUID = COMMAREA.CAUSERID;
+  PA1REC.ZZZSDT = XX0XWDAT;
+  PA1REC.ZZZSTM = XX0XWTIM;
+  PA1REC.PA1YETDT = XX0XWDAT;
+  PA1REC.PA1YESDT = XX0XWDAT;
+  PA1REC.PA1OATXT = "RESULT OF FCST ADD + REDUC = 0";
+  PA1REC.FB-LATE-BK-FL-MDT = 0; /* init late bk flag date*/
+  PA1REC.FB-LATE-BK-FL = "N"; /* init late bk flag date*/
+  PA1REC.PA-APPL-BUY-BTL-FL = "Y"; /* init buy bottom line flag*/
+  PA1REC.ZZZCHGDT = 0;
+  PA1REC.ZZZCHGTM = 0;
+  PA1REC.ZZZCHGCT = 0;
+  ;
+  PA0RS13(); /* ADD ORDER ADJUSTMENT HEADER*/
+  ;
+end // end PA0R203
+
+// UPDATE FACTORY RECORDS
+Function PA0R300()
+   /* -----------------------------------------------------*/
+   /* ADD RECORDS TO COMBINED DATABASE*/
+   /* -----------------------------------------------------*/
+  ;
+  if (PAWREC.PA1OANBR[PA0RWX1] > 0)
+    PA7REC.PA1OANBR = PA8REC.PA8NXTNB;
+    PA7REC.PA7PRNBR = PAWREC.PA1OANBR[PA0RWX1];
+    PA7REC.ZZZSDT = XX0XWDAT;
+    PA7REC.PA7XRFTY = " ";
+    PA0RS07(); /* WRITE COMBINED RECORD*/
+  end
+  ;
+end // end PA0R300
+
+// OPEN DPRODA.VPAITM01
+Function PA0RS-01-IO4980-S1()
+   /* ------------------------------------------------------------*/
+   /* OPEN DPRODA.VPAITM01 TABLE.*/
+   /* ------------------------------------------------------------*/
+  ;
+  set PA2REC empty; /* init item  rec*/
+  set PAEREC empty; /* init item  rec*/
+  PAEREC.PAEFUNC = "S1";
+  PA2REC.PA1OANBR = PA1REC.PA1OANBR;
+  PA2REC.YESCD = "*";
+  ;
+  try
+    call "IO4980" (PAEREC, SQLCA, PA2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  PAWREC.XXXMODID = "S01"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "0000000" /* GOOD RETURN CODE*/
+   && SQLCA.VAGen_SQLCODE == -911)  /* RESOURCE UNAVAILABLE*/
+    PAWREC.XXXMSGNO = 11;
+    TA1REC.TA1FUNC = "POST";
+  else
+    PAWREC.XXXMSGNO = 10; /* UNEXPECTED ERROR*/
+    TA1REC.TA1FUNC = "RETN";
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "OPEN DPRODA.VPAITM01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNM = "PA0RS01"; /* Program number*/
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPAITM01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PA2REC.PA2KEY; /* ===>Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit program;
+  ;
+   /* **                                                        ***/
+   /* ********* END OF PA0RS-01-IO4980-S1 **************************/
+   /* **                                                        ***/
+  ;
+  ;
+end // end PA0RS-01-IO4980-S1
+
+// GET NEXT DPRODA.VPAITM01
+Function PA0RS-02-IO4980-N1()
+   /* ------------------------------------------------------------*/
+   /* OPEN DPRODA.VPAITM01 TABLE.*/
+   /* ------------------------------------------------------------*/
+  ;
+  PAEREC.PAEFUNC = "N1";
+  ;
+  try
+    call "IO4980" (PAEREC, SQLCA, PA2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* and normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100)
+      ;
+      return; /* Return to previous process*/
+      ;
+    end
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  PAWREC.XXXMODID = "S02"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "0000000" /* GOOD RETURN CODE*/
+   && SQLCA.VAGen_SQLCODE == -911)  /* RESOURCE UNAVAILABLE*/
+    PAWREC.XXXMSGNO = 11;
+    TA1REC.TA1FUNC = "POST";
+  else
+    PAWREC.XXXMSGNO = 10; /* UNEXPECTED ERROR*/
+    TA1REC.TA1FUNC = "RETN";
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "FETCH DPRODA.VPAITM01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNM = "PA0RS02"; /* Program number*/
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPAITM01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PA2REC.PA2KEY; /* ===>Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit program;
+  ;
+   /* **                                                        ***/
+   /* ********* END OF PA0RS-02-IO4980-N1 **************************/
+   /* **                                                        ***/
+  ;
+  ;
+end // end PA0RS-02-IO4980-N1
+
+// CLOSE DPRODA.VPAITM01
+Function PA0RS-03-IO4980-C1()
+   /* ------------------------------------------------------------*/
+   /* CLOSE DPRODA.VPAITM01 TABLE.*/
+   /* ------------------------------------------------------------*/
+  ;
+  PAEREC.PAEFUNC = "C1";
+  ;
+  try
+    call "IO4980" (PAEREC, SQLCA, PA2REC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == 0)      /* and normal return code*/
+    ;
+    return; /* Return to previous process*/
+    ;
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  PAWREC.XXXMODID = "S03"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "0000000" /* GOOD RETURN CODE*/
+   && SQLCA.VAGen_SQLCODE == -911)  /* RESOURCE UNAVAILABLE*/
+    PAWREC.XXXMSGNO = 11;
+    TA1REC.TA1FUNC = "POST";
+  else
+    PAWREC.XXXMSGNO = 10; /* UNEXPECTED ERROR*/
+    TA1REC.TA1FUNC = "RETN";
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "CLOSE DPRODA.VPAITM01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNM = "PA0RS03"; /* Program number*/
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPAITM01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PA2REC.PA2KEY; /* ===>Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit program;
+  ;
+   /* **                                                        ***/
+   /* ********* END OF PA0RS-03-IO4980-C1 **************************/
+   /* **                                                        ***/
+  ;
+  ;
+end // end PA0RS-03-IO4980-C1
+
+// GET DFBUY.VDNORD01
+Function PA0RS-04-IO4640-SB()
+   /* ------------------------------------------------------------*/
+   /* GET DFBUY.VDNORD01*/
+   /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO4640" ("SB", SQLCA, FBHREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* and normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100)
+      ;
+      return; /* Return to previous process*/
+      ;
+    end
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  PAWREC.XXXMODID = "S04"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "0000000" /* GOOD RETURN CODE*/
+   && SQLCA.VAGen_SQLCODE == -911)  /* RESOURCE UNAVAILABLE*/
+    PAWREC.XXXMSGNO = 11;
+    TA1REC.TA1FUNC = "POST";
+  else
+    PAWREC.XXXMSGNO = 10; /* UNEXPECTED ERROR*/
+    TA1REC.TA1FUNC = "RETN";
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "GET DFBUY.VDNORD01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNM = "PA0RS04"; /* Program number*/
+  TA1REC.TA1DBASE = "DFBUY   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VDNORD01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FBHREC.FBHGROUP; /* ===>Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit program;
+  ;
+   /* **                                                        ***/
+   /* ********* END OF PA0RS-04-IO4640-SB **************************/
+   /* **                                                        ***/
+  ;
+  ;
+end // end PA0RS-04-IO4640-SB
+
+// UPDATE DFBUY.VDNORD01
+Function PA0RS-05-IO4640-U()
+   /* ------------------------------------------------------------*/
+   /* UPDATE DFBUY.VDNORD01*/
+   /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO4640" ("U ", SQLCA, FBHREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* and normal return code*/
+    )                           
+      return; /* Return to previous process*/
+      ;
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        VGVar.handleSysLibraryErrors = 0;
+        sysLib.rollback(); /* ROLL BACK ALL CHANGES*/
+        PAWREC.XXXMODID = "S05";
+        PAWREC.XXXMSGNO = 12; /* DATA UPDATED BY ANOTHER APPL*/
+        exit program;
+      end
+    end
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  PAWREC.XXXMODID = "S05"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "0000000" /* GOOD RETURN CODE*/
+   && SQLCA.VAGen_SQLCODE == -911)  /* RESOURCE UNAVAILABLE*/
+    PAWREC.XXXMSGNO = 11;
+    TA1REC.TA1FUNC = "POST";
+  else
+    PAWREC.XXXMSGNO = 10; /* UNEXPECTED ERROR*/
+    TA1REC.TA1FUNC = "RETN";
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UDPATE DFBUY.VDNORD01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNM = "PA0RS05"; /* Program number*/
+  TA1REC.TA1DBASE = "DFBUY   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VDNORD01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FBHREC.FBHGROUP; /* ===>Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit program;
+  ;
+   /* **                                                        ***/
+   /* ********* END OF PA0RS-05-IO4640-U  **************************/
+   /* **                                                        ***/
+  ;
+  ;
+end // end PA0RS-05-IO4640-U
+
+// SELECT DFBUY.VFQTBS01
+Function PA0RS-06-IO4740-S()
+   /* ------------------------------------------------------------*/
+   /* SELECT DFBUY.VFQTBS01*/
+   /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO4740" ("S ", SQLCA, FBKREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* and normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100)
+      ;
+      return; /* Return to previous process*/
+      ;
+    end
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  PAWREC.XXXMODID = "S06"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "0000000" /* GOOD RETURN CODE*/
+   && SQLCA.VAGen_SQLCODE == -911)  /* RESOURCE UNAVAILABLE*/
+    PAWREC.XXXMSGNO = 11;
+    TA1REC.TA1FUNC = "POST";
+  else
+    PAWREC.XXXMSGNO = 10; /* UNEXPECTED ERROR*/
+    TA1REC.TA1FUNC = "RETN";
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "GET DFBUY.VFQTBS01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNM = "PA0RS06"; /* Program number*/
+  TA1REC.TA1DBASE = "DFBUY   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFQTBS01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FBKREC.FBKGROUP; /* ===>Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit program;
+  ;
+   /* **                                                        ***/
+   /* ********* END OF PA0RS-06-IO4740-S  **************************/
+   /* **                                                        ***/
+  ;
+  ;
+end // end PA0RS-06-IO4740-S
+
+// UPDATE DFBUY.VFQTBS01
+Function PA0RS-07-IO4740-U()
+   /* ------------------------------------------------------------*/
+   /* UPDATE DFBUY.VDNORD01*/
+   /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO4740" ("U ", SQLCA, FBKREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* and normal return code*/
+    )                           
+      return; /* Return to previous process*/
+      ;
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        VGVar.handleSysLibraryErrors = 0;
+        sysLib.rollback(); /* ROLL BACK ALL CHANGES*/
+        PAWREC.XXXMODID = "S07";
+        PAWREC.XXXMSGNO = 12; /* DATA UPDATED BY ANOTHER APPLICATION*/
+        exit program;
+      end
+    end
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  PAWREC.XXXMODID = "S07"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "0000000" /* GOOD RETURN CODE*/
+   && SQLCA.VAGen_SQLCODE == -911)  /* RESOURCE UNAVAILABLE*/
+    PAWREC.XXXMSGNO = 11;
+    TA1REC.TA1FUNC = "POST";
+  else
+    PAWREC.XXXMSGNO = 10; /* UNEXPECTED ERROR*/
+    TA1REC.TA1FUNC = "RETN";
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UDPATE DFBUY.VFQTBS01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNM = "PA0RS07"; /* Program number*/
+  TA1REC.TA1DBASE = "DFBUY   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFQTBS01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FBKREC.FBKGROUP; /* ===>Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit program;
+  ;
+   /* **                                                        ***/
+   /* ********* END OF PA0RS-07-IO4740-U  **************************/
+   /* **                                                        ***/
+  ;
+  ;
+end // end PA0RS-07-IO4740-U
+
+// SELECT DFBUY.VFSCTL01
+Function PA0RS-08-IO4670-S()
+   /* ------------------------------------------------------------*/
+   /* SELECT DFBUY.VFSCTL01*/
+   /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO4670" ("S ", SQLCA, FBMREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* and normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100)
+      ;
+      return; /* Return to previous process*/
+      ;
+    end
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  PAWREC.XXXMODID = "S08"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "0000000" /* GOOD RETURN CODE*/
+   && SQLCA.VAGen_SQLCODE == -911)  /* RESOURCE UNAVAILABLE*/
+    PAWREC.XXXMSGNO = 11;
+    TA1REC.TA1FUNC = "POST";
+  else
+    PAWREC.XXXMSGNO = 10; /* UNEXPECTED ERROR*/
+    TA1REC.TA1FUNC = "RETN";
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "GET DFBUY.VFSCTL01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNM = "PA0RS08"; /* Program number*/
+  TA1REC.TA1DBASE = "DFBUY   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFSCTL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FBMREC.FBMGROUP; /* ===>Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit program;
+  ;
+   /* **                                                        ***/
+   /* ********* END OF PA0RS-08-IO4670-S  **************************/
+   /* **                                                        ***/
+  ;
+  ;
+end // end PA0RS-08-IO4670-S
+
+// UPDATE DFBUY.VFSCTL01
+Function PA0RS-09-IO4670-U()
+   /* ------------------------------------------------------------*/
+   /* UPDATE DFBUY.VFSCTL01*/
+   /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO4670" ("U ", SQLCA, FBMREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Close table set*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* and normal return code*/
+    )                           
+      return; /* Return to previous process*/
+      ;
+    else
+      if (SQLCA.VAGen_SQLCODE == 100)
+        VGVar.handleSysLibraryErrors = 0;
+        sysLib.rollback(); /* ROLL BACK ALL CHANGES*/
+        PAWREC.XXXMODID = "S09";
+        PAWREC.XXXMSGNO = 12; /* DATA UPDATED BY ANOTHER APPL*/
+        exit program;
+      end
+    end
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  PAWREC.XXXMODID = "S09"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "0000000" /* GOOD RETURN CODE*/
+   && SQLCA.VAGen_SQLCODE == -911)  /* RESOURCE UNAVAILABLE*/
+    PAWREC.XXXMSGNO = 11;
+    TA1REC.TA1FUNC = "POST";
+  else
+    PAWREC.XXXMSGNO = 10; /* UNEXPECTED ERROR*/
+    TA1REC.TA1FUNC = "RETN";
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UDPATE DFBUY.VFSCTL01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNM = "PA0RS09"; /* Program number*/
+  TA1REC.TA1DBASE = "DFBUY   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFSCTL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = FBMREC.FBMGROUP; /* ===>Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit program;
+  ;
+   /* **                                                        ***/
+   /* ********* END OF PA0RS-09-IO4670-U  **************************/
+   /* **                                                        ***/
+  ;
+  ;
+end // end PA0RS-09-IO4670-U
+
+// SELECT SET DCORP.VSUMCD01
+Function PA0RS-10-IO2640-S()
+  ;
+   /* ------------------------------------------------------------*/
+   /* Select UNIQUE row from the table.*/
+   /* ------------------------------------------------------------*/
+  ;
+  try
+    call "IO2640" ("S ", SQLCA, YSMREC) {isNoRefresh = yes, isExternal = yes};
+  end /* Select row*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* OR NOT FOUND*/
+      ;
+      return; /* Return to previous process*/
+      ;
+    end
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  PAWREC.XXXMODID = "S10"; /* Module identification*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    converseLib.validationFailed(11); /* 'Resources unavailable'*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    ;
+  else
+    ;
+    converseLib.validationFailed(10); /* 'Error - Please nofity programming'*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    ;
+  end
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "GET UNIQUE DCORP.VSUMCD01";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = "PA0RS10"; /* Program number*/
+  TA1REC.TA1DBASE = "DCORP   "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VSUMCD01"; /* Table view name*/
+  TA1REC.TA1TBLKE = YSMREC.YSMGRP; /* Formatted error key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  exit stack; /* EXIT TO DISPLAY MAP*/
+  ;
+  ;
+end // end PA0RS-10-IO2640-S
+
+// FETCH OA HEADER
+Function PA0RS01()
+   /* -------------------------------------------------*/
+    /* SELECT SET FOR O/A HEADERS*/
+   /* -------------------------------------------------*/
+  ;
+  set PA1REC empty;
+  ;
+  PA1REC.PA1OANBR = PAWREC.PA1OANBR[PA0RWX1];
+  ;
+  try
+    call "IO4830" ("S ", SQLCA, PA1REC) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return;
+    else
+      ;
+      TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+      TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+      ;
+      TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+      TA1REC.TA1LOC = "PA0ES15 GET O/A HEADER        ";
+      TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+      TA1REC.TA1TBLVU = "VPAHDR01"; /* Table view name*/
+      TA1REC.TA1TBLKE = PA1REC.PA1KEY; /* Table key*/
+      ;
+      if (sysVar.errorCode == "00000000" /* Call successful*/
+       && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+        ;
+        TA1REC.TA1FUNC = "POST"; /* Termination function*/
+        call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Error diagnosis routine*/
+        ;
+      else
+        ;
+        TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+        call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+        ;
+      end
+      ;
+      sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+      SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+    end
+  end
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* ROLLBACK ALL WORK*/
+  exit program; /* RETURN TO CALLING APPL*/
+  ;
+end // end PA0RS01
+
+// DELETE WORK RECORDS
+Function PA0RS02()
+   /* -------------------------------------------------*/
+   /* DELETE ALL WORK RECORD FOR OA NUMBER*/
+   /* -------------------------------------------------*/
+  ;
+  PACREC.PA1OANBR = PAWREC.PA1OANBR[PA0RWX1];
+  PACREC.ZZZSDT = -1;
+  PACREC.ZZZSTM = -1;
+  PACREC.PACORDTY = "*";
+  ;
+  try
+    call "IO4950" ("D1", SQLCA, PACREC) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100)
+      return;
+    end
+  end
+  ;
+  PAWREC.XXXMSGNO = 10;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "PA0RS42 DELETE TYPE ONE WORK  ";
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPAWRK01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PACREC.PACGRP01;
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  else
+    ;
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  end
+  ;
+  sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+  SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback();
+  exit program;
+end // end PA0RS02
+
+// DELETE BOTTOM LINE RECORDS
+Function PA0RS03()
+   /* -----------------------------------------------------*/
+   /* DELETE BOTTOM LINE*/
+   /* -----------------------------------------------------*/
+  ;
+  ;
+  PA5REC.PA1OANBR = PAWREC.PA1OANBR[PA0RWX1];
+  ;
+  /* *************************** Y2K OUT BEGIN ****************************/
+  /*  */
+  /* CALL IO5090 'D ',SQLCA,PA5REC (NONCSP,NOMAPS,REPLY;*/
+  /*  */
+  /* *************************** Y2K OUT END ******************************/
+  /*  */
+  /*  */
+  /* *************************** Y2K IN BEGIN *****************************/
+  /*  */
+  try
+    call "VBOTLN02" ("D ", SQLCA, PA5REC) {isNoRefresh = yes, isExternal = yes};
+  end
+  /*  */
+  /* *************************** Y2K IN END *******************************/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100)
+      return;
+    end
+  end
+  ;
+  PAWREC.XXXMSGNO = 10;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "PA0RS03 DELETE TYPE ONE WORK  ";
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VBOTLN01"; /* Table view name*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  else
+    ;
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  end
+  ;
+  sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+  SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback();
+  exit program;
+end // end PA0RS03
+
+// DELETE FROZEN ITEM RECORDS
+Function PA0RS04()
+   /* ------------------------------------------------------------*/
+   /* DELETE FROZEN ITEM FOR OA NUMBER*/
+   /* ------------------------------------------------------------*/
+  ;
+  set PAIREC empty;
+  ;
+  PAIREC.PA1OANBR = PAWREC.PA1OANBR[PA0RWX1];
+  PAIREC.ZZZCHGDT = -1;
+  PAIREC.ZZZCHGTM = -1;
+  ;
+  try
+    call "IO4960" ("D1", SQLCA, PAIREC) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* NO RECORDS TO DELETE*/
+      return;
+    end
+  else
+    ;
+    converseLib.validationFailed(10);
+    TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+    TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+    ;
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1LOC = "PA0RS04 DELETE FROZEN ITEM    ";
+    TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VFRZIT01"; /* Table view name*/
+    ;
+    if (sysVar.errorCode == "00000000" /* Call successful*/
+     && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+      ;
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+      call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+      ;
+    else
+      ;
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+      ;
+    end
+    ;
+    sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+    SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+    return;
+    ;
+  end
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback();
+  exit program;
+  ;
+end // end PA0RS04
+
+// DELETE FROZEN SIZE RECORDS
+Function PA0RS05()
+   /* ------------------------------------------------------------*/
+   /* DELETE FROZEN SIZE FOR OA NUMBER*/
+   /* ------------------------------------------------------------*/
+  ;
+  set PASREC empty;
+  ;
+  PASREC.PA1OANBR = PAWREC.PA1OANBR[PA0RWX1];
+  PASREC.ZZZCHGDT = -1;
+  PASREC.ZZZCHGTM = -1;
+  ;
+  try
+    call "IO4970" ("D1", SQLCA, PASREC) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || SQLCA.VAGen_SQLCODE == 100) /* NO RECORDS TO DELETE*/
+      return;
+    end
+  else
+    ;
+    converseLib.validationFailed(10);
+    TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+    TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+    ;
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1LOC = "PA0RS05 DELETE FROZEN SIZE    ";
+    TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VFRZSZ01"; /* Table view name*/
+    ;
+    if (sysVar.errorCode == "00000000" /* Call successful*/
+     && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+      ;
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+      call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+      ;
+    else
+      ;
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+      ;
+    end
+    ;
+    sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+    SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+    return;
+    ;
+  end
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback();
+  exit program;
+  ;
+end // end PA0RS05
+
+// UPDATE OA HEADER
+Function PA0RS06()
+   /* -------------------------------------------------*/
+    /* SELECT SET FOR O/A HEADERS*/
+   /* -------------------------------------------------*/
+  ;
+  ;
+  PA1REC.YESCD = "97";
+  PA1REC.PA1YESID = COMMAREA.CAUSERID;
+  PA1REC.XXXPGUID = COMMAREA.CAUSERID;
+  PA1REC.PA1CMIND = "F"; /* set combined indicator to 'f', combined from*/
+  PA1REC.PA1YESDT = XX0XWDAT;
+  ;
+  try
+    call "IO4830" ("U ", SQLCA, PA1REC) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return;
+    else
+      ;
+      TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+      TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+      ;
+      TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+      TA1REC.TA1LOC = "PA0RS06 UPDATE OA HEADER      ";
+      TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+      TA1REC.TA1TBLVU = "VPAHDR01"; /* Table view name*/
+      TA1REC.TA1TBLKE = PA1REC.PA1KEY; /* Table key*/
+      ;
+      if (sysVar.errorCode == "00000000" /* Call successful*/
+       && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+        ;
+        TA1REC.TA1FUNC = "POST"; /* Termination function*/
+        call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes};
+                                   /* Error diagnosis routine*/
+        ;
+      else
+        ;
+        TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+        call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+        ;
+      end
+      ;
+      sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+      SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+    end
+  end
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* ROLLBACK ALL WORK*/
+  exit program; /* RETURN TO CALLING APPL*/
+  ;
+end // end PA0RS06
+
+// WRITE COMBINED RECORD
+Function PA0RS07()
+   /* ------------------------------------------------*/
+    /* DATA BASE IOMODE NEED TO BE DEFINED*/
+   /* ------------------------------------------------*/
+  ;
+  PA7REC.PA7RPTFT = "Y"; /* init pa-rpt-assnfcty-fl*/
+  ;
+  try
+    call "IO5120" ("A ", SQLCA, PA7REC) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (VAGen_SQLCODE == 0)
+      return;
+    end
+  end
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "PA0RS07 GET GROUP CODE        ";
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPAXRF01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PA7REC.PA7KEY; /* Table key*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  else
+    ;
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  end
+  ;
+  sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+  SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+  ;
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback();
+  exit program;
+end // end PA0RS07
+
+// SELECT SET FACTORY
+Function PA0RS08()
+   /* ------------------------------------------------------*/
+   /* SELECT SET FOR FACTORY CURSOR*/
+   /* ------------------------------------------------------*/
+  ;
+   /* GET PA0KS09*/
+   /* -------------------------------------------------*/
+    /* SELECT SET FOR O/A FACTORY RECORDS*/
+   /* -------------------------------------------------*/
+  ;
+  ;
+  try
+    call "IO4810" ("S1", SQLCA, PA4REC) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || VAGen_SQLCODE == 100)   
+      return;
+    end
+    ;
+    TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+    TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+    ;
+    TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+    TA1REC.TA1LOC = "PA0RS08 GET O/A FACTORY RECS  ";
+    TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+    TA1REC.TA1TBLVU = "VFYPA001"; /* Table view name*/
+    TA1REC.TA1TBLKE = PA4REC.PA4KEY; /* Table key*/
+    ;
+    if (sysVar.errorCode == "00000000" /* Call successful*/
+     && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+      ;
+      TA1REC.TA1FUNC = "POST"; /* Termination function*/
+      call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+      ;
+    else
+      ;
+      TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+      call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+      ;
+    end
+    ;
+    sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+    SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+    return;
+  end
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback();
+  exit program;
+end // end PA0RS08
+
+// FETCH FACTORY RECORD
+Function PA0RS09()
+   /* -----------------------------------------------------*/
+    /* FETCH FACTORY ROWS*/
+   /* -----------------------------------------------------*/
+  ;
+  ;
+  try
+    call "IO4810" ("N1", SQLCA, PA4REC) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (VAGen_SQLCODE == 0
+     || VAGen_SQLCODE == 100)
+      return;
+    end
+  end
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "PA0RS09 GET GROUP CODE        ";
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFYPA001"; /* Table view name*/
+  TA1REC.TA1TBLKE = PA4REC.PA4KEY; /* Table key*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  else
+    ;
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  end
+  ;
+  sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+  SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+  ;
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback();
+  exit program;
+end // end PA0RS09
+
+// UPDATE FACTORY RECORD
+Function PA0RS10()
+   /* -----------------------------------------------------*/
+    /* UPDATE FACTORY ROWS*/
+   /* -----------------------------------------------------*/
+  ;
+  ;
+  try
+    call "IO4810" ("U ", SQLCA, PA4REC) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (VAGen_SQLCODE == 0)
+      return;
+    end
+  end
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "PA0RS09 GET GROUP CODE        ";
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFYPA001"; /* Table view name*/
+  TA1REC.TA1TBLKE = PA4REC.PA4KEY; /* Table key*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  else
+    ;
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  end
+  ;
+  sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+  SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+  ;
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback();
+  exit program;
+end // end PA0RS10
+
+// CLOSE FACTORY CURSOR
+Function PA0RS11()
+   /* --------------------------------------------*/
+    /* CLOSE FACTORY CURSOR*/
+   /* --------------------------------------------*/
+  ;
+  ;
+  try
+    call "IO4810" ("C1", SQLCA, PA4REC) {isNoRefresh = yes, isExternal = yes};
+  end
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    if (SQLCA.VAGen_SQLCODE == 0 /* Normal return code*/
+     || VAGen_SQLCODE == 100)   
+      return;
+    end
+  end
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "PA0KR11 CLOSE FACTIRY CURSOR  ";
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VFYPA001"; /* Table view name*/
+  TA1REC.TA1TBLKE = PA4REC.PA4KEY; /* Table key*/
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  else
+    ;
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    call "TA0020" (TA1REC, TAEREC) {isExternal = yes}; /* Error diagnosis routine*/
+    ;
+  end
+  ;
+  sysVar.errorCode = TA1REC.TA1MAP; /* CSP return code*/
+  SQLCA.SQLCAREC = TAEREC.SQLCAREC; /* SQL commarea*/
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* ROLLBACK WORK*/
+  exit program; /* RETURN TO CALLING APPLICATION*/
+end // end PA0RS11
+
+// GET NEXT OA NUMBER
+Function PA0RS12()
+   /* ------------------------------------------------------------*/
+   /* GET NEXT SEQUENTIAL OA NUMBER*/
+   /* ------------------------------------------------------------*/
+  ;
+  ;
+  PA8REC.ZZZCHGDT = XX0XW01.XX0XWDAT; /* current system date*/
+  PA8REC.ZZZCHGTM = XX0XW01.XX0XWTIM; /* current system time*/
+  ;
+  try
+    call "IO4800" ("G ", SQLCA, PA8REC) {isNoRefresh = yes, isExternal = yes};
+  end /* insert row*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+  end
+  ;
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    XXXMSGNO = 11; /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    ;
+  else
+    ;
+    VGVar.handleSysLibraryErrors = 0;
+    sysLib.rollback(); /* Roll back all changes*/
+    ;
+    converseLib.validationFailed(10); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    ;
+    ;
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UPDATE THE TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPACTL01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PA8REC.PA8KEY; /* Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* ROLLBACK ALL WORK*/
+  ;
+  exit program;
+end // end PA0RS12
+
+// ADD OA HEADER
+Function PA0RS13()
+   /* ------------------------------------------------------------*/
+   /* ADD A ROW TO DPRODA.VPAHDR01*/
+   /* ------------------------------------------------------------*/
+  ;
+  PA1REC.KUCCOID = 0;
+  PA1REC.KUMSTRID = 0;
+  PA1REC.XNXCD = 0;
+  PA1REC.YSMXDV = "10";
+  PA1REC.PA1HLDFL = "N";
+  PA1REC.PA1INTFL = "N";
+  ;
+   /* INITIALIZE AIR FREIGHT NUMBER*/
+  ;
+  PA1REC.PA-AFRGT-RQT-ID = 0;
+  ;
+  try
+    call "IO4830" ("A ", SQLCA, PA1REC) {isNoRefresh = yes, isExternal = yes};
+  end /* insert row*/
+  ;
+   /* ------------------------------------------------------------*/
+   /* If successful, return to the previous process.*/
+   /* ------------------------------------------------------------*/
+  ;
+  if (sysVar.errorCode == "00000000") /* Call successful*/
+    ;
+    if (SQLCA.VAGen_SQLCODE == 0) /* Normal return code*/
+      return; /* Return to previous process*/
+    end
+    ;
+  end
+  ;
+   /* ------------------------------------------------------------*/
+   /* If data not available, return an error message to the user.*/
+   /* Otherwise, indicate that a system error has occurred.*/
+   /* ------------------------------------------------------------*/
+  ;
+  TA1REC.TA1MAP = sysVar.errorCode; /* CSP return code*/
+  TAEREC.SQLCAREC = SQLCA.SQLCAREC; /* SQL commarea*/
+  ;
+  ;
+  if (sysVar.errorCode == "00000000" /* Call successful*/
+   && SQLCA.VAGen_SQLCODE == -911)   /* and resource not available*/
+    ;
+    XXXMSGNO = 11; /* Indicate not available*/
+    TA1REC.TA1FUNC = "POST"; /* Termination function*/
+    ;
+  else
+    ;
+    ;
+    converseLib.validationFailed(10); /* Indicate system error*/
+    TA1REC.TA1FUNC = "RETN"; /* Termination function*/
+    ;
+    ;
+  end
+  ;
+  TA1REC.TA1TYPE = "DB2 "; /* Type of error*/
+  TA1REC.TA1LOC = "UPDATE THE TABLE ROW";
+  TA1REC.TA1PGMAP = COMMAREA.CACURRAP; /* Program application*/
+  TA1REC.TA1PGMNO = "PA0R"; /* Program number*/
+  TA1REC.TA1DBASE = "DPRODA  "; /* Data base name*/
+  TA1REC.TA1TBLVU = "VPAHDR01"; /* Table view name*/
+  TA1REC.TA1TBLKE = PA1REC.PA1KEY; /* Table key*/
+  ;
+  call "TA0020" (TA1REC, TAEREC) {isNoRefresh = yes, isExternal = yes}; /* Error diagnosis routine*/
+  ;
+  VGVar.handleSysLibraryErrors = 0;
+  sysLib.rollback(); /* ROLLBACK ALL WORK*/
+  ;
+  exit program;
+end // end PA0RS13
+
+Record PA0RW01 type basicRecord
+  10 PA0RWX1 PA0RWX1 ; 
+  10 PA0RWTSR PA0RWTSR ; 
+  10 PA1SBFMO PA1SBFMO ; 
+  10 PA0RW-OR-OA-FLAG PA0RW-OR-OA-FLAG ; 
+  10 PA0RW-BUY-FLAGS-UPDATED PA0RW-BUY-FLAGS-UPDATED ; 
+  10 PA0RW-PR-OA-FLAG PA0RW-PR-OA-FLAG ; 
+end // end PA0RW01
+
+DataItem PA0RW-BUY-FLAGS-UPDATED char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem PA0RW-OR-OA-FLAG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+DataItem PA0RW-PR-OA-FLAG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// ACCUMULATOR FOR HEADER QTY'S
+DataItem PA0RWTSR int {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// INDEX FOR PAWREC
+DataItem PA0RWX1 smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+

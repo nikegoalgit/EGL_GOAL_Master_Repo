@@ -1,0 +1,1784 @@
+package kg0f;
+
+import corpcom2.XX0XW01;
+import corpcom4.XSENTRY;
+import corpcom4.XSEXIT;
+import corpcom4.XSPF1;
+import corpcom4.XSPF4;
+import corpcom4.XSSEGTR;
+import corpcom4.XX0XS01;
+import corpcom5.*;
+import corpcom6.SQLCA;
+import corpx1.XAUTBL;
+import ku.common.KUCREC;
+import ku.common.KUDREC;
+import ku.common.KUJREC;
+import ku.common.KUMREC;
+import ku.common.KUNREC;
+import ta.common.TA1REC;
+//*** PROGRAM=KG0F ****
+// ;****************** begin  prologue ************************
+// ;
+// inqurire/add/change conversion company mapping
+// 
+// 
+// Maintenance Log:
+// 
+// 01/17/91 - JHEMME - Created.
+// 04/08/91 - DSALZW - db2 changes
+// 04/17/91 - twatso - a few trivial bugs to fix:
+//                     a) if comp diff than specified on top
+//                        replace desc with comp #
+//                     b) if update ='n' list all info avail
+//                     c) duplication of all data can happen
+//                        and shouldn't.
+// 05/01/91 - dsalzw - allow inquiry on 'from' or 'to' company
+//                   - no update for converted companies
+// 06/12/91 - dsalzw - fix bugs w/pg nbr, display self id & nm
+// 07/26/91 - jhemme - turn back on upd for conv cmpny's
+//                       (commented out code in kg0f115)
+// 09/02/93 - CHELLM - Added 'from' department
+// 10/09/95 - CHELLM - Added 'from' dept to DELETE KG0F530
+// 09/04/96 - kclar1 - allowed page number to be 4 digits
+// ;****************** end of prologue ************************
+// *********************
+Program KG0F type textUIProgram //VAGen Info - main text program
+  {
+  includeReferencedFunctions = yes, allowUnqualifiedItemReferences = yes, 
+  throwNrfEofExceptions = yes, handleHardIOErrors = no, V60ExceptionCompatibility = yes, 
+  I4GLItemsNullable = no, textLiteralDefaultIsString = no, localSQLScope = yes, 
+  msgTablePrefix = "CU00", inputRecord = COMMAREA, segmented = yes
+  }
+
+  // Data Declarations
+  COMMAREA COMMAREA ; // record
+  ERRSQLCA ERRSQLCA; // record
+  KG0FW01 KG0FW01; // record
+  KG0FW02 KG0FW02; // record
+  KG0FW04 KG0FW04; // record
+  KUCREC KUCREC; // record
+  KUDREC KUDREC; // record
+  KUJREC KUJREC; // record
+  KUMREC KUMREC; // record
+  KUNREC KUNREC; // record
+  SQLCA SQLCA; // record
+  TA1REC TA1REC; // record
+  XX0XW01 XX0XW01; // record
+
+  // VAGen Info - items needed for migration
+  VAGen_EZESYS char(8);
+  VAGen_EZEREPLY num(1);
+  VAGen_EZE_WAIT_TIME bin(9,2);
+  VAGen_EZE_ITEMLEN int;
+
+  // Use Declarations
+  use XAUTBL {deleteAfterUse = yes}; // table
+  use KG0FM.KG0FM010 // form
+   {
+    pfKeyEquate = no
+  };
+
+  function main()
+    // VAGen Info - initialization needed for migration
+    VAGen_EZESYS = VGLib.getVAGSysType();
+    KG0F000: KG0F000();
+    goto KG0F100;
+    KG0F100: KG0F100();
+    goto KG0F100;
+  end // end main
+end // end KG0F
+
+// initialization process
+Function KG0F000()
+   /* *********************************************/
+    /* initialization process*/
+   /* *********************************************/
+  ;
+  XSENTRY();
+  ;
+  XSSEGTR(); /* set segmented transaction id*/
+  ;
+  set KG0FW01 empty; /* working storage 1*/
+  set KG0FW02 empty; /* working storage 2*/
+  set KG0FW04 empty; /* rep temporary storage definition*/
+  set SQLCA empty;
+  set KUCREC empty; /* company record*/
+  set KUMREC empty; /* store record*/
+  set KUJREC empty; /* department record*/
+  set KUDREC empty; /* mapping record*/
+  ;
+  set KG0FM010 initial; /* company conversion screen*/
+  ;
+  KG0FW01.KG0FWERR = "N"; /* error flag*/
+  ;
+   /* ****************************/
+    /* check security*/
+   /* ****************************/
+  ;
+  if (COMMAREA.CACHGFL == "Y") /* change okay*/
+    KG0FW01.KG0FWUPD = "Y"; /* set update on*/
+  else
+    KG0FW01.KG0FWUPD = "N"; /* set update off*/
+  end
+  ;
+   /* ****************************/
+    /* check fast path entry*/
+   /* ****************************/
+  ;
+  if (COMMAREA.CAITEM != " ")
+    KG0FW01.KG0FWUSR = COMMAREA.CAITEM; /* key from fastpath*/
+    KG0FM010.KG0FMCF = KG0FW01.KG0FWCF;
+    KG0FM010.KG0FMCT = KG0FW01.KG0FWCT;
+  end
+  ;
+  if (KG0FM010.KG0FMCF > 0 /* if a company is available*/
+   || KG0FM010.KG0FMCT > 0)
+    KG0F115(); /* process companies*/
+  end
+  ;
+end // end KG0F000
+
+// conversion screen
+Function KG0F100()
+   /* *******************************************/
+   /* converse store conversion screen*/
+   /* *******************************************/
+  ;
+  KG0FM010.KG0FMHDT = VGVar.currentShortGregorianDate;
+  if (KG0FW01.KG0FWPND == "Y" /* updates pending*/
+   && converseVar.validationMsgNum == 0) /* no other messages*/
+    converseLib.validationFailed(277); /* "good edit - pf12 confirm" msg*/
+  end
+  ;
+  converse KG0FM010 ;
+  ;
+  KG0FW01.KG0FWERR = "N";
+  KG0FM010.VAGen_EZEMSG = " ";
+  ;
+  set KG0FM010.CATOAP initialAttributes;
+  set KG0FM010.KG0FMPG1 initialAttributes;
+  set KG0FM010.KG0FMCF initialAttributes;
+  set KG0FM010.KG0FMCT initialAttributes;
+  ;
+  KG0F110(); /* process screen data*/
+  ;
+end // end KG0F100
+
+// process screen keys/data
+Function KG0F110()
+   /* **************************************/
+   /* edit pa2 key*/
+   /* **************************************/
+  ;
+  if (converseVar.eventKey is pa2
+   && KG0FW01.KG0FWPGT != 0) /* company data is available*/
+    KG0FM010.KG0FMCF = KG0FW01.KG0FWCF; /* refresh 'to' company*/
+    KG0FM010.KG0FMCT = KG0FW01.KG0FWCT; /* refresh 'fm' company*/
+    KG0FW01.KG0FWPGC = 1; /* reset page count*/
+    KG0FM010.KG0FMPG1 = 1;
+    KG0F125(); /* refresh stores*/
+    KG0FW01.KG0FWSIX = 1; /* start at top*/
+    KG0F190(); /* move stores to map*/
+    KG0FW01.KG0FWPND = "N"; /* reset update pending flag*/
+    return;
+  end
+  ;
+   /* **************************************/
+   /* check for detail changes*/
+   /* **************************************/
+  ;
+  if (KG0FW01.KG0FWPGT != 0) /* company data is available*/
+    KG0F400(); /* check/save this screen's changes*/
+    if (KG0FW01.KG0FWERR == "Y") /* exit on detail errors*/
+      return;
+    end
+    KG0F420(); /* check every store temp for changes*/
+  end
+  ;
+   /* **************************************/
+   /* edit enter  key*/
+   /* **************************************/
+  ;
+  if (converseVar.eventKey is enter)
+    if (KG0FM010.CATOAP > " ") /* test for fast path*/
+      if (KG0FW01.KG0FWPND == "Y") /* updates pending*/
+        converseLib.validationFailed(367); /* "updates pending" msg*/
+        KG0FW01.KG0FWERR = "Y";
+        set KG0FM010.CATOAP cursor, bold;
+      else /* no updates pending*/
+        if (KG0FW01.KG0FWPGT != 0) /* company data is available*/
+          KG0F161(); /* purge store temp storage*/
+        end
+        COMMAREA.CATOAP = KG0FM010.CATOAP;
+        if (KG0FM010.CAITEM == " ")
+          KG0FW01.KG0FWCF = KG0FM010.KG0FMCF;
+          KG0FW01.KG0FWCT = KG0FM010.KG0FMCT;
+          COMMAREA.CAUSERA = KG0FW01.KG0FWUSR;
+        else
+          COMMAREA.CAITEM = KG0FM010.CAITEM;
+        end
+        COMMAREA.CAFROMAP = "KG0F";
+        XSEXIT();
+        KG0FM010.VAGen_EZEMSG = COMMAREA.CAMSG;
+        KG0FW01.KG0FWERR = "Y";
+        set KG0FM010.CATOAP cursor, bold;
+      end
+    else /* test for page# chg*/
+      if (KG0FM010.KG0FMPG1 != KG0FW01.KG0FWPGC) /* change in page#*/
+        KG0FM010.KG0FMCF = KG0FW01.KG0FWCF; /* reset 'fm' cmpny*/
+        KG0FM010.KG0FMCT = KG0FW01.KG0FWCT; /* reset 'to' cmpny*/
+        if (KG0FM010.KG0FMPG1 > KG0FW01.KG0FWPGT /* greater than max*/
+         || KG0FM010.KG0FMPG1 < 1)               /* or less than 1*/
+          converseLib.validationFailed(379); /* "invalid page" msg*/
+          set KG0FM010.KG0FMPG1 cursor, bold;
+          KG0FW01.KG0FWERR = "Y";
+        else
+          KG0FW01.KG0FWSIX = KG0FM010.KG0FMPG1; /* load rqst'd page*/
+          KG0FW01.KG0FWPGC = KG0FM010.KG0FMPG1;
+          KG0F190();
+        end
+      else /* test for company change*/
+        KG0F700(); /* check for from/to company chg*/
+      end
+    end
+    return;
+  end
+  ;
+   /* **************************************/
+   /* test for fastpath except on <enter>*/
+   /* **************************************/
+  ;
+  if (KG0FM010.CATOAP > " ")
+    KG0FW01.KG0FWERR = "Y";
+    converseLib.validationFailed(90); /* "fast path / pf keys" msg*/
+    set KG0FM010.CATOAP cursor, bold;
+    return;
+  else
+    set KG0FM010.CATOAP modified;
+  end
+  ;
+   /* **************************************/
+   /* pfkey 1/2/3 edit*/
+   /* **************************************/
+  ;
+  if (converseVar.eventKey is pf1 /* help screens*/
+   || converseVar.eventKey is pf3 /* return*/
+   || converseVar.eventKey is pf4) /* master menu*/
+    if (KG0FW01.KG0FWPND == "Y") /* updates pending*/
+      KG0F600(); /* scroll screen to the error*/
+      converseLib.validationFailed(367);
+      KG0FW01.KG0FWERR = "Y";
+      return;
+    else
+      if (KG0FW01.KG0FWPGT != 0) /* company data is available*/
+        KG0F161(); /* purge store temp storage*/
+      end
+    end
+  end
+  ;
+   /* **************************************/
+   /* edit pf1 key*/
+   /* **************************************/
+  ;
+  if (converseVar.eventKey is pf1) /* help system*/
+    XSPF1();
+    KG0FM010.VAGen_EZEMSG = COMMAREA.CAMSG;
+    KG0FW01.KG0FWERR = "Y";
+    return;
+  end
+  ;
+   /* **************************************/
+   /* edit pf3 key*/
+   /* **************************************/
+  ;
+  if (converseVar.eventKey is pf3) /* back to company update*/
+    COMMAREA.CAUSERA = KG0FM010.KG0FMCT;
+    COMMAREA.CAITEM = " ";
+    COMMAREA.CATOAP = COMMAREA.CAFROMAP;
+    COMMAREA.CAFROMAP = "KG0F";
+    XSEXIT();
+    KG0FM010.VAGen_EZEMSG = COMMAREA.CAMSG;
+    KG0FW01.KG0FWERR = "Y";
+    return;
+  end
+  ;
+   /* **************************************/
+   /* edit pf4 key*/
+   /* **************************************/
+  ;
+  if (converseVar.eventKey is pf4) /* back to goal menu*/
+    COMMAREA.CAFROMAP = "KG0F";
+    XSPF4();
+    KG0FM010.VAGen_EZEMSG = COMMAREA.CAMSG;
+    KG0FW01.KG0FWERR = "Y";
+    return;
+  end
+  ;
+   /* **************************************/
+   /* edit pf12 key*/
+   /* **************************************/
+  ;
+  if (converseVar.eventKey is pf12) /* update databases*/
+    if (KG0FW01.KG0FWPND == "Y") /* updates pending*/
+      if (KG0FW01.KG0FWERR == "N") /* if no errors*/
+        KG0F500(); /* process selection entries*/
+      else
+        converseLib.validationFailed(174); /* "must pass edits" msg*/
+      end
+    else
+      converseLib.validationFailed(280); /* "no maintenance performed" msg*/
+    end
+    return;
+  end
+  ;
+   /* **************************************/
+   /* edit pf7 key    (page up for stores)*/
+   /* **************************************/
+  ;
+  if (converseVar.eventKey is pf7) /* scroll backwards for stores*/
+    KG0F670();
+    return;
+  end
+  ;
+   /* **************************************/
+   /* edit pf8 key  (page down for stores)*/
+   /* **************************************/
+  ;
+  if (converseVar.eventKey is pf8) /* scroll forwards for stores*/
+    KG0F675();
+    return;
+  end
+  ;
+   /* **************************************/
+   /* invalid pf key*/
+   /* **************************************/
+  ;
+  if (KG0FW01.KG0FWERR == "N")
+    converseLib.validationFailed(281); /* invalid pf key message*/
+    KG0FW01.KG0FWERR = "Y";
+  end
+  ;
+  ;
+end // end KG0F110
+
+// format to/from companies
+Function KG0F115()
+   /* *********************************************************/
+   /* *  KG0C115 - PROCESS TO/FROM COMPANIES*/
+   /* *     Load company names using company id.*/
+   /* *     Load temp storage stores using 'fm' company.*/
+   /* *********************************************************/
+  ;
+   /* *********************************************************/
+   /* *  Set security for every new company*/
+   /* *********************************************************/
+  if (COMMAREA.CACHGFL == "Y") /* change okay*/
+    KG0FW01.KG0FWUPD = "Y"; /* set update on*/
+  else
+    KG0FW01.KG0FWUPD = "N"; /* set update off*/
+  end
+  ;
+  ;
+   /* *********************************************************/
+   /* *  Check to see if both companies were entered*/
+   /* *********************************************************/
+  ;
+  if (KG0FM010.KG0FMCT == 0
+   && KG0FM010.KG0FMCF == 0)
+    set KG0FM010.KG0FMCF cursor, bold;
+    set KG0FM010.KG0FMCT bold;
+    converseLib.validationFailed(005); /* required field missing*/
+    KG0FW01.KG0FWERR = "Y"; /* at least one company required*/
+    return;
+  else
+    if (KG0FM010.KG0FMCT == 0)
+      KG0F116(); /* look up TO company*/
+    else
+      if (KG0FM010.KG0FMCF == 0)
+        KG0F117(); /* look up FROM company*/
+      else
+         /* next sentence             ; both companies entered*/
+      end
+    end
+  end
+  ;
+  ;
+   /* *********************************************************/
+   /* *  FORMAT TO COMPANY SCREEN DATA*/
+   /* *********************************************************/
+  ;
+  set KUCREC empty; /* clear out company record*/
+  set KG0FM010.KG0FMCT normal; /* set original attributes*/
+  ;
+  KUCREC.KUCCOID = KG0FM010.KG0FMCT; /* set company key*/
+  KG0F120(); /* read vcmpny01*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    KG0FM010.KG0FMCTN = KUCREC.KUCCONM; /* company name*/
+     /* IF KUCREC.XXXSTAT NE 'I'      ; company not inactive*/
+    /* MOVE KG0FM010.KG0FMCT TO KG0FW01.KG0FWCT; save 'to' company*/
+       /* MOVE 'N' TO KG0FW01.KG0FWUPD;*/
+       /* MOVE 240 TO EZEMNO          ; "no security for change"*/
+     /* ELSE ;*/
+    if (KUCREC.XAUCD in XAUTBL.XAUCD /* check account type code*/
+     && XAUTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      if (XAUTBL.XATCD[sysVar.arrayIndex] == "08" /* cole haan acct*/
+       || XAUTBL.XATCD[sysVar.arrayIndex] == "03") /* nil acct*/
+        converseLib.validationFailed(272); /* "not authorized to maint" msg*/
+        set KG0FM010.KG0FMCT cursor, bold;
+      else
+        KG0FW01.KG0FWCT = KG0FM010.KG0FMCT; /* save 'to' company*/
+      end
+    end
+     /* END ;*/
+  else
+    converseLib.validationFailed(25); /* company not found*/
+    KG0FW01.KG0FWERR = "Y"; /* set error flag*/
+    set KG0FM010.KG0FMCT cursor, bold;
+  end
+  ;
+   /* *********************************************************/
+   /* *  FORMAT FROM COMPANY SCREEN DATA*/
+   /* *********************************************************/
+  ;
+  set KUCREC empty; /* clear out company record*/
+  set KG0FM010.KG0FMCF normal; /* set original attributes*/
+  ;
+  KUCREC.KUCCOID = KG0FM010.KG0FMCF; /* set company key*/
+  KG0F120(); /* read vcmpny01*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    KG0FM010.KG0FMCFN = KUCREC.KUCCONM; /* company name*/
+     /* IF KUCREC.XXXSTAT NE 'A'      ; company not active*/
+    /* MOVE KG0FM010.KG0FMCF TO KG0FW01.KG0FWCF; save 'fm' company*/
+       /* MOVE 'N' TO KG0FW01.KG0FWUPD;*/
+       /* MOVE 71 TO EZEMNO           ; "company inactive" msg*/
+     /* ELSE ;*/
+    if (KUCREC.XAUCD in XAUTBL.XAUCD /* check account type code*/
+     && XAUTBL.XXXSTAT[sysVar.arrayIndex] == "A")
+      if (XAUTBL.XATCD[sysVar.arrayIndex] == "08" /* cole haan acct*/
+       || XAUTBL.XATCD[sysVar.arrayIndex] == "03") /* nil acct*/
+        converseLib.validationFailed(272); /* "not authorized to maint" msg*/
+        set KG0FM010.KG0FMCF cursor, bold;
+      else
+        KG0FW01.KG0FWCF = KG0FM010.KG0FMCF; /* save 'fm' company*/
+      end
+    end
+     /* END ;*/
+  else
+    converseLib.validationFailed(25); /* company not found*/
+    KG0FW01.KG0FWERR = "Y"; /* set error flag*/
+    set KG0FM010.KG0FMCF cursor, bold;
+  end
+  ;
+   /* *********************************************************/
+  ;
+  if (KG0FW01.KG0FWERR == "Y") /* to/fm company bad*/
+    return;
+  end
+  ;
+   /* *********************************************************/
+     /* FORMAT STORE DEPT SCREEN DATA*/
+   /* *********************************************************/
+  ;
+  KG0F122(); /* load all stores*/
+  ;
+  if (KG0FW01.KG0FWERR == "Y") /* error loading stores*/
+    return;
+  end
+  ;
+  KG0FW01.KG0FWPGC = 1; /* page counter*/
+  KG0FM010.KG0FMPG1 = KG0FW01.KG0FWPGC;
+  ;
+  KG0FW01.KG0FWSIX = 1; /* start at the top*/
+  KG0F190(); /* move stores to the screen*/
+  ;
+end // end KG0F115
+
+// find first TO company
+Function KG0F116()
+   /* *******************************************/
+   /* * KG0F116 - find first TO company*/
+   /* *******************************************/
+  ;
+  KUDREC.KUCCOID = KG0FM010.KG0FMCF;
+  ;
+  call "IO5570" ("S1", SQLCA, KUDREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* if found, load conversion*/
+     /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "KG0F116";
+    TA1REC.TA1LOC = "SELECT VCONV001";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCONV001";
+    KG0FW01.KG0FWKC = KUDREC.KUCCOID;
+    KG0FW01.KG0FWKS = KUDREC.KUMSTRID;
+    KG0FW01.KG0FWKD = KUDREC.XNXCD;
+    TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+  ;
+  call "IO5570" ("N1", SQLCA, KUDREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* if found, load conversion*/
+    KG0FM010.KG0FMCT = KUDREC.KUDCOCID;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* if not found, return*/
+      KG0FM010.KG0FMCT = 0;
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "ABND";
+      TA1REC.TA1PGMNM = "KG0F116";
+      TA1REC.TA1LOC = "RD NXT VCONV001";
+      TA1REC.TA1MAP = " ";
+      TA1REC.TA1DBASE = "DCUST";
+      TA1REC.TA1TBLVU = "VCONV001";
+      KG0FW01.KG0FWKC = KUDREC.KUCCOID;
+      KG0FW01.KG0FWKS = KUDREC.KUMSTRID;
+      KG0FW01.KG0FWKD = KUDREC.XNXCD;
+      TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+  end
+  ;
+  ;
+   /* close cursor*/
+  call "IO5570" ("C1", SQLCA, KUDREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* if found, load conversion*/
+     /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "KG0F116";
+    TA1REC.TA1LOC = "CLOSE  VCONV001";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCONV001";
+    KG0FW01.KG0FWKC = KUDREC.KUCCOID;
+    KG0FW01.KG0FWKS = KUDREC.KUMSTRID;
+    KG0FW01.KG0FWKD = KUDREC.XNXCD;
+    TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+end // end KG0F116
+
+// find first FROM company
+Function KG0F117()
+   /* *******************************************/
+   /* * KG0F117 - find first FROM company*/
+   /* *******************************************/
+  ;
+  KUDREC.KUDCOCID = KG0FM010.KG0FMCT;
+  ;
+  call "IO5570" ("S2", SQLCA, KUDREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* if found, load conversion*/
+     /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "KG0F117";
+    TA1REC.TA1LOC = "SELECT VCONV001";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCONV001";
+    KG0FW01.KG0FWKC = KUDREC.KUCCOID;
+    KG0FW01.KG0FWKS = KUDREC.KUMSTRID;
+    KG0FW01.KG0FWKD = KUDREC.XNXCD;
+    TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+  ;
+  call "IO5570" ("N2", SQLCA, KUDREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* if found, load conversion*/
+    KG0FM010.KG0FMCF = KUDREC.KUCCOID;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* if not found, return*/
+      KG0FM010.KG0FMCF = 0;
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "ABND";
+      TA1REC.TA1PGMNM = "KG0F117";
+      TA1REC.TA1LOC = "RD NXT VCONV001";
+      TA1REC.TA1MAP = " ";
+      TA1REC.TA1DBASE = "DCUST";
+      TA1REC.TA1TBLVU = "VCONV001";
+      KG0FW01.KG0FWKC = KUDREC.KUCCOID;
+      KG0FW01.KG0FWKS = KUDREC.KUMSTRID;
+      KG0FW01.KG0FWKD = KUDREC.XNXCD;
+      TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+  end
+  ;
+  ;
+   /* close cursor*/
+  call "IO5570" ("C2", SQLCA, KUDREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+     /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "KG0F117";
+    TA1REC.TA1LOC = "CLOSE  VCONV001";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCONV001";
+    KG0FW01.KG0FWKC = KUDREC.KUCCOID;
+    KG0FW01.KG0FWKS = KUDREC.KUMSTRID;
+    KG0FW01.KG0FWKD = KUDREC.XNXCD;
+    TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+  ;
+end // end KG0F117
+
+// select company
+Function KG0F120()
+   /* *****************************/
+   /* * KG0C120 - select company **/
+   /* *****************************/
+  ;
+  ;
+  set SQLCA empty;
+  ;
+  call "IO0240" ("S ", SQLCA, KUCREC) {isNoRefresh = yes, isExternal = yes}; /* read cmpny01*/
+  if (SQLCA.VAGen_SQLCODE == 0) /* company found*/
+     /* next sentence*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* company not found*/
+       /* next sentence*/
+    else
+      TA1REC.TA1TYPE = "DB2"; /* company select error*/
+      TA1REC.TA1FUNC = "ABND";
+      TA1REC.TA1PGMNM = "KG0C125";
+      TA1REC.TA1LOC = "READING DB2 CMPNY01";
+      TA1REC.TA1MAP = " ";
+      TA1REC.TA1DBASE = "DCUST";
+      TA1REC.TA1TBLVU = "VCMPNY01";
+      KG0FW01.KG0FWKC = KUCREC.KUCCOID;
+      TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+  end
+  ;
+end // end KG0F120
+
+// load all stores for company
+Function KG0F122()
+   /* **************************************************/
+   /* * KG0F122 - LOAD ALL STORES/DEPTS USING COMPANY ID*/
+   /* *******************************************************/
+  ;
+  KG0F161(); /* purge temp work file*/
+  if (KG0FW01.KG0FWERR == "Y") /* error in purge*/
+    return;
+  end
+  ;
+  set KUNREC empty;
+  KUNREC.KUCCOID = KUCREC.KUCCOID;
+  KUNREC.KUMSTRID = -1;
+  KUNREC.XNXCD = -1;
+  KUNREC.XGPCD = "**";
+  ;
+  call "IO0280" ("SS", SQLCA, KUNREC) {isNoRefresh = yes, isExternal = yes}; /* "ss" all stor/DEPT*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "KG0C122";
+    TA1REC.TA1LOC = "SELECT SCAN VCUST001";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCUST001";
+    KG0FW01.KG0FWKC = KUCREC.KUCCOID;
+    KG0FW01.KG0FWKS = 0;
+    TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+  set KG0FW04 empty; /* working storage for stor/DEPT*/
+  KG0FW01.KG0FWSCT = 0; /* set actual count to 0*/
+  KG0FW01.KG0FWEND = "N"; /* set end-cust flag to 'n'*/
+  ;
+  ;
+  KG0FW01.KG0FW-HOLD-STORE = 9999;
+  KG0FW01.KG0FW-HOLD-DEPT = 9999;
+               /* ; loop/save stor/dept by the screenfull*/
+  while (KG0FW01.KG0FWEND == "N" /* not end of vcust001*/
+   && KG0FW01.KG0FWERR == "N") /* no errors*/
+    set KG0FW04 empty;
+    KG0FW01.KG0FWCNT = 1;
+    while (KG0FW01.KG0FWCNT < 15   /* 14 store/dept per temp stor rec*/
+     && KG0FW01.KG0FWEND == "N" /* not end of vcust001*/
+     && KG0FW01.KG0FWERR == "N") /* no errors*/
+      KG0F165(); /* select next vcust001*/
+    end
+    KG0F170(); /* write stor/deptto temp storage*/
+  end
+  ;
+  VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+  VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+  sysLib.commit();
+  VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+  
+  ;
+  KG0FW01.KG0FWPGT = KG0FW01.KG0FWSCT; /* kg0fwrrt remains constant*/
+  KG0FM010.KG0FMPG2 = KG0FW01.KG0FWSCT; /* total nbr of pages*/
+  ;
+end // end KG0F122
+
+// load all stores for company
+Function KG0F125()
+   /* **************************************************/
+   /* * KG0F125 - LOAD ALL STORES USING COMPANY ID*/
+   /* *******************************************************/
+  ;
+  ;
+  set KUMREC empty;
+  KUMREC.KUCCOID = KUNREC.KUCCOID;
+  KUMREC.KUMSTRID = KUNREC.KUMSTRID;
+  ;
+  call "IO0340" ("S ", SQLCA, KUMREC) {isNoRefresh = yes, isExternal = yes}; /* "ss" all stores*/
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    KG0FW04.KG0FMSFN[KG0FWCNT] = KUMREC.KUMSTRNM;
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "KG0C125";
+    TA1REC.TA1LOC = "SELECT VSTORE01";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VSTORE01";
+    KG0FW01.KG0FWKC = KUCREC.KUCCOID;
+    KG0FW01.KG0FWKS = 0;
+    TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+  ;
+end // end KG0F125
+
+// purge store temp storage
+Function KG0F161()
+   /* ***************************************/
+   /* * KG0F161 - PURGE STORE TEMP STORAGE **/
+   /* ***************************************/
+  ;
+  KG0FW02.KG0FW2CT = 0;
+  KG0FW02.KG0FW2AP = "KW04";
+  KG0FW02.KG0FW2RC = 0;
+  KG0FW02.KG0FW2FC = "P"; /* purge temp work file*/
+  ;
+  set KG0FW04 empty;
+  KG0FW04.KG0FW4LG = 1194;
+  ;
+  call "TA0050" (KG0FW04, KG0FW02) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (KG0FW02.KG0FW2RC != 0) /* error encountered*/
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.commit();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    KG0FW01.KG0FWERR = "Y";
+    converseLib.validationFailed(228);
+  end
+  ;
+end // end KG0F161
+
+// select next store
+Function KG0F165()
+   /* *******************************************/
+   /* * KG0F165 - SELECT NEXT vcust001*/
+   /* **/
+   /* *    LOAD STORE ID, dept id, status*/
+   /* **/
+   /* *******************************************/
+  ;
+  call "IO0280" ("SN", SQLCA, KUNREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    if (KG0FW01.KG0FW-HOLD-STORE != KUNREC.KUMSTRID || 
+    KG0FW01.KG0FW-HOLD-DEPT != KUNREC.XNXCD)
+      KG0FW01.KG0FWFND = "Y";
+      KG0FW04.KG0FMSF[KG0FWCNT] = KUNREC.KUMSTRID; /* store-id fm*/
+      KG0FW04.KG0FM-CU-DEPT-CONV-ID[KG0FWCNT] = KUNREC.XNXCD;
+      KG0FW04.KG0FMSFX[KG0FWCNT] = KUNREC.XXXSTAT; /* store-stat fm*/
+      KG0F125(); /* SELECT STORE NAME*/
+      KG0F167(); /* read any conversion rec*/
+      KG0FW01.KG0FWCNT = KG0FW01.KG0FWCNT + 1;
+      KG0FW01.KG0FW-HOLD-STORE = KUNREC.KUMSTRID;
+      KG0FW01.KG0FW-HOLD-DEPT = KUNREC.XNXCD;
+    end
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      KG0FW01.KG0FWEND = "Y";
+      KG0F185(); /* close VCUST cursor*/
+      return;
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "ABND";
+      TA1REC.TA1PGMNM = "KG0C140";
+      TA1REC.TA1LOC = "FETCH NEXT VSTORE01";
+      TA1REC.TA1MAP = " ";
+      TA1REC.TA1DBASE = "DCUST";
+      TA1REC.TA1TBLVU = "VSTORE01";
+      KG0FW01.KG0FWKC = KUCREC.KUCCOID;
+      KG0FW01.KG0FWKS = KUMREC.KUMSTRID;
+      TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+  end
+  ;
+end // end KG0F165
+
+// read conversion record
+Function KG0F167()
+   /* *******************************************/
+   /* * KG0F167 - FIND/LOAD A CONVERSION RECORD*/
+   /* *******************************************/
+  ;
+  ;
+  KUDREC.KUCCOID = KUNREC.KUCCOID;
+  KUDREC.KUMSTRID = KUNREC.KUMSTRID;
+  KUDREC.XNXCD = KUNREC.XNXCD;
+  ;
+  call "IO5570" ("S ", SQLCA, KUDREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0) /* if found, load conversion*/
+    KG0FW04.KG0FWSTB[KG0FWCNT] = KUDREC.KUDSTCID;
+    KG0FW04.KG0FWDB[KG0FWCNT] = KUDREC.CU-DEPT-CONV-ID;
+    KG0FW04.KG0FWAFT[KG0FWCNT] = KG0FW04.KG0FWBEF[KG0FWCNT];
+    KG0FW04.KG0FWXCC[KG0FWCNT] = KUDREC.ZZZCHGCT;
+    KUJREC.KUCCOID = KG0FW01.KG0FWCT;
+    KUJREC.XNXCD = KG0FW04.KG0FWDA[KG0FWCNT];
+    ;
+        /* ;if the conversion company not same as map 'to' company*/
+        /* ;display conversion number in descrip and 'x' in status*/
+    if (KUDREC.KUDCOCID != KG0FM010.KG0FMCT)
+      KG0FW04.KG0FMSFX[KG0FWCNT] = "X";
+      KG0FW01.KG0FWCCA = KUDREC.KUDCOCID;
+      KG0FW04.KG0FWDD[KG0FWCNT] = KG0FW01.KG0FWCCA;
+    else
+      KG0FW04.KG0FWDD[KG0FWCNT] = " ";
+    end
+    ;
+    KG0F168(); /* load company department*/
+  else
+    if (SQLCA.VAGen_SQLCODE == 100) /* if not found, return*/
+      return;
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "ABND";
+      TA1REC.TA1PGMNM = "KG0F167";
+      TA1REC.TA1LOC = "FETCH VCONV001";
+      TA1REC.TA1MAP = " ";
+      TA1REC.TA1DBASE = "DCUST";
+      TA1REC.TA1TBLVU = "VCONV001";
+      KG0FW01.KG0FWKC = KUDREC.KUCCOID;
+      KG0FW01.KG0FWKS = KUDREC.KUMSTRID;
+      KG0FW01.KG0FWKD = KUDREC.XNXCD;
+      TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+  end
+  ;
+end // end KG0F167
+
+// read company department
+Function KG0F168()
+   /* ****************************************************/
+   /* * KG0F168 - READ COMPANY DEPARTMENT*/
+   /* ****************************************************/
+  ;
+  call "IO0290" ("S ", SQLCA, KUJREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    KG0FW04.KG0FMDS[KG0FWCNT] = KUJREC.KUJSLFID;
+    if (KG0FW04.KG0FWDD[KG0FWCNT] == " "
+     || KG0FW04.KG0FMSFX[KG0FWCNT] != "X")
+      KG0FW04.KG0FWDD[KG0FWCNT] = KUJREC.KUJSLFNM;
+    end
+    ;
+  else
+    if (SQLCA.VAGen_SQLCODE == 100)
+      return;
+    else
+      TA1REC.TA1TYPE = "DB2";
+      TA1REC.TA1FUNC = "ABND";
+      TA1REC.TA1PGMNM = "KG0F168";
+      TA1REC.TA1LOC = "FETCH VDEPT001";
+      TA1REC.TA1MAP = " ";
+      TA1REC.TA1DBASE = "DCUST";
+      TA1REC.TA1TBLVU = "VDEPT001";
+      KG0FW01.KG0FWKC = KUJREC.KUCCOID;
+      KG0FW01.KG0FWKS = 0;
+      KG0FW01.KG0FWKD = KUJREC.XNXCD;
+      TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+      call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+    end
+  end
+  ;
+end // end KG0F168
+
+// write stores to temp storage
+Function KG0F170()
+   /* ************************************************/
+   /* * KG0F170 - WRITE STORES TO TEMPORARY STORAGE **/
+   /* ************************************************/
+  ;
+  if (KG0FW01.KG0FWFND == "Y") /* stores found*/
+    set KG0FW02 empty;
+    KG0FW02.KG0FW2RC = 0; /* return code*/
+    KG0FW02.KG0FW2FC = "A";
+    KG0FW02.KG0FW2AP = "KW04";
+    KG0FW01.KG0FWSCT = KG0FW01.KG0FWSCT + 1;
+    KG0FW02.KG0FW2CT = KG0FW01.KG0FWSCT;
+    KG0FW04.KG0FW4LG = 1194;
+    call "TA0050" (KG0FW04, KG0FW02) {isNoRefresh = yes, isExternal = yes};
+    if (KG0FW02.KG0FW2RC != 0)
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.commit();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      KG0FW01.KG0FWEND = "Y";
+      KG0FW01.KG0FWERR = "Y";
+      converseLib.validationFailed(228);
+    end
+  end
+  ;
+end // end KG0F170
+
+// close store cursor
+Function KG0F185()
+   /* *******************************************/
+   /* * CLOSE STORE CURSOR*/
+   /* *******************************************/
+  ;
+  call "IO0280" ("CS", SQLCA, KUNREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    /* next sentence*/
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "KG0C185";
+    TA1REC.TA1LOC = "CLOSE CURSOR VCUST001";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCUST001";
+    KG0FW01.KG0FWKC = KUCREC.KUCCOID;
+    KG0FW01.KG0FWKS = KUNREC.KUMSTRID;
+    TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+end // end KG0F185
+
+// move stores to screen
+Function KG0F190()
+   /* ***********************************/
+   /* * KG0F190 - MOVE STORES TO SCREEN*/
+   /* ***********************************/
+  ;
+  ;
+  KG0FW01.KG0FWCNT = 1; /* counter for screen*/
+  ;
+  KG0F195(); /* read store temp storage*/
+  ;
+  while (KG0FW01.KG0FWCNT < 15)
+    if (KG0FW04.KG0FMSFX[KG0FWCNT] == " ")
+      KG0FM010.KG0FMSF[KG0FWCNT] = 0;
+      KG0FM010.KG0FMSFN[KG0FWCNT] = " ";
+      KG0FM010.KG0FM-CU-DEPT-CONV-ID[KG0FWCNT] = " ";
+      KG0FM010.KG0FMSFX[KG0FWCNT] = " ";
+      KG0FM010.KG0FMST[KG0FWCNT] = 0;
+      KG0FM010.KG0FMD[KG0FWCNT] = 0;
+      KG0FM010.KG0FMDS[KG0FWCNT] = " ";
+      KG0FM010.KG0FMDD[KG0FWCNT] = " ";
+      set KG0FM010.KG0FMST[KG0FWCNT] skip, invisible; /* to store*/
+      set KG0FM010.KG0FMD[KG0FWCNT] skip, invisible; /* to dept*/
+      if (converseVar.validationMsgNum == 0) /* no previous message*/
+        converseLib.validationFailed(206); /* "end of data" msg*/
+      end
+      /* else status field is not spaces*/
+    else
+      KG0FM010.KG0FMSF[KG0FWCNT] = KG0FW04.KG0FMSF[KG0FWCNT];
+      KG0FM010.KG0FMSFN[KG0FWCNT] = KG0FW04.KG0FMSFN[KG0FWCNT];
+      KG0FM010.KG0FM-CU-DEPT-CONV-ID[KG0FWCNT] = KG0FW04.KG0FM-CU-DEPT-CONV-ID[KG0FWCNT];
+      if (KG0FW04.KG0FMSFX[KG0FWCNT] == "A")
+        KG0FM010.KG0FMSFX[KG0FWCNT] = " ";
+      else
+        KG0FM010.KG0FMSFX[KG0FWCNT] = KG0FW04.KG0FMSFX[KG0FWCNT];
+      end
+      ;
+      KG0FM010.KG0FMDS[KG0FWCNT] = KG0FW04.KG0FMDS[KG0FWCNT];
+      KG0FM010.KG0FMDD[KG0FWCNT] = KG0FW04.KG0FWDD[KG0FWCNT];
+      KG0FM010.KG0FMST[KG0FWCNT] = KG0FW04.KG0FWSTA[KG0FWCNT];
+      KG0FM010.KG0FMD[KG0FWCNT] = KG0FW04.KG0FWDA[KG0FWCNT];
+      ;
+      if (KG0FW01.KG0FWUPD == "Y") /* update okay*/
+        set KG0FM010.KG0FMST[KG0FWCNT] initialAttributes;
+        set KG0FM010.KG0FMD[KG0FWCNT] initialAttributes;
+        ;
+        if (KG0FW04.KG0FMSFX[KG0FWCNT] == "X")
+          set KG0FM010.KG0FMD[KG0FWCNT] skip;
+          set KG0FM010.KG0FMST[KG0FWCNT] skip;
+        end
+        ;
+      else /* inquiry only*/
+        set KG0FM010.KG0FMST[KG0FWCNT] skip;
+        set KG0FM010.KG0FMD[KG0FWCNT] skip;
+      end
+    end
+    KG0FW01.KG0FWCNT = KG0FW01.KG0FWCNT + 1;
+  end
+  ;
+  KG0FW01.KG0FWCNT = 1; /* counter for screen*/
+  while (KG0FW01.KG0FWCNT < 15)
+    if (KG0FW01.KG0FWUPD == "Y") /* update okay*/
+      if (KG0FM010.KG0FMSFX[KG0FWCNT] != "X")
+        set KG0FM010.KG0FMST[KG0FWCNT] cursor;
+        KG0FW01.KG0FWCNT = 16; /* counter for screen*/
+      end
+    end
+    KG0FW01.KG0FWCNT = KG0FW01.KG0FWCNT + 1;
+  end
+  ;
+end // end KG0F190
+
+// read store temp storage
+Function KG0F195()
+   /* ************************************/
+   /* * KG0F195 READ STORE TEMP STORAGE **/
+   /* ************************************/
+  ;
+  KG0FW02.KG0FW2RC = 0;
+  KG0FW02.KG0FW2CT = KG0FW01.KG0FWSIX;
+  KG0FW02.KG0FW2FC = "R";
+  KG0FW02.KG0FW2AP = "KW04";
+  KG0FW04.KG0FW4LG = 1194;
+  call "TA0050" (KG0FW04, KG0FW02) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (KG0FW02.KG0FW2RC == 0)
+    /* next sentence*/
+  else
+    if (KG0FW02.KG0FW2RC == 7)
+      converseLib.validationFailed(206); /* end of data*/
+      KG0FW01.KG0FWERR = "Y";
+      KG0FW01.KG0FWEND = "Y";
+    else
+      VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+      VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+      sysLib.commit();
+      VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+      
+      converseLib.validationFailed(228);
+      KG0FW01.KG0FWERR = "Y";
+      KG0FW01.KG0FWEND = "Y";
+    end
+  end
+  ;
+end // end KG0F195
+
+// test for conversion detail chg
+Function KG0F400()
+   /* **************************************/
+   /* * KG0F400 - check detail level change*/
+   /* **************************************/
+  ;
+  KG0FW01.KG0FWCHG = "N"; /* to store/dept change*/
+  KG0FW01.KG0FWCNT = 1; /* counter for screen*/
+  ;
+  while (KG0FW01.KG0FWCNT < 15)
+    if (KG0FM010.KG0FMST[KG0FWCNT] == KG0FW04.KG0FWSTA[KG0FWCNT]
+     && KG0FM010.KG0FMD[KG0FWCNT] == KG0FW04.KG0FWDA[KG0FWCNT])
+      /* next sentence*/
+    else
+      if (KG0FM010.KG0FMST[KG0FWCNT] == 0 /* stt/dp were reset to 0's*/
+       && KG0FM010.KG0FMD[KG0FWCNT] == 0)
+        KG0FW04.KG0FMDS[KG0FWCNT] = " "; /* reset dp-self-id*/
+        KG0FW04.KG0FWDD[KG0FWCNT] = " "; /* reset dp-desc*/
+      else
+        KUJREC.KUCCOID = KG0FW01.KG0FWCT; /* stt/dp were changed*/
+        KUJREC.XNXCD = KG0FM010.KG0FMD[KG0FWCNT];
+        KG0F168(); /* read department*/
+        if (SQLCA.VAGen_SQLCODE == 100
+         || KUJREC.XXXSTAT == "I")
+          set KG0FM010.KG0FMD[KG0FWCNT] cursor, bold;
+          converseLib.validationFailed(238); /* "dp not functional" msg*/
+          KG0FW01.KG0FWERR = "Y";
+          return;
+        end
+      end /* save map changes to w04*/
+      set KG0FM010.KG0FMD[KG0FWCNT] initialAttributes;
+      KG0FM010.KG0FMDS[KG0FWCNT] = KG0FW04.KG0FMDS[KG0FWCNT];
+      KG0FM010.KG0FMDD[KG0FWCNT] = KG0FW04.KG0FWDD[KG0FWCNT];
+      set KG0FM010.KG0FMST[KG0FWCNT] initialAttributes;
+      KG0FW04.KG0FWSTA[KG0FWCNT] = KG0FM010.KG0FMST[KG0FWCNT];
+      KG0FW04.KG0FWDA[KG0FWCNT] = KG0FM010.KG0FMD[KG0FWCNT];
+      KG0FW01.KG0FWCHG = "Y"; /* to store/dept change*/
+    end
+    KG0FW01.KG0FWCNT = KG0FW01.KG0FWCNT + 1;
+  end
+   /* ;*/
+  if (KG0FW01.KG0FWCHG == "Y") /* to store/dept change*/
+    KG0F410(); /* rewrite store temp storage*/
+  end
+  ;
+end // end KG0F400
+
+// rewrite store temp storage
+Function KG0F410()
+   /* *********************************************/
+   /* * KG0C410 - REWRITE STORES TO TEMP STORAGE **/
+   /* *********************************************/
+  ;
+  set KG0FW02 empty;
+  KG0FW02.KG0FW2RC = 0; /* return code*/
+  KG0FW02.KG0FW2FC = "U";
+  KG0FW02.KG0FW2AP = "KW04";
+  KG0FW02.KG0FW2CT = KG0FW01.KG0FWSIX;
+  KG0FW04.KG0FW4LG = 1194;
+  call "TA0050" (KG0FW04, KG0FW02) {isNoRefresh = yes, isExternal = yes};
+  if (KG0FW02.KG0FW2RC != 0)
+    VAGen_EZEREPLY = VGVar.handleSysLibraryErrors;	  // save value
+    VGVar.handleSysLibraryErrors = 0;		// VAGEN (REPLY option omitted
+    sysLib.commit();
+    VGVar.handleSysLibraryErrors = VAGen_EZEREPLY;		//restore value
+    
+    KG0FW01.KG0FWEND = "Y";
+    KG0FW01.KG0FWERR = "Y";
+    converseLib.validationFailed(228);
+  end
+  ;
+end // end KG0F410
+// test all stores for change
+Function KG0F420()
+   /* ********************************************/
+   /* * KG0F420 - TEST FOR DATA CHANGE*/
+   /* *   read through temp storage to see if any*/
+   /* *   updates are pending.*/
+   /* ********************************************/
+  ;
+  KG0FW01.KG0FWSIX = 1;
+  KG0FW01.KG0FWPND = "N";
+  while (KG0FW01.KG0FWSIX <= KG0FW01.KG0FWPGT
+   && KG0FW01.KG0FWPND == "N")
+    KG0F195(); /* read store temp storage*/
+    KG0FW01.KG0FWCNT = 1;
+    while (KG0FW01.KG0FWCNT < 15
+     && KG0FW01.KG0FWPND == "N")
+      if (KG0FW04.KG0FWSTB[KG0FWCNT] != KG0FW04.KG0FWSTA[KG0FWCNT]
+       || KG0FW04.KG0FWDB[KG0FWCNT] != KG0FW04.KG0FWDA[KG0FWCNT])
+        KG0FW01.KG0FWPND = "Y";
+        KG0FW01.KG0FWXXX = KG0FW01.KG0FWSIX;
+      end
+      KG0FW01.KG0FWCNT = KG0FW01.KG0FWCNT + 1;
+    end
+    KG0FW01.KG0FWSIX = KG0FW01.KG0FWSIX + 1;
+  end
+  ;
+  if (KG0FW01.KG0FWPGT > 0)
+    KG0FW01.KG0FWSIX = KG0FW01.KG0FWPGC; /* get current page#*/
+    KG0F195(); /* return current page*/
+  end
+  ;
+end // end KG0F420
+
+// process conversion entries
+Function KG0F500()
+   /* ********************************************/
+   /* * KG0F500 - PROCESS CONVERSION CHANGES*/
+   /* ********************************************/
+  ;
+  KG0FW01.KG0FWSIX = 1;
+  while (KG0FW01.KG0FWSIX <= KG0FW01.KG0FWPGT)
+    KG0F195(); /* read store temp storage*/
+    KG0FW01.KG0FWCNT = 1;
+    KG0FW01.KG0FWPND = "N";
+    while (KG0FW01.KG0FWCNT < 15)
+      if (KG0FW04.KG0FWSTB[KG0FWCNT] != KG0FW04.KG0FWSTA[KG0FWCNT]
+       || KG0FW04.KG0FWDB[KG0FWCNT] != KG0FW04.KG0FWDA[KG0FWCNT])
+        if (KG0FW04.KG0FWSTA[KG0FWCNT] == 0
+         && KG0FW04.KG0FWDA[KG0FWCNT] == 0)
+          KG0F530(); /* delete conversion rec*/
+        else
+          if (KG0FW04.KG0FWSTB[KG0FWCNT] == 0
+           && KG0FW04.KG0FWDB[KG0FWCNT] == 0)
+            KG0F520(); /* insert conversion rec*/
+          else
+            KG0F510(); /* update conversion rec*/
+          end
+        end
+        KG0FW04.KG0FWSTB[KG0FWCNT] = KG0FW04.KG0FWSTA[KG0FWCNT];
+        KG0FW04.KG0FWDB[KG0FWCNT] = KG0FW04.KG0FWDA[KG0FWCNT];
+        KG0FW01.KG0FWPND = "Y";
+      end
+      KG0FW01.KG0FWCNT = KG0FW01.KG0FWCNT + 1;
+    end
+    if (KG0FW01.KG0FWPND == "Y") /* temp page changed*/
+      KG0F410(); /* rewrite temp page*/
+    end
+    KG0FW01.KG0FWSIX = KG0FW01.KG0FWSIX + 1;
+  end
+  ;
+  KG0FW01.KG0FWSIX = KG0FW01.KG0FWPGC; /* get current page#*/
+  KG0F195(); /* return current temp page*/
+  converseLib.validationFailed(279); /* "upd completed" msg*/
+  ;
+end // end KG0F500
+
+// update conversion record
+Function KG0F510()
+   /* ********************************************/
+   /* * KG0F510 - UPDATE CONVERSION DATABASE*/
+   /* ********************************************/
+  ;
+  KUDREC.KUCCOID = KG0FW01.KG0FWCF;
+  KUDREC.KUMSTRID = KG0FW04.KG0FMSF[KG0FWCNT];
+  KUDREC.XNXCD = KG0FW04.KG0FM-CU-DEPT-CONV-ID[KG0FWCNT];
+  KUDREC.KUDCOCID = KG0FW01.KG0FWCT;
+  KUDREC.KUDSTCID = KG0FW04.KG0FWSTA[KG0FWCNT];
+  KUDREC.CU-DEPT-CONV-ID = KG0FW04.KG0FWDA[KG0FWCNT];
+  KUDREC.KUDCSTAT = " ";
+  KUDREC.ZZZCHGCT = KG0FW04.KG0FWXCC[KG0FWCNT];
+  ;
+  XX0XS01();
+  KUDREC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  KUDREC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+  ;
+  call "IO5570" ("U ", SQLCA, KUDREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    return;
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "KG0F510";
+    TA1REC.TA1LOC = "UPDATE VCONV001";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCONV001";
+    KG0FW01.KG0FWKC = KUDREC.KUCCOID;
+    KG0FW01.KG0FWKS = KUDREC.KUMSTRID;
+    KG0FW01.KG0FWKD = 0;
+    TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+end // end KG0F510
+
+// add conversion record
+Function KG0F520()
+   /* ********************************************/
+   /* * KG0F520 - INSERT TO CONVERSION DATABASE*/
+   /* ********************************************/
+  ;
+  KUDREC.KUCCOID = KG0FW01.KG0FWCF;
+  KUDREC.KUMSTRID = KG0FW04.KG0FMSF[KG0FWCNT];
+  KUDREC.XNXCD = KG0FW04.KG0FM-CU-DEPT-CONV-ID[KG0FWCNT];
+  KUDREC.KUDCOCID = KG0FW01.KG0FWCT;
+  KUDREC.KUDSTCID = KG0FW04.KG0FWSTA[KG0FWCNT];
+  KUDREC.CU-DEPT-CONV-ID = KG0FW04.KG0FWDA[KG0FWCNT];
+  KUDREC.KUDCSTAT = " ";
+  ;
+  XX0XS01();
+  KUDREC.ZZZSDT = XX0XW01.XX0XWDAT;
+  KUDREC.ZZZCHGDT = XX0XW01.XX0XWDAT;
+  KUDREC.ZZZCHGTM = XX0XW01.XX0XWTIM;
+  ;
+  call "IO5570" ("A ", SQLCA, KUDREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    return;
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "KG0F520";
+    TA1REC.TA1LOC = "INSERT VCONV001";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCONV001";
+    KG0FW01.KG0FWKC = KUDREC.KUCCOID;
+    KG0FW01.KG0FWKS = KUDREC.KUMSTRID;
+    KG0FW01.KG0FWKD = 0;
+    TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+end // end KG0F520
+
+// delete conversion record
+Function KG0F530()
+   /* ********************************************/
+   /* * KG0F530 - DELETE FROM CONVERSION DATABASE*/
+   /* ********************************************/
+  ;
+  KUDREC.KUCCOID = KG0FW01.KG0FWCF;
+  KUDREC.KUMSTRID = KG0FW04.KG0FMSF[KG0FWCNT];
+  KUDREC.CU-DEPT-CONV-ID = KG0FW04.KG0FM-CU-DEPT-CONV-ID;
+  ;
+  call "IO5570" ("D ", SQLCA, KUDREC) {isNoRefresh = yes, isExternal = yes};
+  ;
+  if (SQLCA.VAGen_SQLCODE == 0)
+    return;
+  else
+    TA1REC.TA1TYPE = "DB2";
+    TA1REC.TA1FUNC = "ABND";
+    TA1REC.TA1PGMNM = "KG0F530";
+    TA1REC.TA1LOC = "DELETE VCONV001";
+    TA1REC.TA1MAP = " ";
+    TA1REC.TA1DBASE = "DCUST";
+    TA1REC.TA1TBLVU = "VCONV001";
+    KG0FW01.KG0FWKC = KUDREC.KUCCOID;
+    KG0FW01.KG0FWKS = KUDREC.KUMSTRID;
+    KG0FW01.KG0FWKD = 0;
+    TA1REC.TA1TBLKE = KG0FW01.KG0FWKEY;
+    call "TA0020" (TA1REC, SQLCA) {isExternal = yes};
+  end
+  ;
+end // end KG0F530
+
+// cursor > first store/dp change
+Function KG0F600()
+   /* *********************************************************/
+   /* *  KG0C600 - SCROLL SCREEN TO ERROR*/
+   /* *    load screen from 1st changed store/dept*/
+   /* *********************************************************/
+  ;
+  if (KG0FW01.KG0FWXXX != KG0FW01.KG0FWSIX)
+    KG0FW01.KG0FWPGC = KG0FW01.KG0FWXXX;
+    KG0FM010.KG0FMPG1 = KG0FW01.KG0FWPGC;
+    KG0FW01.KG0FWSIX = KG0FW01.KG0FWXXX;
+    KG0F190(); /* move stores to screen*/
+  end
+  ;
+   /* **************************************/
+   /* *  set cursor on first changed store*/
+   /* **************************************/
+  ;
+  KG0FW01.KG0FWCNT = 1;
+  ;
+  while (KG0FW01.KG0FWCNT < 15)
+    if (KG0FW04.KG0FWSTB[KG0FWCNT] != KG0FW04.KG0FWSTA[KG0FWCNT]
+     || KG0FW04.KG0FWDB[KG0FWCNT] != KG0FW04.KG0FWDA[KG0FWCNT])
+      set KG0FM010.KG0FMST[KG0FWCNT] cursor, bold;
+      KG0FW01.KG0FWCNT = 14;
+    end
+    KG0FW01.KG0FWCNT = KG0FW01.KG0FWCNT + 1;
+  end
+end // end KG0F600
+
+// page up for stores
+Function KG0F670()
+   /* *******************************/
+   /* * KG0F670 - PAGE UP FOR STORES*/
+   /* *******************************/
+  ;
+  if (KG0FW01.KG0FWSIX > 1)
+    KG0FW01.KG0FWSIX = KG0FW01.KG0FWSIX - 1;
+    KG0FW01.KG0FWPGC = KG0FW01.KG0FWPGC - 1;
+    KG0FM010.KG0FMPG1 = KG0FW01.KG0FWPGC;
+    KG0F190(); /* move stores to screen*/
+  else
+    converseLib.validationFailed(208); /* at begining of data*/
+  end
+  ;
+  ;
+end // end KG0F670
+
+// page down for stores
+Function KG0F675()
+   /* *******************************************/
+   /* page down for reps*/
+   /* *******************************************/
+  ;
+  if (KG0FW01.KG0FWSIX >= KG0FW01.KG0FWPGT) /* if past total #of reps*/
+    converseLib.validationFailed(206);
+  else
+    KG0FW01.KG0FWSIX = KG0FW01.KG0FWSIX + 1;
+    KG0FW01.KG0FWPGC = KG0FW01.KG0FWPGC + 1; /* page counter*/
+    KG0FM010.KG0FMPG1 = KG0FW01.KG0FWPGC;
+    KG0F190(); /* move sales reps to the screen*/
+  end
+  ;
+end // end KG0F675
+
+// test for to/from company chg
+Function KG0F700()
+   /* **********************************/
+   /* * KG0F700 - EDIT COMPANY CHANGES*/
+   /* **********************************/
+  ;
+  if (KG0FM010.KG0FMCF != KG0FW01.KG0FWCF /* companies changed*/
+   || KG0FM010.KG0FMCT != KG0FW01.KG0FWCT)
+    if (KG0FW01.KG0FWPND == "Y") /* updates are pending*/
+      converseLib.validationFailed(121); /* "updates not completed" msg*/
+      KG0FW01.KG0FWERR = "Y";
+      if (KG0FM010.KG0FMCF != KG0FW01.KG0FWCF) /* set cursor*/
+        set KG0FM010.KG0FMCF cursor, bold;
+      else
+        set KG0FM010.KG0FMCT cursor, bold;
+      end
+      KG0FM010.KG0FMCF = KG0FW01.KG0FWCF;
+      KG0FM010.KG0FMCT = KG0FW01.KG0FWCT;
+    else
+      KG0F115(); /* process new companies*/
+    end
+  end
+  ;
+end // end KG0F700
+
+//*** RECORD=KG0FW01 ****
+// working storage for rep maintenance screen
+// ***********************
+Record KG0FW01 type basicRecord
+  10 KG0FWUSR KG0FWUSR ; 
+    15 KG0FWCF KG0FWCF ; 
+    15 KG0FWCT KG0FWCT ; 
+    15 * num(1) ; 
+  10 KG0FWKEY KG0FWKEY ; 
+    15 KG0FWKC KG0FWKC ; 
+    15 KG0FWKS KG0FWKS ; 
+    15 KG0FWKD KG0FWKD ; 
+    15 * num(17) ; 
+  10 KG0FWUPD KG0FWUPD ; 
+  10 KG0FWERR KG0FWERR ; 
+  10 KG0FWCHG KG0FWCHG ; 
+  10 KG0FWPND KG0FWPND ; 
+  10 KG0FWEND KG0FWEND ; 
+  10 KG0FWFND KG0FWFND ; 
+  10 KG0FWCNT KG0FWCNT ; 
+  10 KG0FWSCT KG0FWSCT ; 
+  10 KG0FWPGC KG0FWPGC ; 
+  10 KG0FWPGT KG0FWPGT ; 
+  10 KG0FWSIX KG0FWSIX ; 
+  10 KG0FWCCA KG0FWCCA ; 
+  10 KG0FWXXX KG0FWXXX ; 
+  10 KG0FW-HOLD-STORE KG0FW-HOLD-STORE ; 
+  10 KG0FW-HOLD-DEPT KG0FW-HOLD-DEPT ; 
+end // end KG0FW01
+
+//*** RECORD=KG0FW02 ****
+// working storage record for parm to ta0050 (temp storage)
+// ***********************
+Record KG0FW02 type basicRecord
+  10 KG0FW2AP KG0FW2AP ; 
+  10 KG0FW2CT KG0FW2CT ; 
+  10 KG0FW2FC KG0FW2FC ; 
+  10 KG0FW2RC KG0FW2RC ; 
+end // end KG0FW02
+
+//*** RECORD=KG0FW04 ****
+// working storage rec for editing against the screen
+// ;
+// the following fields (KG0CW01) are used for processing
+//  1) KG0CWRIN - misc looping thru the table
+//  2) KG0CWRMR - last full position on the table
+//  3) KG0CWRIX - last rep on the screen
+//  4) KG0CWRCT - counter used to match the screen counter
+//                of KG0CWCNT
+//  5) KG0CWRPL - holding field when replacing a rep with a
+// new rep
+// ;
+// ;*  09-02-93  CHELLM  added from dept. - KG0FMDF
+// ***********************
+Record KG0FW04 type basicRecord
+  10 KG0FW4LG KG0FW4LG ; 
+  10 KG0FWDIS KG0FWDIS [14] ; 
+    15 KG0FMSF KG0FMSF ; 
+    15 KG0FM-CU-DEPT-CONV-ID smallint ; //   FM DEPT-ID
+    15 KG0FMSFN KG0FMSFN ; 
+    15 KG0FMSFX KG0FMSFX ; 
+    15 KG0FMDS KG0FMDS ; 
+    15 KG0FWDD KG0FWDD ; 
+    15 KG0FWXCC KG0FWXCC ; 
+  10 KG0FWBEF KG0FWBEF [14] ; 
+    15 KG0FWSTB KG0FWSTB ; 
+    15 KG0FWDB KG0FWDB ; 
+  10 KG0FWAFT KG0FWAFT [14] ; 
+    15 KG0FWSTA KG0FWSTA ; 
+    15 KG0FWDA KG0FWDA ; 
+end // end KG0FW04
+
+//   dept self id
+DataItem KG0FMDS char(10)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   fm store id
+DataItem KG0FMSF smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   fm store name
+DataItem KG0FMSFN char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   fm store status
+DataItem KG0FMSFX char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// HOLD DEPT ID
+DataItem KG0FW-HOLD-DEPT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// HOLD STORE ID
+DataItem KG0FW-HOLD-STORE smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// application
+DataItem KG0FW2AP char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// count
+DataItem KG0FW2CT num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// function
+DataItem KG0FW2FC char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// return code
+DataItem KG0FW2RC num(1)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// RECORD LENGTH
+DataItem KG0FW4LG num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// CUST CONV (AFTER IMAGE)
+DataItem KG0FWAFT char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// CUST CONV (BEFORE IMAGE)
+DataItem KG0FWBEF char(4)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// company conversion area
+DataItem KG0FWCCA num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   from company number
+DataItem KG0FWCF num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// to store/dept change
+DataItem KG0FWCHG char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// screen detail counter
+DataItem KG0FWCNT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   to company number
+DataItem KG0FWCT num(7)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   to dept id
+DataItem KG0FWDA smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   to dept id
+DataItem KG0FWDB smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   dept description
+DataItem KG0FWDD char(30)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// DISPLAY ONLY
+DataItem KG0FWDIS char(77)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// end of stores flag
+DataItem KG0FWEND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// application error flag
+DataItem KG0FWERR char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// store found flag
+DataItem KG0FWFND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   company number
+DataItem KG0FWKC num(9)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   department number
+DataItem KG0FWKD num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// key for abending
+DataItem KG0FWKEY char(34)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   store number
+DataItem KG0FWKS num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// page counter
+DataItem KG0FWPGC num(4)  {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// total nbr of store temp recs
+DataItem KG0FWPGT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// updates pending flag
+DataItem KG0FWPND char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// store count
+DataItem KG0FWSCT smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// store index
+DataItem KG0FWSIX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+//   to store id
+DataItem KG0FWSTA smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   to store id
+DataItem KG0FWSTB smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// update mode flag
+DataItem KG0FWUPD char(1)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+// commarea passed
+DataItem KG0FWUSR char(15)  {
+  align = left, fillCharacter = nullFill, inputRequired = no
+}
+end
+
+//   change count
+DataItem KG0FWXCC smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+// first screen with updates
+DataItem KG0FWXXX smallint {
+  currency = no, numericSeparator = no, sign = none, align = right, 
+  fillCharacter = " ", inputRequired = no
+}
+end
+
+
